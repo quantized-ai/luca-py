@@ -1,7 +1,9 @@
 """CLI argument parsing and session building."""
 
-from luca.agent.contrib.tui.cli import arg_parser, build_session
+from luca.agent.contrib.tui.app import AgentApp
+from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
+from luca.agent.contrib.tui.wiring import default_model
 
 from .helpers import fresh_session
 
@@ -12,7 +14,9 @@ def test_default_args():
     assert (args.conversation, args.fork, args.no_streaming, args.faux) == (
         None, False, False, False,
     )
-    assert (args.model, args.reasoning_effort) == (None, None)
+    assert (args.model, args.provider, args.reasoning_effort) == (
+        None, None, None,
+    )
 
 
 def test_model_and_reasoning_effort_override_the_fresh_session():
@@ -24,6 +28,28 @@ def test_model_and_reasoning_effort_override_the_fresh_session():
     assert llm.model == "moonshotai/kimi-k2.7-code"
     assert llm.reasoning_effort == "high"
     assert llm.provider == "openrouter"
+
+
+def test_provider_override_is_passed_through_as_is():
+    session = build_session(arg_parser().parse_args([
+        "--provider", "quantized",
+    ]))
+
+    llm = session.session_config.llm_config
+    assert llm.provider == "quantized"
+    assert llm.model == default_model().model
+
+
+def test_provider_override_applies_on_resume(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    session = fresh_session()
+    save_session(session)
+
+    resumed = build_session(arg_parser().parse_args([
+        "--conversation", session.id, "--provider", "quantized",
+    ]))
+
+    assert resumed.session_config.llm_config.provider == "quantized"
 
 
 def test_model_override_composes_with_faux():
@@ -54,6 +80,23 @@ def test_faux_session_uses_the_faux_model():
     session = build_session(arg_parser().parse_args(["--faux"]))
 
     assert session.session_config.llm_config.provider == "faux"
+
+
+def test_main_prints_the_resume_hint_after_the_app_exits(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["id"] = self.runner.session.id
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    out = capsys.readouterr().out
+    assert f"--conversation {seen['id']}" in out
+    assert "Goodbye!" in out
 
 
 def test_resume_and_fork(tmp_path, monkeypatch):

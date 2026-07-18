@@ -8,9 +8,10 @@
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning-effort high
 
-`--model` / `--reasoning-effort` update the session's `LLMConfig` (the
-provider stays openrouter — or faux under `--faux`); the config persists with
-the session, and passing either flag on a resume overrides the stored value.
+`--model` / `--provider` / `--reasoning-effort` update the session's
+`LLMConfig` (defaults: openrouter, or faux under `--faux`); the config
+persists with the session, and passing any of these flags on a resume
+overrides the stored value.
 
 Sessions persist to `<session-id>.json` in the working directory after every
 run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
@@ -52,6 +53,11 @@ def arg_parser() -> argparse.ArgumentParser:
              "resumed session's model.",
     )
     parser.add_argument(
+        "--provider",
+        help="Provider name for the session (e.g. openrouter, anthropic). "
+             "Passed to the LLMConfig as-is. Persists like --model.",
+    )
+    parser.add_argument(
         "--reasoning-effort",
         choices=["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
         help="Reasoning effort for the model. Persists like --model.",
@@ -70,6 +76,8 @@ def build_session(args: argparse.Namespace) -> AgentSession:
     overrides = {}
     if args.model:
         overrides["model"] = args.model
+    if args.provider:
+        overrides["provider"] = args.provider
     if args.reasoning_effort:
         overrides["reasoning_effort"] = args.reasoning_effort
     if overrides:
@@ -89,6 +97,10 @@ def main(argv: list[str] | None = None) -> None:
         streaming=not args.no_streaming,
     )
     app.run()
+    print(
+        f"Goodbye! Resume session with "
+        f"`python main.py --conversation {app.runner.session.id}`"
+    )
 
 
 if __name__ == "__main__":
