@@ -1,0 +1,124 @@
+"""luca.agent.core — the agent framework core.
+
+The conversation data model (`models`) plus the runtime surface: the
+`AgentSessionRunner` loop, the `ToolRegistry` contract, the `Tool` base
+class and its `ToolContext`, the `ConversationProjector` LLM-projection
+strategy, the system-prompt strategy, and the agent exceptions. Event
+classes live in `luca.agent.core.events`; the inbound response /
+tool-definition translations in `luca.agent.core.adapter`.
+"""
+
+from .context import CancellationToken, ToolContext
+from .context_manager import PRUNED_TOOL_OUTPUT_MARKER, ContextManager
+from .exceptions import (
+    AgentError,
+    AlreadyCancellingError,
+    CancelledError,
+    InvalidToolArguments,
+    ProjectionError,
+    ToolNotFound,
+)
+from .models import (
+    AgentSession,
+    AnyEntry,
+    ApprovalDecision,
+    ApprovalOption,
+    ApprovalStatus,
+    AssistantMessage,
+    BaseConfigModel,
+    CancelRequested,
+    CompactionEntry,
+    Content,
+    Conversation,
+    ConversationStatus,
+    Entry,
+    ExecutionResult,
+    ExecutionStatus,
+    Inf,
+    LLMConfig,
+    MilliSeconds,
+    PrunedEntry,
+    RuntimeConfig,
+    Seconds,
+    SessionConfig,
+    SessionRuntimeStatus,
+    SystemPromptPart,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolExecution,
+    ToolExecutionError,
+    ToolKind,
+    ToolSpec,
+    TurnFinish,
+    TurnOutcome,
+    TurnStart,
+    Usage,
+    UserMessage,
+)
+from .middleware import AgentMiddlewareMixin
+from .projection import CANCELLED_TURN_MARKER, ConversationProjector
+from .runner import AgentRun, AgentSessionRunner, RunResult
+from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
+from .tool_registry import ToolRegistry
+from .tools import Tool, tool
+
+__all__ = [
+    "AgentError",
+    "AgentMiddlewareMixin",
+    "AgentRun",
+    "AgentSession",
+    "AgentSessionRunner",
+    "AlreadyCancellingError",
+    "AnyEntry",
+    "ApprovalDecision",
+    "ApprovalOption",
+    "ApprovalStatus",
+    "AssistantMessage",
+    "BaseConfigModel",
+    "CANCELLED_TURN_MARKER",
+    "CancelRequested",
+    "CancellationToken",
+    "CancelledError",
+    "CompactionEntry",
+    "Content",
+    "ContextManager",
+    "Conversation",
+    "ConversationProjector",
+    "ConversationStatus",
+    "DefaultSystemPromptAssembler",
+    "Entry",
+    "ExecutionResult",
+    "ExecutionStatus",
+    "Inf",
+    "InvalidToolArguments",
+    "LLMConfig",
+    "MilliSeconds",
+    "PRUNED_TOOL_OUTPUT_MARKER",
+    "ProjectionError",
+    "PrunedEntry",
+    "RunResult",
+    "RuntimeConfig",
+    "Seconds",
+    "SessionConfig",
+    "SessionRuntimeStatus",
+    "SystemPromptAssembler",
+    "SystemPromptPart",
+    "TextContent",
+    "ThinkingContent",
+    "Tool",
+    "ToolCall",
+    "ToolContext",
+    "ToolExecution",
+    "ToolExecutionError",
+    "ToolKind",
+    "ToolNotFound",
+    "ToolRegistry",
+    "ToolSpec",
+    "TurnFinish",
+    "TurnOutcome",
+    "TurnStart",
+    "Usage",
+    "UserMessage",
+    "tool",
+]

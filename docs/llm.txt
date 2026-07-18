@@ -1,0 +1,116 @@
+# Writing docs for `luca` — agent guide
+
+Read this before you add or change anything under `docs/`. It captures where docs
+live, how they're structured, and the house style. Follow it so every page reads
+as one voice. This file itself obeys the style it preaches — brief, dense,
+example-led.
+
+Guardrails (project-wide): never read `prompts/` or `TODO.md`. Always use
+`uv run`, never bare `python`.
+
+## Where docs live
+
+```
+docs/
+├── README.md          # top-level index → links to agent/README.md and client/README.md
+├── llm.txt            # this file
+├── agent/             # luca.agent docs (the primary product)
+│   ├── README.md      # index: 60-second example + page table
+│   ├── NN-topic.md    # 01-quickstart, 02-data-model, … 08-runtime-config
+│   └── contrib/       # one folder per luca.agent.contrib package
+│       ├── README.md  # index: the core/contrib boundary + package table
+│       └── <package>/README.md   # e.g. resource_permissions/README.md
+└── client/            # luca.client docs (the supporting LLM SDK)
+    ├── README.md      # index
+    └── NN-topic.md    # 01-installation … 13-roadmap, plus data_sample*.md
+```
+
+Two layers, two folders. **Decide which layer a topic belongs to and put it
+there** — don't mix:
+
+- `luca.agent` (agent framework: `AgentSession`, runner, tools, permissions,
+  prompts, middleware, runtime config) → `docs/agent/`.
+- `luca.client` (chat-completion SDK: `completion`/`acompletion`, providers,
+  transports, streaming, catalog) → `docs/client/`.
+
+The agent talks to models *through* the client. Document each layer from its own
+surface; don't leak client internals into agent pages or vice-versa. If a topic
+truly spans both, put it in the primary layer and cross-link.
+
+## Page conventions
+
+- **Filenames:** `NN-topic.md`, zero-padded, kebab-case (`04-runner.md`). The
+  number sets reading order — pages build on earlier ones.
+- **Each folder has a `README.md`** index: a one-paragraph framing, a tiny
+  runnable example, and a table of the pages with a one-line topic each.
+- **Every page ends with a `Next:` pointer** to the following page (except the
+  last, which links back to the index).
+- **Links:**
+  - within a folder → bare filename: `[tools](03-tools.md)`
+  - across folders → `[install](../client/01-installation.md)`
+  - to a repo-root file (`main.py`, `architecture.md`) → count the levels up
+    from the page: `[main.py](../../main.py)` from `docs/<layer>/`,
+    `[main.py](../../../../main.py)` from `docs/agent/contrib/<package>/`.
+- **When you add / remove / renumber a page:** update that folder's `README.md`
+  table, and the top-level `docs/README.md` if the set of folders changed. Fix
+  the `Next:` chain.
+
+## Style
+
+Tailored to a **human reader**, so: **dense, not verbose. Less is more.**
+
+- **Every feature = a short description + a minimal example.** No feature without
+  a code sample; no long prose without a snippet.
+- **Grow complexity down the page.** Start with the simplest usage, then layer on
+  options. E.g. a tool page goes: define → context → approval → rich result →
+  cancellation. Number the sections (`## 1.`, `## 2.`, …).
+- **Prefer tables** for enumerations: fields, statuses, hook signatures, config
+  knobs. Tables beat paragraphs for reference material.
+- **Trim ruthlessly.** Cut restating what the code says, hedging, and "note
+  that". One good example replaces three sentences.
+- **Gotchas get a callout:** `> ⚠️ **Short title.** One or two sentences.`
+- Keep a consistent example model across snippets:
+  `LLMConfig(model="openai/gpt-4o-mini", provider="openrouter")`.
+
+## Examples must be correct
+
+Docs are only trusted if they run. Before you commit a page:
+
+- **Import from the real public surface.** Agent: `from luca.agent.core import …`
+  (the `luca.agent` package intentionally exports nothing); events live in
+  `luca.agent.core.events`. Client: `from luca.client import …`.
+- **Validate the snippets against the live code** with a throwaway script — check
+  imports, symbol names, signatures, and constructions:
+
+  ```bash
+  uv run python - <<'PY'
+  from luca.agent.core import AgentSessionRunner, Tool, ToolRegistry, LLMConfig
+  from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
+  # …paste the doc's classes/calls; assert the shapes you claim…
+  print("ok")
+  PY
+  ```
+
+  (You won't be able to run a real model call without a provider key — validate
+  the API surface, not the network round-trip.)
+- **Code wins.** When the code disagrees with a doc, the code is right and the
+  doc is wrong — fix the doc. Never document aspirational behavior; if you can't
+  reproduce it, don't claim it. (This is also how the middleware footgun in
+  `middleware_issue.md` was caught — a snippet that wouldn't run.)
+
+## Workflow: documenting a change
+
+1. Identify the layer and the affected page(s). New capability → usually a new
+   `## N.` section on an existing page, not a new file. New top-level topic → a
+   new `NN-topic.md` (then update the index + `Next:` chain).
+2. Write the description + example; keep it in the page's complexity order.
+3. Validate the example (above).
+4. Re-read for density — delete anything the example already shows.
+
+**Worked example — the middleware fix** (`middleware_issue.md`): the base class
+is now `AgentMiddlewareMixin` and every hook returns its input (identity), so a
+partial-override subclass is safe. The docs (`docs/agent/07-middleware.md` §1)
+still recommend **plain classes** — the mixin is shown in full source but
+flagged "prefer a plain class; the base mixin might change." Keep new middleware
+examples in the plain-class style, and keep the embedded mixin source in sync
+with `luca/agent/core/middleware.py`.
