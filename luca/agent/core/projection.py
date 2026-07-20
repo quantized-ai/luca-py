@@ -52,8 +52,17 @@ import json
 from collections.abc import Mapping
 from typing import ClassVar
 
-from luca.client.types import Message, TextBlock, ThinkingBlock, ToolMessage
+from luca.client.types import (
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
+    Message,
+    TextBlock,
+    ThinkingBlock,
+    ToolMessage,
+)
 from luca.client.types import AssistantMessage as ClientAssistantMessage
+from luca.client.types import ImageBlock as ClientImageBlock
 from luca.client.types import ToolCall as ClientToolCall
 from luca.client.types import UserMessage as ClientUserMessage
 
@@ -65,6 +74,10 @@ from .models import (
     CompactionEntry,
     Conversation,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -315,12 +328,43 @@ class ConversationProjector:
             return "[tool execution failed]"
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
-    def _content_block(self, part) -> TextBlock:
-        """Agent content value → canonical client content block."""
+    def _content_block(self, part) -> TextBlock | ClientImageBlock:
+        """Agent content value → canonical client content block.
+
+        Shared by every entry projection. Only a `UserMessage` can hold an
+        `ImageContent`; the text-only `Content` alias is what keeps images
+        out of tool results and pruned entries."""
         if isinstance(part, TextContent):
             return TextBlock(text=part.text)
+        if isinstance(part, ImageContent):
+            return self._image_block(part)
         raise ProjectionError(
             f"Cannot project content of type {type(part).__name__}."
+        )
+
+    def _image_block(self, part: ImageContent) -> ClientImageBlock:
+        """Agent image part → client `ImageBlock`. Override to rewrite media
+        (proxy a URL, upload base64 and swap in a file id). `part.name` is
+        presentation metadata and is dropped here by design."""
+        source = part.source
+        if isinstance(source, ImageBase64):
+            return ClientImageBlock(
+                source=MediaBase64(
+                    data=source.data, media_type=source.media_type,
+                ),
+            )
+        if isinstance(source, ImageURL):
+            return ClientImageBlock(
+                source=MediaURL(url=source.url, media_type=source.media_type),
+            )
+        if isinstance(source, ImageFileId):
+            return ClientImageBlock(
+                source=MediaFileId(
+                    file_id=source.file_id, media_type=source.media_type,
+                ),
+            )
+        raise ProjectionError(
+            f"Cannot project image source of type {type(source).__name__}."
         )
 
 

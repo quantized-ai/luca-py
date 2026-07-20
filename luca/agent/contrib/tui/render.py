@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from luca.agent.core.models import ExecutionStatus, ToolCall
+from luca.agent.core.models import (
+    ExecutionStatus,
+    ImageContent,
+    TextContent,
+    ToolCall,
+)
 
 RESULT_MAX_LINES = 12
 RESULT_MAX_CHARS = 2_000
@@ -31,6 +36,21 @@ def format_tool_call(call: ToolCall) -> str:
 
 def status_label(status: ExecutionStatus) -> str:
     return STATUS_LABELS.get(status, status.value)
+
+
+def user_transcript_text(parts) -> str:
+    """A user message's parts as transcript text: text verbatim, each image
+    as a `[image: name]` placeholder line. Textual cannot draw images, and
+    both the live and the replayed transcript render through here so they
+    cannot drift."""
+    lines: list[str] = []
+    for part in parts:
+        if isinstance(part, TextContent):
+            lines.append(part.text)
+        elif isinstance(part, ImageContent):
+            label = part.name or part.source.media_type or "image"
+            lines.append(f"[image: {label}]")
+    return "\n".join(lines)
 
 
 def clip_text(

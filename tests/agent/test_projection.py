@@ -22,6 +22,10 @@ from luca.agent.core.models import (
     Conversation,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     LLMConfig,
     PrunedEntry,
     TextContent,
@@ -40,8 +44,16 @@ from luca.agent.core.projection import (
     ConversationProjector,
     tool_message_text,
 )
-from luca.client.types import TextBlock, ThinkingBlock, ToolMessage
+from luca.client.types import (
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
+    TextBlock,
+    ThinkingBlock,
+    ToolMessage,
+)
 from luca.client.types import AssistantMessage as LucaAssistantMessage
+from luca.client.types import ImageBlock as LucaImageBlock
 from luca.client.types import ToolCall as LucaToolCall
 from luca.client.types import UserMessage as LucaUserMessage
 
@@ -666,3 +678,92 @@ def test_tool_message_text_concatenates_text_blocks_in_order():
             content=[TextBlock(text="first "), TextBlock(text="second")],
         ),
     ) == "first second"
+
+
+# ── image parts ────────────────────────────────────────────────────────────────
+
+
+def test_user_message_projects_image_and_text_parts_in_order():
+    entries = {
+        "u1": UserMessage(
+            id="u1", created_at=1,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    name="receipt.jpg",
+                ),
+                TextContent(text="how much did I tip?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaImageBlock(
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
+                ),
+                TextBlock(text="how much did I tip?"),
+            ],
+        ),
+    ]
+
+
+def test_image_url_source_projects_to_a_media_url():
+    part = ImageContent(
+        source=ImageURL(url="https://example.com/a.png", media_type="image/png"),
+    )
+
+    assert PROJECTOR._image_block(part) == LucaImageBlock(
+        source=MediaURL(url="https://example.com/a.png", media_type="image/png"),
+    )
+
+
+def test_image_file_id_source_projects_to_a_media_file_id():
+    part = ImageContent(source=ImageFileId(file_id="file_123"))
+
+    assert PROJECTOR._image_block(part) == LucaImageBlock(
+        source=MediaFileId(file_id="file_123", media_type=None),
+    )
+
+
+def test_image_name_is_not_projected():
+    source = ImageBase64(data="aGk=", media_type="image/png")
+
+    assert PROJECTOR._image_block(
+        ImageContent(source=source, name="receipt.jpg"),
+    ) == PROJECTOR._image_block(ImageContent(source=source))
+
+
+def test_unknown_content_type_still_fails_loudly():
+    with pytest.raises(ProjectionError, match="ThinkingContent"):
+        PROJECTOR._content_block(ThinkingContent(thinking="hmm"))
+
+
+def test_subclass_can_rewrite_image_media_only():
+    class Uploading(ConversationProjector):
+        def _image_block(self, part):
+            return LucaImageBlock(source=MediaFileId(file_id="uploaded_1"))
+
+    entries = {
+        "u1": UserMessage(
+            id="u1", created_at=1,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+                TextContent(text="what is this?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert Uploading().project(conversation, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaImageBlock(source=MediaFileId(file_id="uploaded_1")),
+                TextBlock(text="what is this?"),
+            ],
+        ),
+    ]

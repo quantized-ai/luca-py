@@ -25,6 +25,10 @@ from luca.agent.core.models import (
     Conversation,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     Inf,
     MilliSeconds,
     PrunedEntry,
@@ -40,6 +44,7 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     Usage,
+    UserMessage,
 )
 
 from tests.agent.scenarios import MODEL
@@ -471,3 +476,74 @@ def test_pruned_entry_round_trips_inside_a_session():
     assert reloaded == session
     # the discriminated union deserializes the node to its concrete subclass
     assert type(reloaded.entries["p1"]) is PrunedEntry
+
+
+# ── image content ──────────────────────────────────────────────────────────────
+
+
+def test_image_content_defaults_to_a_null_name():
+    source = ImageBase64(data="aGk=", media_type="image/png")
+
+    assert ImageContent(source=source) == ImageContent(source=source, name=None)
+
+
+def test_image_content_round_trips_each_source_kind():
+    for source in (
+        ImageURL(url="https://example.com/a.png", media_type="image/png"),
+        ImageBase64(data="aGk=", media_type="image/png"),
+        ImageFileId(file_id="file_123"),
+    ):
+        part = ImageContent(source=source, name="a.png")
+
+        assert ImageContent.model_validate_json(part.model_dump_json()) == part
+
+
+def test_image_content_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        ImageContent(
+            source=ImageBase64(data="aGk=", media_type="image/png"),
+            bogus="nope",
+        )
+
+
+def test_image_source_rejects_an_unknown_kind():
+    with pytest.raises(ValidationError):
+        ImageContent.model_validate(
+            {"source": {"kind": "carrier-pigeon", "data": "aGk="}},
+        )
+
+
+def test_user_message_mixes_image_and_text_parts_in_order():
+    message = UserMessage(
+        id="u1", created_at=1000,
+        parts=[
+            ImageContent(
+                source=ImageBase64(data="aGk=", media_type="image/png"),
+                name="receipt.jpg",
+            ),
+            TextContent(text="how much did I tip?"),
+        ],
+    )
+
+    reloaded = UserMessage.model_validate_json(message.model_dump_json())
+
+    assert reloaded == message
+    assert [type(part) for part in reloaded.parts] == [ImageContent, TextContent]
+
+
+def test_user_message_parts_require_the_type_discriminator():
+    with pytest.raises(ValidationError):
+        UserMessage.model_validate(
+            {"id": "u1", "created_at": 1000, "parts": [{"text": "hi"}]},
+        )
+
+
+def test_execution_result_content_stays_text_only():
+    with pytest.raises(ValidationError):
+        ExecutionResult(
+            content=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+            ],
+        )

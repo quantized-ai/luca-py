@@ -34,6 +34,11 @@ from .models import (
     Entry,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageSource,
+    ImageURL,
     Inf,
     LLMConfig,
     MilliSeconds,
@@ -55,6 +60,7 @@ from .models import (
     TurnStart,
     Usage,
     UserMessage,
+    UserPart,
 )
 from .middleware import AgentMiddlewareMixin
 from .projection import CANCELLED_TURN_MARKER, ConversationProjector
@@ -90,6 +96,11 @@ __all__ = [
     "Entry",
     "ExecutionResult",
     "ExecutionStatus",
+    "ImageBase64",
+    "ImageContent",
+    "ImageFileId",
+    "ImageSource",
+    "ImageURL",
     "Inf",
     "InvalidToolArguments",
     "LLMConfig",
@@ -120,5 +131,6 @@ __all__ = [
     "TurnStart",
     "Usage",
     "UserMessage",
+    "UserPart",
     "tool",
 ]

@@ -52,7 +52,10 @@ class AgentMiddlewareMixin:
 
     def before_post_message(self, text: str) -> str:
         """Before a user message is appended to the session. Return the
-        (possibly modified) text — sanitise, enrich, log."""
+        (possibly modified) text — sanitise, enrich, log. Called once per
+        post with the message's text parts joined ("" when the post carries
+        only images); the result replaces all of them, at the first one's
+        position. Images are not visible here and never move."""
         return text
 
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
@@ -142,7 +145,7 @@ class AgentMiddlewareMixin:
 
 | Stage | Hook | Signature → returns |
 |---|---|---|
-| User posts | `before_post_message` | `(text: str)` → `str` |
+| User posts | `before_post_message` | `(text: str)` → `str` — the post's text parts, joined |
 | **Any** entry persistence | `before_entry_written` | `(entry: AnyEntry)` → `AnyEntry` |
 | Per model call | `build_model_string` | `(model_string: str, llm_cfg: LLMConfig)` → `str` |
 | Per model call | `build_tool_list` | `(tools: list)` → `list` |

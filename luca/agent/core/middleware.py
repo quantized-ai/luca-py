@@ -59,7 +59,13 @@ class AgentMiddlewareMixin:
 
     def before_post_message(self, text: str) -> str:
         """Before a user message is appended to the session. Return the
-        (possibly modified) text — sanitise, enrich, log."""
+        (possibly modified) text — sanitise, enrich, log.
+
+        Called ONCE per post with the concatenated text of the message's text
+        parts ("" when the post carries only images). The return value
+        replaces all of them, landing at the first text part's position, or
+        appended when the post had none. Image parts are not visible here and
+        never move."""
         return text
 
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:

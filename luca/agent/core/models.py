@@ -64,7 +64,51 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# result-content union; images & other content types extend this in pass 2
+class ImageURL(BaseModel):
+    kind: Literal["url"] = "url"
+    url: str
+    media_type: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ImageBase64(BaseModel):
+    kind: Literal["base64"] = "base64"
+    data: str  # base64-encoded bytes, no `data:` prefix
+    media_type: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ImageFileId(BaseModel):
+    kind: Literal["file"] = "file"
+    file_id: str
+    media_type: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ImageSource = Annotated[
+    Union[ImageURL, ImageBase64, ImageFileId],
+    Field(discriminator="kind"),
+]
+
+
+class ImageContent(BaseModel):
+    """An image carried by a `UserMessage`. `name` is presentation metadata
+    (a transcript placeholder, a replayed filename) and is deliberately NOT
+    projected — the client's `ImageBlock` carries only a source."""
+
+    type: Literal["image"] = "image"
+    source: ImageSource
+    name: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# Tool-result content. Text-only by design: `ImageContent` is a user-message
+# part. Widening this to carry tool-result images touches `ExecutionResult`,
+# `PrunedEntry` and the tool-execution projection, and is a separate change.
 Content = TextContent
 
 
@@ -269,9 +313,15 @@ class Entry(BaseModel):
 # ── message entries ──────────────────────────────────────────────────────────
 
 
+UserPart = Annotated[
+    Union[TextContent, ImageContent],
+    Field(discriminator="type"),
+]
+
+
 class UserMessage(Entry):
     type: Literal["user"] = "user"
-    parts: list[TextContent]  # (+ image, etc. → pass 2)
+    parts: list[UserPart]
 
 
 class AssistantMessage(Entry):

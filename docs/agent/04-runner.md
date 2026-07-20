@@ -28,6 +28,16 @@ runner = AgentSessionRunner(session, tool_registry=registry)
 runner.post_message("Summarize the repo.")     # appends a UserMessage, status → PENDING
 ```
 
+`post_message` takes a string, or an ordered list of parts to mix text and
+images ([02](02-data-model.md)):
+
+```python
+runner.post_message([
+    ImageContent(source=ImageBase64(data=b64_bytes, media_type="image/png")),
+    TextContent(text="What is in this screenshot?"),
+])
+```
+
 ## 1. Drive it: `run()`
 
 `run()` returns an **`AgentRun`** handle. It is **lazy** — nothing happens until

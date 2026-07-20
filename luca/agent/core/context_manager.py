@@ -23,8 +23,9 @@ only its durable results persist) owning three policies over the shared
 
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
-`CHARS_PER_TOKEN` characters of model-facing text, and pruning supports only
-terminal tool executions, replacing their output with a fixed marker.
+`CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
+per image, and pruning supports only terminal tool executions, replacing
+their output with a fixed marker.
 Instantiate it directly, subclass and override selected methods, or supply
 another object with the same behavior. Luca does not prescribe per-entry-type
 methods — dispatch by type here is an internal choice, not a runner contract.
@@ -46,6 +47,7 @@ from .models import (
     Entry,
     ExecutionResult,
     ExecutionStatus,
+    ImageContent,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -64,6 +66,7 @@ class ContextManager:
 
     PRUNED_TOOL_OUTPUT_MARKER: ClassVar[str] = PRUNED_TOOL_OUTPUT_MARKER
     CHARS_PER_TOKEN: ClassVar[int] = 4
+    IMAGE_TOKENS: ClassVar[int] = 1_000
 
     def calculate_context(self, entry: Entry) -> int:
         """Estimate the context tokens of `entry`'s model-facing content.
@@ -74,8 +77,15 @@ class ContextManager:
         tool execution owns only its model-facing outcome (result content,
         else its structured error message), and is 0 while nonterminal; a
         compaction owns its summary; a pruned entry owns its replacement
-        content. Markers own nothing."""
-        return self._estimate_tokens(self._model_facing_text(entry))
+        content. Markers own nothing.
+
+        Non-text content is counted separately by `_media_tokens`, so
+        `_estimate_tokens` and `_model_facing_text` stay text-shaped and
+        independently overridable."""
+        return (
+            self._estimate_tokens(self._model_facing_text(entry))
+            + self._media_tokens(entry)
+        )
 
     def prune_entry(self, entry: Entry) -> PrunedEntry:
         """Build the `PrunedEntry` template replacing `entry` in a path.
@@ -123,7 +133,10 @@ class ContextManager:
         `calculate_context`). Unknown entry types contribute nothing rather
         than failing: calculation is an estimate, not a projection."""
         if isinstance(entry, UserMessage):
-            return "".join(part.text for part in entry.parts)
+            return "".join(
+                part.text for part in entry.parts
+                if isinstance(part, TextContent)
+            )
         if isinstance(entry, AssistantMessage):
             chunks: list[str] = []
             for part in entry.parts:
@@ -146,3 +159,15 @@ class ContextManager:
         if isinstance(entry, PrunedEntry):
             return "".join(part.text for part in entry.content)
         return ""
+
+    def _media_tokens(self, entry: Entry) -> int:
+        """The entry's non-text context contribution: a flat constant per
+        image, deliberately dimension-blind. A URL source has no local bytes
+        to measure, reading real dimensions would need an image decoder (a
+        new dependency), and the provider formulas disagree by an order of
+        magnitude. Override with a per-provider formula if it matters."""
+        if isinstance(entry, UserMessage):
+            return self.IMAGE_TOKENS * sum(
+                isinstance(part, ImageContent) for part in entry.parts
+            )
+        return 0

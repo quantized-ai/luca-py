@@ -51,16 +51,20 @@ Three hooks; the runner calls them at fixed points:
 
 | Hook | Called | Default behavior |
 |---|---|---|
-| `calculate_context(entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4` |
+| `calculate_context(entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
 | `process_tool_output(result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
 | `prune_entry(entry) -> PrunedEntry` | never by the runner itself — you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
 
 > ⚠️ **The default is a placeholder, not a policy.** Four-characters-per-token
-> estimation, no truncation, marker-only pruning — enough to make the seam
-> real and the numbers non-zero. It exists so the *architecture* is in place;
-> if context accounting matters to your application, improving this class is
-> **your** job: bring a real tokenizer, a real truncation budget, a real
-> pruning strategy.
+> estimation, a flat 1000 tokens per image, no truncation, marker-only
+> pruning — enough to make the seam real and the numbers non-zero. It exists
+> so the *architecture* is in place; if context accounting matters to your
+> application, improving this class is **your** job: bring a real tokenizer,
+> a real truncation budget, a real pruning strategy.
+
+The image constant is deliberately dimension-blind: a URL source has no local
+bytes to measure, reading real dimensions would need an image decoder, and the
+provider formulas disagree by an order of magnitude.
 
 Per-type content ownership in the default estimate: a user message owns its
 content; an assistant message its text + thinking + tool-call requests (name
@@ -88,6 +92,15 @@ class TiktokenContext(ContextManager):
 
     def _estimate_tokens(self, text: str) -> int:
         return len(self._encoding.encode(text))
+```
+
+Images are counted by a separate method, so a text tokenizer and an image
+formula are independent overrides:
+
+```python
+class AnthropicImages(ContextManager):
+    def _media_tokens(self, entry) -> int:
+        return sum(w * h // 750 for w, h in dimensions_of(entry))
 ```
 
 Truncate tool outputs before they become durable — preserve the original

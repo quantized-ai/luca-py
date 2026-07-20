@@ -5,8 +5,15 @@ from luca.agent.contrib.tui.render import (
     format_args,
     format_tool_call,
     status_label,
+    user_transcript_text,
 )
-from luca.agent.core.models import ExecutionStatus, ToolCall
+from luca.agent.core.models import (
+    ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    TextContent,
+    ToolCall,
+)
 
 
 def test_format_args():
@@ -42,3 +49,19 @@ def test_clip_text_bounds_chars():
     clipped = clip_text("x" * 5_000)
     assert len(clipped) < 5_000
     assert clipped.endswith("… (+3000 more characters)")
+
+
+def test_user_transcript_text_renders_images_as_placeholders():
+    assert user_transcript_text([
+        ImageContent(
+            source=ImageBase64(data="aGk=", media_type="image/png"),
+            name="receipt.jpg",
+        ),
+        TextContent(text="how much did I tip?"),
+    ]) == "[image: receipt.jpg]\nhow much did I tip?"
+
+
+def test_user_transcript_text_falls_back_to_the_media_type():
+    assert user_transcript_text([
+        ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+    ]) == "[image: image/png]"

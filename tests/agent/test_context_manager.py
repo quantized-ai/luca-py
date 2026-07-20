@@ -26,6 +26,8 @@ from luca.agent.core.models import (
     CompactionEntry,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
     LLMConfig,
     PrunedEntry,
     TextContent,
@@ -242,3 +244,57 @@ def test_subclass_can_change_the_pruned_output_marker():
     )
 
     assert Terse().prune_entry(entry).content == [TextContent(text="[gone]")]
+
+
+# ── image content ──────────────────────────────────────────────────────────────
+
+
+def test_image_only_message_counts_the_flat_image_constant():
+    entry = UserMessage(
+        id="u1", created_at=1000,
+        parts=[
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+        ],
+    )
+
+    assert CM.calculate_context(entry) == 1_000
+
+
+def test_images_add_to_the_text_estimate():
+    entry = UserMessage(
+        id="u1", created_at=1000,
+        parts=[
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="Add 1 and 2"),  # 11 chars
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/jpeg")),
+        ],
+    )
+
+    assert CM.calculate_context(entry) == 2_002  # 2 * 1000 + 11 // 4
+
+
+def test_subclass_can_change_the_per_image_cost():
+    class Free(ContextManager):
+        IMAGE_TOKENS = 0
+
+    entry = UserMessage(
+        id="u1", created_at=1000,
+        parts=[
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="Add 1 and 2"),  # 11 chars
+        ],
+    )
+
+    assert Free().calculate_context(entry) == 2
+
+
+def test_non_user_entries_have_no_media_contribution():
+    entry = AssistantMessage(
+        id="a1", created_at=1000,
+        parts=[TextContent(text="Add 1 and 2")],  # 11 chars
+        llm_config=MODEL,
+        stop_reason="stop",
+    )
+
+    assert CM._media_tokens(entry) == 0
+    assert CM.calculate_context(entry) == 2

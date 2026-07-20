@@ -27,7 +27,7 @@ client's job — the projector never builds OpenAI dicts or Anthropic blocks):
 
 | Entry | Projects to |
 |---|---|
-| `UserMessage` | client `UserMessage`, content in order |
+| `UserMessage` | client `UserMessage`, content in order — text and image blocks |
 | `AssistantMessage` | client `AssistantMessage` — text / thinking / tool-call blocks in order |
 | `ToolExecution` (terminal) | one correlated client `ToolMessage` (below) |
 | `CompactionEntry` | a synthetic user message carrying the summary |
@@ -95,7 +95,21 @@ class KeepRecent(ConversationProjector):
         return super().project(conversation, entries)[-40:]
 ```
 
-## 5. Fail-loud rules
+## 5. Rewriting image media
+
+`_image_block(part)` maps an `ImageContent` to the client's `ImageBlock`.
+Override it to rewrite media without touching the rest of the projection —
+uploading base64 bytes once and sending an id instead, for example:
+
+```python
+class Uploading(ConversationProjector):
+    def _image_block(self, part):
+        return ImageBlock(source=MediaFileId(file_id=upload(part.source)))
+```
+
+`part.name` is display metadata and is dropped on the way to the wire.
+
+## 6. Fail-loud rules
 
 Projection never papers over broken state — errors raise `ProjectionError`
 instead of producing invented content:

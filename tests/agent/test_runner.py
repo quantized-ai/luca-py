@@ -42,6 +42,8 @@ from luca.agent.core.models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
     SessionConfig,
     TextContent,
     ThinkingContent,
@@ -928,6 +930,50 @@ async def test_post_message_queues_behind_a_pending_message():
         parts=[TextContent(text="Second")],
         context_tokens=1,  # len("Second") // 4
     )
+
+
+async def test_post_message_accepts_a_part_list_and_keeps_its_order():
+    session = AgentSession(
+        id="s_pm_parts",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+    image = ImageContent(
+        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
+    )
+
+    runner.post_message([image, TextContent(text="Hello")])
+
+    assert runner.session.entries["u1"] == UserMessage(
+        id="u1", parent_id=None, created_at=1000,
+        parts=[image, TextContent(text="Hello")],
+        context_tokens=1_001,  # IMAGE_TOKENS + len("Hello") // 4
+    )
+
+
+async def test_post_message_rejects_an_empty_part_list():
+    session = AgentSession(
+        id="s_pm_empty",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+
+    with pytest.raises(AgentError, match="non-empty list"):
+        runner.post_message([])
+
+
+async def test_post_message_rejects_a_part_it_does_not_own():
+    session = AgentSession(
+        id="s_pm_bad",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+
+    with pytest.raises(AgentError, match="ThinkingContent"):
+        runner.post_message([ThinkingContent(thinking="not a user part")])
 
 
 async def test_run_when_idle_raises():

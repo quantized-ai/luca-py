@@ -116,6 +116,7 @@ from .models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
+    ImageContent,
     Inf,
     LLMConfig,
     RuntimeConfig,
@@ -130,6 +131,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    UserPart,
 )
 from .events import (
     AgentEvent,
@@ -586,13 +588,17 @@ class AgentSessionRunner:
 
     # ── caller-facing mutations / queries ────────────────────────────────────
 
-    def post_message(self, text: str) -> str:
+    def post_message(self, content: str | list[UserPart]) -> str:
         """Append a user message and arm the runner. Legal when the bracket is
         CLOSED and the status is IDLE or PENDING: a fresh/finished session,
         after a failed turn (add or clarify before the retry), or behind an
         already-queued message (queueing — consecutive user messages are an
         established shape). An open turn — CANCELLING, AWAITING_APPROVAL, or a
-        resumable bracket — always rejects."""
+        resumable bracket — always rejects.
+
+        `content` is a bare string (the common case) or an ordered list of
+        parts mixing text and images. `before_post_message` sees text only —
+        see `_apply_before_post_message` for how its result is reassembled."""
         if (
             self.status not in (ConversationStatus.IDLE, ConversationStatus.PENDING)
             or self.ledger.open_turn_index() is not None
@@ -601,15 +607,46 @@ class AgentSessionRunner:
                 f"post_message requires a closed turn and IDLE/PENDING status "
                 f"(status={self.status.value})."
             )
-        text = self._run_middlewares("before_post_message", text)
+        parts = self._apply_before_post_message(_normalize_post_parts(content))
         message = self._append(
             lambda entry_id, parent_id, ts: UserMessage(
-                id=entry_id, parent_id=parent_id, created_at=ts,
-                parts=[TextContent(text=text)],
+                id=entry_id, parent_id=parent_id, created_at=ts, parts=parts,
             )
         )
         self._set_status(ConversationStatus.PENDING)
         return message.id
+
+    def _apply_before_post_message(
+        self, parts: list[UserPart],
+    ) -> list[UserPart]:
+        """Run the text-only `before_post_message` hook over a part list.
+
+        The hook is called ONCE per post with the concatenated text of the
+        message's text parts ("" for an image-only post). Its return value
+        replaces all of them, landing at the first text part's position (or
+        appended when the post carried none). Image parts never move. An
+        empty result drops the text part only when another part survives —
+        so `post_message("")` still persists one empty text part."""
+        joined = "".join(
+            part.text for part in parts if isinstance(part, TextContent)
+        )
+        text = self._run_middlewares("before_post_message", joined)
+        others = [part for part in parts if not isinstance(part, TextContent)]
+        if not text and others:
+            return others
+        replacement = TextContent(text=text)
+        out: list[UserPart] = []
+        placed = False
+        for part in parts:
+            if isinstance(part, TextContent):
+                if not placed:
+                    placed = True
+                    out.append(replacement)
+                continue
+            out.append(part)
+        if not placed:
+            out.append(replacement)
+        return out
 
     def pending_approvals(self) -> list[ToolExecution]:
         """The open turn's executions awaiting an out-of-band approval — those
@@ -1726,6 +1763,24 @@ async def _cancel_quietly(task: asyncio.Task) -> None:
 def _swallow_result(task: asyncio.Task) -> None:
     if not task.cancelled():
         task.exception()  # retrieved — no unretrieved-exception noise
+
+
+def _normalize_post_parts(content: str | list[UserPart]) -> list[UserPart]:
+    """`post_message` input → the part list persisted on the `UserMessage`."""
+    if isinstance(content, str):
+        return [TextContent(text=content)]
+    if not isinstance(content, list) or not content:
+        raise AgentError(
+            "post_message accepts a string or a non-empty list of content "
+            "parts."
+        )
+    for part in content:
+        if not isinstance(part, (TextContent, ImageContent)):
+            raise AgentError(
+                f"post_message cannot accept a content part of type "
+                f"{type(part).__name__}."
+            )
+    return list(content)
 
 
 def _to_delta_event(event) -> AgentEvent | None:
