@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TypeVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -72,6 +73,8 @@ from .cells import (
 from .screens import ApprovalScreen
 from .sessions import save_session
 from .wiring import build_runner
+
+_CellT = TypeVar("_CellT", bound=TranscriptCell)
 
 
 class AgentApp(App):
@@ -204,36 +207,22 @@ class AgentApp(App):
         streaming)."""
         match event:
             case ReasoningStart():
-                self._live_reasoning = ReasoningCell()
-                await self._mount_cell(self._live_reasoning)
+                self._live_reasoning = None
             case ReasoningDelta(text=text):
-                if self._live_reasoning is None:
-                    self._live_reasoning = ReasoningCell()
-                    await self._mount_cell(self._live_reasoning)
-                self._live_reasoning.append_text(text)
-                self._scroll_end()
+                self._live_reasoning = await self._stream_into(
+                    self._live_reasoning, ReasoningCell, text,
+                )
             case ReasoningBlock(text=text):
-                cell = self._live_reasoning
-                if cell is None:
-                    cell = ReasoningCell()
-                    await self._mount_cell(cell)
-                cell.set_text(text)
+                await self._settle_cell(self._live_reasoning, ReasoningCell, text)
                 self._live_reasoning = None
             case TextStart():
-                self._live_text = AssistantCell()
-                await self._mount_cell(self._live_text)
+                self._live_text = None
             case TextDelta(text=text):
-                if self._live_text is None:
-                    self._live_text = AssistantCell()
-                    await self._mount_cell(self._live_text)
-                self._live_text.append_text(text)
-                self._scroll_end()
+                self._live_text = await self._stream_into(
+                    self._live_text, AssistantCell, text,
+                )
             case TextBlock(text=text):
-                cell = self._live_text
-                if cell is None:
-                    cell = AssistantCell()
-                    await self._mount_cell(cell)
-                cell.set_text(text)
+                await self._settle_cell(self._live_text, AssistantCell, text)
                 self._live_text = None
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
                 cell = ToolCallCell(execution)
@@ -256,6 +245,35 @@ class AgentApp(App):
             case ToolCallStart() | FinishReason() | ApprovalRequired():
                 pass
 
+    async def _stream_into(
+        self, cell: _CellT | None, cell_class: type[_CellT], delta: str,
+    ) -> _CellT | None:
+        """Append a delta, mounting the cell on the first visible one so a
+        whitespace-only block never gets a cell."""
+        if cell is None:
+            if not delta.strip():
+                return None
+            cell = cell_class()
+            await self._mount_cell(cell)
+        cell.append_text(delta)
+        self._scroll_end()
+        return cell
+
+    async def _settle_cell(
+        self, cell: _CellT | None, cell_class: type[_CellT], text: str,
+    ) -> None:
+        """Settle a streamed cell against its completed block (or mount it
+        whole when not streaming). Blank text never survives: providers emit
+        whitespace-only content alongside tool calls."""
+        if not text.strip():
+            if cell is not None:
+                await cell.remove()
+            return
+        if cell is None:
+            cell = cell_class()
+            await self._mount_cell(cell)
+        cell.set_text(text)
+
     # ── history replay (resume) ────────────────────────────────────────────────
 
     async def _replay_history(self) -> None:
@@ -271,9 +289,10 @@ class AgentApp(App):
                 await self._mount_cell(UserCell(text))
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
-                    if isinstance(part, ThinkingContent):
+                    # blank parts are skipped exactly as a live run drops them
+                    if isinstance(part, ThinkingContent) and part.thinking.strip():
                         await self._mount_cell(ReasoningCell(part.thinking))
-                    elif isinstance(part, TextContent):
+                    elif isinstance(part, TextContent) and part.text.strip():
                         await self._mount_cell(AssistantCell(part.text))
                     # a ToolCall part renders through its ToolExecution entry
             elif isinstance(entry, ToolExecution):

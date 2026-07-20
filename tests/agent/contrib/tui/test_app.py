@@ -90,6 +90,62 @@ async def test_non_streaming_renders_the_same_transcript(tmp_path):
         assert [cell.text for cell in app.query(AssistantCell)] == ["Hey!"]
 
 
+async def test_blank_text_renders_no_assistant_cell(tmp_path):
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message(
+            [faux_thinking("deciding"), faux_text(" ")],
+        )),
+        workspace=tmp_path, session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        assert [cell.text for cell in app.query(ReasoningCell)] == ["deciding"]
+        assert [cell.text for cell in app.query(AssistantCell)] == []
+
+
+async def test_blank_text_renders_no_assistant_cell_non_streaming(tmp_path):
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("   ")])),
+        workspace=tmp_path, session_dir=tmp_path,
+        streaming=False,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        assert [cell.text for cell in app.query(AssistantCell)] == []
+
+
+async def test_resume_skips_blank_assistant_text(tmp_path):
+    session = fresh_session()
+    app = AgentApp(
+        session,
+        provider=scripted(faux_assistant_message(
+            [faux_thinking("deciding"), faux_text(" ")],
+        )),
+        workspace=tmp_path, session_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+
+    reloaded = load_session(session.id, tmp_path)
+    resumed = AgentApp(
+        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+    )
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+
+        assert [cell.text for cell in resumed.query(ReasoningCell)] == ["deciding"]
+        assert [cell.text for cell in resumed.query(AssistantCell)] == []
+
+
 async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
     session = fresh_session()
     app = AgentApp(
