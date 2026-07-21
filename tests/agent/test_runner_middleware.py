@@ -185,8 +185,8 @@ async def test_middleware_after_llm_response_return_stored_in_session():
 
 async def test_middleware_before_post_message_return_stored_in_entry():
     class UpperCaseMiddleware:
-        def before_post_message(self, text: str) -> str:
-            return text.upper()
+        def before_post_message(self, parts: list) -> list:
+            return [TextContent(text=p.text.upper()) for p in parts]
 
     session = AgentSession(
         id="s_mw_pm",
@@ -203,119 +203,71 @@ async def test_middleware_before_post_message_return_stored_in_entry():
     assert runner.session.entries["u1"].parts == [TextContent(text="HELLO WORLD")]
 
 
-async def test_before_post_message_rewrites_text_without_moving_images():
-    class UpperCaseMiddleware:
-        def before_post_message(self, text: str) -> str:
-            return text.upper()
-
-    session = AgentSession(
-        id="s_mw_pm_img",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-    runner = DeterministicRunner(
-        session, ids=["u1"], now=1000,
-        middleware=[UpperCaseMiddleware()],
-    )
-    image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
-    )
-
-    runner.post_message([image, TextContent(text="hello world")])
-
-    assert runner.session.entries["u1"].parts == [
-        image, TextContent(text="HELLO WORLD"),
-    ]
-
-
-async def test_before_post_message_joins_text_parts_at_the_first_slot():
-    class JoiningMiddleware:
-        def before_post_message(self, text: str) -> str:
-            return f"{text}!"
-
-    session = AgentSession(
-        id="s_mw_pm_join",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-    runner = DeterministicRunner(
-        session, ids=["u1"], now=1000,
-        middleware=[JoiningMiddleware()],
-    )
-    image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
-    )
-
-    runner.post_message([TextContent(text="a"), image, TextContent(text="b")])
-
-    assert runner.session.entries["u1"].parts == [TextContent(text="ab!"), image]
-
-
-async def test_before_post_message_sees_empty_text_for_an_image_only_post():
+async def test_before_post_message_sees_every_part_including_images():
     class RecordingMiddleware:
         def __init__(self) -> None:
-            self.calls: list[str] = []
+            self.seen: list[str] = []
 
-        def before_post_message(self, text: str) -> str:
-            self.calls.append(text)
-            return text
+        def before_post_message(self, parts: list) -> list:
+            self.seen = [part.type for part in parts]
+            return parts
 
     middleware = RecordingMiddleware()
     session = AgentSession(
-        id="s_mw_pm_imgonly",
+        id="s_mw_pm_seen",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
         session, ids=["u1"], now=1000, middleware=[middleware],
     )
-    image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
-    )
+    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
 
-    runner.post_message([image])
+    runner.post_message([image, TextContent(text="hi")])
 
-    assert middleware.calls == [""]
-    assert runner.session.entries["u1"].parts == [image]
+    assert middleware.seen == ["image", "text"]
 
 
-async def test_before_post_message_can_append_text_to_an_image_only_post():
-    class ReminderMiddleware:
-        def before_post_message(self, text: str) -> str:
-            return f"{text}be concise"
+async def test_before_post_message_can_drop_a_part():
+    class TextOnlyMiddleware:
+        def before_post_message(self, parts: list) -> list:
+            return [p for p in parts if isinstance(p, TextContent)]
 
     session = AgentSession(
-        id="s_mw_pm_append",
+        id="s_mw_pm_drop",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session, ids=["u1"], now=1000, middleware=[TextOnlyMiddleware()],
+    )
+    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+
+    runner.post_message([image, TextContent(text="hi")])
+
+    assert runner.session.entries["u1"].parts == [TextContent(text="hi")]
+
+
+async def test_before_post_message_can_add_a_part():
+    class ReminderMiddleware:
+        def before_post_message(self, parts: list) -> list:
+            return [*parts, TextContent(text="be concise")]
+
+    session = AgentSession(
+        id="s_mw_pm_add",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
         session, ids=["u1"], now=1000, middleware=[ReminderMiddleware()],
     )
-    image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
-    )
+    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
 
     runner.post_message([image])
 
     assert runner.session.entries["u1"].parts == [
         image, TextContent(text="be concise"),
     ]
-
-
-async def test_before_post_message_keeps_an_empty_text_part_for_a_bare_string():
-    # post_message("") behaviour is unchanged: with no other part to carry
-    # the message, the empty text part survives
-    session = AgentSession(
-        id="s_mw_pm_blank",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-    runner = DeterministicRunner(session, ids=["u1"], now=1000)
-
-    runner.post_message("")
-
-    assert runner.session.entries["u1"].parts == [TextContent(text="")]
 
 
 # ── before_entry_written ──────────────────────────────────────────────────────
@@ -763,7 +715,9 @@ def test_mixin_every_hook_returns_its_input():
 
     assert mixin.build_model_string("openrouter:openai/gpt-4o-mini", MODEL) == "openrouter:openai/gpt-4o-mini"
     assert mixin.build_tool_list(["t1", "t2"]) == ["t1", "t2"]
-    assert mixin.before_post_message("hello") == "hello"
+    assert mixin.before_post_message([TextContent(text="hello")]) == [
+        TextContent(text="hello"),
+    ]
     assert mixin.before_entry_written(entry) is entry
     assert mixin.before_llm_call(["m1"], "sys") == (["m1"], "sys")
     assert mixin.before_llm_call(["m1"], None) == (["m1"], None)

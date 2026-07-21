@@ -158,7 +158,14 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(source, MediaBase64):
             return {"url": f"data:{source.media_type};base64,{source.data}"}
         if isinstance(source, MediaFileId):
-            return {"url": source.file_id}
+            # `image_url` takes a URL or a data URL and nothing else — a bare
+            # file id is a Responses API feature. Sending one produces an
+            # opaque 400, so refuse it here where the message can be useful.
+            raise BadRequestError(
+                "The chat-completions API cannot take an image by file id "
+                f"({source.file_id!r}); pass MediaURL or MediaBase64 instead.",
+                provider=self._provider,
+            )
         raise BadRequestError(
             f"Unknown media source type {type(source).__name__}",
             provider=self._provider,

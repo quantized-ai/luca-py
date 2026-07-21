@@ -348,7 +348,11 @@ class AgentApp(App):
                     data=base64.b64encode(data).decode("ascii"),
                     media_type=MEDIA_TYPE,
                 ),
-                name=f"pasted-{len(self._pending_images) + 1}.png",
+                metadata={
+                    "name": f"pasted-{len(self._pending_images) + 1}.png",
+                    "size_bytes": len(data),
+                    "origin": "clipboard",
+                },
             ),
         )
         self._refresh_status()

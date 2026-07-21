@@ -344,8 +344,8 @@ class ConversationProjector:
 
     def _image_block(self, part: ImageContent) -> ClientImageBlock:
         """Agent image part → client `ImageBlock`. Override to rewrite media
-        (proxy a URL, upload base64 and swap in a file id). `part.name` is
-        presentation metadata and is dropped here by design."""
+        (proxy a URL, upload base64 and swap in a file id). `part.metadata` is
+        application-owned and is dropped here by design."""
         source = part.source
         if isinstance(source, ImageBase64):
             return ClientImageBlock(

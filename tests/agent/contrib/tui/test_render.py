@@ -55,7 +55,7 @@ def test_user_transcript_text_renders_images_as_placeholders():
     assert user_transcript_text([
         ImageContent(
             source=ImageBase64(data="aGk=", media_type="image/png"),
-            name="receipt.jpg",
+            metadata={"name": "receipt.jpg"},
         ),
         TextContent(text="how much did I tip?"),
     ]) == "[image: receipt.jpg]\nhow much did I tip?"

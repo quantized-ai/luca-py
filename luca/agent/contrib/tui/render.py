@@ -48,7 +48,11 @@ def user_transcript_text(parts) -> str:
         if isinstance(part, TextContent):
             lines.append(part.text)
         elif isinstance(part, ImageContent):
-            label = part.name or part.source.media_type or "image"
+            label = (
+                part.metadata.get("name")
+                or part.source.media_type
+                or "image"
+            )
             lines.append(f"[image: {label}]")
     return "\n".join(lines)
 

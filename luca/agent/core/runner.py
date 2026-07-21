@@ -597,8 +597,8 @@ class AgentSessionRunner:
         resumable bracket — always rejects.
 
         `content` is a bare string (the common case) or an ordered list of
-        parts mixing text and images. `before_post_message` sees text only —
-        see `_apply_before_post_message` for how its result is reassembled."""
+        parts mixing text and images; `before_post_message` sees that list and
+        returns the one that is persisted."""
         if (
             self.status not in (ConversationStatus.IDLE, ConversationStatus.PENDING)
             or self.ledger.open_turn_index() is not None
@@ -607,7 +607,9 @@ class AgentSessionRunner:
                 f"post_message requires a closed turn and IDLE/PENDING status "
                 f"(status={self.status.value})."
             )
-        parts = self._apply_before_post_message(_normalize_post_parts(content))
+        parts = self._run_middlewares(
+            "before_post_message", _normalize_post_parts(content),
+        )
         message = self._append(
             lambda entry_id, parent_id, ts: UserMessage(
                 id=entry_id, parent_id=parent_id, created_at=ts, parts=parts,
@@ -615,38 +617,6 @@ class AgentSessionRunner:
         )
         self._set_status(ConversationStatus.PENDING)
         return message.id
-
-    def _apply_before_post_message(
-        self, parts: list[UserPart],
-    ) -> list[UserPart]:
-        """Run the text-only `before_post_message` hook over a part list.
-
-        The hook is called ONCE per post with the concatenated text of the
-        message's text parts ("" for an image-only post). Its return value
-        replaces all of them, landing at the first text part's position (or
-        appended when the post carried none). Image parts never move. An
-        empty result drops the text part only when another part survives —
-        so `post_message("")` still persists one empty text part."""
-        joined = "".join(
-            part.text for part in parts if isinstance(part, TextContent)
-        )
-        text = self._run_middlewares("before_post_message", joined)
-        others = [part for part in parts if not isinstance(part, TextContent)]
-        if not text and others:
-            return others
-        replacement = TextContent(text=text)
-        out: list[UserPart] = []
-        placed = False
-        for part in parts:
-            if isinstance(part, TextContent):
-                if not placed:
-                    placed = True
-                    out.append(replacement)
-                continue
-            out.append(part)
-        if not placed:
-            out.append(replacement)
-        return out
 
     def pending_approvals(self) -> list[ToolExecution]:
         """The open turn's executions awaiting an out-of-band approval — those

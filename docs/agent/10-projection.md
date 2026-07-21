@@ -107,7 +107,7 @@ class Uploading(ConversationProjector):
         return ImageBlock(source=MediaFileId(file_id=upload(part.source)))
 ```
 
-`part.name` is display metadata and is dropped on the way to the wire.
+`part.metadata` is application-owned and is dropped on the way to the wire.
 
 ## 6. Fail-loud rules
 

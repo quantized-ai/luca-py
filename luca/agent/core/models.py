@@ -95,13 +95,16 @@ ImageSource = Annotated[
 
 
 class ImageContent(BaseModel):
-    """An image carried by a `UserMessage`. `name` is presentation metadata
-    (a transcript placeholder, a replayed filename) and is deliberately NOT
-    projected — the client's `ImageBlock` carries only a source."""
+    """An image carried by a `UserMessage`.
+
+    `metadata` is application-owned and deliberately NOT projected — the
+    client's `ImageBlock` carries only a source. It survives in the session,
+    so a replayed transcript can still describe an image whose original file
+    has since been deleted (`name`, `path`, `size_bytes`, …)."""
 
     type: Literal["image"] = "image"
     source: ImageSource
-    name: str | None = None
+    metadata: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 

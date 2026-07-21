@@ -940,7 +940,8 @@ async def test_post_message_accepts_a_part_list_and_keeps_its_order():
     )
     runner = DeterministicRunner(session, ids=["u1"], now=1000)
     image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"), name="a.png",
+        source=ImageBase64(data="aGk=", media_type="image/png"),
+        metadata={"name": "a.png"},
     )
 
     runner.post_message([image, TextContent(text="Hello")])

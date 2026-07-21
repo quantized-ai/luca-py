@@ -70,7 +70,7 @@ turn_finish     outcome=completed
 | `thinking` | the model's reasoning, when it emits any |
 
 An `image` part carries a `source` — one of `ImageURL`, `ImageBase64` or
-`ImageFileId` — plus an optional `name` for display:
+`ImageFileId` — plus free-form `metadata`:
 
 ```python
 from luca.agent.core import ImageBase64, ImageContent, TextContent
@@ -78,15 +78,25 @@ from luca.agent.core import ImageBase64, ImageContent, TextContent
 runner.post_message([
     ImageContent(
         source=ImageBase64(data=b64_bytes, media_type="image/png"),
-        name="receipt.jpg",
+        metadata={"name": "receipt.jpg"},
     ),
     TextContent(text="how much did I tip here?"),
 ])
 ```
 
+`metadata` is yours and is never sent to the provider. It stays in the saved
+session, so a replayed transcript can still describe an image whose file has
+since been deleted.
+
+| Source | Support |
+|---|---|
+| `ImageBase64` | everywhere |
+| `ImageURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
+| `ImageFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
+
 > ⚠️ **Images are user-message parts.** An assistant message carries text,
 > thinking and tool calls; a tool result (`ExecutionResult.content`) is text
-> only. `name` is display metadata and is not sent to the provider.
+> only.
 
 Beyond `parts`, an assistant entry records its provenance: the `llm_config`
 that produced it and a `stop_reason` — `"stop"` here (the model finished its

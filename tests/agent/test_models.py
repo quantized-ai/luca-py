@@ -481,10 +481,10 @@ def test_pruned_entry_round_trips_inside_a_session():
 # ── image content ──────────────────────────────────────────────────────────────
 
 
-def test_image_content_defaults_to_a_null_name():
+def test_image_content_defaults_to_empty_metadata():
     source = ImageBase64(data="aGk=", media_type="image/png")
 
-    assert ImageContent(source=source) == ImageContent(source=source, name=None)
+    assert ImageContent(source=source) == ImageContent(source=source, metadata={})
 
 
 def test_image_content_round_trips_each_source_kind():
@@ -493,7 +493,7 @@ def test_image_content_round_trips_each_source_kind():
         ImageBase64(data="aGk=", media_type="image/png"),
         ImageFileId(file_id="file_123"),
     ):
-        part = ImageContent(source=source, name="a.png")
+        part = ImageContent(source=source, metadata={"name": "a.png"})
 
         assert ImageContent.model_validate_json(part.model_dump_json()) == part
 
@@ -519,7 +519,7 @@ def test_user_message_mixes_image_and_text_parts_in_order():
         parts=[
             ImageContent(
                 source=ImageBase64(data="aGk=", media_type="image/png"),
-                name="receipt.jpg",
+                metadata={"name": "receipt.jpg"},
             ),
             TextContent(text="how much did I tip?"),
         ],

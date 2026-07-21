@@ -7,9 +7,14 @@ import json as _json
 
 import pytest
 
+from luca.client.exceptions import BadRequestError
 from luca.client.types import (
     AssistantMessage,
     ChatCompletionRequest,
+    ImageBlock,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     TextBlock,
     ToolCall,
     ToolMessage,
@@ -143,3 +148,28 @@ def test_openai_transport_outbound_payload(case, openai_transport_factory):
         "body": case.expected_body,
         "auth": case.expected_auth,
     }
+
+
+def test_image_sources_project_to_image_url(openai_transport_factory):
+    transport = openai_transport_factory()
+
+    assert transport._project_user_block(
+        ImageBlock(source=MediaURL(url="https://example.com/a.png")),
+    ) == {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+    assert transport._project_user_block(
+        ImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+    ) == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,aGk="},
+    }
+
+
+def test_an_image_file_id_is_refused_with_a_useful_message(openai_transport_factory):
+    # chat-completions has no file-id shape for images (that is Responses API);
+    # sending one would return an opaque 400 from the provider
+    transport = openai_transport_factory()
+
+    with pytest.raises(BadRequestError, match="cannot take an image by file id"):
+        transport._project_user_block(
+            ImageBlock(source=MediaFileId(file_id="file-abc123")),
+        )

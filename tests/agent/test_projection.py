@@ -690,7 +690,7 @@ def test_user_message_projects_image_and_text_parts_in_order():
             parts=[
                 ImageContent(
                     source=ImageBase64(data="aGk=", media_type="image/png"),
-                    name="receipt.jpg",
+                    metadata={"name": "receipt.jpg"},
                 ),
                 TextContent(text="how much did I tip?"),
             ],
@@ -728,11 +728,11 @@ def test_image_file_id_source_projects_to_a_media_file_id():
     )
 
 
-def test_image_name_is_not_projected():
+def test_image_metadata_is_not_projected():
     source = ImageBase64(data="aGk=", media_type="image/png")
 
     assert PROJECTOR._image_block(
-        ImageContent(source=source, name="receipt.jpg"),
+        ImageContent(source=source, metadata={"name": "receipt.jpg"}),
     ) == PROJECTOR._image_block(ImageContent(source=source))
 
 
