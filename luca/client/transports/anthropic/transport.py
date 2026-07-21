@@ -11,7 +11,7 @@ Differences from OpenAI worth highlighting:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -54,6 +54,40 @@ _DEFAULT_MAX_TOKENS = 4096
 class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     transport_id = "anthropic"
 
+    # Extended thinking comes in two mutually exclusive shapes and which one a
+    # model takes is not discoverable from the wire: adaptive models reject
+    # `budget_tokens` and manual models reject `adaptive`. Adaptive is the
+    # default because that is where Anthropic is moving; the exceptions are
+    # listed. Subclass to change any of it.
+    MANUAL_THINKING_MODELS: ClassVar[tuple[str, ...]] = (
+        "claude-opus-4-5", "claude-haiku-4-5",
+        "claude-sonnet-4-5", "claude-opus-4-1",
+        "claude-sonnet-4-0", "claude-opus-4-0",
+    )
+    NO_THINKING_MODELS: ClassVar[tuple[str, ...]] = (
+        "claude-3-5-sonnet", "claude-3-5-haiku", "claude-3-opus",
+        "claude-3-sonnet", "claude-3-haiku",
+    )
+    # Manual mode takes a token budget, not a word. Anthropic requires
+    # >= 1024 and strictly < max_tokens.
+    EFFORT_BUDGETS: ClassVar[dict[str, int]] = {
+        "minimal": 1024, "low": 2048, "medium": 4096,
+        "high": 8192, "xhigh": 16384, "auto": 4096,
+    }
+    # Adaptive takes a word, and accepts only these four.
+    ADAPTIVE_EFFORTS: ClassVar[dict[str, str]] = {
+        "minimal": "low", "low": "low", "medium": "medium",
+        "high": "high", "xhigh": "xhigh",
+    }
+    MIN_THINKING_BUDGET: ClassVar[int] = 1024
+    # Room left for the answer: generous when we size `max_tokens` ourselves,
+    # only the bare minimum when squeezing a budget under a caller's cap.
+    COMPLETION_HEADROOM: ClassVar[int] = 4096
+    MIN_COMPLETION_TOKENS: ClassVar[int] = 1024
+    # Adaptive models omit the reasoning text by default and return only the
+    # encrypted signature, which leaves nothing to render. Ask for summaries.
+    THINKING_DISPLAY: ClassVar[str | None] = "summarized"
+
     # --- headers / URL ---
 
     def _headers(self) -> dict[str, str]:
@@ -73,20 +107,24 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     def _build_chat_completion_payload(
         self, request: ChatCompletionRequest, *, stream: bool = False,
     ) -> dict:
+        thinking, max_tokens = self._thinking_config(request)
         payload: dict[str, Any] = {
             "model": request.model,
-            "max_tokens": request.max_tokens or _DEFAULT_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "messages": self._project_messages(request.messages),
         }
+        payload.update(thinking)
         if request.system_message is not None:
             payload["system"] = self._project_system(request.system_message)
         if stream:
             payload["stream"] = True
-        if request.temperature is not None:
+        # Sampling controls are rejected while thinking is active.
+        sampling_allowed = "thinking" not in payload
+        if request.temperature is not None and sampling_allowed:
             payload["temperature"] = request.temperature
-        if request.top_p is not None:
+        if request.top_p is not None and sampling_allowed:
             payload["top_p"] = request.top_p
-        if request.top_k is not None:
+        if request.top_k is not None and sampling_allowed:
             payload["top_k"] = request.top_k
         if request.stop is not None:
             payload["stop_sequences"] = (
@@ -101,6 +139,62 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.extra_args:
             payload.update(request.extra_args)
         return payload
+
+    def _thinking_mode(self, model: str) -> str:
+        """`"manual"`, `"adaptive"` or `"none"` for a wire model id.
+
+        Matches on a normalized id so `-latest`, a dated suffix and a gateway
+        prefix (`us.anthropic.claude-…`) all resolve to the same bucket."""
+        normalized = model.rsplit(".", 1)[-1].rsplit("/", 1)[-1]
+        for prefix in self.NO_THINKING_MODELS:
+            if normalized.startswith(prefix):
+                return "none"
+        for prefix in self.MANUAL_THINKING_MODELS:
+            if normalized.startswith(prefix):
+                return "manual"
+        return "adaptive"
+
+    def _thinking_config(self, request: ChatCompletionRequest) -> tuple[dict, int]:
+        """The thinking-related payload keys plus the `max_tokens` to send.
+
+        `reasoning_effort=None` leaves thinking off entirely, so a caller that
+        never asked for it keeps the old wire shape."""
+        max_tokens = request.max_tokens or _DEFAULT_MAX_TOKENS
+        effort = request.reasoning_effort
+        if effort is None:
+            return {}, max_tokens
+
+        mode = self._thinking_mode(request.model)
+        if effort == "none" or mode == "none":
+            return {"thinking": {"type": "disabled"}}, max_tokens
+
+        if mode == "adaptive":
+            config: dict[str, Any] = {"type": "adaptive"}
+            if self.THINKING_DISPLAY is not None:
+                config["display"] = self.THINKING_DISPLAY
+            thinking: dict[str, Any] = {"thinking": config}
+            # "auto" means "let the model decide", which is the absence of an
+            # effort key rather than any particular value.
+            adaptive_effort = self.ADAPTIVE_EFFORTS.get(effort)
+            if adaptive_effort is not None:
+                thinking["output_config"] = {"effort": adaptive_effort}
+            return thinking, max_tokens
+
+        budget = self.EFFORT_BUDGETS.get(effort, self.MIN_THINKING_BUDGET)
+        if request.max_tokens is None:
+            max_tokens = budget + self.COMPLETION_HEADROOM
+        else:
+            # The caller's cap is a billing contract: shrink the budget to fit
+            # inside it rather than quietly raising it.
+            budget = min(budget, request.max_tokens - self.MIN_COMPLETION_TOKENS)
+        if budget < self.MIN_THINKING_BUDGET:
+            raise UnsupportedParameterError(
+                f"max_tokens={request.max_tokens} leaves no room for extended "
+                f"thinking on {request.model!r}: Anthropic requires a budget "
+                f"of at least {self.MIN_THINKING_BUDGET} tokens below it.",
+                provider=self._provider,
+            )
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}}, max_tokens
 
     def _project_system(self, system_message: Any) -> Any:
         if isinstance(system_message, str):
@@ -162,10 +256,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             if isinstance(block, TextBlock):
                 wire_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
-                tb: dict = {"type": "thinking", "thinking": block.text}
-                if block.signature is not None:
-                    tb["signature"] = block.signature
-                wire_blocks.append(tb)
+                thinking = self._project_thinking_block(block)
+                if thinking is not None:
+                    wire_blocks.append(thinking)
             elif isinstance(block, ToolCall):
                 wire_blocks.append({
                     "type": "tool_use",
@@ -177,6 +270,27 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 # Anthropic doesn't take refusals on the way in; drop.
                 continue
         return {"role": "assistant", "content": wire_blocks}
+
+    def _project_thinking_block(self, block: ThinkingBlock) -> dict | None:
+        """One thinking block on the way back, or None to omit it.
+
+        An unsigned block is DROPPED rather than sent. Anthropic rejects a
+        thinking block whose signature is missing (400 `signature: Field
+        required`) but accepts the turn with the block absent, and unsigned
+        blocks are reachable: a truncated response never receives its
+        `signature_delta`, and a session moved from an OpenAI-compatible host
+        carries reasoning text that was never signed. Sending it would make
+        the whole conversation permanently unusable; dropping it costs one
+        turn's visible reasoning."""
+        if block.signature is None:
+            return None
+        if block.redacted:
+            return {"type": "redacted_thinking", "data": block.signature}
+        return {
+            "type": "thinking",
+            "thinking": block.text,
+            "signature": block.signature,
+        }
 
     def _project_tool_message_as_user(self, msg: ToolMessage) -> dict:
         if isinstance(msg.content, str):

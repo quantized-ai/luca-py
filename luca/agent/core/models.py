@@ -47,8 +47,18 @@ class TextContent(BaseModel):
 
 
 class ThinkingContent(BaseModel):
+    """The model's reasoning. `signature` is the provider's opaque attestation
+    over it, durable because some providers reject a replayed thinking block
+    without one; `redacted` marks a block whose reasoning the provider
+    encrypted, leaving `thinking` empty and the payload in `signature`.
+
+    Both are provider-owned and must round-trip byte for byte: rewriting
+    `thinking` in middleware invalidates the signature."""
+
     type: Literal["thinking"] = "thinking"
     thinking: str
+    signature: str | None = None
+    redacted: bool = False
 
     model_config = ConfigDict(extra="forbid")
 

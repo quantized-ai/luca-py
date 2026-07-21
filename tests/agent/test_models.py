@@ -602,3 +602,52 @@ def test_an_assistant_message_round_trips_every_part_type():
     assert [type(part) for part in reloaded.parts] == [
         ThinkingContent, TextContent, ToolCall,
     ]
+
+
+# ── thinking signatures ────────────────────────────────────────────────────────
+
+
+def test_thinking_content_defaults_to_unsigned_and_unredacted():
+    assert ThinkingContent(thinking="hmm") == ThinkingContent(
+        thinking="hmm", signature=None, redacted=False,
+    )
+
+
+def test_thinking_content_round_trips_its_signature():
+    part = ThinkingContent(thinking="let me think", signature="sig-abc")
+
+    assert ThinkingContent.model_validate_json(part.model_dump_json()) == part
+
+
+def test_a_redacted_thinking_part_round_trips_with_an_empty_body():
+    # the reasoning is encrypted into the signature; `thinking` stays empty
+    part = ThinkingContent(thinking="", signature="encrypted", redacted=True)
+
+    reloaded = ThinkingContent.model_validate_json(part.model_dump_json())
+
+    assert reloaded == part
+    assert reloaded.thinking == ""
+
+
+def test_a_signature_survives_a_whole_session_round_trip():
+    session = AgentSession(
+        id="s_sig",
+        entries={
+            "a1": AssistantMessage(
+                id="a1", created_at=1000,
+                parts=[
+                    ThinkingContent(thinking="reasoning", signature="sig-abc"),
+                    TextContent(text="the answer"),
+                ],
+                llm_config=MODEL, stop_reason="stop",
+            ),
+        },
+        active_conversation=Conversation(
+            id="c1", nodes=["a1"], created_at=1000, updated_at=1000,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    reloaded = AgentSession.model_validate_json(session.model_dump_json())
+
+    assert reloaded.entries["a1"].parts[0].signature == "sig-abc"

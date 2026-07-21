@@ -48,3 +48,26 @@ def test_tool_projects_to_client_tool():
     assert tool_to_luca_tool(AddTool()) == LucaTool(
         name="add", description="Add two numbers.", parameters=BinaryArgs,
     )
+
+
+def test_message_to_parts_keeps_the_thinking_signature():
+    # dropping it here is what made a replayed Anthropic turn unacceptable
+    parts = message_to_parts(
+        LucaAssistantMessage(content=[
+            ThinkingBlock(text="reasoning", signature="sig-abc"),
+        ]),
+    )
+
+    assert parts == [ThinkingContent(thinking="reasoning", signature="sig-abc")]
+
+
+def test_message_to_parts_keeps_a_redacted_block():
+    parts = message_to_parts(
+        LucaAssistantMessage(content=[
+            ThinkingBlock(text="", signature="encrypted", redacted=True),
+        ]),
+    )
+
+    assert parts == [
+        ThinkingContent(thinking="", signature="encrypted", redacted=True),
+    ]

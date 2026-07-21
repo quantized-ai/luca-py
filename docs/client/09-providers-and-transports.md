@@ -122,8 +122,15 @@ as `thinking_*` stream events). Pure OpenAI responses simply omit the field,
 so the branch is inert for them — this is data-driven, **not** an
 `if self._provider == "openrouter"` check, and it benefits every
 OpenAI-compatible reasoning host at once. Sending an assistant turn back
-**drops** the `ThinkingBlock` (round-trip replay via OpenRouter's
-`reasoning_details` + `signature` is a future enhancement).
+**drops** the `ThinkingBlock` — these hosts have no replay surface, and the
+reasoning arrives unsigned (round-trip via OpenRouter's `reasoning_details`
+is a future enhancement).
+
+`AnthropicTransport` is the exception: it both reads and replays thinking,
+signature included, because Anthropic **requires** the signature on a
+replayed block during tool use. An unsigned block is dropped rather than
+sent — Anthropic rejects the request outright if the signature is missing,
+but accepts the turn without the block.
 
 ## Lower level: transports
 

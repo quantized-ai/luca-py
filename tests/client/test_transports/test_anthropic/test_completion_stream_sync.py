@@ -74,3 +74,62 @@ def test_anthropic_streaming_tool_use(anthropic_transport_factory):
     assert len(finish.tool_calls) == 1
     assert finish.tool_calls[0].name == "get_weather"
     assert finish.tool_calls[0].arguments == {"city": "NYC"}
+
+
+def test_anthropic_streaming_thinking_carries_the_signature(anthropic_transport_factory):
+    # the signature arrives as its own delta just before content_block_stop
+    chunks = [
+        _sse("message_start", '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}'),
+        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}'),
+        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me think"}}'),
+        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}'),
+        _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
+        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}'),
+        _sse("message_stop", '{"type":"message_stop"}'),
+    ]
+    transport = anthropic_transport_factory(
+        http_client=make_sync_client(sse_response(chunks)),
+    )
+
+    with transport.completion_stream(
+        ChatCompletionRequest(
+            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+        ),
+    ) as stream:
+        collect_events_with_snapshots(stream)
+        [block] = stream.message.content
+
+    assert block.text == "let me think"
+    assert block.signature == "sig-abc"
+    assert block.redacted is False
+
+
+def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
+    anthropic_transport_factory,
+):
+    # a redacted block arrives whole in content_block_start with no deltas —
+    # if the start event drops `data` the payload is gone for good
+    chunks = [
+        _sse("message_start", '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}'),
+        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"encrypted-payload"}}'),
+        _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
+        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}'),
+        _sse("message_stop", '{"type":"message_stop"}'),
+    ]
+    transport = anthropic_transport_factory(
+        http_client=make_sync_client(sse_response(chunks)),
+    )
+
+    with transport.completion_stream(
+        ChatCompletionRequest(
+            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+        ),
+    ) as stream:
+        collect_events_with_snapshots(stream)
+        [block] = stream.message.content
+
+    assert block.redacted is True
+    assert block.signature == "encrypted-payload"
+    assert transport._project_assistant_message(stream.message)["content"] == [
+        {"type": "redacted_thinking", "data": "encrypted-payload"},
+    ]

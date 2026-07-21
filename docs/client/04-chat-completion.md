@@ -35,7 +35,7 @@ Common keyword args:
 | `tool_choice` | `"auto" \| "required" \| "none" \| dict` | Force or block tool use. |
 | `response_format` | `dict \| type \| TypeAdapter \| None` | Structured output schema. See [`07-structured-output.md`](07-structured-output.md). |
 | `temperature`, `top_p`, `top_k`, `max_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs` | various | Standard generation knobs. `None` means "not sent". |
-| `reasoning_effort` | `"none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "auto"` | For reasoning-capable models. |
+| `reasoning_effort` | `"none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "auto"` | For reasoning-capable models. Passed through verbatim on OpenAI-compatible hosts; translated to Anthropic's thinking config ([09](09-providers-and-transports.md)). `None` leaves thinking off. |
 | `thinking_budgets` | `dict[str, int] \| None` | Provider-specific thinking budget. |
 | `cache_retention` | `"none" \| "short" \| "long" \| None` | Prompt-cache hint. |
 | `session_id` | `str \| None` | Routing affinity hint where supported. |

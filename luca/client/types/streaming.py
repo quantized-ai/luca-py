@@ -214,6 +214,10 @@ class RawBlockStart:
     block_type: Literal["text", "thinking", "tool_call", "refusal"]
     tool_id: str | None = None
     tool_name: str | None = None
+    # A redacted thinking block arrives whole in the start event — encrypted
+    # payload, no deltas — so it has to be carried here or it is lost.
+    signature: str | None = None
+    redacted: bool = False
 
 
 @dataclass
@@ -552,7 +556,11 @@ class _ChatCompletionAccumulator:
                 self._open_block_indices.add(raw.index)
                 yield TextStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
             elif raw.block_type == "thinking":
-                self._message.content.append(ThinkingBlock(text=""))
+                self._message.content.append(
+                    ThinkingBlock(
+                        text="", signature=raw.signature, redacted=raw.redacted,
+                    ),
+                )
                 self._open_block_indices.add(raw.index)
                 yield ThinkingStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
             elif raw.block_type == "refusal":

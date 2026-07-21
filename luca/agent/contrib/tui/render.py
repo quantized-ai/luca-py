@@ -38,6 +38,17 @@ def status_label(status: ExecutionStatus) -> str:
     return STATUS_LABELS.get(status, status.value)
 
 
+REDACTED_REASONING_MARKER = "[reasoning withheld by the provider]"
+
+
+def reasoning_transcript_text(part) -> str:
+    """A thinking part as transcript text. A redacted block carries no
+    readable body, so it gets a marker instead of rendering as nothing."""
+    if part.redacted:
+        return REDACTED_REASONING_MARKER
+    return part.thinking if part.thinking.strip() else ""
+
+
 def user_transcript_text(parts) -> str:
     """A user message's parts as transcript text: text verbatim, each image
     as a `[image: name]` placeholder line. Textual cannot draw images, and

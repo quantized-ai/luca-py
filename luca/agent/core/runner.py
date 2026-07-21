@@ -1284,7 +1284,11 @@ class AgentSessionRunner:
         events: list[AgentEvent] = []
         for part in parts:
             if isinstance(part, ThinkingContent):
-                events.append(ReasoningBlock(text=part.thinking))
+                events.append(
+                    ReasoningBlock(
+                        text=part.thinking, redacted=part.redacted,
+                    ),
+                )
             elif isinstance(part, TextContent):
                 events.append(TextBlock(text=part.text))
         events.append(FinishReason(finish_reason=finish_reason))
