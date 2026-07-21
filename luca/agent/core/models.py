@@ -64,8 +64,62 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# result-content union; images & other content types extend this in pass 2
-Content = TextContent
+class ImageURL(BaseModel):
+    kind: Literal["url"] = "url"
+    url: str
+    media_type: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ImageBase64(BaseModel):
+    kind: Literal["base64"] = "base64"
+    data: str  # base64-encoded bytes, no `data:` prefix
+    media_type: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ImageFileId(BaseModel):
+    kind: Literal["file"] = "file"
+    file_id: str
+    media_type: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ImageSource = Annotated[
+    Union[ImageURL, ImageBase64, ImageFileId],
+    Field(discriminator="kind"),
+]
+
+
+class ImageContent(BaseModel):
+    """An image carried by a `UserMessage`.
+
+    `metadata` is application-owned and deliberately NOT projected — the
+    client's `ImageBlock` carries only a source. It survives in the session,
+    so a replayed transcript can still describe an image whose original file
+    has since been deleted (`name`, `path`, `size_bytes`, …)."""
+
+    type: Literal["image"] = "image"
+    source: ImageSource
+    metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# what a user message, a tool result or a pruned replacement carries
+ContentPart = Annotated[
+    Union[TextContent, ImageContent],
+    Field(discriminator="type"),
+]
+
+# what an assistant message carries — a different set, so a separate union
+AssistantContentPart = Annotated[
+    Union[TextContent, ThinkingContent, ToolCall],
+    Field(discriminator="type"),
+]
 
 
 # ── value objects (carried by entries) ─────────────────────────────────────
@@ -117,7 +171,7 @@ class ExecutionResult(BaseModel):
     useful "file does not exist" result with `is_error=True` and still be
     COMPLETED. Execution timing lives on `ToolExecution`, not here."""
 
-    content: list[Content]  # what the LLM sees
+    content: list[ContentPart]  # what the LLM sees
     metadata: dict = Field(default_factory=dict)  # e.g. {"exit_code": 0}
     is_error: bool = False  # the tool's verdict about the returned result
 
@@ -271,17 +325,12 @@ class Entry(BaseModel):
 
 class UserMessage(Entry):
     type: Literal["user"] = "user"
-    parts: list[TextContent]  # (+ image, etc. → pass 2)
+    parts: list[ContentPart]
 
 
 class AssistantMessage(Entry):
     type: Literal["assistant"] = "assistant"
-    parts: list[
-        Annotated[
-            Union[TextContent, ThinkingContent, ToolCall],
-            Field(discriminator="type"),
-        ]
-    ]
+    parts: list[AssistantContentPart]
     llm_config: LLMConfig  # provenance: the config that PRODUCED this message
     stop_reason: str  # "stop" | "tool_use"  (error/aborted → pass 2)
     # NO usage field: provider consumption is conversation-scoped accessory
@@ -426,7 +475,7 @@ class PrunedEntry(Entry):
     type: Literal["pruned"] = "pruned"
     pruned_entry_type: str
     pruned_entry_id: str
-    content: list[Content]
+    content: list[ContentPart]
 
 
 # The durable, uniformly-addressable node space. Discriminated on `type` so a

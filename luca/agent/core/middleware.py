@@ -36,6 +36,7 @@ from .models import (
     ApprovalDecision,
     LLMConfig,
     ToolExecution,
+    ContentPart,
 )
 
 try:
@@ -57,10 +58,12 @@ class AgentMiddlewareMixin:
         vary by turn, session state, or any runtime condition."""
         return tools
 
-    def before_post_message(self, text: str) -> str:
+    def before_post_message(self, parts: list[ContentPart]) -> list[ContentPart]:
         """Before a user message is appended to the session. Return the
-        (possibly modified) text — sanitise, enrich, log."""
-        return text
+        (possibly modified) content parts — sanitise, enrich, log. The whole
+        ordered list is visible, text and images alike, so a hook can rewrite,
+        drop, reorder or add parts."""
+        return parts
 
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,

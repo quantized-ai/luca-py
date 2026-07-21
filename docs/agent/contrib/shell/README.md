@@ -37,7 +37,7 @@ tools use), so grants keep their meaning across resumed sessions.
 
 | Tool | Kind | Does |
 |---|---|---|
-| `read` | READ | Numbered text pages, directory listings, image/PDF attachments; caps at 2000 lines / 50 KiB |
+| `read` | READ | Numbered text pages, directory listings, images as real `ImageContent` (PDFs still a stub); caps at 2000 lines / 50 KiB |
 | `glob` | SEARCH | ripgrep-backed file finding under a root |
 | `grep` | SEARCH | ripgrep-backed content search, grouped per file |
 | `edit` | EDIT | Unique exact replacement with fuzzy-correction strategies; unified diff in metadata |

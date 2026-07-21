@@ -23,6 +23,8 @@ mount.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import os
 from pathlib import Path
 from typing import TypeVar
@@ -52,12 +54,15 @@ from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
     TextContent,
     ThinkingContent,
     ToolExecution,
     TurnFinish,
     TurnOutcome,
     UserMessage,
+    ContentPart,
 )
 from luca.agent.core.projection import tool_message_text
 
@@ -70,6 +75,8 @@ from .cells import (
     TranscriptCell,
     UserCell,
 )
+from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
+from .render import user_transcript_text
 from .screens import ApprovalScreen
 from .sessions import save_session
 from .wiring import build_runner
@@ -82,6 +89,7 @@ class AgentApp(App):
 
     BINDINGS = [
         Binding("escape", "cancel_run", "Cancel turn"),
+        Binding("ctrl+v", "paste_image", "Attach image", priority=True),
         Binding("ctrl+d", "save_quit", "Quit", priority=True),
     ]
 
@@ -114,6 +122,7 @@ class AgentApp(App):
         self._live_reasoning: ReasoningCell | None = None
         self._live_text: AssistantCell | None = None
         self._tool_cells: dict[str, ToolCallCell] = {}
+        self._pending_images: list[ImageContent] = []
 
     @property
     def current_run(self) -> AgentRun | None:
@@ -137,12 +146,18 @@ class AgentApp(App):
     # ── input ──────────────────────────────────────────────────────────────────
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if not self.runner.idle():
+            return
         text = event.value.strip()
-        if not text or not self.runner.idle():
+        parts: list[ContentPart] = [*self._pending_images]
+        if text:
+            parts.append(TextContent(text=text))
+        if not parts:
             return
         event.input.value = ""
-        self.runner.post_message(text)
-        await self._mount_cell(UserCell(text))
+        self._pending_images = []
+        self.runner.post_message(parts)
+        await self._mount_cell(UserCell(user_transcript_text(parts)))
         self._start_drive()
 
     # ── the drive worker ───────────────────────────────────────────────────────
@@ -282,14 +297,11 @@ class AgentApp(App):
         for node_id in session.active_conversation.nodes:
             entry = entries.get(node_id)
             if isinstance(entry, UserMessage):
-                text = "".join(
-                    part.text for part in entry.parts
-                    if isinstance(part, TextContent)
+                await self._mount_cell(
+                    UserCell(user_transcript_text(entry.parts)),
                 )
-                await self._mount_cell(UserCell(text))
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
-                    # blank parts are skipped exactly as a live run drops them
                     if isinstance(part, ThinkingContent) and part.thinking.strip():
                         await self._mount_cell(ReasoningCell(part.thinking))
                     elif isinstance(part, TextContent) and part.text.strip():
@@ -315,9 +327,41 @@ class AgentApp(App):
 
     # ── actions ────────────────────────────────────────────────────────────────
 
+    async def action_paste_image(self) -> None:
+        """Attach the clipboard's image to the next message. A terminal never
+        transmits image bytes on paste, so the clipboard is read directly —
+        blocking work, kept off the UI thread."""
+        try:
+            data = await asyncio.to_thread(read_clipboard_image)
+        except ClipboardUnavailable as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if data is None:
+            self.notify("No image in the clipboard.")
+            return
+        self._pending_images.append(
+            ImageContent(
+                source=ImageBase64(
+                    data=base64.b64encode(data).decode("ascii"),
+                    media_type=MEDIA_TYPE,
+                ),
+                metadata={
+                    "name": f"pasted-{len(self._pending_images) + 1}.png",
+                    "size_bytes": len(data),
+                    "origin": "clipboard",
+                },
+            ),
+        )
+        self._refresh_status()
+        self.notify("Image attached — Enter to send, Esc to clear.")
+
     async def action_cancel_run(self) -> None:
         run = self._current_run
         if run is None:
+            if self._pending_images:
+                self._pending_images = []
+                self._refresh_status()
+                self.notify("Attachments cleared.")
             return
         try:
             run.cancel(error="cancelled by user")
@@ -351,4 +395,8 @@ class AgentApp(App):
 
     def _refresh_status(self) -> None:
         session = self.runner.session
-        self.sub_title = f"session {session.id} · {self.runner.status.value}"
+        status = f"session {session.id} · {self.runner.status.value}"
+        if self._pending_images:
+            count = len(self._pending_images)
+            status += f" · {count} image{'s' if count > 1 else ''} attached"
+        self.sub_title = status

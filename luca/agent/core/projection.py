@@ -52,8 +52,17 @@ import json
 from collections.abc import Mapping
 from typing import ClassVar
 
-from luca.client.types import Message, TextBlock, ThinkingBlock, ToolMessage
+from luca.client.types import (
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
+    Message,
+    TextBlock,
+    ThinkingBlock,
+    ToolMessage,
+)
 from luca.client.types import AssistantMessage as ClientAssistantMessage
+from luca.client.types import ImageBlock as ClientImageBlock
 from luca.client.types import ToolCall as ClientToolCall
 from luca.client.types import UserMessage as ClientUserMessage
 
@@ -65,6 +74,10 @@ from .models import (
     CompactionEntry,
     Conversation,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -315,21 +328,62 @@ class ConversationProjector:
             return "[tool execution failed]"
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
-    def _content_block(self, part) -> TextBlock:
-        """Agent content value → canonical client content block."""
+    def _content_block(self, part) -> TextBlock | ClientImageBlock:
+        """Agent content value → canonical client content block. Shared by
+        every entry projection: user messages, tool results and pruned
+        replacements all carry the same `ContentPart` union."""
         if isinstance(part, TextContent):
             return TextBlock(text=part.text)
+        if isinstance(part, ImageContent):
+            return self._image_block(part)
         raise ProjectionError(
             f"Cannot project content of type {type(part).__name__}."
         )
 
+    def _image_block(self, part: ImageContent) -> ClientImageBlock:
+        """Agent image part → client `ImageBlock`. Override to rewrite media
+        (proxy a URL, upload base64 and swap in a file id). `part.metadata` is
+        application-owned and is dropped here by design."""
+        source = part.source
+        if isinstance(source, ImageBase64):
+            return ClientImageBlock(
+                source=MediaBase64(
+                    data=source.data, media_type=source.media_type,
+                ),
+            )
+        if isinstance(source, ImageURL):
+            return ClientImageBlock(
+                source=MediaURL(url=source.url, media_type=source.media_type),
+            )
+        if isinstance(source, ImageFileId):
+            return ClientImageBlock(
+                source=MediaFileId(
+                    file_id=source.file_id, media_type=source.media_type,
+                ),
+            )
+        raise ProjectionError(
+            f"Cannot project image source of type {type(source).__name__}."
+        )
+
+
+# Presentation-only stand-in for an image when a tool message is flattened for
+# an event. Unlike the model-facing markers above this is a module constant,
+# not a class var: `tool_message_text` is a free function, so a projector
+# subclass cannot change it.
+IMAGE_BLOCK_MARKER = "[image]"
+
 
 def tool_message_text(message: ToolMessage) -> str:
     """Flatten a projected tool message for event presentation: string content
-    is used directly; list content concatenates its TextBlock texts in order
-    (non-text blocks contribute nothing)."""
+    is used directly; list content concatenates its blocks in order, an image
+    contributing a marker so a caller rendering this never silently loses a
+    block it cannot draw."""
     if isinstance(message.content, str):
         return message.content
-    return "".join(
-        block.text for block in message.content if isinstance(block, TextBlock)
-    )
+    chunks: list[str] = []
+    for block in message.content:
+        if isinstance(block, TextBlock):
+            chunks.append(block.text)
+        elif isinstance(block, ClientImageBlock):
+            chunks.append(IMAGE_BLOCK_MARKER)
+    return "".join(chunks)

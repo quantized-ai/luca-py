@@ -95,7 +95,7 @@ import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from luca.client import acompletion, acompletion_stream
 from luca.client.exceptions import TimeoutError as ClientTimeoutError
@@ -130,6 +130,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    ContentPart,
 )
 from .events import (
     AgentEvent,
@@ -586,13 +587,17 @@ class AgentSessionRunner:
 
     # ── caller-facing mutations / queries ────────────────────────────────────
 
-    def post_message(self, text: str) -> str:
+    def post_message(self, content: str | list[ContentPart]) -> str:
         """Append a user message and arm the runner. Legal when the bracket is
         CLOSED and the status is IDLE or PENDING: a fresh/finished session,
         after a failed turn (add or clarify before the retry), or behind an
         already-queued message (queueing — consecutive user messages are an
         established shape). An open turn — CANCELLING, AWAITING_APPROVAL, or a
-        resumable bracket — always rejects."""
+        resumable bracket — always rejects.
+
+        `content` is a bare string (the common case) or an ordered list of
+        parts mixing text and images; `before_post_message` sees that list and
+        returns the one that is persisted."""
         if (
             self.status not in (ConversationStatus.IDLE, ConversationStatus.PENDING)
             or self.ledger.open_turn_index() is not None
@@ -601,11 +606,12 @@ class AgentSessionRunner:
                 f"post_message requires a closed turn and IDLE/PENDING status "
                 f"(status={self.status.value})."
             )
-        text = self._run_middlewares("before_post_message", text)
+        parts = self._run_middlewares(
+            "before_post_message", _normalize_post_parts(content),
+        )
         message = self._append(
             lambda entry_id, parent_id, ts: UserMessage(
-                id=entry_id, parent_id=parent_id, created_at=ts,
-                parts=[TextContent(text=text)],
+                id=entry_id, parent_id=parent_id, created_at=ts, parts=parts,
             )
         )
         self._set_status(ConversationStatus.PENDING)
@@ -1726,6 +1732,28 @@ async def _cancel_quietly(task: asyncio.Task) -> None:
 def _swallow_result(task: asyncio.Task) -> None:
     if not task.cancelled():
         task.exception()  # retrieved — no unretrieved-exception noise
+
+
+_POST_PARTS = TypeAdapter(list[ContentPart])
+
+
+def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]:
+    """`post_message` input → the part list persisted on the `UserMessage`.
+
+    Shape is checked against `ContentPart` itself, so a new part type needs no
+    change here; a part the union does not admit raises `ValidationError`."""
+    if not content:
+        raise AgentError(
+            "post_message requires a non-empty string or list of content parts."
+        )
+    if isinstance(content, str):
+        return [TextContent(text=content)]
+    if isinstance(content, BaseModel):
+        raise AgentError(
+            f"post_message takes a list of content parts; wrap the "
+            f"{type(content).__name__} in a list."
+        )
+    return _POST_PARTS.validate_python(content)
 
 
 def _to_delta_event(event) -> AgentEvent | None:

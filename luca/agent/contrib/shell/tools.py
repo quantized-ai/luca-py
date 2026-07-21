@@ -26,6 +26,7 @@ shell plugin owns that wiring.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import difflib
 import json
@@ -48,6 +49,8 @@ from luca.agent.contrib.resource_permissions import (
 from luca.agent.core import (
     CancellationToken,
     ExecutionResult,
+    ImageBase64,
+    ImageContent,
     TextContent,
     Tool,
     ToolContext,
@@ -332,7 +335,7 @@ class ReadTool(ShellTool):
             return self._read_directory(path, offset, limit)
         mime = mimetypes.guess_type(path.name)[0]
         if mime in SUPPORTED_IMAGE_MIMES:
-            return self._attachment(path, mime, "Image read successfully")
+            return self._image(path, mime)
         if mime == "application/pdf":
             return self._attachment(path, mime, "PDF read successfully")
         if path.suffix.lower() in KNOWN_BINARY_EXTENSIONS:
@@ -355,6 +358,28 @@ class ReadTool(ShellTool):
                 listed = "\n".join(f"  {path.parent / name}" for name in siblings)
                 message += f"\n\nDid you mean one of these?\n{listed}"
         return message
+
+    def _image(self, path: Path, mime: str) -> ExecutionResult:
+        """The image itself, so the model actually sees what it asked to read.
+        Whether the target provider can receive it is the adapter layer's
+        problem, not this tool's."""
+        data = path.read_bytes()
+        return ExecutionResult(
+            content=[
+                ImageContent(
+                    source=ImageBase64(
+                        data=base64.b64encode(data).decode("ascii"),
+                        media_type=mime,
+                    ),
+                    metadata={
+                        "name": path.name,
+                        "path": str(path),
+                        "size_bytes": len(data),
+                    },
+                ),
+            ],
+            metadata={"attachment": {"path": str(path), "mime_type": mime}},
+        )
 
     def _attachment(self, path: Path, mime: str, text: str) -> ExecutionResult:
         return ExecutionResult(

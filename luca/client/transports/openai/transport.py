@@ -158,7 +158,11 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(source, MediaBase64):
             return {"url": f"data:{source.media_type};base64,{source.data}"}
         if isinstance(source, MediaFileId):
-            return {"url": source.file_id}
+            raise BadRequestError(
+                "The chat-completions API cannot take an image by file id "
+                f"({source.file_id!r}); pass MediaURL or MediaBase64 instead.",
+                provider=self._provider,
+            )
         raise BadRequestError(
             f"Unknown media source type {type(source).__name__}",
             provider=self._provider,
@@ -200,7 +204,20 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(msg.content, str):
             content = msg.content
         else:
-            content = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+            # Refusing beats dropping: the model would be told the tool call
+            # succeeded and handed a result with the image missing.
+            unsupported = {
+                type(b).__name__ for b in msg.content
+                if not isinstance(b, TextBlock)
+            }
+            if unsupported:
+                raise BadRequestError(
+                    "The chat-completions API allows only text in a tool "
+                    f"result; cannot send {', '.join(sorted(unsupported))} "
+                    f"for tool_call_id {msg.tool_call_id!r}.",
+                    provider=self._provider,
+                )
+            content = "".join(b.text for b in msg.content)
         wire: dict = {
             "role": "tool",
             "tool_call_id": msg.tool_call_id,

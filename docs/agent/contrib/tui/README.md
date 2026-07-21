@@ -36,6 +36,7 @@ values on a resume.
 |---|---|
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `notice` (cancels, failures) |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker |
+| `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
 | Approval modal | One screen per uncovered permission step: Approve once / tool-suggested ALWAYS grants / Deny / Abandon — pick by button or digit key |
 | `Esc` | Cancels the live run (`run.cancel()`); the wind-down renders live and the turn closes `CANCELLED` |
 | `Ctrl+D` | Saves the session and quits |
@@ -50,9 +51,24 @@ thin:
 | `wiring.py` | `build_runner(session, workspace=, provider=, mode=)` — shell + memory plugins, the demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | `build_approval_prompts(execution, strategy)` — pending steps → `ApprovalPrompt`s whose options carry fully-built `ApprovalAnswer`s (the whole gate policy, no UI) |
 | `sessions.py` | `<session-id>.json` load / save / fork |
-| `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label` |
+| `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text` (the live and replayed transcript share it, so they cannot drift) |
+| `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modal, `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `cli.py` | argparse entry point |
+
+Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
+message. The status bar shows how many are attached, and `Esc` clears them
+while nothing is running. A message can be image-only.
+
+> ⚠️ **The clipboard is read directly, not pasted.** A terminal only ever
+> transmits text, so image bytes never arrive as a key event. `Ctrl+V` shells
+> out instead: `osascript` on macOS, `wl-paste` or `xclip` on Linux,
+> PowerShell on Windows. Where none of those exist you get a notice, and
+> nothing is attached. This is also why paste cannot work over SSH — the
+> clipboard it reads is the one on the machine running the TUI.
+
+> ⚠️ **Textual cannot draw images.** The transcript shows a placeholder line,
+> never the picture.
 
 The drive worker is the REPL loop verbatim: answer the gate, then fall
 *through* to a run — recording answers on the strategy never advances the

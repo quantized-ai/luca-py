@@ -63,8 +63,8 @@ class EchoTool(PingTool):
 
 
 class RecordingMiddleware:
-    def before_post_message(self, text: str) -> str:
-        return text
+    def before_post_message(self, parts: list) -> list:
+        return parts
 
 
 class FullPlugin:

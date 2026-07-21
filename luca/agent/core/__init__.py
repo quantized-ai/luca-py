@@ -24,16 +24,22 @@ from .models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
+    AssistantContentPart,
     AssistantMessage,
     BaseConfigModel,
     CancelRequested,
     CompactionEntry,
-    Content,
+    ContentPart,
     Conversation,
     ConversationStatus,
     Entry,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageSource,
+    ImageURL,
     Inf,
     LLMConfig,
     MilliSeconds,
@@ -57,7 +63,11 @@ from .models import (
     UserMessage,
 )
 from .middleware import AgentMiddlewareMixin
-from .projection import CANCELLED_TURN_MARKER, ConversationProjector
+from .projection import (
+    CANCELLED_TURN_MARKER,
+    IMAGE_BLOCK_MARKER,
+    ConversationProjector,
+)
 from .runner import AgentRun, AgentSessionRunner, RunResult
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import ToolRegistry
@@ -74,6 +84,7 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalOption",
     "ApprovalStatus",
+    "AssistantContentPart",
     "AssistantMessage",
     "BaseConfigModel",
     "CANCELLED_TURN_MARKER",
@@ -81,7 +92,7 @@ __all__ = [
     "CancellationToken",
     "CancelledError",
     "CompactionEntry",
-    "Content",
+    "ContentPart",
     "ContextManager",
     "Conversation",
     "ConversationProjector",
@@ -90,6 +101,12 @@ __all__ = [
     "Entry",
     "ExecutionResult",
     "ExecutionStatus",
+    "ImageBase64",
+    "ImageContent",
+    "ImageFileId",
+    "ImageSource",
+    "IMAGE_BLOCK_MARKER",
+    "ImageURL",
     "Inf",
     "InvalidToolArguments",
     "LLMConfig",

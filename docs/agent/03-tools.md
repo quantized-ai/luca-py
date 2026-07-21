@@ -117,6 +117,20 @@ class RunSqlTool(Tool):
 - Timing lives on the execution (`started_at` / `ended_at`), stamped by the
   runner — the result carries none.
 
+`content` takes the same `ContentPart` union a user message does, so a tool can
+return an image — a screenshot tool, or the shell `read` tool on a png:
+
+```python
+return ExecutionResult(content=[
+    ImageContent(source=ImageBase64(data=b64, media_type="image/png")),
+])
+```
+
+> ⚠️ **Return what the tool actually produced.** Whether the target provider
+> can receive it is the adapter layer's problem ([10](10-projection.md)), not
+> the tool's. Today an image in a tool result reaches Anthropic and raises on
+> the OpenAI chat-completions API.
+
 ## 5. Tool identity — `tool_kind`, `namespace`, `version`, `timeout_in_ms`
 
 These class vars are snapshotted into the `ToolSpec` recorded on every execution

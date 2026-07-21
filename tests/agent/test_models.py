@@ -25,6 +25,10 @@ from luca.agent.core.models import (
     Conversation,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     Inf,
     MilliSeconds,
     PrunedEntry,
@@ -32,6 +36,7 @@ from luca.agent.core.models import (
     Seconds,
     SessionConfig,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolExecution,
     ToolExecutionError,
@@ -40,6 +45,7 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     Usage,
+    UserMessage,
 )
 
 from tests.agent.scenarios import MODEL
@@ -471,3 +477,128 @@ def test_pruned_entry_round_trips_inside_a_session():
     assert reloaded == session
     # the discriminated union deserializes the node to its concrete subclass
     assert type(reloaded.entries["p1"]) is PrunedEntry
+
+
+# ── image content ──────────────────────────────────────────────────────────────
+
+
+def test_image_content_defaults_to_empty_metadata():
+    source = ImageBase64(data="aGk=", media_type="image/png")
+
+    assert ImageContent(source=source) == ImageContent(source=source, metadata={})
+
+
+def test_image_content_round_trips_each_source_kind():
+    for source in (
+        ImageURL(url="https://example.com/a.png", media_type="image/png"),
+        ImageBase64(data="aGk=", media_type="image/png"),
+        ImageFileId(file_id="file_123"),
+    ):
+        part = ImageContent(source=source, metadata={"name": "a.png"})
+
+        assert ImageContent.model_validate_json(part.model_dump_json()) == part
+
+
+def test_image_content_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        ImageContent(
+            source=ImageBase64(data="aGk=", media_type="image/png"),
+            bogus="nope",
+        )
+
+
+def test_image_source_rejects_an_unknown_kind():
+    with pytest.raises(ValidationError):
+        ImageContent.model_validate(
+            {"source": {"kind": "carrier-pigeon", "data": "aGk="}},
+        )
+
+
+def test_user_message_mixes_image_and_text_parts_in_order():
+    message = UserMessage(
+        id="u1", created_at=1000,
+        parts=[
+            ImageContent(
+                source=ImageBase64(data="aGk=", media_type="image/png"),
+                metadata={"name": "receipt.jpg"},
+            ),
+            TextContent(text="how much did I tip?"),
+        ],
+    )
+
+    reloaded = UserMessage.model_validate_json(message.model_dump_json())
+
+    assert reloaded == message
+    assert [type(part) for part in reloaded.parts] == [ImageContent, TextContent]
+
+
+def test_user_message_parts_require_the_type_discriminator():
+    with pytest.raises(ValidationError):
+        UserMessage.model_validate(
+            {"id": "u1", "created_at": 1000, "parts": [{"text": "hi"}]},
+        )
+
+
+def test_execution_result_carries_the_same_content_union_as_a_message():
+    # the conversation is the source of truth: a tool that returns an image
+    # stores one, whatever a given provider can receive today
+    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    result = ExecutionResult(content=[image, TextContent(text="a screenshot")])
+
+    assert ExecutionResult.model_validate_json(result.model_dump_json()) == result
+
+
+# ── the two content unions are separate on purpose ─────────────────────────────
+
+
+def test_a_user_message_cannot_carry_assistant_only_parts():
+    # the reason ContentPart and AssistantContentPart stay separate
+    for rejected in (
+        ThinkingContent(thinking="reasoning is the assistant's"),
+        ToolCall(id="tc1", name="add"),
+    ):
+        with pytest.raises(ValidationError):
+            UserMessage(id="u1", created_at=1000, parts=[rejected])
+
+
+def test_an_assistant_message_cannot_carry_an_image():
+    # assistant images are a separate change: the client's AssistantMessage
+    # has no ImageBlock, so nothing downstream could project one yet
+    with pytest.raises(ValidationError):
+        AssistantMessage(
+            id="a1", created_at=1000,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+            ],
+            llm_config=MODEL, stop_reason="stop",
+        )
+
+
+def test_text_is_the_part_both_unions_share():
+    text = TextContent(text="shared")
+
+    assert UserMessage(id="u1", created_at=1, parts=[text]).parts == [text]
+    assert AssistantMessage(
+        id="a1", created_at=1, parts=[text], llm_config=MODEL, stop_reason="stop",
+    ).parts == [text]
+
+
+def test_an_assistant_message_round_trips_every_part_type():
+    message = AssistantMessage(
+        id="a1", created_at=1000,
+        parts=[
+            ThinkingContent(thinking="let me add"),
+            TextContent(text="adding now"),
+            ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        ],
+        llm_config=MODEL, stop_reason="tool_use",
+    )
+
+    reloaded = AssistantMessage.model_validate_json(message.model_dump_json())
+
+    assert reloaded == message
+    assert [type(part) for part in reloaded.parts] == [
+        ThinkingContent, TextContent, ToolCall,
+    ]

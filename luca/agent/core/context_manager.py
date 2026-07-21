@@ -23,8 +23,9 @@ only its durable results persist) owning three policies over the shared
 
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
-`CHARS_PER_TOKEN` characters of model-facing text, and pruning supports only
-terminal tool executions, replacing their output with a fixed marker.
+`CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
+per image, and pruning supports only terminal tool executions, replacing
+their output with a fixed marker.
 Instantiate it directly, subclass and override selected methods, or supply
 another object with the same behavior. Luca does not prescribe per-entry-type
 methods — dispatch by type here is an internal choice, not a runner contract.
@@ -46,6 +47,7 @@ from .models import (
     Entry,
     ExecutionResult,
     ExecutionStatus,
+    ImageContent,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -64,6 +66,7 @@ class ContextManager:
 
     PRUNED_TOOL_OUTPUT_MARKER: ClassVar[str] = PRUNED_TOOL_OUTPUT_MARKER
     CHARS_PER_TOKEN: ClassVar[int] = 4
+    IMAGE_TOKENS: ClassVar[int] = 1_000
 
     def calculate_context(self, entry: Entry) -> int:
         """Estimate the context tokens of `entry`'s model-facing content.
@@ -74,8 +77,15 @@ class ContextManager:
         tool execution owns only its model-facing outcome (result content,
         else its structured error message), and is 0 while nonterminal; a
         compaction owns its summary; a pruned entry owns its replacement
-        content. Markers own nothing."""
-        return self._estimate_tokens(self._model_facing_text(entry))
+        content. Markers own nothing.
+
+        Non-text content is counted separately by `_media_tokens`, so
+        `_estimate_tokens` and `_model_facing_text` stay text-shaped and
+        independently overridable."""
+        return (
+            self._estimate_tokens(self._model_facing_text(entry))
+            + self._media_tokens(entry)
+        )
 
     def prune_entry(self, entry: Entry) -> PrunedEntry:
         """Build the `PrunedEntry` template replacing `entry` in a path.
@@ -123,7 +133,7 @@ class ContextManager:
         `calculate_context`). Unknown entry types contribute nothing rather
         than failing: calculation is an estimate, not a projection."""
         if isinstance(entry, UserMessage):
-            return "".join(part.text for part in entry.parts)
+            return _text_of(entry.parts)
         if isinstance(entry, AssistantMessage):
             chunks: list[str] = []
             for part in entry.parts:
@@ -137,12 +147,43 @@ class ContextManager:
             return "".join(chunks)
         if isinstance(entry, ToolExecution):
             if entry.result is not None:
-                return "".join(part.text for part in entry.result.content)
+                return _text_of(entry.result.content)
             if entry.error is not None:
                 return entry.error.error_message
             return ""
         if isinstance(entry, CompactionEntry):
             return entry.summary
         if isinstance(entry, PrunedEntry):
-            return "".join(part.text for part in entry.content)
+            return _text_of(entry.content)
         return ""
+
+    def _media_tokens(self, entry: Entry) -> int:
+        """The entry's non-text context contribution: a flat constant per
+        image, deliberately dimension-blind. A URL source has no local bytes
+        to measure, reading real dimensions would need an image decoder (a
+        new dependency), and the provider formulas disagree by an order of
+        magnitude. Override with a per-provider formula if it matters."""
+        return self.IMAGE_TOKENS * _image_count(self._media_parts(entry))
+
+    def _media_parts(self, entry: Entry) -> list:
+        """The parts an entry owns that may carry non-text content — the same
+        ownership `_model_facing_text` applies, from the other side."""
+        if isinstance(entry, UserMessage):
+            return entry.parts
+        if isinstance(entry, ToolExecution):
+            return entry.result.content if entry.result is not None else []
+        if isinstance(entry, PrunedEntry):
+            return entry.content
+        return []
+
+
+def _text_of(parts) -> str:
+    """The text a content-part list contributes. Non-text parts contribute no
+    characters — they are counted by `_media_tokens` instead."""
+    return "".join(
+        part.text for part in parts if isinstance(part, TextContent)
+    )
+
+
+def _image_count(parts) -> int:
+    return sum(isinstance(part, ImageContent) for part in parts)

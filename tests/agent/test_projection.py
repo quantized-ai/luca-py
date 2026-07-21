@@ -22,6 +22,10 @@ from luca.agent.core.models import (
     Conversation,
     ExecutionResult,
     ExecutionStatus,
+    ImageBase64,
+    ImageContent,
+    ImageFileId,
+    ImageURL,
     LLMConfig,
     PrunedEntry,
     TextContent,
@@ -40,8 +44,16 @@ from luca.agent.core.projection import (
     ConversationProjector,
     tool_message_text,
 )
-from luca.client.types import TextBlock, ThinkingBlock, ToolMessage
+from luca.client.types import (
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
+    TextBlock,
+    ThinkingBlock,
+    ToolMessage,
+)
 from luca.client.types import AssistantMessage as LucaAssistantMessage
+from luca.client.types import ImageBlock as LucaImageBlock
 from luca.client.types import ToolCall as LucaToolCall
 from luca.client.types import UserMessage as LucaUserMessage
 
@@ -666,3 +678,162 @@ def test_tool_message_text_concatenates_text_blocks_in_order():
             content=[TextBlock(text="first "), TextBlock(text="second")],
         ),
     ) == "first second"
+
+
+# ── image parts ────────────────────────────────────────────────────────────────
+
+
+def test_user_message_projects_image_and_text_parts_in_order():
+    entries = {
+        "u1": UserMessage(
+            id="u1", created_at=1,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    metadata={"name": "receipt.jpg"},
+                ),
+                TextContent(text="how much did I tip?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaImageBlock(
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
+                ),
+                TextBlock(text="how much did I tip?"),
+            ],
+        ),
+    ]
+
+
+def test_image_url_source_projects_to_a_media_url():
+    part = ImageContent(
+        source=ImageURL(url="https://example.com/a.png", media_type="image/png"),
+    )
+
+    assert PROJECTOR._image_block(part) == LucaImageBlock(
+        source=MediaURL(url="https://example.com/a.png", media_type="image/png"),
+    )
+
+
+def test_image_file_id_source_projects_to_a_media_file_id():
+    part = ImageContent(source=ImageFileId(file_id="file_123"))
+
+    assert PROJECTOR._image_block(part) == LucaImageBlock(
+        source=MediaFileId(file_id="file_123", media_type=None),
+    )
+
+
+def test_image_metadata_is_not_projected():
+    source = ImageBase64(data="aGk=", media_type="image/png")
+
+    assert PROJECTOR._image_block(
+        ImageContent(source=source, metadata={"name": "receipt.jpg"}),
+    ) == PROJECTOR._image_block(ImageContent(source=source))
+
+
+def test_unknown_content_type_still_fails_loudly():
+    with pytest.raises(ProjectionError, match="ThinkingContent"):
+        PROJECTOR._content_block(ThinkingContent(thinking="hmm"))
+
+
+def test_subclass_can_rewrite_image_media_only():
+    class Uploading(ConversationProjector):
+        def _image_block(self, part):
+            return LucaImageBlock(source=MediaFileId(file_id="uploaded_1"))
+
+    entries = {
+        "u1": UserMessage(
+            id="u1", created_at=1,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+                TextContent(text="what is this?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert Uploading().project(conversation, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaImageBlock(source=MediaFileId(file_id="uploaded_1")),
+                TextBlock(text="what is this?"),
+            ],
+        ),
+    ]
+
+
+# ── images in tool results ─────────────────────────────────────────────────────
+
+
+def test_completed_execution_projects_image_result_content():
+    entries = {
+        "te1": ToolExecution(
+            id="te1", created_at=1,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    metadata={"name": "shot.png"},
+                ),
+                TextContent(text="shot.png"),
+            ]),
+            started_at=1, ended_at=1,
+        ),
+    }
+
+    assert PROJECTOR.project_tool_execution(entries["te1"], entries) == ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextBlock(text="shot.png"),
+        ],
+    )
+
+
+def test_tool_message_text_marks_an_image_rather_than_dropping_it():
+    message = ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextBlock(text=" shot.png"),
+        ],
+    )
+
+    assert tool_message_text(message) == "[image] shot.png"
+
+
+def test_pruned_entry_can_carry_an_image_replacement():
+    entries = {
+        "te1": ToolExecution(
+            id="te1", created_at=1,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="original")]),
+            started_at=1, ended_at=1,
+        ),
+        "p1": PrunedEntry(
+            id="p1", created_at=2,
+            pruned_entry_type="tool_execution",
+            pruned_entry_id="te1",
+            content=[
+                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ],
+        ),
+    }
+
+    assert PROJECTOR.project_pruned(entries["p1"], entries) == ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+        ],
+    )
