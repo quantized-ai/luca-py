@@ -207,7 +207,22 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(msg.content, str):
             content = msg.content
         else:
-            content = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+            # The chat-completions API allows only text in a `role: tool`
+            # message (images in tool results are a Responses API feature).
+            # Say so rather than quietly shipping a tool output with the
+            # image missing — the model would be told the call succeeded.
+            unsupported = {
+                type(b).__name__ for b in msg.content
+                if not isinstance(b, TextBlock)
+            }
+            if unsupported:
+                raise BadRequestError(
+                    "The chat-completions API allows only text in a tool "
+                    f"result; cannot send {', '.join(sorted(unsupported))} "
+                    f"for tool_call_id {msg.tool_call_id!r}.",
+                    provider=self._provider,
+                )
+            content = "".join(b.text for b in msg.content)
         wire: dict = {
             "role": "tool",
             "tool_call_id": msg.tool_call_id,

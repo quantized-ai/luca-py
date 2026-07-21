@@ -28,7 +28,7 @@ from .models import (
     BaseConfigModel,
     CancelRequested,
     CompactionEntry,
-    Content,
+    ContentPart,
     Conversation,
     ConversationStatus,
     Entry,
@@ -59,7 +59,6 @@ from .models import (
     TurnOutcome,
     TurnStart,
     Usage,
-    UserContentPart,
     UserMessage,
 )
 from .middleware import AgentMiddlewareMixin
@@ -87,7 +86,7 @@ __all__ = [
     "CancellationToken",
     "CancelledError",
     "CompactionEntry",
-    "Content",
+    "ContentPart",
     "ContextManager",
     "Conversation",
     "ConversationProjector",
@@ -130,7 +129,6 @@ __all__ = [
     "TurnOutcome",
     "TurnStart",
     "Usage",
-    "UserContentPart",
     "UserMessage",
     "tool",
 ]

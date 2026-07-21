@@ -329,11 +329,9 @@ class ConversationProjector:
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
     def _content_block(self, part) -> TextBlock | ClientImageBlock:
-        """Agent content value → canonical client content block.
-
-        Shared by every entry projection. Only a `UserMessage` can hold an
-        `ImageContent`; the text-only `Content` alias is what keeps images
-        out of tool results and pruned entries."""
+        """Agent content value → canonical client content block. Shared by
+        every entry projection: user messages, tool results and pruned
+        replacements all carry the same `ContentPart` union."""
         if isinstance(part, TextContent):
             return TextBlock(text=part.text)
         if isinstance(part, ImageContent):
@@ -368,12 +366,20 @@ class ConversationProjector:
         )
 
 
+IMAGE_BLOCK_MARKER = "[image]"
+
+
 def tool_message_text(message: ToolMessage) -> str:
     """Flatten a projected tool message for event presentation: string content
-    is used directly; list content concatenates its TextBlock texts in order
-    (non-text blocks contribute nothing)."""
+    is used directly; list content concatenates its blocks in order, an image
+    contributing a marker so a caller rendering this never silently loses a
+    block it cannot draw."""
     if isinstance(message.content, str):
         return message.content
-    return "".join(
-        block.text for block in message.content if isinstance(block, TextBlock)
-    )
+    chunks: list[str] = []
+    for block in message.content:
+        if isinstance(block, TextBlock):
+            chunks.append(block.text)
+        elif isinstance(block, ClientImageBlock):
+            chunks.append(IMAGE_BLOCK_MARKER)
+    return "".join(chunks)

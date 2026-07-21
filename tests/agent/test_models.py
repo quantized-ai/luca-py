@@ -538,12 +538,10 @@ def test_user_message_parts_require_the_type_discriminator():
         )
 
 
-def test_execution_result_content_stays_text_only():
-    with pytest.raises(ValidationError):
-        ExecutionResult(
-            content=[
-                ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
-                ),
-            ],
-        )
+def test_execution_result_carries_the_same_content_union_as_a_message():
+    # the conversation is the source of truth: a tool that returns an image
+    # stores one, whatever a given provider can receive today
+    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    result = ExecutionResult(content=[image, TextContent(text="a screenshot")])
+
+    assert ExecutionResult.model_validate_json(result.model_dump_json()) == result

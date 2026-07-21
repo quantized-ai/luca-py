@@ -173,3 +173,19 @@ def test_an_image_file_id_is_refused_with_a_useful_message(openai_transport_fact
         transport._project_user_block(
             ImageBlock(source=MediaFileId(file_id="file-abc123")),
         )
+
+
+def test_an_image_in_a_tool_result_is_refused(openai_transport_factory):
+    # chat-completions allows only text in a `role: tool` message; dropping
+    # the image would tell the model the call succeeded with nothing in it
+    transport = openai_transport_factory()
+    message = ToolMessage(
+        tool_call_id="call_abc",
+        content=[
+            ImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextBlock(text="shot.png"),
+        ],
+    )
+
+    with pytest.raises(BadRequestError, match="only text in a tool result"):
+        transport._project_tool_message(message)

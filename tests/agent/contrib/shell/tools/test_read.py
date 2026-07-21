@@ -1,11 +1,14 @@
 """Unit tests for the shell `read` tool: text paging, directory listings,
 binary/media classification, and its permission resource."""
 
+import base64
+
 import pytest
 from pydantic import ValidationError
 
 from luca.agent.contrib.resource_permissions import ResourcePermission
 from luca.agent.contrib.shell import FileReadTracker, ReadTool
+from luca.agent.core import ImageBase64, ImageContent
 
 
 def make_tool(tmp_path, tracker=None) -> ReadTool:
@@ -221,13 +224,26 @@ async def test_text_extension_with_nul_byte_is_rejected(tmp_path, run):
 # ── scenario 10: media attachments ────────────────────────────────────────────
 
 
-async def test_png_is_returned_as_an_image_attachment(tmp_path, run):
-    (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n....")
+async def test_png_is_returned_as_real_image_content(tmp_path, run):
+    data = b"\x89PNG\r\n\x1a\n...."
+    (tmp_path / "pic.png").write_bytes(data)
 
     result = await run(make_tool(tmp_path), {"file_path": "pic.png"})
 
     assert result.is_error is False
-    assert body(result) == "Image read successfully"
+    assert result.content == [
+        ImageContent(
+            source=ImageBase64(
+                data=base64.b64encode(data).decode("ascii"),
+                media_type="image/png",
+            ),
+            metadata={
+                "name": "pic.png",
+                "path": str(tmp_path / "pic.png"),
+                "size_bytes": len(data),
+            },
+        ),
+    ]
     assert result.metadata == {
         "attachment": {"path": str(tmp_path / "pic.png"), "mime_type": "image/png"},
     }

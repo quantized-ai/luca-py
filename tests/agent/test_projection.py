@@ -767,3 +767,73 @@ def test_subclass_can_rewrite_image_media_only():
             ],
         ),
     ]
+
+
+# ── images in tool results ─────────────────────────────────────────────────────
+
+
+def test_completed_execution_projects_image_result_content():
+    entries = {
+        "te1": ToolExecution(
+            id="te1", created_at=1,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    metadata={"name": "shot.png"},
+                ),
+                TextContent(text="shot.png"),
+            ]),
+            started_at=1, ended_at=1,
+        ),
+    }
+
+    assert PROJECTOR.project_tool_execution(entries["te1"], entries) == ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextBlock(text="shot.png"),
+        ],
+    )
+
+
+def test_tool_message_text_marks_an_image_rather_than_dropping_it():
+    message = ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextBlock(text=" shot.png"),
+        ],
+    )
+
+    assert tool_message_text(message) == "[image] shot.png"
+
+
+def test_pruned_entry_can_carry_an_image_replacement():
+    entries = {
+        "te1": ToolExecution(
+            id="te1", created_at=1,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="original")]),
+            started_at=1, ended_at=1,
+        ),
+        "p1": PrunedEntry(
+            id="p1", created_at=2,
+            pruned_entry_type="tool_execution",
+            pruned_entry_id="te1",
+            content=[
+                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ],
+        ),
+    }
+
+    assert PROJECTOR.project_pruned(entries["p1"], entries) == ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+        ],
+    )

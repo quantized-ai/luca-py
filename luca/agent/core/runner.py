@@ -131,7 +131,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
-    UserContentPart,
+    ContentPart,
 )
 from .events import (
     AgentEvent,
@@ -588,7 +588,7 @@ class AgentSessionRunner:
 
     # ── caller-facing mutations / queries ────────────────────────────────────
 
-    def post_message(self, content: str | list[UserContentPart]) -> str:
+    def post_message(self, content: str | list[ContentPart]) -> str:
         """Append a user message and arm the runner. Legal when the bracket is
         CLOSED and the status is IDLE or PENDING: a fresh/finished session,
         after a failed turn (add or clarify before the retry), or behind an
@@ -1735,7 +1735,7 @@ def _swallow_result(task: asyncio.Task) -> None:
         task.exception()  # retrieved — no unretrieved-exception noise
 
 
-def _normalize_post_parts(content: str | list[UserContentPart]) -> list[UserContentPart]:
+def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]:
     """`post_message` input → the part list persisted on the `UserMessage`."""
     if isinstance(content, str):
         return [TextContent(text=content)]

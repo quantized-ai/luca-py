@@ -109,10 +109,13 @@ class ImageContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# Tool-result content. Text-only by design: `ImageContent` is a user-message
-# part. Widening this to carry tool-result images touches `ExecutionResult`,
-# `PrunedEntry` and the tool-execution projection, and is a separate change.
-Content = TextContent
+# What a user message part, a tool result, or a pruned replacement carries.
+# The conversation is the source of truth: whether a given provider can receive
+# a given part is the adapter layer's problem, never the data model's.
+ContentPart = Annotated[
+    Union[TextContent, ImageContent],
+    Field(discriminator="type"),
+]
 
 
 # ── value objects (carried by entries) ─────────────────────────────────────
@@ -164,7 +167,7 @@ class ExecutionResult(BaseModel):
     useful "file does not exist" result with `is_error=True` and still be
     COMPLETED. Execution timing lives on `ToolExecution`, not here."""
 
-    content: list[Content]  # what the LLM sees
+    content: list[ContentPart]  # what the LLM sees
     metadata: dict = Field(default_factory=dict)  # e.g. {"exit_code": 0}
     is_error: bool = False  # the tool's verdict about the returned result
 
@@ -316,15 +319,9 @@ class Entry(BaseModel):
 # ── message entries ──────────────────────────────────────────────────────────
 
 
-UserContentPart = Annotated[
-    Union[TextContent, ImageContent],
-    Field(discriminator="type"),
-]
-
-
 class UserMessage(Entry):
     type: Literal["user"] = "user"
-    parts: list[UserContentPart]
+    parts: list[ContentPart]
 
 
 class AssistantMessage(Entry):
@@ -479,7 +476,7 @@ class PrunedEntry(Entry):
     type: Literal["pruned"] = "pruned"
     pruned_entry_type: str
     pruned_entry_id: str
-    content: list[Content]
+    content: list[ContentPart]
 
 
 # The durable, uniformly-addressable node space. Discriminated on `type` so a

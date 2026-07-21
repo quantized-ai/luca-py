@@ -298,3 +298,32 @@ def test_non_user_entries_have_no_media_contribution():
 
     assert CM._media_tokens(entry) == 0
     assert CM.calculate_context(entry) == 2
+
+
+def test_tool_result_images_are_counted():
+    entry = ToolExecution(
+        id="te1", created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="the answer is 3."),  # 16 chars
+        ]),
+        started_at=1000, ended_at=1000,
+    )
+
+    assert CM.calculate_context(entry) == 1_004  # IMAGE_TOKENS + 16 // 4
+
+
+def test_pruned_entry_images_are_counted():
+    entry = PrunedEntry(
+        id="p1", created_at=1000,
+        pruned_entry_type="tool_execution",
+        pruned_entry_id="te1",
+        content=[
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+        ],
+    )
+
+    assert CM.calculate_context(entry) == 1_000

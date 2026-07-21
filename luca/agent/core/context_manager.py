@@ -133,10 +133,7 @@ class ContextManager:
         `calculate_context`). Unknown entry types contribute nothing rather
         than failing: calculation is an estimate, not a projection."""
         if isinstance(entry, UserMessage):
-            return "".join(
-                part.text for part in entry.parts
-                if isinstance(part, TextContent)
-            )
+            return _text_of(entry.parts)
         if isinstance(entry, AssistantMessage):
             chunks: list[str] = []
             for part in entry.parts:
@@ -150,14 +147,14 @@ class ContextManager:
             return "".join(chunks)
         if isinstance(entry, ToolExecution):
             if entry.result is not None:
-                return "".join(part.text for part in entry.result.content)
+                return _text_of(entry.result.content)
             if entry.error is not None:
                 return entry.error.error_message
             return ""
         if isinstance(entry, CompactionEntry):
             return entry.summary
         if isinstance(entry, PrunedEntry):
-            return "".join(part.text for part in entry.content)
+            return _text_of(entry.content)
         return ""
 
     def _media_tokens(self, entry: Entry) -> int:
@@ -166,8 +163,27 @@ class ContextManager:
         to measure, reading real dimensions would need an image decoder (a
         new dependency), and the provider formulas disagree by an order of
         magnitude. Override with a per-provider formula if it matters."""
+        return self.IMAGE_TOKENS * _image_count(self._media_parts(entry))
+
+    def _media_parts(self, entry: Entry) -> list:
+        """The parts an entry owns that may carry non-text content — the same
+        ownership `_model_facing_text` applies, from the other side."""
         if isinstance(entry, UserMessage):
-            return self.IMAGE_TOKENS * sum(
-                isinstance(part, ImageContent) for part in entry.parts
-            )
-        return 0
+            return entry.parts
+        if isinstance(entry, ToolExecution):
+            return entry.result.content if entry.result is not None else []
+        if isinstance(entry, PrunedEntry):
+            return entry.content
+        return []
+
+
+def _text_of(parts) -> str:
+    """The text a content-part list contributes. Non-text parts contribute no
+    characters — they are counted by `_media_tokens` instead."""
+    return "".join(
+        part.text for part in parts if isinstance(part, TextContent)
+    )
+
+
+def _image_count(parts) -> int:
+    return sum(isinstance(part, ImageContent) for part in parts)

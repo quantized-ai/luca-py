@@ -94,9 +94,14 @@ since been deleted.
 | `ImageURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
 | `ImageFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
 
-> ⚠️ **Images are user-message parts.** An assistant message carries text,
-> thinking and tool calls; a tool result (`ExecutionResult.content`) is text
-> only.
+The same union backs `ExecutionResult.content`, so a tool can return an image
+too — the shell `read` tool returns one for a png or jpeg. An assistant message
+is the exception: it carries text, thinking and tool calls, not images.
+
+> ⚠️ **The conversation is the source of truth.** What a given provider can
+> actually receive is the adapter layer's problem, not the data model's. An
+> image in a tool result is stored either way; today it reaches Anthropic and
+> raises on the OpenAI chat-completions API.
 
 Beyond `parts`, an assistant entry records its provenance: the `llm_config`
 that produced it and a `stop_reason` — `"stop"` here (the model finished its
