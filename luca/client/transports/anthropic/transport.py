@@ -118,13 +118,12 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["system"] = self._project_system(request.system_message)
         if stream:
             payload["stream"] = True
-        # Sampling controls are rejected while thinking is active.
-        sampling_allowed = "thinking" not in payload
-        if request.temperature is not None and sampling_allowed:
+        self._check_sampling(request, payload)
+        if request.temperature is not None:
             payload["temperature"] = request.temperature
-        if request.top_p is not None and sampling_allowed:
+        if request.top_p is not None:
             payload["top_p"] = request.top_p
-        if request.top_k is not None and sampling_allowed:
+        if request.top_k is not None:
             payload["top_k"] = request.top_k
         if request.stop is not None:
             payload["stop_sequences"] = (
@@ -139,6 +138,30 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.extra_args:
             payload.update(request.extra_args)
         return payload
+
+    def _check_sampling(self, request: ChatCompletionRequest, payload: dict) -> None:
+        """Anthropic rejects the sampling controls while thinking is *active*.
+        Thinking explicitly `disabled` is not active and leaves them legal, so
+        the gate keys off the mode rather than the presence of the key.
+
+        Refused rather than stripped: silently dropping a caller's temperature
+        changes their output with nothing to notice."""
+        if payload.get("thinking", {}).get("type") in (None, "disabled"):
+            return
+        conflicting = [
+            name for name, value in (
+                ("temperature", request.temperature),
+                ("top_p", request.top_p),
+                ("top_k", request.top_k),
+            )
+            if value is not None
+        ]
+        if conflicting:
+            raise UnsupportedParameterError(
+                f"{', '.join(conflicting)} cannot be set while extended "
+                f"thinking is active on {request.model!r}.",
+                provider=self._provider,
+            )
 
     def _thinking_mode(self, model: str) -> str:
         """`"manual"`, `"adaptive"` or `"none"` for a wire model id.

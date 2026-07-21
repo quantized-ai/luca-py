@@ -142,10 +142,13 @@ def test_effort_none_disables_thinking(anthropic_transport_factory):
             model="claude-sonnet-5",
             messages=[UserMessage(content="hi")],
             reasoning_effort="none",
+            temperature=0.2,
         ),
     )
 
     assert payload["thinking"] == {"type": "disabled"}
+    # disabled is not active, so the sampling controls stay legal
+    assert payload["temperature"] == 0.2
 
 
 def test_effort_auto_sends_adaptive_without_an_effort_key(anthropic_transport_factory):
@@ -211,22 +214,40 @@ def test_a_max_tokens_too_small_for_any_budget_raises(anthropic_transport_factor
         )
 
 
-def test_sampling_controls_are_dropped_while_thinking(anthropic_transport_factory):
-    # Anthropic rejects them when thinking is active
+def test_sampling_controls_are_refused_while_thinking(anthropic_transport_factory):
+    # Anthropic rejects them when thinking is active. Refusing beats
+    # stripping: a silently dropped temperature changes the output with
+    # nothing for the caller to notice.
+    transport = anthropic_transport_factory()
+
+    with pytest.raises(UnsupportedParameterError, match="temperature, top_p, top_k"):
+        transport._build_chat_completion_payload(
+            ChatCompletionRequest(
+                model="claude-sonnet-5",
+                messages=[UserMessage(content="hi")],
+                reasoning_effort="high",
+                temperature=0.2, top_p=0.9, top_k=40,
+            ),
+        )
+
+
+def test_a_model_without_thinking_support_keeps_its_sampling_controls(
+    anthropic_transport_factory,
+):
+    # thinking is off for these, so nothing about sampling changes
     transport = anthropic_transport_factory()
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5",
+            model="claude-3-5-haiku-latest",
             messages=[UserMessage(content="hi")],
             reasoning_effort="high",
-            temperature=0.2, top_p=0.9, top_k=40,
+            temperature=0.2,
         ),
     )
 
-    assert "temperature" not in payload
-    assert "top_p" not in payload
-    assert "top_k" not in payload
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["temperature"] == 0.2
 
 
 def test_sampling_controls_survive_when_thinking_is_off(anthropic_transport_factory):

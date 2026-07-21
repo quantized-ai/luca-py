@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from luca.agent.core.models import (
+    ContentPart,
     ExecutionStatus,
     ImageContent,
     TextContent,
+    ThinkingContent,
     ToolCall,
 )
 
@@ -41,7 +45,7 @@ def status_label(status: ExecutionStatus) -> str:
 REDACTED_REASONING_MARKER = "[reasoning withheld by the provider]"
 
 
-def reasoning_transcript_text(part) -> str:
+def reasoning_transcript_text(part: ThinkingContent) -> str:
     """A thinking part as transcript text. A redacted block carries no
     readable body, so it gets a marker instead of rendering as nothing."""
     if part.redacted:
@@ -49,7 +53,7 @@ def reasoning_transcript_text(part) -> str:
     return part.thinking if part.thinking.strip() else ""
 
 
-def user_transcript_text(parts) -> str:
+def user_transcript_text(parts: Iterable[ContentPart]) -> str:
     """A user message's parts as transcript text: text verbatim, each image
     as a `[image: name]` placeholder line. Textual cannot draw images, and
     both the live and the replayed transcript render through here so they
