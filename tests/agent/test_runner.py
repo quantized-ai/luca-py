@@ -30,6 +30,7 @@ this order per turn:
 """
 
 import pytest
+from pydantic import ValidationError
 
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import (
@@ -953,7 +954,9 @@ async def test_post_message_accepts_a_part_list_and_keeps_its_order():
     )
 
 
-async def test_post_message_rejects_an_empty_part_list():
+async def test_post_message_rejects_empty_input():
+    # a post with nothing in it is meaningless; "" used to persist an empty
+    # text part, which some providers reject on the wire
     session = AgentSession(
         id="s_pm_empty",
         active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
@@ -961,11 +964,27 @@ async def test_post_message_rejects_an_empty_part_list():
     )
     runner = DeterministicRunner(session, ids=["u1"], now=1000)
 
-    with pytest.raises(AgentError, match="non-empty list"):
-        runner.post_message([])
+    for empty in ("", [], None):
+        with pytest.raises(AgentError, match="non-empty"):
+            runner.post_message(empty)
 
 
-async def test_post_message_rejects_a_part_it_does_not_own():
+async def test_post_message_keeps_a_whitespace_only_string():
+    # only *empty* is rejected — what counts as meaningful text is the
+    # application's call, not the runner's
+    session = AgentSession(
+        id="s_pm_ws",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+
+    runner.post_message("   ")
+
+    assert runner.session.entries["u1"].parts == [TextContent(text="   ")]
+
+
+async def test_post_message_rejects_a_part_the_union_does_not_admit():
     session = AgentSession(
         id="s_pm_bad",
         active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
@@ -973,8 +992,50 @@ async def test_post_message_rejects_a_part_it_does_not_own():
     )
     runner = DeterministicRunner(session, ids=["u1"], now=1000)
 
-    with pytest.raises(AgentError, match="ThinkingContent"):
-        runner.post_message([ThinkingContent(thinking="not a user part")])
+    for rejected in (
+        [ThinkingContent(thinking="not a user part")],
+        [ToolCall(id="tc1", name="add")],
+        ["a bare string"],
+        [[TextContent(text="nested")]],
+    ):
+        with pytest.raises(ValidationError):
+            runner.post_message(rejected)
+
+
+async def test_post_message_validates_raw_dicts_into_parts():
+    # shape is checked against ContentPart itself, so the wire form works too
+    session = AgentSession(
+        id="s_pm_dicts",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+
+    runner.post_message([
+        {"type": "image", "source": {
+            "kind": "base64", "data": "aGk=", "media_type": "image/png",
+        }},
+        {"type": "text", "text": "what is this?"},
+    ])
+
+    assert runner.session.entries["u1"].parts == [
+        ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+        TextContent(text="what is this?"),
+    ]
+
+
+async def test_post_message_does_not_copy_the_parts_it_is_given():
+    session = AgentSession(
+        id="s_pm_ident",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+    part = TextContent(text="Hello")
+
+    runner.post_message([part])
+
+    assert runner.session.entries["u1"].parts[0] is part
 
 
 async def test_run_when_idle_raises():

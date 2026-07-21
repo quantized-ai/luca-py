@@ -29,7 +29,8 @@ runner.post_message("Summarize the repo.")     # appends a UserMessage, status â
 ```
 
 `post_message` takes a string, or an ordered list of parts to mix text and
-images ([02](02-data-model.md)):
+images ([02](02-data-model.md)). Parts are validated against the `ContentPart`
+union, and empty input (`""`, `[]`) raises `AgentError`:
 
 ```python
 runner.post_message([

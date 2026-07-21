@@ -95,7 +95,7 @@ import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from luca.client import acompletion, acompletion_stream
 from luca.client.exceptions import TimeoutError as ClientTimeoutError
@@ -116,7 +116,6 @@ from .models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
-    ImageContent,
     Inf,
     LLMConfig,
     RuntimeConfig,
@@ -1735,22 +1734,21 @@ def _swallow_result(task: asyncio.Task) -> None:
         task.exception()  # retrieved — no unretrieved-exception noise
 
 
+_POST_PARTS = TypeAdapter(list[ContentPart])
+
+
 def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]:
-    """`post_message` input → the part list persisted on the `UserMessage`."""
+    """`post_message` input → the part list persisted on the `UserMessage`.
+
+    Shape is checked against `ContentPart` itself, so a new part type needs no
+    change here; a part the union does not admit raises `ValidationError`."""
+    if not content:
+        raise AgentError(
+            "post_message requires a non-empty string or list of content parts."
+        )
     if isinstance(content, str):
         return [TextContent(text=content)]
-    if not isinstance(content, list) or not content:
-        raise AgentError(
-            "post_message accepts a string or a non-empty list of content "
-            "parts."
-        )
-    for part in content:
-        if not isinstance(part, (TextContent, ImageContent)):
-            raise AgentError(
-                f"post_message cannot accept a content part of type "
-                f"{type(part).__name__}."
-            )
-    return list(content)
+    return _POST_PARTS.validate_python(content)
 
 
 def _to_delta_event(event) -> AgentEvent | None:

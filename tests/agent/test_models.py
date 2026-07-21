@@ -36,6 +36,7 @@ from luca.agent.core.models import (
     Seconds,
     SessionConfig,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolExecution,
     ToolExecutionError,
@@ -545,3 +546,59 @@ def test_execution_result_carries_the_same_content_union_as_a_message():
     result = ExecutionResult(content=[image, TextContent(text="a screenshot")])
 
     assert ExecutionResult.model_validate_json(result.model_dump_json()) == result
+
+
+# ── the two content unions are separate on purpose ─────────────────────────────
+
+
+def test_a_user_message_cannot_carry_assistant_only_parts():
+    # the reason ContentPart and AssistantContentPart stay separate
+    for rejected in (
+        ThinkingContent(thinking="reasoning is the assistant's"),
+        ToolCall(id="tc1", name="add"),
+    ):
+        with pytest.raises(ValidationError):
+            UserMessage(id="u1", created_at=1000, parts=[rejected])
+
+
+def test_an_assistant_message_cannot_carry_an_image():
+    # assistant images are a separate change: the client's AssistantMessage
+    # has no ImageBlock, so nothing downstream could project one yet
+    with pytest.raises(ValidationError):
+        AssistantMessage(
+            id="a1", created_at=1000,
+            parts=[
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+            ],
+            llm_config=MODEL, stop_reason="stop",
+        )
+
+
+def test_text_is_the_part_both_unions_share():
+    text = TextContent(text="shared")
+
+    assert UserMessage(id="u1", created_at=1, parts=[text]).parts == [text]
+    assert AssistantMessage(
+        id="a1", created_at=1, parts=[text], llm_config=MODEL, stop_reason="stop",
+    ).parts == [text]
+
+
+def test_an_assistant_message_round_trips_every_part_type():
+    message = AssistantMessage(
+        id="a1", created_at=1000,
+        parts=[
+            ThinkingContent(thinking="let me add"),
+            TextContent(text="adding now"),
+            ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        ],
+        llm_config=MODEL, stop_reason="tool_use",
+    )
+
+    reloaded = AssistantMessage.model_validate_json(message.model_dump_json())
+
+    assert reloaded == message
+    assert [type(part) for part in reloaded.parts] == [
+        ThinkingContent, TextContent, ToolCall,
+    ]

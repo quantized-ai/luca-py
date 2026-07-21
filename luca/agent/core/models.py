@@ -109,9 +109,15 @@ class ImageContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# message-part, tool-result and pruned-replacement content union
+# what a user message, a tool result or a pruned replacement carries
 ContentPart = Annotated[
     Union[TextContent, ImageContent],
+    Field(discriminator="type"),
+]
+
+# what an assistant message carries — a different set, so a separate union
+AssistantContentPart = Annotated[
+    Union[TextContent, ThinkingContent, ToolCall],
     Field(discriminator="type"),
 ]
 
@@ -324,12 +330,7 @@ class UserMessage(Entry):
 
 class AssistantMessage(Entry):
     type: Literal["assistant"] = "assistant"
-    parts: list[
-        Annotated[
-            Union[TextContent, ThinkingContent, ToolCall],
-            Field(discriminator="type"),
-        ]
-    ]
+    parts: list[AssistantContentPart]
     llm_config: LLMConfig  # provenance: the config that PRODUCED this message
     stop_reason: str  # "stop" | "tool_use"  (error/aborted → pass 2)
     # NO usage field: provider consumption is conversation-scoped accessory
