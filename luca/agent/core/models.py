@@ -109,9 +109,7 @@ class ImageContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# What a user message part, a tool result, or a pruned replacement carries.
-# The conversation is the source of truth: whether a given provider can receive
-# a given part is the adapter layer's problem, never the data model's.
+# message-part, tool-result and pruned-replacement content union
 ContentPart = Annotated[
     Union[TextContent, ImageContent],
     Field(discriminator="type"),

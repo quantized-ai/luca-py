@@ -158,9 +158,6 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(source, MediaBase64):
             return {"url": f"data:{source.media_type};base64,{source.data}"}
         if isinstance(source, MediaFileId):
-            # `image_url` takes a URL or a data URL and nothing else — a bare
-            # file id is a Responses API feature. Sending one produces an
-            # opaque 400, so refuse it here where the message can be useful.
             raise BadRequestError(
                 "The chat-completions API cannot take an image by file id "
                 f"({source.file_id!r}); pass MediaURL or MediaBase64 instead.",
@@ -207,10 +204,8 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if isinstance(msg.content, str):
             content = msg.content
         else:
-            # The chat-completions API allows only text in a `role: tool`
-            # message (images in tool results are a Responses API feature).
-            # Say so rather than quietly shipping a tool output with the
-            # image missing — the model would be told the call succeeded.
+            # Refusing beats dropping: the model would be told the tool call
+            # succeeded and handed a result with the image missing.
             unsupported = {
                 type(b).__name__ for b in msg.content
                 if not isinstance(b, TextBlock)

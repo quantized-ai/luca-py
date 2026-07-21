@@ -149,8 +149,6 @@ class AgentApp(App):
         if not self.runner.idle():
             return
         text = event.value.strip()
-        # Attachments lead the message, so an image-only post is legal and a
-        # bare Enter with nothing pending still does nothing.
         parts: list[ContentPart] = [*self._pending_images]
         if text:
             parts.append(TextContent(text=text))
@@ -304,7 +302,6 @@ class AgentApp(App):
                 )
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
-                    # blank parts are skipped exactly as a live run drops them
                     if isinstance(part, ThinkingContent) and part.thinking.strip():
                         await self._mount_cell(ReasoningCell(part.thinking))
                     elif isinstance(part, TextContent) and part.text.strip():
