@@ -54,6 +54,7 @@ class _FauxText:
 class _FauxThinking:
     text: str
     signature: str | None = None
+    redacted: bool = False
 
 
 @dataclass
@@ -93,8 +94,10 @@ def faux_text(text: str) -> _FauxText:
     return _FauxText(text=text)
 
 
-def faux_thinking(text: str, signature: str | None = None) -> _FauxThinking:
-    return _FauxThinking(text=text, signature=signature)
+def faux_thinking(
+    text: str, signature: str | None = None, redacted: bool = False,
+) -> _FauxThinking:
+    return _FauxThinking(text=text, signature=signature, redacted=redacted)
 
 
 def faux_tool_call(name: str, arguments: dict, id: str = "tool_call_faux") -> _FauxToolCall:
@@ -246,7 +249,9 @@ class FauxTransport(BaseTransport, ChatCompletionTransportMixin):
             if isinstance(b, _FauxText):
                 out.append(TextBlock(text=b.text))
             elif isinstance(b, _FauxThinking):
-                out.append(ThinkingBlock(text=b.text, signature=b.signature))
+                out.append(ThinkingBlock(
+                    text=b.text, signature=b.signature, redacted=b.redacted,
+                ))
             elif isinstance(b, _FauxToolCall):
                 out.append(
                     ToolCall(
@@ -314,8 +319,14 @@ def _scripted_raw_events(
         elif isinstance(block, _FauxThinking):
             i = next_idx
             next_idx += 1
-            yield RawBlockStart(index=i, block_type="thinking")
-            if block.text:
+            # A redacted block carries its payload on the start event and
+            # streams no deltas, mirroring how a provider sends one.
+            yield RawBlockStart(
+                index=i, block_type="thinking",
+                signature=block.signature if block.redacted else None,
+                redacted=block.redacted,
+            )
+            if block.text and not block.redacted:
                 yield RawThinkingDelta(index=i, text=block.text, signature=block.signature)
             yield RawBlockStop(index=i)
         elif isinstance(block, _FauxToolCall):

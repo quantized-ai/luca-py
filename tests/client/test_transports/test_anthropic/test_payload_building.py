@@ -356,3 +356,17 @@ def test_a_redacted_block_survives_a_full_receive_then_send(
         {"type": "redacted_thinking", "data": "encrypted-payload"},
         {"type": "text", "text": "done"},
     ]
+
+
+def test_thinking_mode_normalizes_dotted_versions(anthropic_transport_factory):
+    # a dotted version is the same model as the dashed one; getting this
+    # wrong silently sends the other mode and the request 400s
+    transport = anthropic_transport_factory()
+
+    assert transport._thinking_mode("claude-sonnet-4.5") == "manual"
+    assert transport._thinking_mode("anthropic/claude-opus-4.5") == "manual"
+    assert transport._thinking_mode("claude-3.5-sonnet") == "none"
+    assert transport._thinking_mode(
+        "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    ) == "none"
+    assert transport._thinking_mode("some-other-model") == "adaptive"

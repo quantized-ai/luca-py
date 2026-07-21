@@ -12,6 +12,7 @@ from textual.widgets import Input
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui import app as app_module
 from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
+from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.cells import (
     AssistantCell,
     NoticeCell,
@@ -324,6 +325,52 @@ async def test_resume_replays_a_pasted_image_identically(tmp_path, monkeypatch):
         await pilot.pause()
 
         assert [cell.text for cell in resumed.query(UserCell)] == live
+
+
+async def test_redacted_reasoning_shows_a_marker_instead_of_nothing(tmp_path):
+    # a redacted block has an empty body, so without a marker the user sees
+    # an unexplained gap where the reasoning should be
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([
+            faux_thinking("", signature="encrypted", redacted=True),
+            faux_text("Done."),
+        ])),
+        workspace=tmp_path, session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        assert [cell.text for cell in app.query(ReasoningCell)] == [
+            REDACTED_REASONING_MARKER,
+        ]
+
+
+async def test_a_redacted_block_replays_the_same_as_it_rendered(tmp_path):
+    session = fresh_session()
+    app = AgentApp(
+        session,
+        provider=scripted(faux_assistant_message([
+            faux_thinking("", signature="encrypted", redacted=True),
+            faux_text("Done."),
+        ])),
+        workspace=tmp_path, session_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+        live = [cell.text for cell in app.query(ReasoningCell)]
+
+    reloaded = load_session(session.id, tmp_path)
+    resumed = AgentApp(
+        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+    )
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+
+        assert [cell.text for cell in resumed.query(ReasoningCell)] == live
 
 
 async def test_ctrl_d_saves_and_quits(tmp_path):

@@ -166,9 +166,14 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     def _thinking_mode(self, model: str) -> str:
         """`"manual"`, `"adaptive"` or `"none"` for a wire model id.
 
-        Matches on a normalized id so `-latest`, a dated suffix and a gateway
-        prefix (`us.anthropic.claude-…`) all resolve to the same bucket."""
-        normalized = model.rsplit(".", 1)[-1].rsplit("/", 1)[-1]
+        Matches on a normalized id so `-latest`, a dated suffix, a gateway
+        prefix (`us.anthropic.claude-…`) and a dotted version (`claude-sonnet-4.5`
+        for `claude-sonnet-4-5`) all resolve to the same bucket."""
+        normalized = model.rsplit("/", 1)[-1]
+        anchor = normalized.find("claude")
+        if anchor > 0:  # strip a gateway prefix, keep the model id itself
+            normalized = normalized[anchor:]
+        normalized = normalized.replace(".", "-")
         for prefix in self.NO_THINKING_MODELS:
             if normalized.startswith(prefix):
                 return "none"
