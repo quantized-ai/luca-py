@@ -366,6 +366,10 @@ class ConversationProjector:
         )
 
 
+# Presentation-only stand-in for an image when a tool message is flattened for
+# an event. Unlike the model-facing markers above this is a module constant,
+# not a class var: `tool_message_text` is a free function, so a projector
+# subclass cannot change it.
 IMAGE_BLOCK_MARKER = "[image]"
 
 

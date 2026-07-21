@@ -94,9 +94,17 @@ since been deleted.
 | `ImageURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
 | `ImageFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
 
-The same union backs `ExecutionResult.content`, so a tool can return an image
-too — the shell `read` tool returns one for a png or jpeg. An assistant message
-is the exception: it carries text, thinking and tool calls, not images.
+There are two part unions, and they stay separate so a `tool_call` can never
+land in a user message:
+
+| Union | Parts | Used by |
+|---|---|---|
+| `ContentPart` | `text`, `image` | user messages, `ExecutionResult.content`, `PrunedEntry.content` |
+| `AssistantContentPart` | `text`, `thinking`, `tool_call` | assistant messages |
+
+So a tool can return an image too — the shell `read` tool returns one for a png
+or jpeg. An assistant message is the exception: it carries text, thinking and
+tool calls, not images.
 
 > ⚠️ **The conversation is the source of truth.** What a given provider can
 > actually receive is the adapter layer's problem, not the data model's. An

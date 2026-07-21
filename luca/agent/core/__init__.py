@@ -63,7 +63,11 @@ from .models import (
     UserMessage,
 )
 from .middleware import AgentMiddlewareMixin
-from .projection import CANCELLED_TURN_MARKER, ConversationProjector
+from .projection import (
+    CANCELLED_TURN_MARKER,
+    IMAGE_BLOCK_MARKER,
+    ConversationProjector,
+)
 from .runner import AgentRun, AgentSessionRunner, RunResult
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import ToolRegistry
@@ -101,6 +105,7 @@ __all__ = [
     "ImageContent",
     "ImageFileId",
     "ImageSource",
+    "IMAGE_BLOCK_MARKER",
     "ImageURL",
     "Inf",
     "InvalidToolArguments",

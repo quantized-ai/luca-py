@@ -1748,6 +1748,11 @@ def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]
         )
     if isinstance(content, str):
         return [TextContent(text=content)]
+    if isinstance(content, BaseModel):
+        raise AgentError(
+            f"post_message takes a list of content parts; wrap the "
+            f"{type(content).__name__} in a list."
+        )
     return _POST_PARTS.validate_python(content)
 
 

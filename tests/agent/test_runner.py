@@ -1164,3 +1164,17 @@ async def test_completed_session_round_trips_and_rederives_status():
         reloaded, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
     )
     assert rebuilt.status == ConversationStatus.IDLE
+
+
+async def test_post_message_names_the_mistake_when_a_part_is_not_in_a_list():
+    # an easy caller slip; pydantic would iterate the model field by field
+    # and report something unreadable about tuples
+    session = AgentSession(
+        id="s_pm_bare",
+        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["u1"], now=1000)
+
+    with pytest.raises(AgentError, match="wrap the TextContent in a list"):
+        runner.post_message(TextContent(text="hi"))
