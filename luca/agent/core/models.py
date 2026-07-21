@@ -316,7 +316,7 @@ class Entry(BaseModel):
 # ── message entries ──────────────────────────────────────────────────────────
 
 
-UserPart = Annotated[
+UserContentPart = Annotated[
     Union[TextContent, ImageContent],
     Field(discriminator="type"),
 ]
@@ -324,7 +324,7 @@ UserPart = Annotated[
 
 class UserMessage(Entry):
     type: Literal["user"] = "user"
-    parts: list[UserPart]
+    parts: list[UserContentPart]
 
 
 class AssistantMessage(Entry):

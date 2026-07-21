@@ -62,7 +62,7 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     UserMessage,
-    UserPart,
+    UserContentPart,
 )
 from luca.agent.core.projection import tool_message_text
 
@@ -151,7 +151,7 @@ class AgentApp(App):
         text = event.value.strip()
         # Attachments lead the message, so an image-only post is legal and a
         # bare Enter with nothing pending still does nothing.
-        parts: list[UserPart] = [*self._pending_images]
+        parts: list[UserContentPart] = [*self._pending_images]
         if text:
             parts.append(TextContent(text=text))
         if not parts:

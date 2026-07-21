@@ -59,8 +59,8 @@ from .models import (
     TurnOutcome,
     TurnStart,
     Usage,
+    UserContentPart,
     UserMessage,
-    UserPart,
 )
 from .middleware import AgentMiddlewareMixin
 from .projection import CANCELLED_TURN_MARKER, ConversationProjector
@@ -130,7 +130,7 @@ __all__ = [
     "TurnOutcome",
     "TurnStart",
     "Usage",
+    "UserContentPart",
     "UserMessage",
-    "UserPart",
     "tool",
 ]

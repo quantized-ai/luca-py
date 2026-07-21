@@ -50,7 +50,7 @@ class AgentMiddlewareMixin:
         vary by turn, session state, or any runtime condition."""
         return tools
 
-    def before_post_message(self, parts: list[UserPart]) -> list[UserPart]:
+    def before_post_message(self, parts: list[UserContentPart]) -> list[UserContentPart]:
         """Before a user message is appended to the session. Return the
         (possibly modified) content parts — sanitise, enrich, log. The whole
         ordered list is visible, text and images alike, so a hook can
@@ -144,7 +144,7 @@ class AgentMiddlewareMixin:
 
 | Stage | Hook | Signature → returns |
 |---|---|---|
-| User posts | `before_post_message` | `(parts: list[UserPart])` → `list[UserPart]` |
+| User posts | `before_post_message` | `(parts: list[UserContentPart])` → `list[UserContentPart]` |
 | **Any** entry persistence | `before_entry_written` | `(entry: AnyEntry)` → `AnyEntry` |
 | Per model call | `build_model_string` | `(model_string: str, llm_cfg: LLMConfig)` → `str` |
 | Per model call | `build_tool_list` | `(tools: list)` → `list` |
