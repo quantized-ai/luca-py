@@ -623,10 +623,7 @@ def test_a_redacted_thinking_part_round_trips_with_an_empty_body():
     # the reasoning is encrypted into the signature; `thinking` stays empty
     part = ThinkingContent(thinking="", signature="encrypted", redacted=True)
 
-    reloaded = ThinkingContent.model_validate_json(part.model_dump_json())
-
-    assert reloaded == part
-    assert reloaded.thinking == ""
+    assert ThinkingContent.model_validate_json(part.model_dump_json()) == part
 
 
 def test_a_signature_survives_a_whole_session_round_trip():

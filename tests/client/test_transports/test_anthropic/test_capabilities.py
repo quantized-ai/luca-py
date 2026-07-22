@@ -62,8 +62,6 @@ def test_an_unknown_model_gets_the_conservative_record():
     # a model we have never seen is as likely to be old as new, and sending
     # the wrong thinking shape is a hard 400
     assert UNKNOWN == ModelCapabilities()
-    assert UNKNOWN.is_known_model is False
-    assert UNKNOWN.supports_thinking is False
 
 
 def test_a_specific_id_is_not_swallowed_by_a_broader_one():

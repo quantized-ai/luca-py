@@ -83,6 +83,14 @@ architecture.md                    # client internal design spec
 testing_architecture.md            # testing strategy for the client
 ```
 
+## Tests
+
+The project-wide test style in [`AGENTS.md`](AGENTS.md) applies here: **assert
+on the full object, not on individual properties.** For this layer that means
+the whole outbound payload dict, the whole parsed `AssistantMessage`, the whole
+content block — `assert block == ThinkingBlock(...)`, not three attribute
+checks. `tests/client/` mirrors `luca/client/` exactly.
+
 ## Design principles (non-negotiable — internalize before changing structure)
 
 From `architecture.md`. These are architectural constraints, not preferences.

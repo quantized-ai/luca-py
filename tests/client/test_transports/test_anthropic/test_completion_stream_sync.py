@@ -4,6 +4,7 @@ import pytest
 
 from luca.client.types import (
     ChatCompletionRequest,
+    ThinkingBlock,
     Usage,
     UserMessage,
 )
@@ -99,9 +100,9 @@ def test_anthropic_streaming_thinking_carries_the_signature(anthropic_transport_
         collect_events_with_snapshots(stream)
         [block] = stream.message.content
 
-    assert block.text == "let me think"
-    assert block.signature == "sig-abc"
-    assert block.redacted is False
+    assert block == ThinkingBlock(
+        text="let me think", signature="sig-abc", redacted=False,
+    )
 
 
 def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
@@ -128,8 +129,9 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
         collect_events_with_snapshots(stream)
         [block] = stream.message.content
 
-    assert block.redacted is True
-    assert block.signature == "encrypted-payload"
+    assert block == ThinkingBlock(
+        text="", signature="encrypted-payload", redacted=True,
+    )
     assert transport._project_assistant_message(stream.message)["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},
     ]

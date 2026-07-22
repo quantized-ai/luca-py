@@ -416,7 +416,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 - Drain a lazy run for event-list asserts: `async with runner.run() as run: events = [e async for e in run]`
 - Await for `RunResult` asserts: `await runner.run()`
 
-**Assertions:** assert on full objects — both `runner.session == AgentSession(...)` (status included) and the complete `events == [...]` list.
+**Assertions:** the project-wide full-object rule (see `AGENTS.md`), applied here — both `runner.session == AgentSession(...)` (status included) and the complete `events == [...]` list.
 
 **Providers:** use `FauxProvider` via `provider=`. `faux_hang()` scripts a hang for cancellation/timeout scenarios.
 
