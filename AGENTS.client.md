@@ -50,7 +50,7 @@ luca/client/                       # the supporting LLM SDK
 │   ├── content.py                 # TextBlock, ImageBlock, ThinkingBlock, ToolCall, RefusalBlock, ...
 │   ├── media.py                   # MediaURL, MediaBase64, MediaFileId
 │   ├── messages.py                # UserMessage, AssistantMessage, ToolMessage
-│   ├── reasoning.py               # ReasoningEffort literal
+│   ├── reasoning.py               # Reasoning literal
 │   ├── streaming.py               # StreamEvent union, BaseStream, accumulator
 │   ├── structured.py              # ResponseFormat, parse_structured_output
 │   └── tools.py                   # Tool, ToolChoice, JSON-schema normalization

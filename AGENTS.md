@@ -73,7 +73,7 @@ uv run python main.py --faux                       # offline scripted demo — n
 uv run python main.py --conversation <id>          # resume <id>.json
 uv run python main.py --conversation <id> --fork   # branch into a new session
 uv run python main.py --no-streaming               # block-level events instead of deltas
-uv run python main.py --model <id> --reasoning-effort <level>  # override the session's LLMConfig
+uv run python main.py --model <id> --reasoning <level>  # override the session's LLMConfig
 ```
 
 The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `.env` — except with `--faux`. Sessions persist to `<session-id>.json` in the working directory.

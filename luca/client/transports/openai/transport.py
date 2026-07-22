@@ -87,8 +87,10 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
             payload["parallel_tool_calls"] = request.parallel_tool_calls
         if request.user is not None:
             payload["user"] = request.user
-        if request.reasoning_effort is not None:
-            payload["reasoning_effort"] = request.reasoning_effort
+        # `reasoning_effort` is OpenAI's wire key; `reasoning` is ours.
+        # "provider-default" means send nothing.
+        if request.reasoning is not None and request.reasoning != "provider-default":
+            payload["reasoning_effort"] = request.reasoning
 
         if request.tools:
             payload["tools"] = self._project_tools(request.tools)
@@ -97,9 +99,13 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if request.response_format is not None:
             payload["response_format"] = self._project_response_format(request.response_format)
 
-        if request.extra_args:
-            payload.update(request.extra_args)
+        payload.update(self._provider_options(request))
         return payload
+
+    def _provider_options(self, request: ChatCompletionRequest) -> dict:
+        """This provider's raw options, or nothing. Scoped by provider name so
+        one provider's options can never reach another's payload."""
+        return (request.provider_options or {}).get(self._provider) or {}
 
     def _project_system_message(self, system_message: Any) -> dict:
         """Canonical str | list[TextBlock] → OpenAI wire-level system entry."""

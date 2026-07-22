@@ -91,7 +91,7 @@ SYSTEM_PROMPT = (
 def default_model() -> LLMConfig:
     return LLMConfig(
         model="openai/gpt-5.4-mini", provider="openrouter",
-        reasoning_effort="medium",
+        reasoning="medium",
     )
 
 

@@ -23,7 +23,7 @@ nobody has to grep to find out whether a feature is real.
   choice; parallel tool calls (where the host supports it).
 - Structured output: `response_format=` + `response.parse()` /
   `FinishEvent.parse()` with the same three input styles.
-- Reasoning: `ThinkingBlock`, `reasoning_effort=`, signature preservation
+- Reasoning: `ThinkingBlock`, `reasoning=`, signature preservation
   per-transport.
 - Streaming: full `StreamEvent` union, `partial: AssistantMessage` snapshot
   policy, cancellation as `FinishEvent(cancelled=True)`, terminal
@@ -31,7 +31,7 @@ nobody has to grep to find out whether a feature is real.
 - Typed error hierarchy under `ClientError`.
 - Catalog: `catalog.get`, `catalog.list`, `catalog.register`. Ships with a
   curated set of records.
-- `extra_args=` and `model_info=` escape hatches on every request.
+- `provider_options=` and `model_info=` escape hatches on every request.
 
 **Providers**: `OpenAIProvider`, `AnthropicProvider`, `OpenRouterProvider`,
 `FauxProvider`, plus `GenericProvider`-backed entries for `groq`,

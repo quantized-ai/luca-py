@@ -46,6 +46,7 @@ from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.tools import tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
+from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096
@@ -54,38 +55,9 @@ _DEFAULT_MAX_TOKENS = 4096
 class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     transport_id = "anthropic"
 
-    # Extended thinking comes in two mutually exclusive shapes and which one a
-    # model takes is not discoverable from the wire: adaptive models reject
-    # `budget_tokens` and manual models reject `adaptive`. Adaptive is the
-    # default because that is where Anthropic is moving; the exceptions are
-    # listed. Subclass to change any of it.
-    MANUAL_THINKING_MODELS: ClassVar[tuple[str, ...]] = (
-        "claude-opus-4-5", "claude-haiku-4-5",
-        "claude-sonnet-4-5", "claude-opus-4-1",
-        "claude-sonnet-4-0", "claude-opus-4-0",
-    )
-    NO_THINKING_MODELS: ClassVar[tuple[str, ...]] = (
-        "claude-3-5-sonnet", "claude-3-5-haiku", "claude-3-opus",
-        "claude-3-sonnet", "claude-3-haiku",
-    )
-    # Manual mode takes a token budget, not a word. Anthropic requires
-    # >= 1024 and strictly < max_tokens.
-    EFFORT_BUDGETS: ClassVar[dict[str, int]] = {
-        "minimal": 1024, "low": 2048, "medium": 4096,
-        "high": 8192, "xhigh": 16384, "auto": 4096,
-    }
-    # Adaptive takes a word, and accepts only these four.
-    ADAPTIVE_EFFORTS: ClassVar[dict[str, str]] = {
-        "minimal": "low", "low": "low", "medium": "medium",
-        "high": "high", "xhigh": "xhigh",
-    }
-    MIN_THINKING_BUDGET: ClassVar[int] = 1024
-    # Room left for the answer: generous when we size `max_tokens` ourselves,
-    # only the bare minimum when squeezing a budget under a caller's cap.
-    COMPLETION_HEADROOM: ClassVar[int] = 4096
-    MIN_COMPLETION_TOKENS: ClassVar[int] = 1024
-    # Adaptive models omit the reasoning text by default and return only the
-    # encrypted signature, which leaves nothing to render. Ask for summaries.
+    # Adaptive models omit the reasoning text by default and return only
+    # the encrypted signature, which leaves nothing to render. Ask for
+    # summaries. Model facts live in `capabilities.py`; this is policy.
     THINKING_DISPLAY: ClassVar[str | None] = "summarized"
 
     # --- headers / URL ---
@@ -107,7 +79,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     def _build_chat_completion_payload(
         self, request: ChatCompletionRequest, *, stream: bool = False,
     ) -> dict:
-        thinking, max_tokens = self._thinking_config(request)
+        capabilities = get_model_capabilities(request.model)
+        options = self._provider_options(request)
+        thinking, max_tokens = self._thinking_config(request, capabilities, options)
         payload: dict[str, Any] = {
             "model": request.model,
             "max_tokens": max_tokens,
@@ -118,7 +92,11 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["system"] = self._project_system(request.system_message)
         if stream:
             payload["stream"] = True
-        self._check_sampling(request, payload)
+        check_sampling(
+            capabilities, thinking,
+            temperature=request.temperature, top_p=request.top_p,
+            top_k=request.top_k, model=request.model,
+        )
         if request.temperature is not None:
             payload["temperature"] = request.temperature
         if request.top_p is not None:
@@ -135,94 +113,28 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["tool_choice"] = self._project_tool_choice(request.tool_choice)
         if request.metadata is not None:
             payload["metadata"] = request.metadata
-        if request.extra_args:
-            payload.update(request.extra_args)
+        payload.update(options)
         return payload
 
-    def _check_sampling(self, request: ChatCompletionRequest, payload: dict) -> None:
-        """Anthropic rejects the sampling controls while thinking is *active*.
-        Thinking explicitly `disabled` is not active and leaves them legal, so
-        the gate keys off the mode rather than the presence of the key.
+    def _provider_options(self, request: ChatCompletionRequest) -> dict:
+        """This provider's raw options, or nothing. Scoped by provider name so
+        one provider's options can never reach another's payload."""
+        return (request.provider_options or {}).get(self._provider) or {}
 
-        Refused rather than stripped: silently dropping a caller's temperature
-        changes their output with nothing to notice."""
-        if payload.get("thinking", {}).get("type") in (None, "disabled"):
-            return
-        conflicting = [
-            name for name, value in (
-                ("temperature", request.temperature),
-                ("top_p", request.top_p),
-                ("top_k", request.top_k),
-            )
-            if value is not None
-        ]
-        if conflicting:
-            raise UnsupportedParameterError(
-                f"{', '.join(conflicting)} cannot be set while extended "
-                f"thinking is active on {request.model!r}.",
-                provider=self._provider,
-            )
-
-    def _thinking_mode(self, model: str) -> str:
-        """`"manual"`, `"adaptive"` or `"none"` for a wire model id.
-
-        Matches on a normalized id so `-latest`, a dated suffix, a gateway
-        prefix (`us.anthropic.claude-…`) and a dotted version (`claude-sonnet-4.5`
-        for `claude-sonnet-4-5`) all resolve to the same bucket."""
-        normalized = model.rsplit("/", 1)[-1]
-        anchor = normalized.find("claude")
-        if anchor > 0:  # strip a gateway prefix, keep the model id itself
-            normalized = normalized[anchor:]
-        normalized = normalized.replace(".", "-")
-        for prefix in self.NO_THINKING_MODELS:
-            if normalized.startswith(prefix):
-                return "none"
-        for prefix in self.MANUAL_THINKING_MODELS:
-            if normalized.startswith(prefix):
-                return "manual"
-        return "adaptive"
-
-    def _thinking_config(self, request: ChatCompletionRequest) -> tuple[dict, int]:
+    def _thinking_config(
+        self, request: ChatCompletionRequest, capabilities, options: dict,
+    ) -> tuple[dict, int]:
         """The thinking-related payload keys plus the `max_tokens` to send.
 
-        `reasoning_effort=None` leaves thinking off entirely, so a caller that
-        never asked for it keeps the old wire shape."""
-        max_tokens = request.max_tokens or _DEFAULT_MAX_TOKENS
-        effort = request.reasoning_effort
-        if effort is None:
-            return {}, max_tokens
-
-        mode = self._thinking_mode(request.model)
-        if effort == "none" or mode == "none":
-            return {"thinking": {"type": "disabled"}}, max_tokens
-
-        if mode == "adaptive":
-            config: dict[str, Any] = {"type": "adaptive"}
-            if self.THINKING_DISPLAY is not None:
-                config["display"] = self.THINKING_DISPLAY
-            thinking: dict[str, Any] = {"thinking": config}
-            # "auto" means "let the model decide", which is the absence of an
-            # effort key rather than any particular value.
-            adaptive_effort = self.ADAPTIVE_EFFORTS.get(effort)
-            if adaptive_effort is not None:
-                thinking["output_config"] = {"effort": adaptive_effort}
-            return thinking, max_tokens
-
-        budget = self.EFFORT_BUDGETS.get(effort, self.MIN_THINKING_BUDGET)
-        if request.max_tokens is None:
-            max_tokens = budget + self.COMPLETION_HEADROOM
-        else:
-            # The caller's cap is a billing contract: shrink the budget to fit
-            # inside it rather than quietly raising it.
-            budget = min(budget, request.max_tokens - self.MIN_COMPLETION_TOKENS)
-        if budget < self.MIN_THINKING_BUDGET:
-            raise UnsupportedParameterError(
-                f"max_tokens={request.max_tokens} leaves no room for extended "
-                f"thinking on {request.model!r}: Anthropic requires a budget "
-                f"of at least {self.MIN_THINKING_BUDGET} tokens below it.",
-                provider=self._provider,
-            )
-        return {"thinking": {"type": "enabled", "budget_tokens": budget}}, max_tokens
+        Raw provider options win outright rather than being merged into: a
+        caller who spelled out `thinking` gets exactly that, and the resolved
+        reasoning is skipped entirely."""
+        if "thinking" in options or "output_config" in options:
+            return {}, request.max_tokens or capabilities.max_output_tokens
+        return resolve_reasoning(
+            request.reasoning, capabilities, request.max_tokens,
+            display=self.THINKING_DISPLAY, model=request.model,
+        )
 
     def _project_system(self, system_message: Any) -> Any:
         if isinstance(system_message, str):

@@ -69,11 +69,11 @@ CASES = [
     ),
 
     PayloadCase(
-        name="extra_args_merges_into_payload",
+        name="provider_options_merge_into_payload",
         request=ChatCompletionRequest(
             model="gpt-4o", provider="openai",
             messages=[UserMessage(content="Hi")],
-            extra_args={"custom_flag": True},
+            provider_options={"openai": {"custom_flag": True}},
         ),
         expected_url="https://api.openai.com/v1/chat/completions",
         expected_body={
@@ -189,3 +189,50 @@ def test_an_image_in_a_tool_result_is_refused(openai_transport_factory):
 
     with pytest.raises(BadRequestError, match="only text in a tool result"):
         transport._project_tool_message(message)
+
+
+# ── reasoning ──────────────────────────────────────────────────────────────────
+
+
+def test_the_openai_wire_key_stays_reasoning_effort(openai_transport_factory):
+    # `reasoning` is OUR field name; `reasoning_effort` is OpenAI's wire key
+    # and every OpenAI-compatible host expects it. Renaming one must not
+    # rename the other.
+    transport = openai_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-4o", messages=[UserMessage(content="hi")],
+            reasoning="high",
+        ),
+    )
+
+    assert payload["reasoning_effort"] == "high"
+    assert "reasoning" not in payload
+
+
+def test_provider_default_sends_no_reasoning_key(openai_transport_factory):
+    transport = openai_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-4o", messages=[UserMessage(content="hi")],
+            reasoning="provider-default",
+        ),
+    )
+
+    assert "reasoning_effort" not in payload
+
+
+def test_only_this_providers_options_are_merged(openai_transport_factory):
+    transport = openai_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-4o", messages=[UserMessage(content="hi")],
+            provider_options={"openai": {"mine": 1}, "anthropic": {"theirs": 2}},
+        ),
+    )
+
+    assert payload["mine"] == 1
+    assert "theirs" not in payload

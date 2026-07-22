@@ -147,7 +147,7 @@ class BaseConfigModel(BaseModel):
 class LLMConfig(BaseConfigModel):
     model: str  # e.g. "openai/gpt-5.4-mini"
     provider: str  # e.g. "openrouter"
-    reasoning_effort: str | None = None
+    reasoning: str | None = None
 
 
 class Usage(BaseModel):

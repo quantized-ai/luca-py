@@ -20,10 +20,10 @@ uv run python main.py                     # fresh session (needs OPENROUTER_API_
 uv run python main.py --faux              # offline scripted demo — no key, no network
 uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
-uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning-effort high
+uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 ```
 
-`--model` / `--reasoning-effort` update the session's `LLMConfig` (provider
+`--model` / `--reasoning` update the session's `LLMConfig` (provider
 stays openrouter); they persist with the session and override the stored
 values on a resume.
 

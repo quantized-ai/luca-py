@@ -35,14 +35,13 @@ Common keyword args:
 | `tool_choice` | `"auto" \| "required" \| "none" \| dict` | Force or block tool use. |
 | `response_format` | `dict \| type \| TypeAdapter \| None` | Structured output schema. See [`07-structured-output.md`](07-structured-output.md). |
 | `temperature`, `top_p`, `top_k`, `max_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs` | various | Standard generation knobs. `None` means "not sent". |
-| `reasoning_effort` | `"none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "auto"` | For reasoning-capable models. Passed through verbatim on OpenAI-compatible hosts; translated to Anthropic's thinking config ([09](09-providers-and-transports.md)). `None` leaves thinking off. |
-| `thinking_budgets` | `dict[str, int] \| None` | Provider-specific thinking budget. |
+| `reasoning` | `"provider-default" \| "none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh"` | How much reasoning to ask for. Sent verbatim as `reasoning_effort` on OpenAI-compatible hosts; resolved against per-model capabilities on Anthropic ([09](09-providers-and-transports.md)). `provider-default` and `None` both send nothing; `none` explicitly disables. |
 | `cache_retention` | `"none" \| "short" \| "long" \| None` | Prompt-cache hint. |
 | `session_id` | `str \| None` | Routing affinity hint where supported. |
 | `parallel_tool_calls` | `bool \| None` | OpenAI knob. |
 | `user` | `str \| None` | End-user identifier. |
 | `metadata` | `dict \| None` | Provider-level metadata. |
-| `extra_args` | `dict \| None` | Escape hatch — merged into the outbound JSON. |
+| `provider_options` | `dict[str, dict] \| None` | Raw provider options, keyed by provider name. Only the matching provider's dict is merged, and it wins over anything the transport derived. |
 | `model_info` | `ModelInfo \| dict \| None` | Override the catalog lookup for this call. |
 | `api_key` | `str \| None` | Override env. |
 | `base_url` | `str \| None` | Override host URL. |
