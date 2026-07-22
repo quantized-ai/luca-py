@@ -4,6 +4,7 @@ from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import default_model
+from luca.agent.core.models import LLMConfig
 
 from .helpers import fresh_session
 
@@ -14,20 +15,21 @@ def test_default_args():
     assert (args.conversation, args.fork, args.no_streaming, args.faux) == (
         None, False, False, False,
     )
-    assert (args.model, args.provider, args.reasoning_effort) == (
+    assert (args.model, args.provider, args.reasoning) == (
         None, None, None,
     )
 
 
-def test_model_and_reasoning_effort_override_the_fresh_session():
+def test_model_and_reasoning_override_the_fresh_session():
     session = build_session(arg_parser().parse_args([
-        "--model", "moonshotai/kimi-k2.7-code", "--reasoning-effort", "high",
+        "--model", "moonshotai/kimi-k2.7-code", "--reasoning", "high",
     ]))
 
-    llm = session.session_config.llm_config
-    assert llm.model == "moonshotai/kimi-k2.7-code"
-    assert llm.reasoning_effort == "high"
-    assert llm.provider == "openrouter"
+    assert session.session_config.llm_config == LLMConfig(
+        model="moonshotai/kimi-k2.7-code",
+        provider="openrouter",
+        reasoning="high",
+    )
 
 
 def test_provider_override_is_passed_through_as_is():

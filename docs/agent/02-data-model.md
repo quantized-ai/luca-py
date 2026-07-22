@@ -67,7 +67,7 @@ turn_finish     outcome=completed
 |---|---|
 | `text` | prose |
 | `image` | an image the user attached |
-| `thinking` | the model's reasoning, when it emits any |
+| `thinking` | the model's reasoning, when it emits any — plus the provider's `signature` over it, and `redacted` when the body was withheld |
 
 An `image` part carries a `source` — one of `ImageURL`, `ImageBase64` or
 `ImageFileId` — plus free-form `metadata`:

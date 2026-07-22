@@ -29,7 +29,13 @@ def message_to_parts(
     parts: list[TextContent | ThinkingContent | ToolCall] = []
     for block in message.content:
         if block.type == "thinking":
-            parts.append(ThinkingContent(thinking=block.text))
+            parts.append(
+                ThinkingContent(
+                    thinking=block.text,
+                    signature=block.signature,
+                    redacted=block.redacted,
+                ),
+            )
         elif block.type in ("text", "refusal"):
             parts.append(TextContent(text=block.text))
         elif block.type == "tool_call":

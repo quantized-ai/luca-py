@@ -1127,7 +1127,7 @@ class AgentSessionRunner:
                         system_message=system_message,
                         tools=tool_list or None,
                         tool_choice=tool_choice,
-                        reasoning_effort=llm_cfg.reasoning_effort,
+                        reasoning=llm_cfg.reasoning,
                         provider=self.provider,
                         timeout=request_timeout,
                         total_timeout=total_timeout,
@@ -1171,7 +1171,7 @@ class AgentSessionRunner:
                             system_message=system_message,
                             tools=tool_list or None,
                             tool_choice=tool_choice,
-                            reasoning_effort=llm_cfg.reasoning_effort,
+                            reasoning=llm_cfg.reasoning,
                             provider=self.provider,
                             timeout=request_timeout,
                             total_timeout=total_timeout,
@@ -1284,7 +1284,11 @@ class AgentSessionRunner:
         events: list[AgentEvent] = []
         for part in parts:
             if isinstance(part, ThinkingContent):
-                events.append(ReasoningBlock(text=part.thinking))
+                events.append(
+                    ReasoningBlock(
+                        text=part.thinking, redacted=part.redacted,
+                    ),
+                )
             elif isinstance(part, TextContent):
                 events.append(TextBlock(text=part.text))
         events.append(FinishReason(finish_reason=finish_reason))

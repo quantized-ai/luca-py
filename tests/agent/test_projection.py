@@ -837,3 +837,45 @@ def test_pruned_entry_can_carry_an_image_replacement():
             LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
+
+
+# ── thinking signatures ────────────────────────────────────────────────────────
+
+
+def test_assistant_thinking_projects_with_its_signature():
+    # the signature is what lets a provider accept a replayed thinking block
+    entries = {
+        "a1": AssistantMessage(
+            id="a1", created_at=1,
+            parts=[
+                ThinkingContent(thinking="reasoning", signature="sig-abc"),
+                TextContent(text="the answer"),
+            ],
+            llm_config=MODEL, stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaAssistantMessage(content=[
+            ThinkingBlock(text="reasoning", signature="sig-abc"),
+            TextBlock(text="the answer"),
+        ]),
+    ]
+
+
+def test_a_redacted_thinking_part_projects_as_redacted():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1", created_at=1,
+            parts=[ThinkingContent(thinking="", signature="enc", redacted=True)],
+            llm_config=MODEL, stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaAssistantMessage(content=[
+            ThinkingBlock(text="", signature="enc", redacted=True),
+        ]),
+    ]

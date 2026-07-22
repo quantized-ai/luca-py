@@ -91,7 +91,7 @@ SYSTEM_PROMPT = (
 def default_model() -> LLMConfig:
     return LLMConfig(
         model="openai/gpt-5.4-mini", provider="openrouter",
-        reasoning_effort="medium",
+        reasoning="medium",
     )
 
 
@@ -133,7 +133,10 @@ def build_faux_provider() -> FauxProvider:
     faux.set_responses([
         faux_assistant_message(
             [
-                faux_thinking("The user wants arithmetic — I should multiply."),
+                faux_thinking(
+                    "The user wants arithmetic — I should multiply.",
+                    signature="faux-signature",
+                ),
                 faux_tool_call("multiply", {"a": 6, "b": 7}, id="tc_faux_1"),
             ],
             finish_reason="tool_use",

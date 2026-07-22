@@ -70,7 +70,10 @@ def _process_event(
                 tool_id=block.get("id"), tool_name=block.get("name"),
             )
         elif block_type == "redacted_thinking":
-            yield RawBlockStart(index=idx, block_type="thinking")
+            yield RawBlockStart(
+                index=idx, block_type="thinking",
+                signature=block.get("data"), redacted=True,
+            )
 
     elif event_type == "content_block_delta":
         idx = data.get("index", 0)

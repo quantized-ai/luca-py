@@ -20,7 +20,7 @@ from .content import (
 )
 from .media import MediaBase64, MediaFileId, MediaSource, MediaURL
 from .messages import AssistantMessage, Message, ToolMessage, UserMessage
-from .reasoning import ReasoningEffort
+from .reasoning import Reasoning
 from .streaming import (
     AsyncBaseStream,
     AsyncChatCompletionStream,
@@ -75,7 +75,7 @@ __all__ = [
     # messages
     "AssistantMessage", "Message", "ToolMessage", "UserMessage",
     # reasoning
-    "ReasoningEffort",
+    "Reasoning",
     # streaming
     "AsyncBaseStream", "AsyncChatCompletionStream", "BaseStream",
     "ChatCompletionStream", "ErrorEvent", "FinishEvent",

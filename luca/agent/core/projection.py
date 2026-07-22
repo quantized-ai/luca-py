@@ -176,7 +176,13 @@ class ConversationProjector:
         blocks: list = []
         for part in entry.parts:
             if isinstance(part, ThinkingContent):
-                blocks.append(ThinkingBlock(text=part.thinking))
+                blocks.append(
+                    ThinkingBlock(
+                        text=part.thinking,
+                        signature=part.signature,
+                        redacted=part.redacted,
+                    ),
+                )
             elif isinstance(part, ToolCall):
                 blocks.append(
                     ClientToolCall(

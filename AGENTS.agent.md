@@ -315,7 +315,9 @@ It is always recomputed via `AgentSession.session_runtime_status` (a `@property`
 
 ### Reasoning durability
 
-The client drops `ThinkingBlock` when projecting an assistant message back to a provider. However, `AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload.
+`AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload — text, `signature` and `redacted` alike.
+
+Whether it goes back on the wire is the transport's call: OpenAI-compatible hosts have no replay surface and drop it, Anthropic requires the signature during tool use and replays the block verbatim. A `ThinkingContent` is therefore immutable once persisted; rewriting `thinking` in middleware invalidates the signature and the provider will reject the turn.
 
 ## Common tasks
 
@@ -414,7 +416,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 - Drain a lazy run for event-list asserts: `async with runner.run() as run: events = [e async for e in run]`
 - Await for `RunResult` asserts: `await runner.run()`
 
-**Assertions:** assert on full objects — both `runner.session == AgentSession(...)` (status included) and the complete `events == [...]` list.
+**Assertions:** the project-wide full-object rule (see `AGENTS.md`), applied here — both `runner.session == AgentSession(...)` (status included) and the complete `events == [...]` list.
 
 **Providers:** use `FauxProvider` via `provider=`. `faux_hang()` scripts a hang for cancellation/timeout scenarios.
 

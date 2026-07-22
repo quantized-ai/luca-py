@@ -50,7 +50,7 @@ luca/client/                       # the supporting LLM SDK
 │   ├── content.py                 # TextBlock, ImageBlock, ThinkingBlock, ToolCall, RefusalBlock, ...
 │   ├── media.py                   # MediaURL, MediaBase64, MediaFileId
 │   ├── messages.py                # UserMessage, AssistantMessage, ToolMessage
-│   ├── reasoning.py               # ReasoningEffort literal
+│   ├── reasoning.py               # Reasoning literal
 │   ├── streaming.py               # StreamEvent union, BaseStream, accumulator
 │   ├── structured.py              # ResponseFormat, parse_structured_output
 │   └── tools.py                   # Tool, ToolChoice, JSON-schema normalization
@@ -82,6 +82,14 @@ api_prd.md                         # client public API contract
 architecture.md                    # client internal design spec
 testing_architecture.md            # testing strategy for the client
 ```
+
+## Tests
+
+The project-wide test style in [`AGENTS.md`](AGENTS.md) applies here: **assert
+on the full object, not on individual properties.** For this layer that means
+the whole outbound payload dict, the whole parsed `AssistantMessage`, the whole
+content block — `assert block == ThinkingBlock(...)`, not three attribute
+checks. `tests/client/` mirrors `luca/client/` exactly.
 
 ## Design principles (non-negotiable — internalize before changing structure)
 

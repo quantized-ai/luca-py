@@ -12,5 +12,5 @@ uv run python main.py --help
 To use it first add your keys to your `.env` and then run:
 
 ```bash
-uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning-effort high --provider openrouter
+uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high --provider openrouter
 ```

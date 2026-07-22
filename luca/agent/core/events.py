@@ -47,6 +47,9 @@ from .models import ToolExecution
 class ReasoningBlock(BaseModel):
     type: Literal["reasoning_block"] = "reasoning_block"
     text: str
+    # A provider may withhold the reasoning body and return only its encrypted
+    # attestation; `text` is then empty and there is nothing to render.
+    redacted: bool = False
 
     model_config = ConfigDict(extra="forbid")
 

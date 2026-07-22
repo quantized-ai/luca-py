@@ -11,7 +11,7 @@ Differences from OpenAI worth highlighting:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -46,6 +46,7 @@ from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.tools import tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
+from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096
@@ -53,6 +54,11 @@ _DEFAULT_MAX_TOKENS = 4096
 
 class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     transport_id = "anthropic"
+
+    # Adaptive models omit the reasoning text by default and return only
+    # the encrypted signature, which leaves nothing to render. Ask for
+    # summaries. Model facts live in `capabilities.py`; this is policy.
+    THINKING_DISPLAY: ClassVar[str | None] = "summarized"
 
     # --- headers / URL ---
 
@@ -73,15 +79,24 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     def _build_chat_completion_payload(
         self, request: ChatCompletionRequest, *, stream: bool = False,
     ) -> dict:
+        capabilities = get_model_capabilities(request.model)
+        options = self._provider_options(request)
+        thinking, max_tokens = self._thinking_config(request, capabilities, options)
         payload: dict[str, Any] = {
             "model": request.model,
-            "max_tokens": request.max_tokens or _DEFAULT_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "messages": self._project_messages(request.messages),
         }
+        payload.update(thinking)
         if request.system_message is not None:
             payload["system"] = self._project_system(request.system_message)
         if stream:
             payload["stream"] = True
+        check_sampling(
+            capabilities, thinking,
+            temperature=request.temperature, top_p=request.top_p,
+            top_k=request.top_k, model=request.model,
+        )
         if request.temperature is not None:
             payload["temperature"] = request.temperature
         if request.top_p is not None:
@@ -98,9 +113,28 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["tool_choice"] = self._project_tool_choice(request.tool_choice)
         if request.metadata is not None:
             payload["metadata"] = request.metadata
-        if request.extra_args:
-            payload.update(request.extra_args)
+        payload.update(options)
         return payload
+
+    def _provider_options(self, request: ChatCompletionRequest) -> dict:
+        """This provider's raw options, or nothing. Scoped by provider name so
+        one provider's options can never reach another's payload."""
+        return (request.provider_options or {}).get(self._provider) or {}
+
+    def _thinking_config(
+        self, request: ChatCompletionRequest, capabilities, options: dict,
+    ) -> tuple[dict, int]:
+        """The thinking-related payload keys plus the `max_tokens` to send.
+
+        Raw provider options win outright rather than being merged into: a
+        caller who spelled out `thinking` gets exactly that, and the resolved
+        reasoning is skipped entirely."""
+        if "thinking" in options or "output_config" in options:
+            return {}, request.max_tokens or capabilities.max_output_tokens
+        return resolve_reasoning(
+            request.reasoning, capabilities, request.max_tokens,
+            display=self.THINKING_DISPLAY, model=request.model,
+        )
 
     def _project_system(self, system_message: Any) -> Any:
         if isinstance(system_message, str):
@@ -162,10 +196,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             if isinstance(block, TextBlock):
                 wire_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
-                tb: dict = {"type": "thinking", "thinking": block.text}
-                if block.signature is not None:
-                    tb["signature"] = block.signature
-                wire_blocks.append(tb)
+                thinking = self._project_thinking_block(block)
+                if thinking is not None:
+                    wire_blocks.append(thinking)
             elif isinstance(block, ToolCall):
                 wire_blocks.append({
                     "type": "tool_use",
@@ -177,6 +210,27 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 # Anthropic doesn't take refusals on the way in; drop.
                 continue
         return {"role": "assistant", "content": wire_blocks}
+
+    def _project_thinking_block(self, block: ThinkingBlock) -> dict | None:
+        """One thinking block on the way back, or None to omit it.
+
+        An unsigned block is DROPPED rather than sent. Anthropic rejects a
+        thinking block whose signature is missing (400 `signature: Field
+        required`) but accepts the turn with the block absent, and unsigned
+        blocks are reachable: a truncated response never receives its
+        `signature_delta`, and a session moved from an OpenAI-compatible host
+        carries reasoning text that was never signed. Sending it would make
+        the whole conversation permanently unusable; dropping it costs one
+        turn's visible reasoning."""
+        if block.signature is None:
+            return None
+        if block.redacted:
+            return {"type": "redacted_thinking", "data": block.signature}
+        return {
+            "type": "thinking",
+            "thinking": block.text,
+            "signature": block.signature,
+        }
 
     def _project_tool_message_as_user(self, msg: ToolMessage) -> dict:
         if isinstance(msg.content, str):

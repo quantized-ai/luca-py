@@ -76,7 +76,11 @@ from .cells import (
     UserCell,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
-from .render import user_transcript_text
+from .render import (
+    REDACTED_REASONING_MARKER,
+    reasoning_transcript_text,
+    user_transcript_text,
+)
 from .screens import ApprovalScreen
 from .sessions import save_session
 from .wiring import build_runner
@@ -227,8 +231,11 @@ class AgentApp(App):
                 self._live_reasoning = await self._stream_into(
                     self._live_reasoning, ReasoningCell, text,
                 )
-            case ReasoningBlock(text=text):
-                await self._settle_cell(self._live_reasoning, ReasoningCell, text)
+            case ReasoningBlock(text=text, redacted=redacted):
+                await self._settle_cell(
+                    self._live_reasoning, ReasoningCell,
+                    REDACTED_REASONING_MARKER if redacted else text,
+                )
                 self._live_reasoning = None
             case TextStart():
                 self._live_text = None
@@ -302,8 +309,10 @@ class AgentApp(App):
                 )
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
-                    if isinstance(part, ThinkingContent) and part.thinking.strip():
-                        await self._mount_cell(ReasoningCell(part.thinking))
+                    if isinstance(part, ThinkingContent):
+                        text = reasoning_transcript_text(part)
+                        if text:
+                            await self._mount_cell(ReasoningCell(text))
                     elif isinstance(part, TextContent) and part.text.strip():
                         await self._mount_cell(AssistantCell(part.text))
                     # a ToolCall part renders through its ToolExecution entry

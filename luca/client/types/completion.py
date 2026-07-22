@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from .catalog import ModelCost, ModelInfo
 from .content import TextBlock
 from .messages import AssistantMessage, Message
-from .reasoning import ReasoningEffort
+from .reasoning import Reasoning
 from .structured import ResponseFormat, parse_structured_output
 from .tools import Tool, ToolChoice
 
@@ -81,8 +81,7 @@ class ChatCompletionRequest(BaseModel):
     logprobs: bool | None = None
     top_logprobs: int | None = None
 
-    reasoning_effort: ReasoningEffort | None = None
-    thinking_budgets: dict[str, int] | None = None
+    reasoning: Reasoning | None = None
 
     cache_retention: Literal["none", "short", "long"] | None = None
     session_id: str | None = None
@@ -93,7 +92,10 @@ class ChatCompletionRequest(BaseModel):
     model_info: Union[ModelInfo, dict] | None = None
 
     metadata: dict | None = None
-    extra_args: dict | None = None
+    # Raw provider-specific options, keyed by provider name. Only the
+    # matching provider's dict is used, and it wins over anything the
+    # transport derived.
+    provider_options: dict[str, dict] | None = None
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 

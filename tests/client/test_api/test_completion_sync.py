@@ -36,8 +36,13 @@ CASES = [
     KwargCase("system_message", {"system_message": "be brief"}, "system_message", "be brief"),
     KwargCase("temperature", {"temperature": 0.5}, "temperature", 0.5),
     KwargCase("max_tokens", {"max_tokens": 100}, "max_tokens", 100),
-    KwargCase("reasoning_effort", {"reasoning_effort": "high"}, "reasoning_effort", "high"),
-    KwargCase("extra_args", {"extra_args": {"x": 1}}, "extra_args", {"x": 1}),
+    KwargCase("reasoning", {"reasoning": "high"}, "reasoning", "high"),
+    KwargCase(
+        "provider_options",
+        {"provider_options": {"stub": {"x": 1}}},
+        "provider_options",
+        {"stub": {"x": 1}},
+    ),
     KwargCase("metadata", {"metadata": {"trace_id": "t1"}}, "metadata", {"trace_id": "t1"}),
     KwargCase("session_id", {"session_id": "s-1"}, "session_id", "s-1"),
 ]

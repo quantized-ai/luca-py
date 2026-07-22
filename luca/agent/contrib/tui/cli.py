@@ -6,9 +6,9 @@
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui \
-        --model moonshotai/kimi-k2.7-code --reasoning-effort high
+        --model moonshotai/kimi-k2.7-code --reasoning high
 
-`--model` / `--provider` / `--reasoning-effort` update the session's
+`--model` / `--provider` / `--reasoning` update the session's
 `LLMConfig` (defaults: openrouter, or faux under `--faux`); the config
 persists with the session, and passing any of these flags on a resume
 overrides the stored value.
@@ -22,8 +22,10 @@ conversation (one turn: a gated `multiply` call, then the wrap-up).
 from __future__ import annotations
 
 import argparse
+from typing import get_args
 
 from luca.agent.core import AgentSessionRunner
+from luca.client.types import Reasoning
 from luca.agent.core.models import AgentSession
 
 from .app import AgentApp
@@ -58,9 +60,9 @@ def arg_parser() -> argparse.ArgumentParser:
              "Passed to the LLMConfig as-is. Persists like --model.",
     )
     parser.add_argument(
-        "--reasoning-effort",
-        choices=["none", "minimal", "low", "medium", "high", "xhigh", "auto"],
-        help="Reasoning effort for the model. Persists like --model.",
+        "--reasoning",
+        choices=list(get_args(Reasoning)),
+        help="Reasoning level for the model. Persists like --model.",
     )
     return parser
 
@@ -78,8 +80,8 @@ def build_session(args: argparse.Namespace) -> AgentSession:
         overrides["model"] = args.model
     if args.provider:
         overrides["provider"] = args.provider
-    if args.reasoning_effort:
-        overrides["reasoning_effort"] = args.reasoning_effort
+    if args.reasoning:
+        overrides["reasoning"] = args.reasoning
     if overrides:
         session.session_config.llm_config = (
             session.session_config.llm_config.model_copy(update=overrides)
