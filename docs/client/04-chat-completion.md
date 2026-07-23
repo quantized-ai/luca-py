@@ -35,7 +35,7 @@ Common keyword args:
 | `tool_choice` | `"auto" \| "required" \| "none" \| dict` | Force or block tool use. |
 | `response_format` | `dict \| type \| TypeAdapter \| None` | Structured output schema. See [`07-structured-output.md`](07-structured-output.md). |
 | `temperature`, `top_p`, `top_k`, `max_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs` | various | Standard generation knobs. `None` means "not sent". |
-| `reasoning` | `"provider-default" \| "none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh"` | How much reasoning to ask for. Sent verbatim as `reasoning_effort` on OpenAI-compatible hosts; resolved against per-model capabilities on Anthropic ([09](09-providers-and-transports.md)). `provider-default` and `None` both send nothing; `none` explicitly disables. |
+| `reasoning` | `"provider-default" \| "none" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh"` | How much reasoning to ask for. Sent verbatim as `reasoning_effort` on OpenAI-compatible hosts; resolved against per-model capabilities on Anthropic and Bedrock ([09](09-providers-and-transports.md)). `provider-default` and `None` both send nothing; `none` explicitly disables. |
 | `cache_retention` | `"none" \| "short" \| "long" \| None` | Prompt-cache hint. |
 | `session_id` | `str \| None` | Routing affinity hint where supported. |
 | `parallel_tool_calls` | `bool \| None` | OpenAI knob. |

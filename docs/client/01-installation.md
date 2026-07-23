@@ -34,6 +34,7 @@ scripts; the SDK itself reads `os.environ` directly.
 | `openai` | `OPENAI_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openrouter` | `OPENROUTER_API_KEY` |
+| `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` (+ `BEDROCK_AWS_REGION`) |
 | `groq` | `GROQ_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `ollama` | (none — local) |

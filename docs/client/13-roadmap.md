@@ -34,11 +34,11 @@ nobody has to grep to find out whether a feature is real.
 - `provider_options=` and `model_info=` escape hatches on every request.
 
 **Providers**: `OpenAIProvider`, `AnthropicProvider`, `OpenRouterProvider`,
-`FauxProvider`, plus `GenericProvider`-backed entries for `groq`,
-`deepseek`, `ollama`.
+`BedrockProvider`, `FauxProvider`, plus `GenericProvider`-backed entries for
+`groq`, `deepseek`, `ollama`.
 
 **Transports**: `OpenAITransport`, `AnthropicTransport`,
-`OpenRouterTransport`, `FauxTransport`.
+`OpenRouterTransport`, `BedrockTransport`, `FauxTransport`.
 
 **Testing**: `luca.client.testing` — `FauxProvider`,
 `FauxTransport`, scripted-response builders.
@@ -64,11 +64,11 @@ relevant transport classes.
 registered in `PROVIDERS`:
 
 - `together`, `cerebras`, `fireworks`, `xai`, `parasail`, `mistral`,
-  Bedrock, Vertex / Gemini, Azure.
+  Vertex / Gemini, Azure.
 
 For OpenAI-compatible hosts, "register" is a one-line dict entry. For
-Bedrock or Vertex it's a new transport class (different auth scheme, very
-different wire shape).
+Vertex it's a new transport class (different auth scheme, very different
+wire shape) — Bedrock is the worked example of that path, now shipped.
 
 **Agent module** — `luca.agent` is a sibling submodule scheduled
 for after the LLM client stabilizes.
