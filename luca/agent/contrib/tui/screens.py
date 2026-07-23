@@ -13,7 +13,7 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label
+from textual.widgets import Button, Label, OptionList
 
 from .approvals import ApprovalPrompt, PromptOption
 
@@ -91,3 +91,69 @@ class ApprovalScreen(ModalScreen[PromptOption]):
         elif event.key in ("escape", "a"):
             event.stop()
             self.dismiss(self.prompt.options[-1])  # abandon is always last
+
+
+class PickerScreen(ModalScreen[str | None]):
+    """A single-choice list picker: arrow keys to move, Enter to select, Esc to
+    cancel. `self._options` holds the values; the displayed row equals the value
+    except the current one, which is shown with a "(current)" suffix. Selection
+    maps back by index, so it returns the raw value. Dismisses with the chosen
+    string, or None on cancel."""
+
+    DEFAULT_CSS = """
+    PickerScreen {
+        align: center middle;
+    }
+    #picker-dialog {
+        width: 70%;
+        max-width: 100;
+        height: auto;
+        max-height: 80%;
+        padding: 1 2;
+        border: thick $primary;
+        background: $surface;
+    }
+    #picker-dialog Label {
+        margin-bottom: 1;
+    }
+    #picker-options {
+        height: auto;
+        max-height: 20;
+    }
+    """
+
+    def __init__(
+        self, title: str, options: list[str], *, current: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self._options = options
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        labels = [
+            f"{opt} (current)" if opt == self._current else opt
+            for opt in self._options
+        ]
+        with Container(id="picker-dialog"):
+            yield Label(self._title, markup=False, id="picker-title")
+            yield OptionList(*labels, id="picker-options")
+
+    def on_mount(self) -> None:
+        options = self.query_one("#picker-options", OptionList)
+        options.highlighted = (
+            self._options.index(self._current)
+            if self._current in self._options else 0
+        )
+        options.focus()
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected,
+    ) -> None:
+        event.stop()
+        self.dismiss(self._options[event.option_index])
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)

@@ -95,6 +95,50 @@ def default_model() -> LLMConfig:
     )
 
 
+# The `/model` picker's models, grouped by provider so `/model` can drill down:
+# pick a provider, then pick one of its models. A short curated set (the client
+# catalog is too stale to drive a picker). `/model provider:model` still
+# switches to anything off this list, including providers not shown here.
+RECOMMENDED_MODELS: dict[str, tuple[str, ...]] = {
+    "anthropic": (
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+        "claude-fable-5",
+    ),
+    "openrouter": (
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.4",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-opus-4-8",
+        "moonshotai/kimi-k2.7-code",
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-r1",
+    ),
+    "openai": (
+        "gpt-5.4",
+        "gpt-5.4-mini",
+    ),
+    "bedrock": (
+        "us.amazon.nova-lite-v1:0",
+        "us.amazon.nova-pro-v1:0",
+        "us.amazon.nova-micro-v1:0",
+        "us.meta.llama3-3-70b-instruct-v1:0",
+        "us.meta.llama4-maverick-17b-instruct-v1:0",
+        "us.deepseek.r1-v1:0",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    ),
+    "groq": (
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+    ),
+    "deepseek": (
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ),
+}
+
+
 def faux_model() -> LLMConfig:
     return LLMConfig(model="fake-model", provider="faux")
 
