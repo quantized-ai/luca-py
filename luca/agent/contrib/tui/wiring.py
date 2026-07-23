@@ -96,9 +96,10 @@ def default_model() -> LLMConfig:
 
 
 # The `/model` picker's models, grouped by provider so `/model` can drill down:
-# pick a provider, then pick one of its models. A short curated set (the client
-# catalog is too stale to drive a picker). `/model provider:model` still
-# switches to anything off this list, including providers not shown here.
+# pick a provider, then pick one of its models. Only providers registered on
+# this branch with models verified live are listed (bedrock ships in a separate
+# PR; groq/deepseek/ollama need keys). `/model provider:model` still switches to
+# anything off this list, so an unlisted provider is still reachable by hand.
 RECOMMENDED_MODELS: dict[str, tuple[str, ...]] = {
     "anthropic": (
         "claude-opus-4-8",
@@ -118,23 +119,6 @@ RECOMMENDED_MODELS: dict[str, tuple[str, ...]] = {
     "openai": (
         "gpt-5.4",
         "gpt-5.4-mini",
-    ),
-    "bedrock": (
-        "us.amazon.nova-lite-v1:0",
-        "us.amazon.nova-pro-v1:0",
-        "us.amazon.nova-micro-v1:0",
-        "us.meta.llama3-3-70b-instruct-v1:0",
-        "us.meta.llama4-maverick-17b-instruct-v1:0",
-        "us.deepseek.r1-v1:0",
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    ),
-    "groq": (
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ),
-    "deepseek": (
-        "deepseek-chat",
-        "deepseek-reasoner",
     ),
 }
 
