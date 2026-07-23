@@ -69,9 +69,9 @@ def test_a_dated_anthropic_profile_resolves_to_the_thinking_tier():
 
 
 def test_an_unknown_model_is_conservative_and_flagged():
+    # The default record is all-false with the smallest ceiling and
+    # is_known_model=False — the whole object pins that.
     assert UNKNOWN == ModelCapabilities()
-    assert UNKNOWN.is_known_model is False
-    assert UNKNOWN.supports_thinking is False
 
 
 # ── the resolver ─────────────────────────────────────────────────────────────

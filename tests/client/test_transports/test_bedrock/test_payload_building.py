@@ -237,10 +237,15 @@ def test_reasoning_goes_into_additional_model_request_fields(bedrock_transport_f
         transport, model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         messages=[UserMessage(content="Hi")], reasoning="low",
     )
-    assert payload["additionalModelRequestFields"] == {
-        "thinking": {"type": "enabled", "budget_tokens": 6_400},
+    # Reasoning lands in additionalModelRequestFields, and maxTokens gets the
+    # budget plus completion headroom — the whole payload pins both at once.
+    assert payload == {
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
+        "inferenceConfig": {"maxTokens": 7_424},
+        "additionalModelRequestFields": {
+            "thinking": {"type": "enabled", "budget_tokens": 6_400},
+        },
     }
-    assert payload["inferenceConfig"]["maxTokens"] == 7_424
 
 
 def test_provider_options_win_over_resolved_reasoning(bedrock_transport_factory):
@@ -250,7 +255,11 @@ def test_provider_options_win_over_resolved_reasoning(bedrock_transport_factory)
         messages=[UserMessage(content="Hi")], reasoning="high",
         provider_options={"bedrock": {"additionalModelRequestFields": {"custom": 1}}},
     )
-    assert payload["additionalModelRequestFields"] == {"custom": 1}
+    # reasoning="high" is dropped entirely because the raw field is present.
+    assert payload == {
+        "messages": [{"role": "user", "content": [{"text": "Hi"}]}],
+        "additionalModelRequestFields": {"custom": 1},
+    }
 
 
 def test_temperature_on_a_thinking_model_with_reasoning_active_raises(bedrock_transport_factory):
