@@ -104,8 +104,8 @@ class ChatCompletionTransportMixin:
       _async_chat_completion_stream_class() -> type
 
     Optional overrides:
-      _chat_completion_url() -> str
-      _build_chat_completion_httpx_request(request) -> httpx.Request
+      _chat_completion_url(request, *, stream=False) -> str
+      _build_chat_completion_httpx_request(request, client) -> httpx.Request
     """
 
     # type-ignored: methods reference self._client etc., set by BaseTransport.
@@ -113,7 +113,9 @@ class ChatCompletionTransportMixin:
     def completion(
         self, request: "ChatCompletionRequest",
     ) -> "ChatCompletionResponse":
-        httpx_request = self._build_chat_completion_httpx_request(request)
+        httpx_request = self._build_chat_completion_httpx_request(
+            request, self._client,  # type: ignore[attr-defined]
+        )
         try:
             response = self._client.send(httpx_request)  # type: ignore[attr-defined]
             response.raise_for_status()
@@ -125,13 +127,9 @@ class ChatCompletionTransportMixin:
         self, request: "ChatCompletionRequest",
     ) -> "ChatCompletionResponse":
         aclient = self._ensure_aclient()  # type: ignore[attr-defined]
-        # build_request requires a client — use the async one for the URL host.
-        httpx_request = aclient.build_request(
-            "POST",
-            self._chat_completion_url(),
-            json=self._build_chat_completion_payload(request),
-            headers=self._headers(),  # type: ignore[attr-defined]
-        )
+        # Same builder as the sync path so transports that customise request
+        # construction are not bypassed on async.
+        httpx_request = self._build_chat_completion_httpx_request(request, aclient)
         try:
             response = await aclient.send(httpx_request)
             response.raise_for_status()
@@ -153,15 +151,17 @@ class ChatCompletionTransportMixin:
 
     # --- default hook implementations ---
 
-    def _chat_completion_url(self) -> str:
+    def _chat_completion_url(
+        self, request: "ChatCompletionRequest", *, stream: bool = False,
+    ) -> str:
         return f"{self._base_url}/chat/completions"  # type: ignore[attr-defined]
 
     def _build_chat_completion_httpx_request(
-        self, request: "ChatCompletionRequest",
+        self, request: "ChatCompletionRequest", client: Any,
     ) -> httpx.Request:
-        return self._client.build_request(  # type: ignore[attr-defined]
+        return client.build_request(
             "POST",
-            self._chat_completion_url(),
+            self._chat_completion_url(request),
             json=self._build_chat_completion_payload(request),
             headers=self._headers(),  # type: ignore[attr-defined]
         )

@@ -71,7 +71,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             h["x-api-key"] = self._api_key
         return h
 
-    def _chat_completion_url(self) -> str:
+    def _chat_completion_url(
+        self, request: ChatCompletionRequest, *, stream: bool = False,
+    ) -> str:
         return f"{self._base_url}/v1/messages"
 
     # --- payload building ---
