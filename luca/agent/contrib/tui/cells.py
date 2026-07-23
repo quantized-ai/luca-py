@@ -8,6 +8,7 @@ output. Markup is disabled everywhere — model output is arbitrary text.
 
 from __future__ import annotations
 
+from rich.markdown import Markdown
 from textual.widgets import Static
 
 from luca.agent.core.models import ExecutionStatus, ToolExecution
@@ -31,20 +32,29 @@ class TranscriptCell(Static):
     """
 
     def __init__(self, text: str = "", *, classes: str | None = None) -> None:
-        super().__init__(text, markup=False, classes=classes)
+        super().__init__(markup=False, classes=classes)
         self._text = text
         self.border_title = self.role
+        self.update(self._renderable(text))
 
     @property
     def text(self) -> str:
         return self._text
 
+    def _renderable(self, text: str):
+        """What actually gets rendered for `text`. Base cells are plain; a
+        subclass can format (e.g. markdown). `self._text` always stays raw."""
+        return text
+
     def set_text(self, text: str) -> None:
         self._text = text
-        self.update(text)
+        self.update(self._renderable(text))
 
     def append_text(self, delta: str) -> None:
-        self.set_text(self._text + delta)
+        # Streaming stays plain — partial markdown (a half-open fence) renders
+        # badly; set_text on the block boundary snaps it to the formatted view.
+        self._text += delta
+        self.update(self._text)
 
 
 class UserCell(TranscriptCell):
@@ -62,6 +72,9 @@ class AssistantCell(TranscriptCell):
     AssistantCell { border: round $primary; }
     """
 
+    def _renderable(self, text: str):
+        return Markdown(text) if text.strip() else ""
+
 
 class ReasoningCell(TranscriptCell):
     role = "thinking"
@@ -73,6 +86,9 @@ class ReasoningCell(TranscriptCell):
         text-style: italic;
     }
     """
+
+    def _renderable(self, text: str):
+        return Markdown(text) if text.strip() else ""
 
 
 class NoticeCell(TranscriptCell):
