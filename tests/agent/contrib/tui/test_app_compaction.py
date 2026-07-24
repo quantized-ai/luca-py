@@ -129,7 +129,7 @@ async def test_the_context_bar_is_mounted_and_renders(tmp_path):
         assert "%" in bar.text and "/" in bar.text  # percentage + token readout
 
 
-async def test_the_context_bar_is_left_aligned_with_the_input_text(tmp_path):
+async def test_the_context_bar_sits_just_left_of_the_input_text(tmp_path):
     from textual.widgets import Input
 
     app = AgentApp(
@@ -141,7 +141,7 @@ async def test_the_context_bar_is_left_aligned_with_the_input_text(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         bar = app.query_one("#context-bar", ContextBar)
-        assert bar.content_region.x == app.query_one("#prompt", Input).content_region.x
+        assert bar.content_region.x < app.query_one("#prompt", Input).content_region.x
 
 
 async def test_the_context_bar_turns_red_when_over_the_threshold(tmp_path):

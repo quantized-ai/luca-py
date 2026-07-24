@@ -31,8 +31,8 @@ class ContextBar(Static):
     DEFAULT_CSS = """
     ContextBar {
         height: 1;
-        /* align with the input's text: its margin (1) + border (1) + padding (2) */
-        margin: 0 0 0 4;
+        /* just left of the input's text (which sits at margin+border+padding = 4) */
+        margin: 0 0 0 2;
         color: $text-muted;
     }
     """
