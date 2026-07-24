@@ -127,3 +127,22 @@ async def test_the_context_bar_is_mounted_and_renders(tmp_path):
         await wait_until(pilot, lambda: idle_again(app))
         bar = app.query_one("#context-bar", ContextBar)
         assert bar.text.startswith("context ")
+
+
+async def test_the_context_bar_turns_danger_and_fills_when_over_the_threshold(tmp_path):
+    from textual.widgets import ProgressBar
+
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("Hello.")])),
+        workspace=tmp_path, session_dir=tmp_path,
+        # a tiny window forces 100%; disabled so it does not auto-compact away
+        compactor=Compactor(default_window=1, threshold=0.5, enabled=False),
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: idle_again(app))
+        bar = app.query_one("#context-bar", ContextBar)
+        assert bar.has_class("-danger")
+        assert app.query_one("#ctx-progress", ProgressBar).percentage == 1.0
