@@ -32,6 +32,7 @@ from typing import TypeVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.suggester import SuggestFromList
 from textual.widgets import Footer, Header, Input
 
 from luca.agent.core import AgentRun, AlreadyCancellingError
@@ -76,6 +77,7 @@ from .cells import (
     UserCell,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
+from .commands import COMMANDS, dispatch
 from .render import (
     REDACTED_REASONING_MARKER,
     reasoning_transcript_text,
@@ -119,6 +121,9 @@ class AgentApp(App):
         super().__init__()
         self._session_dir = Path(session_dir)
         self._streaming = streaming
+        self._workspace = workspace
+        self._provider = provider
+        self._mode = mode
         self.runner, self.strategy = build_runner(
             session, workspace=workspace, provider=provider, mode=mode,
         )
@@ -136,7 +141,13 @@ class AgentApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="transcript")
-        yield Input(placeholder="Message the agent — Enter to send", id="prompt")
+        yield Input(
+            placeholder="Message the agent — Enter to send, /help for commands",
+            id="prompt",
+            suggester=SuggestFromList(
+                [f"/{command.name}" for command in COMMANDS], case_sensitive=False,
+            ),
+        )
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -153,6 +164,9 @@ class AgentApp(App):
         if not self.runner.idle():
             return
         text = event.value.strip()
+        if text.startswith("/") and await dispatch(self, text):
+            event.input.value = ""
+            return
         parts: list[ContentPart] = [*self._pending_images]
         if text:
             parts.append(TextContent(text=text))
@@ -379,8 +393,28 @@ class AgentApp(App):
         await self._notice("cancelling — winding down the turn")
 
     async def action_save_quit(self) -> None:
+        await self._quit()
+
+    async def _quit(self) -> None:
         save_session(self.runner.session, self._session_dir)
         self.exit()
+
+    async def _reset_session(self, session: AgentSession) -> None:
+        """Swap in a fresh session and wipe the transcript. `/new` rebuilds the
+        runner so the new conversation drives cleanly; under `--faux` the
+        scripted provider is stateful and already spent, which is a demo-only
+        edge (real runs pass provider=None and build fresh clients per turn)."""
+        self.runner, self.strategy = build_runner(
+            session, workspace=self._workspace,
+            provider=self._provider, mode=self._mode,
+        )
+        await self.query_one("#transcript", VerticalScroll).remove_children()
+        self._live_reasoning = None
+        self._live_text = None
+        self._tool_cells.clear()
+        self._pending_images.clear()
+        self._refresh_status()
+        self.query_one("#prompt", Input).focus()
 
     # ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -404,7 +438,10 @@ class AgentApp(App):
 
     def _refresh_status(self) -> None:
         session = self.runner.session
-        status = f"session {session.id} · {self.runner.status.value}"
+        cfg = session.session_config.llm_config
+        status = f"session {session.id} · {cfg.provider}:{cfg.model} · {self.runner.status.value}"
+        if cfg.reasoning:
+            status += f" · reasoning {cfg.reasoning}"
         if self._pending_images:
             count = len(self._pending_images)
             status += f" · {count} image{'s' if count > 1 else ''} attached"
