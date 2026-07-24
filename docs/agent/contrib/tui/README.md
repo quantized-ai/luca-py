@@ -54,6 +54,7 @@ typo) is sent to the agent as a normal message, so nothing is swallowed.
 | `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
 | `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
 | `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old `<id>.json` stays on disk |
+| `/compact` | Summarize the conversation and continue in a fresh compacted session (see [compaction](../compaction/README.md)). The old `<id>.json` stays on disk |
 | `/quit` | Save and exit (same as `Ctrl+D`) |
 
 The pickers are `PickerScreen` modals (arrow keys to move, Enter to select, Esc
@@ -84,8 +85,9 @@ thin:
 | `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text` (the live and replayed transcript share it, so they cannot drift) |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
+| `context_bar.py` | The one-line context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
-| `cli.py` | argparse entry point |
+| `cli.py` | argparse entry point (incl. `--no-autocompact`, `--compact-threshold`, `--compact-keep-turns`) |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
 message. The status bar shows how many are attached, and `Esc` clears them
