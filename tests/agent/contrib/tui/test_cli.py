@@ -15,10 +15,10 @@ from .helpers import fresh_session
 def test_default_args():
     args = arg_parser().parse_args([])
 
-    assert (args.conversation, args.fork, args.no_streaming, args.faux) == (
+    assert (args.conversation, args.fork, args.streaming, args.faux) == (
         None,
         False,
-        False,
+        None,
         False,
     )
     assert args.pretty_print is False
@@ -27,6 +27,13 @@ def test_default_args():
         None,
         None,
     )
+    # config-resolvable flags default to None so "unset" is distinguishable
+    assert (args.autocompact, args.compact_threshold, args.compact_keep_turns) == (
+        None,
+        None,
+        None,
+    )
+    assert (args.workspace, args.mode) == (None, None)
 
 
 def test_model_and_reasoning_override_the_fresh_session():

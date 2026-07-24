@@ -1,0 +1,483 @@
+{
+  "$defs": {
+    "CompactionSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "keep_turns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keep Turns"
+        },
+        "default_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Window"
+        }
+      },
+      "title": "CompactionSettings",
+      "type": "object"
+    },
+    "ModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "enum": [
+                "provider-default",
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning"
+        }
+      },
+      "title": "ModelConfig",
+      "type": "object"
+    },
+    "PermissionMatchMode": {
+      "enum": [
+        "relaxed",
+        "strict"
+      ],
+      "title": "PermissionMatchMode",
+      "type": "string"
+    },
+    "PermissionMode": {
+      "enum": [
+        "ask",
+        "yolo",
+        "auto"
+      ],
+      "title": "PermissionMode",
+      "type": "string"
+    },
+    "PermissionRule": {
+      "additionalProperties": false,
+      "description": "A config allow/deny rule \u2192 a `ToolKindRule` (when `tool_kind` is set) or\na `ToolRule` over a `(permission, resource)` glob.",
+      "properties": {
+        "decision": {
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "tool_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "permission": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Permission"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Name"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "title": "PermissionRule",
+      "type": "object"
+    },
+    "PermissionSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "match_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMatchMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "title": "Rules",
+          "type": "array"
+        }
+      },
+      "title": "PermissionSettings",
+      "type": "object"
+    },
+    "ProviderDef": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "title": "Base Url",
+          "type": "string"
+        },
+        "api_key_env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key Env"
+        },
+        "transport": {
+          "default": "openai",
+          "title": "Transport",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base_url"
+      ],
+      "title": "ProviderDef",
+      "type": "object"
+    },
+    "RuntimeSettings": {
+      "additionalProperties": false,
+      "description": "Every `RuntimeConfig` knob, all optional (unset = leave the session's).",
+      "properties": {
+        "builtin_client_completion_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builtin Client Completion Timeout In Ms"
+        },
+        "client_completion_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Completion Timeout In Ms"
+        },
+        "tool_execution_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Execution Timeout In Ms"
+        },
+        "llm_completion_cancellation_grace_period": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llm Completion Cancellation Grace Period"
+        },
+        "tool_cancellation_grace_period": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Cancellation Grace Period"
+        },
+        "soft_max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Soft Max Steps"
+        },
+        "hard_max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hard Max Steps"
+        },
+        "doom_loop_threshold": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Doom Loop Threshold"
+        },
+        "limit_tool_choice_on_soft_max_steps_reached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Tool Choice On Soft Max Steps Reached"
+        },
+        "limit_tool_choice_on_doom_loop_flagged": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Tool Choice On Doom Loop Flagged"
+        }
+      },
+      "title": "RuntimeSettings",
+      "type": "object"
+    },
+    "ToolKind": {
+      "enum": [
+        "read",
+        "search",
+        "web_fetch",
+        "edit",
+        "move",
+        "delete",
+        "execute",
+        "switch_mode",
+        "other"
+      ],
+      "title": "ToolKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "$Schema"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSettings"
+    },
+    "compaction": {
+      "$ref": "#/$defs/CompactionSettings"
+    },
+    "permissions": {
+      "$ref": "#/$defs/PermissionSettings"
+    },
+    "providers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ProviderDef"
+      },
+      "title": "Providers",
+      "type": "object"
+    },
+    "models": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Models",
+      "type": "object"
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace"
+    },
+    "additional_directories": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Additional Directories",
+      "type": "array"
+    },
+    "streaming": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Streaming"
+    }
+  },
+  "title": "luca.json",
+  "type": "object",
+  "$id": "https://github.com/quantized-ai/luca-py/luca.schema.json",
+  "description": "Project + user configuration for the Luca TUI."
+}

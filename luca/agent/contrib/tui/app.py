@@ -126,6 +126,9 @@ class AgentApp(App):
         streaming: bool = True,
         mode: str = "ask",
         compaction_policy=None,
+        additional_directories: list | None = None,
+        permission_rules: list | None = None,
+        recommended_models: dict | None = None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -134,13 +137,10 @@ class AgentApp(App):
         self._provider = provider
         self._mode = mode
         self._compaction_policy = compaction_policy
-        self.runner, self.strategy = build_runner(
-            session,
-            workspace=workspace,
-            provider=provider,
-            mode=mode,
-            compaction_policy=compaction_policy,
-        )
+        self._additional_directories = additional_directories
+        self._permission_rules = permission_rules
+        self.recommended_models = recommended_models
+        self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._live_reasoning: ReasoningCell | None = None
         self._live_text: AssistantCell | None = None
@@ -449,18 +449,26 @@ class AgentApp(App):
         save_session(self.runner.session, self._session_dir)
         self.exit()
 
-    async def _reset_session(self, session: AgentSession) -> None:
-        """Swap in a fresh session and wipe the transcript. `/new` rebuilds the
-        runner so the new conversation drives cleanly; under `--faux` the
-        scripted provider is stateful and already spent, which is a demo-only
-        edge (real runs pass provider=None and build fresh clients per turn)."""
-        self.runner, self.strategy = build_runner(
+    def _build_runner(self, session: AgentSession):
+        """One build_runner call site, so `__init__` and the session-swap paths
+        carry the same config-derived workspace / mode / rules and the
+        compaction policy."""
+        return build_runner(
             session,
             workspace=self._workspace,
             provider=self._provider,
             mode=self._mode,
             compaction_policy=self._compaction_policy,
+            additional_directories=self._additional_directories,
+            extra_rules=self._permission_rules,
         )
+
+    async def _reset_session(self, session: AgentSession) -> None:
+        """Swap in a fresh session and wipe the transcript. `/new` rebuilds the
+        runner so the new conversation drives cleanly; under `--faux` the
+        scripted provider is stateful and already spent, which is a demo-only
+        edge (real runs pass provider=None and build fresh clients per turn)."""
+        self.runner, self.strategy = self._build_runner(session)
         await self.query_one("#transcript", VerticalScroll).remove_children()
         self._live_reasoning = None
         self._live_text = None
