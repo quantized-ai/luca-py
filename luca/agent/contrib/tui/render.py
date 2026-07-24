@@ -15,6 +15,7 @@ from luca.agent.core.models import (
 
 RESULT_MAX_LINES = 12
 RESULT_MAX_CHARS = 2_000
+ARG_VALUE_MAX_CHARS = 80
 
 STATUS_LABELS: dict[ExecutionStatus, str] = {
     ExecutionStatus.PENDING: "pending",
@@ -30,8 +31,26 @@ STATUS_LABELS: dict[ExecutionStatus, str] = {
 }
 
 
+def _format_value(value: object) -> str:
+    """One argument value bounded for the call line. Long or multiline strings
+    collapse to a single-line preview with a char count; the durable session
+    keeps the full value. Short values are shown verbatim (repr)."""
+    if isinstance(value, str):
+        collapsed = " ".join(value.split())
+        if len(collapsed) > ARG_VALUE_MAX_CHARS:
+            preview = collapsed[:ARG_VALUE_MAX_CHARS].rstrip() + "…"
+            return f"{preview!r} ({len(value)} chars)"
+        if collapsed != value:  # short, but had newlines/runs of whitespace
+            return repr(collapsed)
+        return repr(value)
+    rendered = repr(value)
+    if len(rendered) > ARG_VALUE_MAX_CHARS:
+        return rendered[:ARG_VALUE_MAX_CHARS].rstrip() + "…"
+    return rendered
+
+
 def format_args(arguments: dict) -> str:
-    return ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+    return ", ".join(f"{key}={_format_value(value)}" for key, value in arguments.items())
 
 
 def format_tool_call(call: ToolCall) -> str:

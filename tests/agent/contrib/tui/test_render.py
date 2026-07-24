@@ -29,6 +29,19 @@ def test_format_tool_call():
     assert format_tool_call(call) == "add(a=1, b=2)"
 
 
+def test_format_args_clips_a_long_string_to_a_bounded_preview():
+    content = "line\n" * 500  # 2500 chars across many lines
+    rendered = format_args({"file_path": "game.py", "content": content})
+    assert rendered.startswith("file_path='game.py', content='line line line")
+    assert rendered.endswith(f"…' ({len(content)} chars)")
+    # the whole call line is one row: no raw newlines survive
+    assert "\n" not in rendered
+
+
+def test_format_args_collapses_a_short_multiline_string():
+    assert format_args({"s": "line1\nline2"}) == "s='line1 line2'"
+
+
 def test_status_label():
     assert status_label(ExecutionStatus.COMPLETED) == "done"
     assert status_label(ExecutionStatus.REJECTED) == "denied"
