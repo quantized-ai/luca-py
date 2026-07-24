@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 from typing import get_args
 
+from luca import __version__
 from luca.agent.core import AgentSessionRunner
 from luca.client.types import Reasoning
 from luca.agent.core.models import AgentSession
@@ -35,6 +36,9 @@ from .wiring import build_faux_provider, default_model, faux_model
 
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
+    parser.add_argument(
+        "--version", action="version", version=f"luca {__version__}",
+    )
     parser.add_argument("--conversation", help="Session id to load (<id>.json).")
     parser.add_argument(
         "--fork", action="store_true",

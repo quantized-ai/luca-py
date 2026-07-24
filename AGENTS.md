@@ -73,7 +73,7 @@ Tests are declarative: precondition → one action → postcondition. No logic, 
 
 ## Running the agent demo
 
-Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual TUI in `luca/agent/contrib/tui` (streaming by default).
+Use `uv run`, not bare `python`. `main.py` and the installed `luca` command both delegate to `luca.cli:main` — a thin launcher (load `.env`, then the Textual TUI in `luca/agent/contrib/tui`, streaming by default). `uv run luca <flags>` is equivalent to `uv run python main.py <flags>`; installed users run `luca` (see the top-level README for `uv tool install ".[tui]"`).
 
 ```bash
 uv run python main.py                              # fresh session
