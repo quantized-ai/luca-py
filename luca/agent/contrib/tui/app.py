@@ -54,6 +54,7 @@ from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
+    CompactionEntry,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
@@ -78,6 +79,8 @@ from .cells import (
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .commands import COMMANDS, dispatch
+from .context_bar import ContextBar
+from luca.agent.contrib.compaction import Compactor
 from .render import (
     REDACTED_REASONING_MARKER,
     reasoning_transcript_text,
@@ -117,6 +120,7 @@ class AgentApp(App):
         session_dir: str | os.PathLike[str] = ".",
         streaming: bool = True,
         mode: str = "ask",
+        compactor: Compactor | None = None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -124,6 +128,8 @@ class AgentApp(App):
         self._workspace = workspace
         self._provider = provider
         self._mode = mode
+        self._compactor = compactor or Compactor()
+        self._compacting = False
         self.runner, self.strategy = build_runner(
             session, workspace=workspace, provider=provider, mode=mode,
         )
@@ -141,6 +147,7 @@ class AgentApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="transcript")
+        yield ContextBar(id="context-bar")
         yield Input(
             placeholder="Message the agent — Enter to send, /help for commands",
             id="prompt",
@@ -204,6 +211,9 @@ class AgentApp(App):
                     self._refresh_status()
                 if runner.idle():
                     break
+            # Turn boundary: compact before the next turn if we crossed the line.
+            if self._compactor.should_compact(self.runner.session):
+                await self._run_compaction(auto=True)
         except Exception as exc:
             await self._notice(f"turn failed: {exc}", error=True)
             save_session(runner.session, self._session_dir)
@@ -344,6 +354,11 @@ class AgentApp(App):
                     except ProjectionError:
                         continue
                     cell.finish(entry, tool_message_text(message), message.is_error)
+            elif isinstance(entry, CompactionEntry):
+                await self._mount_cell(NoticeCell(
+                    f"context compacted — {len(entry.summarized)} earlier "
+                    "entries summarized",
+                ))
             elif isinstance(entry, TurnFinish):
                 if entry.outcome is TurnOutcome.CANCELLED:
                     await self._mount_cell(NoticeCell("turn cancelled"))
@@ -399,6 +414,45 @@ class AgentApp(App):
         save_session(self.runner.session, self._session_dir)
         self.exit()
 
+    # ── compaction ───────────────────────────────────────────────────────────
+
+    def _start_compaction(self) -> None:
+        """Manual `/compact`: drive the compaction on an exclusive worker (it
+        makes an LLM call, so it can't run in the command's handler context)."""
+        self._set_busy(True)
+        self.run_worker(self._compaction_worker(), group="drive", exclusive=True)
+
+    async def _compaction_worker(self) -> None:
+        try:
+            await self._run_compaction(auto=False)
+        finally:
+            self._set_busy(False)
+
+    async def _run_compaction(self, *, auto: bool) -> None:
+        """Summarize the current session and swap in the compacted one. On any
+        failure the source is left untouched — nothing is swapped."""
+        if self._compacting:
+            return
+        self._compacting = True
+        old_id = self.runner.session.id
+        try:
+            await self._notice("compacting" + (" (auto)" if auto else "") + " …")
+            save_session(self.runner.session, self._session_dir)  # source safe before the swap
+            new = await self._compactor.compact(
+                self.runner.session, provider=self._provider,
+            )
+            if new is self.runner.session:
+                await self._notice("nothing to compact yet")
+                return
+            save_session(new, self._session_dir)
+            await self._reset_session(new)
+            await self._replay_history()
+            await self._notice(f"compacted {old_id} → {new.id}")
+        except Exception as exc:
+            await self._notice(f"compaction failed: {exc}", error=True)
+        finally:
+            self._compacting = False
+
     async def _reset_session(self, session: AgentSession) -> None:
         """Swap in a fresh session and wipe the transcript. `/new` rebuilds the
         runner so the new conversation drives cleanly; under `--faux` the
@@ -446,3 +500,7 @@ class AgentApp(App):
             count = len(self._pending_images)
             status += f" · {count} image{'s' if count > 1 else ''} attached"
         self.sub_title = status
+        try:
+            self.query_one("#context-bar", ContextBar).update_from(session, self._compactor)
+        except Exception:
+            pass  # bar not mounted yet (early __init__-time refresh)

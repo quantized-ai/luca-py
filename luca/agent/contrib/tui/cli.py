@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 from typing import get_args
 
+from luca.agent.contrib.compaction import CompactionStrategy, Compactor, RecentTurnsStrategy
 from luca.agent.core import AgentSessionRunner
 from luca.client.types import Reasoning
 from luca.agent.core.models import AgentSession
@@ -64,7 +65,32 @@ def arg_parser() -> argparse.ArgumentParser:
         choices=list(get_args(Reasoning)),
         help="Reasoning level for the model. Persists like --model.",
     )
+    parser.add_argument(
+        "--no-autocompact", action="store_true",
+        help="Disable automatic compaction (still available via /compact).",
+    )
+    parser.add_argument(
+        "--compact-threshold", type=float, default=0.8,
+        help="Auto-compact when context utilization reaches this fraction (default 0.8).",
+    )
+    parser.add_argument(
+        "--compact-keep-turns", type=int, default=0,
+        help="Keep the last N exchanges verbatim when compacting (0 = summary only).",
+    )
     return parser
+
+
+def build_compactor(args: argparse.Namespace) -> Compactor:
+    strategy = (
+        RecentTurnsStrategy(keep_turns=args.compact_keep_turns)
+        if args.compact_keep_turns > 0
+        else CompactionStrategy()
+    )
+    return Compactor(
+        strategy,
+        threshold=args.compact_threshold,
+        enabled=not args.no_autocompact,
+    )
 
 
 def build_session(args: argparse.Namespace) -> AgentSession:
@@ -97,6 +123,7 @@ def main(argv: list[str] | None = None) -> None:
         session,
         provider=provider,
         streaming=not args.no_streaming,
+        compactor=build_compactor(args),
     )
     app.run()
     print(

@@ -164,6 +164,10 @@ async def _cmd_new(app: "AgentApp", arg: str) -> None:
     await app._notice(f"saved {old_id}, started new session {new.id}")
 
 
+async def _cmd_compact(app: "AgentApp", arg: str) -> None:
+    app._start_compaction()
+
+
 async def _cmd_quit(app: "AgentApp", arg: str) -> None:
     await app._quit()
 
@@ -173,6 +177,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("model", "[provider:model]", "pick a provider then a model", _cmd_model),
     SlashCommand("reasoning", "[level]", "pick or set the reasoning level", _cmd_reasoning),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_new),
+    SlashCommand("compact", "", "summarize and start a fresh compacted session", _cmd_compact),
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )
 
