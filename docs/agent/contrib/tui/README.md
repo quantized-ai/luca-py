@@ -16,8 +16,9 @@ from luca.agent.contrib.tui import AgentApp, build_runner, main
 ## 1. Run it
 
 ```bash
-uv run python main.py                     # fresh session (needs OPENROUTER_API_KEY)
-uv run python main.py --faux              # offline scripted demo — no key, no network
+luca                                      # installed command — TUI in the current dir
+luca --faux                               # offline scripted demo — no key, no network
+uv run python main.py                     # same thing from a checkout (needs OPENROUTER_API_KEY)
 uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
@@ -27,8 +28,9 @@ uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 stays openrouter); they persist with the session and override the stored
 values on a resume.
 
-`main.py` is a thin dotenv launcher over `python -m luca.agent.contrib.tui`
-(same flags).
+`main.py`, the `luca` command, and `python -m luca` all delegate to
+`luca.cli:main` (load `.env`, then launch the TUI). Install the command with
+`uv tool install ".[tui]"` — see the top-level README.
 
 ## 2. What's on screen
 

@@ -1,5 +1,8 @@
 """CLI argument parsing and session building."""
 
+import pytest
+
+from luca import __version__
 from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
@@ -7,6 +10,14 @@ from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig
 
 from .helpers import fresh_session
+
+
+def test_version_flag_prints_the_version_and_exits(capsys):
+    with pytest.raises(SystemExit) as exc:
+        arg_parser().parse_args(["--version"])
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"luca {__version__}"
 
 
 def test_default_args():

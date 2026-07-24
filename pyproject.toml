@@ -9,6 +9,15 @@ dependencies = [
     "pydantic>=2",
 ]
 
+[project.scripts]
+luca = "luca.cli:main"
+
+[project.optional-dependencies]
+tui = [
+    "textual>=8.2.8",
+    "python-dotenv>=1.2.2",
+]
+
 [dependency-groups]
 dev = [
     "ipdb>=0.13.13",
