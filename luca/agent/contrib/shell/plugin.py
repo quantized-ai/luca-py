@@ -70,6 +70,7 @@ class ShellAccessPlugin:
         workspace: str | os.PathLike[str],
         additional_directories: list[str | os.PathLike[str]] | None = None,
         mode: PermissionMode | str = PermissionMode.ASK,
+        extra_rules: list | None = None,
     ) -> None:
         self.workspace = _absolute(workspace)
         self.additional_directories = [
@@ -77,8 +78,10 @@ class ShellAccessPlugin:
         ]
         self.mode = PermissionMode(mode)
         self.tracker = FileReadTracker()
+        # Config-seeded rules follow the auto-seeded read-tier defaults, so a
+        # later rule wins (the strategy is last-match-wins).
         self.permission_strategy = PermissionStrategy(
-            mode=self.mode, rules=self._default_rules(),
+            mode=self.mode, rules=[*self._default_rules(), *(extra_rules or [])],
         )
         self.tools: list[Tool] = [
             ReadTool(workdir=self.workspace, tracker=self.tracker),
