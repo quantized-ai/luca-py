@@ -126,12 +126,25 @@ async def test_the_context_bar_is_mounted_and_renders(tmp_path):
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
         bar = app.query_one("#context-bar", ContextBar)
-        assert bar.text.startswith("context ")
+        assert "%" in bar.text and "/" in bar.text  # percentage + token readout
 
 
-async def test_the_context_bar_turns_danger_and_fills_when_over_the_threshold(tmp_path):
-    from textual.widgets import ProgressBar
+async def test_the_context_bar_is_left_aligned_with_the_input_text(tmp_path):
+    from textual.widgets import Input
 
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("hi")])),
+        workspace=tmp_path, session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one("#context-bar", ContextBar)
+        assert bar.content_region.x == app.query_one("#prompt", Input).content_region.x
+
+
+async def test_the_context_bar_turns_red_when_over_the_threshold(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("Hello.")])),
@@ -144,5 +157,4 @@ async def test_the_context_bar_turns_danger_and_fills_when_over_the_threshold(tm
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
         bar = app.query_one("#context-bar", ContextBar)
-        assert bar.has_class("-danger")
-        assert app.query_one("#ctx-progress", ProgressBar).percentage == 1.0
+        assert bar.text.startswith("[red]") and "100%" in bar.text
