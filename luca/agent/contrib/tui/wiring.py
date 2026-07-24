@@ -133,11 +133,16 @@ def build_runner(
     workspace: str | os.PathLike[str] = ".",
     provider=None,
     mode: str = "ask",
+    additional_directories: list | None = None,
+    extra_rules: list | None = None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy. `provider=` is the zero-logic passthrough the tests use
     to inject a `FauxProvider`."""
-    shell = ShellAccessPlugin(workspace=Path(workspace), mode=mode)
+    shell = ShellAccessPlugin(
+        workspace=Path(workspace), mode=mode,
+        additional_directories=additional_directories, extra_rules=extra_rules,
+    )
     strategy = shell.permission_strategy
     registry = SimpleToolRegistry(
         tools=[AddTool(), SubtractTool(), MultiplyTool()],

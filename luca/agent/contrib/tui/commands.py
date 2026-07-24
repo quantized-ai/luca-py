@@ -86,10 +86,13 @@ async def _cmd_model(app: "AgentApp", arg: str) -> None:
     # model, and Esc at either step changes nothing. The model step carries a
     # "back" entry that returns to the provider step with that provider still
     # highlighted, so the provider choice can be changed without starting over.
+    # A luca.json `models` map overrides the built-in list.
+    models = getattr(app, "recommended_models", None) or RECOMMENDED_MODELS
+
     def open_provider_step(highlight: str | None) -> None:
         app.push_screen(
             PickerScreen(
-                "Select a provider", list(RECOMMENDED_MODELS), current=highlight,
+                "Select a provider", list(models), current=highlight,
             ),
             picked_provider,
         )
@@ -112,7 +115,7 @@ async def _cmd_model(app: "AgentApp", arg: str) -> None:
         app.push_screen(
             PickerScreen(
                 f"Select a model ({provider})",
-                [*RECOMMENDED_MODELS[provider], _BACK],
+                [*models[provider], _BACK],
                 current=cfg.model,
             ),
             picked_model,
