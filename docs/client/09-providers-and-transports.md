@@ -12,12 +12,18 @@ of new hosts.
 | `openai` | `OpenAIProvider` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OpenAITransport` |
 | `anthropic` | `AnthropicProvider` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `AnthropicTransport` |
 | `openrouter` | `OpenRouterProvider` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OpenRouterTransport` |
+| `bedrock` | `BedrockProvider` | `https://bedrock-runtime.{region}.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` | `BedrockTransport` |
 | `groq` | `GenericProvider` (from dict) | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `OpenAITransport` |
 | `deepseek` | `GenericProvider` (from dict) | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `OpenAITransport` |
 | `ollama` | `GenericProvider` (from dict) | `http://localhost:11434/v1` | (none) | `OpenAITransport` |
 | `faux` | `FauxProvider` | — | (none) | `FauxTransport` |
 
 `PROVIDERS` lives in `luca/client/providers/__init__.py`.
+
+`bedrock` also reads `BEDROCK_AWS_REGION` to fill the `{region}` in its base
+URL. Pass `base_url=` to point at a VPC endpoint or a proxy instead. The token
+in `AWS_BEARER_TOKEN_BEDROCK` is a Bedrock API key used as a plain bearer
+header; SigV4 is not used.
 
 ## Model strings
 
@@ -132,6 +138,15 @@ replayed block during tool use. An unsigned block is dropped rather than
 sent — Anthropic rejects the request outright if the signature is missing,
 but accepts the turn without the block.
 
+`BedrockTransport` is a full translation transport, not an OpenAI-compatible
+one. It targets the Converse API: the model id goes in the URL path, the
+system prompt is a top-level array, tool arguments are real JSON objects, and
+streaming is a binary `vnd.amazon.eventstream` framing rather than SSE. One
+schema covers every model family on Bedrock (Anthropic, Nova, Llama). Per-model
+facts (reasoning support, output ceilings) live in a capabilities table like
+`AnthropicTransport`'s; the Anthropic-on-Bedrock reasoning rows are written
+from docs and marked unverified until the account's model-use case is approved.
+
 ## Lower level: transports
 
 If you need direct access to the wire layer (custom `httpx.Client`, custom
@@ -166,7 +181,7 @@ the hook methods defined in `ChatCompletionTransportMixin`:
 - `_classify_finish(provider_value, message) -> (canonical, error_message)`
 - `_map_chat_completion_http_error(exc) -> ClientError`
 - `_chat_completion_stream_class()`, `_async_chat_completion_stream_class()`
-- Optional: `_chat_completion_url()`, `_build_chat_completion_httpx_request()`
+- Optional: `_chat_completion_url(request, *, stream=False)`, `_build_chat_completion_httpx_request(request, client)`
 
 The `transport=` kwarg on `BaseProvider.__init__` lets you wrap a
 pre-configured transport in a provider for a uniform call surface.

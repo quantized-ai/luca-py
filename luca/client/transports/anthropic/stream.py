@@ -137,7 +137,7 @@ class AnthropicChatCompletionStream(ChatCompletionStream):
         payload = self._transport._build_chat_completion_payload(self._request, stream=True)
         return self._transport._client.stream(
             "POST",
-            self._transport._chat_completion_url(),
+            self._transport._chat_completion_url(self._request, stream=True),
             json=payload,
             headers=self._transport._headers(),
         )
@@ -176,7 +176,7 @@ class AnthropicAsyncChatCompletionStream(AsyncChatCompletionStream):
         aclient = self._transport._ensure_aclient()
         return aclient.stream(
             "POST",
-            self._transport._chat_completion_url(),
+            self._transport._chat_completion_url(self._request, stream=True),
             json=payload,
             headers=self._transport._headers(),
         )

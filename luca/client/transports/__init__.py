@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .anthropic import AnthropicTransport
 from .base import BaseTransport, ChatCompletionTransportMixin
+from .bedrock import BedrockTransport
 from .faux import FauxTransport
 from .openai import OpenAITransport
 from .openrouter import OpenRouterTransport
@@ -16,6 +17,7 @@ TRANSPORTS: dict[str, type] = {
     "openai": OpenAITransport,
     "anthropic": AnthropicTransport,
     "openrouter": OpenRouterTransport,
+    "bedrock": BedrockTransport,
     # FauxTransport is deliberately NOT registered — tests construct it explicitly.
 }
 
@@ -30,6 +32,7 @@ __all__ = [
     "OpenAITransport",
     "AnthropicTransport",
     "OpenRouterTransport",
+    "BedrockTransport",
     "FauxTransport",
     "TRANSPORTS",
     "register_transport",

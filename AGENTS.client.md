@@ -61,6 +61,7 @@ luca/client/                       # the supporting LLM SDK
 │   ├── openai.py                  # OpenAI provider
 │   ├── anthropic.py               # Anthropic provider
 │   ├── openrouter.py              # OpenRouter provider
+│   ├── bedrock.py                 # Bedrock provider (region → base_url)
 │   ├── generic.py                 # GenericProvider (used by PROVIDERS dict entries)
 │   └── faux.py                    # FauxProvider for tests
 │
@@ -70,6 +71,7 @@ luca/client/                       # the supporting LLM SDK
 │   ├── openai/                    # transport.py + stream.py
 │   ├── anthropic/                 # transport.py + stream.py
 │   ├── openrouter/                # subclass of OpenAITransport (only overrides _headers)
+│   ├── bedrock/                   # Converse translation; binary eventstream decoder
 │   └── faux/                      # scripted responses; no httpx
 │
 └── catalog/                       # in-memory ModelInfo store

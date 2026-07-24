@@ -17,7 +17,7 @@ canonical and provider-agnostic.
 ┌──────────────────────────────────────────────────────────┐
 │  Providers   (luca/client/providers/)           │  ← power users
 │  OpenAIProvider, AnthropicProvider, OpenRouterProvider,  │
-│  GenericProvider, FauxProvider                           │
+│  BedrockProvider, GenericProvider, FauxProvider          │
 │  • holds default base_url, env var, transport class      │
 │  • forwards .completion / .*_stream to the transport     │
 └──────────────────────────────────────────────────────────┘
@@ -26,7 +26,7 @@ canonical and provider-agnostic.
 ┌──────────────────────────────────────────────────────────┐
 │  Transports  (luca/client/transports/)          │  ← advanced
 │  OpenAITransport, AnthropicTransport, OpenRouterTransport│
-│  FauxTransport                                           │
+│  BedrockTransport, FauxTransport                         │
 │  • builds wire JSON  • parses SSE/JSON stream            │
 │  • maps errors to typed ClientError subclasses           │
 └──────────────────────────────────────────────────────────┘
@@ -52,8 +52,9 @@ canonical and provider-agnostic.
 - A **provider** is a vendor identity: a host name (`"openai"`,
   `"groq"`), a default base URL, an env var for the API key, and a default
   transport class. It owns a transport instance.
-- A **transport** is a wire protocol: it builds JSON payloads, parses SSE
-  streams, and maps HTTP errors. The same transport class can serve many
+- A **transport** is a wire protocol: it builds payloads, parses the response
+  stream (SSE for most transports, a binary `vnd.amazon.eventstream` for
+  Bedrock), and maps HTTP errors. The same transport class can serve many
   providers — `OpenAITransport` is the wire format for OpenAI, Groq,
   DeepSeek, Together, Cerebras, Fireworks, Ollama, … via `PROVIDERS`
   config-dict entries that point at it.

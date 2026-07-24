@@ -12,6 +12,7 @@ from ..exceptions import ProviderNotFoundError
 from ..transports import OpenAITransport
 from .anthropic import AnthropicProvider
 from .base import BaseProvider, ChatCompletionMixin
+from .bedrock import BedrockProvider
 from .faux import FauxProvider
 from .generic import GenericProvider
 from .openai import OpenAIProvider
@@ -29,6 +30,7 @@ PROVIDERS: dict[str, Union[type, ProviderConfig]] = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
     "openrouter": OpenRouterProvider,
+    "bedrock": BedrockProvider,
     # Long-tail OpenAI-compatible hosts
     "groq": {
         "default_base_url": "https://api.groq.com/openai/v1",
@@ -102,7 +104,7 @@ def resolve_provider(
 
 __all__ = [
     "BaseProvider", "ChatCompletionMixin",
-    "OpenAIProvider", "AnthropicProvider", "OpenRouterProvider",
+    "OpenAIProvider", "AnthropicProvider", "OpenRouterProvider", "BedrockProvider",
     "GenericProvider", "FauxProvider",
     "PROVIDERS", "ProviderConfig",
     "register_provider", "resolve_provider",
