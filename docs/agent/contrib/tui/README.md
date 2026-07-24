@@ -35,13 +35,43 @@ values on a resume.
 | Piece | Behavior |
 |---|---|
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `notice` (cancels, failures) |
-| Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker |
+| Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
+| Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
 | Approval modal | One screen per uncovered permission step: Approve once / tool-suggested ALWAYS grants / Deny / Abandon — pick by button or digit key |
 | `Esc` | Cancels the live run (`run.cancel()`); the wind-down renders live and the turn closes `CANCELLED` |
 | `Ctrl+D` | Saves the session and quits |
 
-## 3. Structure
+## 3. Slash commands
+
+Type a command at the prompt while idle. The first word is matched against the
+registry in `commands.py`; anything else (a real path like `/etc/hosts`, a
+typo) is sent to the agent as a normal message, so nothing is swallowed.
+
+| Command | Effect |
+|---|---|
+| `/help` | List every command (rendered from the registry, so it never drifts) |
+| `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
+| `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
+| `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old `<id>.json` stays on disk |
+| `/quit` | Save and exit (same as `Ctrl+D`) |
+
+The pickers are `PickerScreen` modals (arrow keys to move, Enter to select, Esc
+to cancel), with the current value pre-highlighted and marked "(current)".
+`/model` is two steps (provider, then model) so a provider is never left with a
+mismatched model, and Esc at either step changes nothing. The model step ends
+with a "← Back to providers" entry that returns to the provider step so the
+provider can be changed without starting over. The list is the curated
+`RECOMMENDED_MODELS` in `wiring.py` grouped by provider, not the client catalog
+(too sparse to drive a picker); `/model <provider:model>` still switches to
+anything off the list, including providers not shown in the picker. The
+direct form rejects an empty half (`/model openai:`), and `/new` carries the
+session's runtime config (timeouts, step limits) into the fresh session.
+
+Adding a command is one `SlashCommand` entry in `commands.py`; `/help` picks it
+up automatically.
+
+## 4. Structure
 
 The Textual-free modules hold everything worth unit-testing; the widgets stay
 thin:
@@ -53,7 +83,8 @@ thin:
 | `sessions.py` | `<session-id>.json` load / save / fork |
 | `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text` (the live and replayed transcript share it, so they cannot drift) |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
-| `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modal, `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
+| `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
+| `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
 | `cli.py` | argparse entry point |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
@@ -74,7 +105,7 @@ The drive worker is the REPL loop verbatim: answer the gate, then fall
 *through* to a run — recording answers on the strategy never advances the
 runner, so the approval branch is always followed by `runner.run()`.
 
-## 4. Test with the faux client
+## 5. Test with the faux client
 
 `provider=` is the same zero-logic passthrough the runner exposes, so the app
 is drivable headless with a scripted
