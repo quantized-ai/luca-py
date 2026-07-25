@@ -174,6 +174,27 @@ async def test_recent_turns_keeps_the_tail_and_folds_the_head():
     )
 
 
+async def test_a_trailing_unanswered_user_message_is_never_folded():
+    # auto-compaction fires with a just-posted, unanswered question on the path;
+    # folding it would drop the question. Full summary must still keep it.
+    session = two_turn_session()
+    session.entries["u3"] = UserMessage(
+        id="u3",
+        parent_id="tf2",
+        created_at=5,
+        parts=[TextContent(text="Q3")],
+        context_tokens=1,
+    )
+    session.active_conversation.nodes.append("u3")
+    offered = (*session.active_conversation.nodes, "cmp")
+    policy = SummarizingCompactionPolicy(provider=_faux("SUMMARY"))  # full summary
+
+    plan = await policy.compact(session, offered, _entry())
+
+    assert plan.nodes == ["cmp", "u3"]  # the pending question survives
+    assert "u3" not in plan.entry.compacted_nodes
+
+
 async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     session = two_turn_session()
     policy = SummarizingCompactionPolicy(RecentTurnsStrategy(keep_turns=5), provider=_faux("x"))

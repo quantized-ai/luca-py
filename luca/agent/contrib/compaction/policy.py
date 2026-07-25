@@ -14,6 +14,7 @@ from luca.agent.core.models import (
     CompactionEntry,
     Conversation,
     TextContent,
+    UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
 from luca.client import acompletion
@@ -78,6 +79,12 @@ class SummarizingCompactionPolicy(CompactionPolicy):
     ) -> CompactionPlan | None:
         candidates = [node_id for node_id in nodes if node_id != entry.id]
         kept = self.strategy.select_keep(candidates, session)
+        # Never fold a trailing unanswered user message: when the policy fires
+        # auto (a message posted, not yet answered), that node is the pending
+        # question, and folding it into the summary would drop it unanswered.
+        # Core leaves this to the policy on purpose; every strategy must obey it.
+        if candidates and candidates[-1] not in kept and isinstance(session.entries[candidates[-1]], UserMessage):
+            kept = [candidates[-1]]
         folded = candidates[: len(candidates) - len(kept)]
         if not folded:
             return None  # nothing older than the kept tail — nothing to compact
