@@ -63,6 +63,17 @@ uv run py.test tests/
 
 `pyproject.toml` configures pytest with `filterwarnings = ["error"]` and `-W error::ResourceWarning`. Any warning fails the build — unclosed streams or connections surface as test failures. Fix them; don't suppress them.
 
+## Lint and format
+
+After changing code, run:
+
+```bash
+uv run ruff check --fix
+uv run ruff format
+```
+
+Config is in `ruff.toml`. Never use `--unsafe-fixes`.
+
 ## Test style (project-wide)
 
 **Assert on the full object, not on individual properties.** `assert block == ThinkingBlock(text=…, signature=…, redacted=False)` rather than three separate attribute checks. A field added later shows up as a diff instead of passing unnoticed, and the expected value doubles as documentation of the shape. The same goes for a whole payload dict, a complete event list, and the resulting `AgentSession`.

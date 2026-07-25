@@ -14,3 +14,20 @@ To use it first add your keys to your `.env` and then run:
 ```bash
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high --provider openrouter
 ```
+
+### Contributing
+
+Set up your env:
+
+```bash
+$ uv sync
+$ uv run pre-commit install
+```
+
+Run tests
+```bash
+$ uv run py.test tests/
+# or with pytest-xdist
+$ uv run py.test tests/ -n {n} # make sure `n < auto` as some tests are time-bound
+```
+
