@@ -478,4 +478,58 @@ loaded session and supplying the collaborators again. An open turn resumes
 (Every entry also carries the shared base fields — `id`, `parent_id`,
 `created_at`, `context_tokens`.)
 
+## 13. Read a saved session
+
+`pretty_print` renders the active conversation as a plain-text transcript —
+the way to inspect a `<session-id>.json` without loading it into an app.
+
+```python
+from luca.agent.core import pretty_print
+
+print(pretty_print(AgentSession.model_validate_json(text)))
+```
+
+```
+LUCA SESSION fb89c986
+Conversation 1a277f0c · idle · 2 turns
+Default: openrouter/openai/gpt-5.4 · reasoning medium
+────────────────────────────────────────────────────────────────
+
+TURN 2 · 2026-07-24 19:32:13
+User
+  what's in my local filesystem?
+
+Assistant · step 1 · openrouter/openai/gpt-5.4
+  [thinking hidden]
+
+  Tools
+  ├─ read(file_path="/", offset=1, limit=200)
+  │  └─ DENIED · approval denied by user
+  │
+  └─ read(
+       file_path="/Users/santiagobasulto/code/python/python-py",
+       offset=1,
+       limit=200
+     )
+     ├─ ALLOWED · permission rule
+     └─ OK · 2 ms
+        <path>/Users/santiagobasulto/code/python/python-py</path>
+        … (+245 more characters)
+
+✓ completed · stop · 7,782 tokens
+
+────────────────────────────────────────────────────────────────
+TOTAL · 2 turns · 3 model calls · 3 tool calls · 13,247 tokens
+```
+
+It reads the durable session, not the wire view ([10](10-projection.md)): a
+tool node shows the stored `ExecutionResult` or `ToolExecutionError`, the
+approval line comes from `approval_status` plus the last decision's
+provenance, and the token counts come from `usages` for **this** conversation
+(§7). Reasoning renders as a marker, tool output clips, and a node id missing
+from the store prints as `[missing entry <id>]` instead of raising — a
+debugging view of a broken session still has to print.
+
+The TUI exposes it as [`--pretty-print`](contrib/tui/README.md#1-run-it).
+
 Next: [`03-tools.md`](03-tools.md).

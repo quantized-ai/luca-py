@@ -1,10 +1,13 @@
 """CLI argument parsing and session building."""
 
+import pytest
+
 from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig
+from luca.agent.core.utils import pretty_print
 
 from .helpers import fresh_session
 
@@ -15,6 +18,7 @@ def test_default_args():
     assert (args.conversation, args.fork, args.no_streaming, args.faux) == (
         None, False, False, False,
     )
+    assert args.pretty_print is False
     assert (args.model, args.provider, args.reasoning) == (
         None, None, None,
     )
@@ -99,6 +103,29 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
     out = capsys.readouterr().out
     assert f"--conversation {seen['id']}" in out
     assert "Goodbye!" in out
+
+
+def test_pretty_print_writes_the_transcript_and_never_starts_the_app(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    session = fresh_session()
+    save_session(session)
+    monkeypatch.setattr(
+        AgentApp, "run", lambda self: pytest.fail("the app must not start"),
+    )
+
+    main(["--conversation", session.id, "--pretty-print"])
+
+    assert capsys.readouterr().out == pretty_print(session) + "\n"
+
+
+def test_pretty_print_without_a_conversation_exits_with_a_usage_error(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--pretty-print"])
+
+    assert exit_info.value.code == 2
+    assert "--pretty-print requires --conversation" in capsys.readouterr().err
 
 
 def test_resume_and_fork(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ Usage:
     uv run python main.py --conversation <id>      # resume <id>.json
     uv run python main.py --conversation <id> --fork  # branch into a new session
     uv run python main.py --no-streaming           # block-level rendering
+    uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
 except with `--faux`. Sessions persist to `<session-id>.json` in the current

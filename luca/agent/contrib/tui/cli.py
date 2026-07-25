@@ -7,6 +7,12 @@
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
+    uv run python -m luca.agent.contrib.tui \
+        --conversation <id> --pretty-print                      # print and exit
+
+`--pretty-print` replaces the TUI entirely: it loads `<id>.json`, writes the
+`pretty_print` transcript to stdout and exits without starting the app, so it
+requires `--conversation` and ignores every other flag.
 
 `--model` / `--provider` / `--reasoning` update the session's
 `LLMConfig` (defaults: openrouter, or faux under `--faux`); the config
@@ -24,7 +30,7 @@ from __future__ import annotations
 import argparse
 from typing import get_args
 
-from luca.agent.core import AgentSessionRunner
+from luca.agent.core import AgentSessionRunner, pretty_print
 from luca.client.types import Reasoning
 from luca.agent.core.models import AgentSession
 
@@ -39,6 +45,11 @@ def arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fork", action="store_true",
         help="Fork the loaded session into a new id.",
+    )
+    parser.add_argument(
+        "--pretty-print", action="store_true",
+        help="Print the loaded conversation as a text transcript and exit "
+             "instead of starting the TUI. Requires --conversation.",
     )
     parser.add_argument(
         "--no-streaming", action="store_true",
@@ -90,7 +101,13 @@ def build_session(args: argparse.Namespace) -> AgentSession:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = arg_parser().parse_args(argv)
+    parser = arg_parser()
+    args = parser.parse_args(argv)
+    if args.pretty_print:
+        if not args.conversation:
+            parser.error("--pretty-print requires --conversation <id>.")
+        print(pretty_print(load_session(args.conversation)))
+        return
     session = build_session(args)
     provider = build_faux_provider() if args.faux else None
     app = AgentApp(

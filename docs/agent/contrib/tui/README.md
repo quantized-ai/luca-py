@@ -21,11 +21,17 @@ uv run python main.py --faux              # offline scripted demo — no key, no
 uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
+uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 ```
 
 `--model` / `--reasoning` update the session's `LLMConfig` (provider
 stays openrouter); they persist with the session and override the stored
 values on a resume.
+
+`--pretty-print` replaces the app: it loads `<id>.json`, writes the
+[`pretty_print`](../../02-data-model.md#13-read-a-saved-session) transcript to
+stdout and exits, so it requires `--conversation` (a usage error without one)
+and ignores every other flag — nothing is started, nothing is saved.
 
 `main.py` is a thin dotenv launcher over `python -m luca.agent.contrib.tui`
 (same flags).
@@ -85,7 +91,7 @@ thin:
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
-| `cli.py` | argparse entry point |
+| `cli.py` | argparse entry point (also the `--pretty-print` transcript path, which never builds an app) |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
 message. The status bar shows how many are attached, and `Esc` clears them

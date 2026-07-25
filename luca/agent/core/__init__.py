@@ -5,7 +5,8 @@ The conversation data model (`models`) plus the runtime surface: the
 class and its `ToolContext`, the `ConversationProjector` LLM-projection
 strategy, the system-prompt strategy, and the agent exceptions. Event
 classes live in `luca.agent.core.events`; the inbound response /
-tool-definition translations in `luca.agent.core.adapter`.
+tool-definition translations in `luca.agent.core.adapter`; the read-only
+`pretty_print` session transcript in `luca.agent.core.utils`.
 """
 
 from .context import CancellationToken, ToolContext
@@ -72,6 +73,7 @@ from .runner import AgentRun, AgentSessionRunner, RunResult
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import ToolRegistry
 from .tools import Tool, tool
+from .utils import pretty_print
 
 __all__ = [
     "AgentError",
@@ -137,5 +139,6 @@ __all__ = [
     "TurnStart",
     "Usage",
     "UserMessage",
+    "pretty_print",
     "tool",
 ]

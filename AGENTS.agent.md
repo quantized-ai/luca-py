@@ -71,7 +71,10 @@ luca/agent/
     ├── ledger.py        # SessionLedger — the single append/read door onto the entry log
     ├── system_prompt.py # coerce_system_prompt_part, SystemPromptAssembler,
     │                    #   DefaultSystemPromptAssembler, part-input type aliases
-    └── runner.py        # AgentSessionRunner, AgentRun handle, RunResult
+    ├── runner.py        # AgentSessionRunner, AgentRun handle, RunResult
+    └── utils.py         # pretty_print(session) — the read-only text transcript
+                         #   of a session (debugging view; reads the durable
+                         #   entries, never the projection)
 
 tests/agent/             # all agent tests; mirrors core/ layout; contrib tests under tests/agent/contrib/
 main.py                  # runnable agent demo — launches the contrib TUI
@@ -442,6 +445,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_ledger.py` | Entry-derived query matrix (status × approval subsets), the `record_usage` door, the `prune` door |
 | `tests/agent/test_projection.py` | `ConversationProjector`: every entry type, every terminal tool status, fail-loud rules, subclass override points |
 | `tests/agent/test_adapter.py` | Inbound message parts + tool wire format |
+| `tests/agent/test_utils.py` | `pretty_print`: whole-transcript assertions per session shape (answered turn, tool tree, failure, open turn, compaction/pruning, clipping) |
 | `tests/agent/test_runner_middleware.py` | Middleware hook dispatch (incl. the tool pair across every outcome) |
 | `tests/agent/test_tools.py` | `Tool` base contract (spec stamping incl. `timeout_in_ms`, token pass-through); the `tool()`/`tool_class()` factory tests are skipped pending their redesign |
 | `tests/agent/contrib/test_simple_tool_registry.py` | Self-scoped contrib tests: birth drafts per preflight outcome, decide delegation, execute resolution, `ProxyToolRegistry` routing/miss degradations/nesting — no runner |
