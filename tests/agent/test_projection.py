@@ -19,6 +19,7 @@ from luca.agent.core.models import (
     AssistantMessage,
     CancelRequested,
     CompactionEntry,
+    CompactionSource,
     Conversation,
     ExecutionResult,
     ExecutionStatus,
@@ -151,20 +152,236 @@ def test_full_tool_call_turn():
 
 def test_compaction_renders_as_synthetic_user_message():
     entries = {
-        "c1": CompactionEntry(
-            id="c1", created_at=2000,
-            summary="## Goal\nFix the failing test suite.",
-            summarized=["u1", "a1"],
+        "cmp": CompactionEntry(
+            id="cmp", created_at=2000,
+            source=CompactionSource.POLICY,
+            parts=[TextContent(text="## Goal\nFix the failing test suite.")],
+            compacted_nodes=["u1", "a1"],
         ),
         "u2": UserMessage(
             id="u2", created_at=2001, parts=[TextContent(text="What next?")],
         ),
     }
-    conversation = Conversation(id="c1", nodes=["c1", "u2"], created_at=2000, updated_at=2001)
+    conversation = Conversation(id="c1", nodes=["cmp", "u2"], created_at=2000, updated_at=2001)
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="## Goal\nFix the failing test suite.")]),
         LucaUserMessage(content=[TextBlock(text="What next?")]),
+    ]
+
+
+def test_a_summary_carrying_an_image_projects_both_blocks_in_order():
+    entries = {
+        "cmp": CompactionEntry(
+            id="cmp", created_at=2000,
+            source=CompactionSource.POLICY,
+            parts=[
+                TextContent(text="Earlier: a screenshot of the failure."),
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                ),
+            ],
+            compacted_nodes=["u1", "a1"],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["cmp"], created_at=2000, updated_at=2000)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[
+            TextBlock(text="Earlier: a screenshot of the failure."),
+            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+        ]),
+    ]
+
+
+def test_a_compaction_with_no_parts_projects_nothing():
+    entries = {
+        "cmp": CompactionEntry(
+            id="cmp", created_at=2000, source=CompactionSource.USER,
+        ),
+        "u2": UserMessage(
+            id="u2", created_at=2001, parts=[TextContent(text="What next?")],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["cmp", "u2"], created_at=2000, updated_at=2001)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="What next?")]),
+    ]
+
+
+def test_a_compaction_with_empty_parts_projects_nothing():
+    entry = CompactionEntry(
+        id="cmp", created_at=2000, source=CompactionSource.USER, parts=[],
+    )
+
+    assert PROJECTOR.project_compaction(entry, {"cmp": entry}) is None
+
+
+def test_a_subclass_can_replace_project_compaction():
+    class Prefixed(ConversationProjector):
+        def project_compaction(self, entry, entries):
+            return LucaUserMessage(
+                content=[TextBlock(text=f"SUMMARY: {entry.parts[0].text}")],
+            )
+
+    entries = {
+        "cmp": CompactionEntry(
+            id="cmp", created_at=2000,
+            source=CompactionSource.POLICY,
+            parts=[TextContent(text="everything so far")],
+            compacted_nodes=["u1"],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["cmp"], created_at=2000, updated_at=2000)
+
+    assert Prefixed().project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="SUMMARY: everything so far")]),
+    ]
+
+
+# ── the compaction bracket: a positional rule on project() ────────────────────
+
+
+def test_a_cancelled_compaction_bracket_projects_nothing_at_all():
+    # the user cancelled a COMPACTION, not their question — without the
+    # positional rule tf_c would put "[Request interrupted by user]" on the
+    # wire, durably, about a question the model was never shown
+    entries = {
+        "u4": UserMessage(id="u4", created_at=2000, parts=[TextContent(text="what is X?")]),
+        "ts_c": TurnStart(id="ts_c", parent_id="u4", created_at=2001),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=2002,
+            source=CompactionSource.POLICY, started_at=2002, ended_at=2003,
+        ),
+        "cr": CancelRequested(id="cr", parent_id="cmp", created_at=2003),
+        "tf_c": TurnFinish(
+            id="tf_c", parent_id="cr", created_at=2003,
+            outcome=TurnOutcome.CANCELLED,
+        ),
+    }
+    conversation = Conversation(
+        id="c1", nodes=["u4", "ts_c", "cmp", "cr", "tf_c"],
+        created_at=2000, updated_at=2003,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="what is X?")]),
+    ]
+
+
+def test_an_archived_conversation_projects_its_originals_and_no_summary():
+    # c1 still holds every original entry, so the summary of them must NOT
+    # also project here — the entry is bookkeeping inside its own bracket
+    entries = {
+        "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
+        "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=2001),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=2002,
+            source=CompactionSource.POLICY,
+            parts=[TextContent(text="the user said hello")],
+            compacted_nodes=["u1"],
+            started_at=2002, ended_at=2002,
+        ),
+        "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=2002),
+    }
+    conversation = Conversation(
+        id="c1", nodes=["u1", "ts_c", "cmp", "tf_c"], created_at=2000, updated_at=2002,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="hello")]),
+    ]
+
+
+def test_the_new_conversation_projects_the_summary_as_a_user_message():
+    # the same entry, one node later: on the path where the originals are gone
+    entries = {
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=2002,
+            source=CompactionSource.POLICY,
+            parts=[TextContent(text="the user said hello")],
+            compacted_nodes=["u1"],
+            started_at=2002, ended_at=2002,
+        ),
+        "u4": UserMessage(id="u4", created_at=2003, parts=[TextContent(text="and now?")]),
+    }
+    conversation = Conversation(
+        id="c2", nodes=["cmp", "u4"], created_at=2002, updated_at=2003,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="the user said hello")]),
+        LucaUserMessage(content=[TextBlock(text="and now?")]),
+    ]
+
+
+def test_two_stacked_closed_compaction_brackets_are_both_skipped():
+    entries = {
+        "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
+        "ts_a": TurnStart(id="ts_a", parent_id="u1", created_at=2001),
+        "cmp_a": CompactionEntry(
+            id="cmp_a", parent_id="ts_a", created_at=2002,
+            source=CompactionSource.POLICY, started_at=2002, ended_at=2002,
+        ),
+        "tf_a": TurnFinish(id="tf_a", parent_id="cmp_a", created_at=2002),
+        "ts_b": TurnStart(id="ts_b", parent_id="tf_a", created_at=2003),
+        "cmp_b": CompactionEntry(
+            id="cmp_b", parent_id="ts_b", created_at=2004,
+            source=CompactionSource.USER, started_at=2004, ended_at=2004,
+        ),
+        "tf_b": TurnFinish(
+            id="tf_b", parent_id="cmp_b", created_at=2004,
+            outcome=TurnOutcome.ERRORED, error="kaboom",
+        ),
+    }
+    conversation = Conversation(
+        id="c1", nodes=["u1", "ts_a", "cmp_a", "tf_a", "ts_b", "cmp_b", "tf_b"],
+        created_at=2000, updated_at=2004,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="hello")]),
+    ]
+
+
+def test_an_open_compaction_bracket_is_skipped_to_the_end_of_the_path():
+    entries = {
+        "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
+        "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=2001),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=2002,
+            source=CompactionSource.USER,
+        ),
+    }
+    conversation = Conversation(
+        id="c1", nodes=["u1", "ts_c", "cmp"], created_at=2000, updated_at=2002,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="hello")]),
+    ]
+
+
+def test_a_conversational_cancelled_bracket_still_projects_the_marker():
+    # the regression guard: ONE predicate separates a compaction bracket from
+    # an ordinary turn, and an ordinary cancelled turn is unchanged
+    entries = {
+        "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=2001),
+        "cr": CancelRequested(id="cr", parent_id="ts", created_at=2002),
+        "tf": TurnFinish(
+            id="tf", parent_id="cr", created_at=2002,
+            outcome=TurnOutcome.CANCELLED,
+        ),
+    }
+    conversation = Conversation(
+        id="c1", nodes=["u1", "ts", "cr", "tf"], created_at=2000, updated_at=2002,
+    )
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaUserMessage(content=[TextBlock(text="hello")]),
+        LucaUserMessage(content=[TextBlock(text=CANCELLED_TURN_MARKER)]),
     ]
 
 

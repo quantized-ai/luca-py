@@ -7,7 +7,8 @@ of the entry's OWN model-facing content — a user message owns its content; an
 assistant message its text + thinking + tool-call requests (name + JSON
 arguments, counted here and never again on the execution); a tool execution
 only its outcome (result content, else the structured error message; 0 while
-nonterminal); a compaction its summary; a pruned entry its replacement
+nonterminal); a compaction its summary `parts` (0 until they land, images
+included); a pruned entry its replacement
 content; markers own nothing. Pruning supports terminal tool executions only
 and returns an identity-less TEMPLATE — stamping ids/clocks belongs to the
 persisting door, never to a strategy.
@@ -24,6 +25,7 @@ from luca.agent.core.models import (
     AssistantMessage,
     CancelRequested,
     CompactionEntry,
+    CompactionSource,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -130,14 +132,47 @@ def test_resultless_errorless_terminal_execution_counts_zero():
     assert CM.calculate_context(entry) == 0
 
 
-def test_compaction_counts_its_summary():
+def test_compaction_counts_its_summary_parts():
     entry = CompactionEntry(
         id="c1", created_at=1000,
-        summary="## Goal\nFix the failing test suite.",  # 35 chars
-        summarized=["u1", "a1"],
+        source=CompactionSource.POLICY,
+        # 35 chars
+        parts=[TextContent(text="## Goal\nFix the failing test suite.")],
+        compacted_nodes=["u1", "a1"],
     )
 
     assert CM.calculate_context(entry) == 8
+
+
+def test_a_compaction_with_no_parts_yet_counts_zero():
+    # scheduled or running: the runner recalculates when `parts` land
+    entry = CompactionEntry(
+        id="c1", created_at=1000, source=CompactionSource.USER,
+    )
+
+    assert CM.calculate_context(entry) == 0
+
+
+def test_a_compaction_with_empty_parts_counts_zero():
+    entry = CompactionEntry(
+        id="c1", created_at=1000, source=CompactionSource.USER, parts=[],
+    )
+
+    assert CM.calculate_context(entry) == 0
+
+
+def test_an_image_carrying_summary_counts_text_plus_the_image_constant():
+    entry = CompactionEntry(
+        id="c1", created_at=1000,
+        source=CompactionSource.POLICY,
+        parts=[
+            TextContent(text="## Goal\nFix the failing test suite."),  # 35
+            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+        ],
+        compacted_nodes=["u1", "a1"],
+    )
+
+    assert CM.calculate_context(entry) == 1_008
 
 
 def test_pruned_entry_counts_its_replacement_content():
@@ -171,9 +206,9 @@ def test_prune_entry_builds_a_template_for_a_terminal_execution():
     )
 
     assert CM.prune_entry(entry) == PrunedEntry(
-        id="",  # placeholder identity — the persisting door stamps the real one
+        id=None,  # uncommitted — the persisting door stamps identity
         parent_id=None,
-        created_at=0,
+        created_at=None,
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[TextContent(text=PRUNED_TOOL_OUTPUT_MARKER)],

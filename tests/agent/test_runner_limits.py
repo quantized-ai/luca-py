@@ -124,7 +124,8 @@ async def test_hard_max_steps_closes_turn_with_errored():
     result = await runner.run()
 
     assert result.outcome == TurnOutcome.ERRORED
-    assert result.status == ConversationStatus.IDLE
+    # the result reports the DERIVED status, which is what the session says
+    assert result.status == ConversationStatus.PENDING
     assert len(faux.requests) == 1  # one LLM call was made
     assert runner.session.status == ConversationStatus.PENDING  # retry-ready
 

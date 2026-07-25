@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from luca.agent.core.models import (
+    CompactionEntry,
     ContentPart,
     ExecutionStatus,
     ImageContent,
@@ -89,6 +90,19 @@ def user_transcript_text(parts: Iterable[ContentPart]) -> str:
             )
             lines.append(f"[image: {label}]")
     return "\n".join(lines)
+
+
+def compaction_transcript_text(entry: CompactionEntry) -> str:
+    """A compaction's summary as transcript text — the same `ContentPart`
+    shape a user message carries, so images render as the same placeholder.
+    Empty for an entry that produced nothing (scheduled, failed, or a no-op),
+    which is exactly when the wire projection emits nothing either."""
+    return user_transcript_text(entry.parts or [])
+
+
+def compaction_subtitle(entry: CompactionEntry) -> str:
+    replaced = len(entry.compacted_nodes or [])
+    return f"replaced {replaced} {'entry' if replaced == 1 else 'entries'}"
 
 
 def clip_text(

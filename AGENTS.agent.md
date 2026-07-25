@@ -11,6 +11,7 @@ Guidance for the `luca.agent` layer. Read this file whenever you're working in `
 - A resumable async agent loop exposed as `runner.run()` (lazy) and `runner.start()` (eager), both returning an `AgentRun` handle. The engine projects the active conversation to LLM messages, calls the model, records the assistant turn, executes tool calls, and loops — bracketed by `TurnStart` / `TurnFinish(outcome)`. One logical turn can span multiple runs.
 - The whole tool lifecycle delegated to a `ToolRegistry` — the core has no built-in tool resolution or approval engine; permission policies are contrib (`contrib/simple_tool_registry`).
 - Durable cancellation via `runner.cancel()` / `run.cancel()`, recorded as a `CancelRequested` entry and wound down at engine step boundaries.
+- Compaction as a step inside a drive: a `CompactionPolicy` decides and summarizes, the runner archives the conversation and installs a new one over the path the policy chose — atomically, losing nothing.
 - Configurable timeouts and step limits that ride on the persisted `RuntimeConfig`, not the constructor.
 - A purely observational event stream (`luca.agent.core.events`) consumed by iterating the handle or via `on_event`.
 
@@ -59,10 +60,15 @@ luca/agent/
     ├── context_manager.py # ContextManager — context-accounting strategy: per-entry
     │                    #   context_tokens estimation, tool-output processing,
     │                    #   PrunedEntry templates (concrete class; runner default)
+    ├── compaction.py    # CompactionPolicy contract + CompactionPlan / UsageCounters /
+    │                    #   ConversationSnapshot + validate_plan (pure — no session
+    │                    #   mutation, no ledger, no asyncio)
     ├── exceptions.py    # AgentError, CancelledError, AlreadyCancellingError,
-    │                    #   ToolNotFound, InvalidToolArguments, ProjectionError
-    ├── events.py        # AgentEvent union (block-level + streaming-delta + ApprovalRequired);
-    │                    #   tool events carry deep ToolExecution snapshots
+    │                    #   ToolNotFound, InvalidToolArguments, ProjectionError,
+    │                    #   CompactionPlanError
+    ├── events.py        # AgentEvent union (block-level + streaming-delta + the
+    │                    #   lifecycle events: ApprovalRequired + the three
+    │                    #   Compaction* ones); tool events carry deep snapshots
     ├── projection.py    # ConversationProjector — the PUBLIC conversation → LLM-message
     │                    #   strategy (subclass to customize history/tool-output policy)
     ├── adapter.py       # message_to_parts() (inbound response conversion) +
@@ -114,7 +120,7 @@ Exception: `AgentSession.session_runtime_status` is a plain `@property` (not a P
 - The request block: a `ToolCall` object inside `AssistantMessage.parts`.
 - A separate, mutable `ToolExecution` entry — the durable source of truth about that call's whole lifecycle — correlated by `tool_call_id`.
 
-`ToolExecution` is the **only** mutable entry type.
+`ToolExecution` is one of the **two** mutable entry types (`CompactionEntry` is the other — see below).
 
 `tool_executions: dict[str, list[str]]` is a denormalized index from `tool_call_id` → execution-entry ids.
 
@@ -129,7 +135,7 @@ These combinations are framework conventions, not Pydantic validators — middle
 
 ### 5. The wire payload is derived, never stored
 
-The **`ConversationProjector`** (`projection.py`) is the public strategy that recomputes the LLM message list from the path on every call: it drops `TurnStart`/`CancelRequested`, projects a CANCELLED `TurnFinish` as the synthetic `[Request interrupted by user]` marker, unwraps messages into client content blocks, projects each terminal `ToolExecution` to its correlated `ToolMessage` (COMPLETED → its result verbatim; every other terminal → derived error text with `is_error=True`), and renders `CompactionEntry` as a synthetic user message. It is a concrete class — pass a subclass as `conversation_projector=` to change any policy (history shaping, redaction, tool-output wording); ALL default derived wording lives on the class. The same `project_tool_execution` output feeds the `ToolExecuted` event's `result_text`/`is_error`, so event and wire never disagree. There is no projection middleware; `before_llm_call` stays as the downstream last-mile hook.
+The **`ConversationProjector`** (`projection.py`) is the public strategy that recomputes the LLM message list from the path on every call: it drops `TurnStart`/`CancelRequested`, projects a CANCELLED `TurnFinish` as the synthetic `[Request interrupted by user]` marker, unwraps messages into client content blocks, projects each terminal `ToolExecution` to its correlated `ToolMessage` (COMPLETED → its result verbatim; every other terminal → derived error text with `is_error=True`), and renders a `CompactionEntry` as a synthetic user message — with one POSITIONAL rule that lives on `project()` itself: a whole compaction bracket (`ts_c cmp [cr] tf_c`) projects as nothing, whatever its outcome, while a `CompactionEntry` outside a bracket projects its `parts`. It is a concrete class — pass a subclass as `conversation_projector=` to change any policy (history shaping, redaction, tool-output wording); ALL default derived wording lives on the class. The same `project_tool_execution` output feeds the `ToolExecuted` event's `result_text`/`is_error`, so event and wire never disagree. There is no projection middleware; `before_llm_call` stays as the downstream last-mile hook.
 
 ### 6. Fail loud on a mid-execution projection
 
@@ -171,7 +177,7 @@ The engine yields `AgentEvent` union members in two tiers:
 
 - **Block events** (always): `ReasoningBlock`, `TextBlock`, `ToolCallReceived`, `ToolExecutionStarted`, `ToolExecuted`, `FinishReason`.
 - **Delta events** (`streaming=True` only): `ReasoningStart`/`Delta`, `TextStart`/`Delta`, `ToolCallStart`. Session behavior is identical regardless of streaming.
-- **`ApprovalRequired`** fires as the last event before a gate, carrying the awaiting `ToolExecution` entries (equivalent to `runner.pending_approvals()`).
+- **Lifecycle events** (always): `ApprovalRequired` fires as the last event before a gate, carrying the awaiting `ToolExecution` entries (equivalent to `runner.pending_approvals()`); `CompactionScheduled` / `CompactionStarted` / `CompactionFinished` carry a deep `CompactionEntry` snapshot through one compaction's lifecycle, `Finished` firing whatever the outcome.
 
 The three tool-lifecycle events carry a deep `ToolExecution` SNAPSHOT (plus a denormalized `tool_call_id`), never a live ledger reference — tool name and arguments come from `execution.raw_tool_call`. Per execution: `ToolCallReceived` fires once at the persisted birth state (PENDING, or a preflight-terminal NOT_FOUND/INVALID/FAILED); `ToolExecutionStarted` fires iff the body dispatches, after RUNNING is persisted and immediately before invocation; `ToolExecuted` fires once at the terminal outcome, with `result_text`/`is_error` copied from the projector's `project_tool_execution` output. Every event follows the persistence of the state its snapshot shows — the stream never leads the durable session.
 
@@ -189,10 +195,11 @@ Status derivation rules:
 - An orphaned `RUNNING` execution (crash mid-body) → plain PENDING — the next drive recovers it to `INTERRUPTED` (no re-dispatch) before doing anything else.
 - Open turn with an unconsumed `CancelRequested` → `CANCELLING` — the next drive is the flush.
 - Closed turn whose trailing `TurnFinish` is TIMED_OUT or ERRORED → PENDING (retry-ready).
+- A closed COMPACTION bracket (`ts_c cmp tf_c`) is transparent — skipped, repeatedly if several stack, and the leaf before it derives. Without it a failed compaction reads as retry-ready (a spin) and a completed one buries a queued user message. An *open* compaction bracket derives PENDING like any open turn.
 
 A logical turn spans one `TurnStart`/`TurnFinish` bracket even across an approval pause. A `TurnStart` with no later `TurnFinish` means resume, not re-open.
 
-`post_message` requires a closed bracket and IDLE or PENDING status. It always rejects CANCELLING and AWAITING_APPROVAL.
+`post_message` requires a closed bracket and IDLE or PENDING status. It always rejects CANCELLING and AWAITING_APPROVAL — and an open compaction bracket, durably, until the compaction has been driven.
 
 ### 12. Cancel is a pure signal
 
@@ -261,6 +268,31 @@ Dispatch (per ready `PENDING`+`ALLOWED` execution): `before_tool_execution` midd
 A call that is terminal at birth is persisted with a structured `error` and never reaches `decide()` (`approval_status` stays `None`); it still passes through the tool middleware pair.
 
 The batteries-included registries live in `luca/agent/contrib/simple_tool_registry/`: `SimpleToolRegistry(tools, permission_policy)` reproduces the classic preflight (resolve → validate → duck-typed `get_approval_context`, stored under `extras["approval_context"]`) and delegates `decide()` to a `PermissionPolicy` (one-arg async `decide(tool_execution)`; `YoloPermissionPolicy` allows everything); `ProxyToolRegistry(*registries)` composes registries (`get_tools` recomputes and caches a `{name → child}` route, duplicate names raise; the other methods route from the cache and degrade to NOT_FOUND on a miss). Everything richer — modes, rules, resource globs, answer-decoupled interactive approval, the `ResourcePermissionToolMixin` — lives in `luca/agent/contrib/resource_permissions/` and is driven interactively by `main.py`.
+
+### Compaction
+
+Replacing the older span of a conversation with a summary of it. **Compaction opens a new conversation inside the same session** — it does not create a new session: add one entry, archive the current view, open a new one over the ids that survive. `conversation_history` keeps the exact pre-compaction path, every compacted entry stays in `entries`, and `CompactionEntry.compacted_nodes` records precisely which ids the summary replaced.
+
+The runner is constructed with one `CompactionPolicy` (`luca/agent/core/compaction.py`; `None` = compaction never happens). Two methods, and they own the whole decision:
+
+```python
+class CompactionPolicy:
+    def should_compact(self, session) -> bool: ...                     # SYNC — start() consults it at call time
+    async def compact(self, session, nodes, entry) -> CompactionPlan | None: ...
+```
+
+- **`nodes`** is the path the policy may rewrite: the active path minus this compaction's own `TurnStart`, ending with `entry`. `plan.nodes` may carry any of those ids in any order with new entries interleaved, and NOTHING else — an id outside the tuple is a plan rejection, so a policy never has to route around framework markers. `plan.nodes = list(nodes)` is a legal full carry.
+- **`entry`** is a DEEP COPY of the committed `CompactionEntry`; the runner applies exactly `parts`, `llm_config` and `metadata` from the returned plan and discards the rest. The copy is load-bearing: a policy that wrote `parts` onto the live entry and then failed would leave a summary projecting onto an unchanged path.
+- **`plan.nodes`** is the new conversation before ids exist: a `str` carries an existing node over, an entry object is created there (the runner stamps `id`/`parent_id`/`created_at`, one timestamp, parents threaded left to right).
+- **`plan.usage`** is a typed `UsageCounters` recorded for the ATTEMPT, against the pre-compaction conversation.
+
+`CompactionEntry` is the second mutable entry type: written when the intent exists (`schedule_compaction()` or `should_compact`), mutated as it progresses, left in its terminal state whichever way it ended. It has NO `status` field — the surrounding turn bracket owns how the attempt ended and the entry owns what it produced.
+
+**Runner integration.** The compaction step runs at the top of `_drive`, BEFORE the conversational bracket: flush a parked cancel → resume / skip / decide → run it → then drive the turn. At most one per drive (structural — the step sits outside the loop), and never while a conversational turn is open. `start()` decides at call time so an eager run opens a compaction bracket instead of a `TurnStart`.
+
+**Safety.** Everything fallible happens before the transition; `SessionLedger.transition_conversation` is the atomic region and contains only plain assignments. `validate_plan` refuses a plan that references an unknown or un-offered id, references one twice, is empty, omits the compaction entry, was computed against a conversation that has since moved, or carries no content — STRUCTURE only, never meaning. A `source=USER` failure raises; a `source=POLICY` failure degrades so the user's turn survives; a cancel always stops the drive. An interrupted compaction resumes in place (the test is `entry.parts is None`, not the bracket's shape); a closed bracket is never retried.
+
+Details in `docs/agent/12-compaction.md`. No default policy ships yet — the summarization strategy is planned as contrib.
 
 ### Tool identity
 
@@ -442,7 +474,9 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_context_manager.py` | Default `ContextManager`: per-type context ownership, prune templates + refusals, identity tool-output, subclass overrides |
 | `tests/agent/test_runner_system_prompt.py` | `system_prompt_parts` forms (str / dict / part / callable) + assembler (callable parts receive `(session_config, runtime_status)`) |
 | `tests/agent/test_runner_limits.py` | Hard/soft `max_steps`, doom-loop flagging, `tool_choice` restriction |
-| `tests/agent/test_ledger.py` | Entry-derived query matrix (status × approval subsets), the `record_usage` door, the `prune` door |
+| `tests/agent/test_ledger.py` | Entry-derived query matrix (status × approval subsets), the `record_usage` / `put_entry` / `transition_conversation` doors, `open_compaction_entry`, the derive-status skip matrix |
+| `tests/agent/test_compaction.py` | The compaction CONTRACT as a unit: `validate_plan` (every rejection), `has_content`, `check_snapshot`, the plan value objects — no runner, no ledger, nothing async |
+| `tests/agent/test_runner_compaction.py` | The drive: brackets, events, the transition, failures by source, cancels, resumes (G6), statuses, `RunResult` |
 | `tests/agent/test_projection.py` | `ConversationProjector`: every entry type, every terminal tool status, fail-loud rules, subclass override points |
 | `tests/agent/test_adapter.py` | Inbound message parts + tool wire format |
 | `tests/agent/test_utils.py` | `pretty_print`: whole-transcript assertions per session shape (answered turn, tool tree, failure, open turn, compaction/pruning, clipping) |
@@ -464,4 +498,5 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | Agent data model / session invariants | `luca/agent/core/models.py` + design principles 1–3 above |
 | The tool-registry contract | `luca/agent/core/tool_registry.py` + `luca/agent/contrib/simple_tool_registry/` |
 | Run lifecycle (run/start, AgentRun, cancel, timeouts, outcomes) | `luca/agent/core/runner.py` + design principles 9, 11, and 12 above |
+| Compaction (policy contract, the plan, the transition, the guarantees) | `luca/agent/core/compaction.py` + the Compaction section above + `docs/agent/12-compaction.md` |
 | Where does this responsibility belong | `runner.py`, `projection.py`, `adapter.py`, and their tests under `tests/agent/` |

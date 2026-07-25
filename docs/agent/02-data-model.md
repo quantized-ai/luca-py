@@ -391,21 +391,42 @@ fork:     nodes = A → B → C → D → G → H     # diverged after D
 ## 9. Compaction
 
 A `compaction` entry is a summary standing in for a span of older entries. The
-bag keeps everything (append-only, nothing is deleted); the *path* stops
-visiting the summarized span:
+bag keeps everything (append-only, nothing is deleted); compaction **archives
+the conversation and opens a new one** over the path that survives:
 
 ```
-before:  nodes = A → B → C → D → E → F
-after:   nodes = A → S → E → F
+before:  active c1 = A → B → C → D → E → F
+
+after:   active  c1 → [A, B, C, D, E, F, ts, S, tf]   ← archived, intact
+         active  c2 → [S, E, F]                       ← the new view
 
 S  compaction
-   ├─ summary      "Read notes.txt; it lists milk, eggs, bread."
-   └─ summarized   [B, C, D]      # the span this entry replaced
+   ├─ source           "user" | "policy"    # who asked
+   ├─ parts            [TextContent("Read notes.txt; it lists milk, eggs…")]
+   ├─ compacted_nodes  [A, B, C, D]         # the span this entry replaced
+   ├─ llm_config       the model that WROTE the summary
+   └─ started_at / ended_at
 ```
 
-`summarized` makes the entry self-describing — you can always recover what it
-replaced. The model sees the summary as a user message
-([10](10-projection.md)).
+`compacted_nodes` makes the entry self-describing — you can always recover what
+it replaced, because those entries are still in the bag and the whole
+pre-compaction path is in `conversation_history`. The model sees `parts` as a
+user message ([10](10-projection.md)); who triggers it and what it says is a
+`CompactionPolicy`'s job ([12](12-compaction.md)).
+
+`compaction` is the **second mutable entry type**: it is written the moment a
+compaction is intended, mutated as it progresses, and left in its terminal
+state whether it succeeded or not. It carries no `status` field — the turn
+bracket around it owns how the attempt ended, and these fields own what it
+produced, so nothing can disagree:
+
+| Log state | Means |
+|---|---|
+| open bracket, no `started_at` | scheduled, not yet started |
+| open bracket, `started_at` set | running — or crashed mid-run |
+| closed `COMPLETED`, `parts` set | succeeded |
+| closed `COMPLETED`, `parts` None | nothing to compact |
+| closed `ERRORED` / `TIMED_OUT` / `CANCELLED` | failed; never retried |
 
 A `pruned` entry works the same way for a *single* entry: replacement content
 standing in for one original (typically a bulky tool output), swapped into the
@@ -468,15 +489,20 @@ loaded session and supplying the collaborators again. An open turn resumes
 |---|---|---|
 | `user` | `parts` | no |
 | `assistant` | `parts`, `llm_config`, `stop_reason` | no |
-| `tool_execution` | one tool call's whole lifecycle (§3–§4) | **yes — the only one** |
+| `tool_execution` | one tool call's whole lifecycle (§3–§4) | **yes** |
 | `turn_start` | — | no |
 | `turn_finish` | `outcome`, `error` | no |
 | `cancel_requested` | requested `outcome`, `error` | no |
-| `compaction` | `summary`, `summarized` ids | no |
+| `compaction` | `source`, `parts`, `compacted_nodes`, `llm_config`, timestamps (§9) | **yes** |
 | `pruned` | replacement `content` for one original entry (§9) | no |
 
 (Every entry also carries the shared base fields — `id`, `parent_id`,
 `created_at`, `context_tokens`.)
+
+`id` and `created_at` are `None` until an entry is **committed**. A template a
+strategy builds — a registry's birth draft, a `ContextManager` pruned
+replacement, a compaction plan's new entry — carries no identity; the
+persisting door stamps both. Every entry in `session.entries` has them.
 
 ## 13. Read a saved session
 

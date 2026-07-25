@@ -253,8 +253,10 @@ def _entry_lines(
     if isinstance(entry, AssistantMessage):
         return _assistant_lines(entry, step, executions)
     if isinstance(entry, CompactionEntry):
-        replaced = _plural(len(entry.summarized), "entry", "entries")
-        return [f"Compaction · replaced {replaced}", *_wrap(entry.summary)]
+        replaced = _plural(len(entry.compacted_nodes or []), "entry", "entries")
+        header = f"Compaction · replaced {replaced}"
+        text = _content_text(entry.parts or [])
+        return [header, *_wrap(text)] if text else [header]
     if isinstance(entry, PrunedEntry):
         return [
             f"Pruned {entry.pruned_entry_type} {entry.pruned_entry_id}",
@@ -448,7 +450,7 @@ def _one_line(text: str) -> str:
 
 
 def _timestamp(entry: AnyEntry | None) -> str:
-    if entry is None:
+    if entry is None or entry.created_at is None:
         return "—"
     return datetime.fromtimestamp(entry.created_at / 1000).strftime(TIMESTAMP_FORMAT)
 

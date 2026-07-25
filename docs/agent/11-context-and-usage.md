@@ -146,6 +146,25 @@ carries no usage. `SessionLedger.record_usage()` is the single write door, so
 the keys always agree with the record and always reference an entry on the
 conversation's path.
 
+A compaction's own summarization call is recorded the same way, under the
+**pre-compaction** conversation — where the request was actually made, with
+that conversation's context as its input ([12](12-compaction.md)). So a
+session's total cost means walking `conversation_history` too:
+
+```python
+spent = sum(
+    usage.total_tokens
+    for records in session.usages.values()
+    for usage in records.values()
+)
+```
+
+> ⚠️ **Atomic session writes are the application's job.** The core owns no
+> persistence. Write to a temporary file and `os.replace` it into place — a
+> crash mid-write otherwise leaves truncated JSON and an unloadable session,
+> which is the one way to lose a whole conversation.
+> `luca.agent.contrib.tui.sessions.save_session` does exactly that.
+
 ## 5. Pruning
 
 Pruning replaces an entry's *contribution to the path* without mutating or
@@ -186,4 +205,6 @@ entry stays in `session.entries` untouched.
 > undecided. A real strategy — thresholds, which entries, budgets — is
 > application policy you build on this seam.
 
-That's the full agent surface. Back to the [index](README.md).
+Next: [`12-compaction.md`](12-compaction.md) — the other half of the context
+story: when pruning single entries is not enough, replace the whole older span
+with a summary.

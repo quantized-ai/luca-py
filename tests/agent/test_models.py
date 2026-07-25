@@ -13,15 +13,18 @@ the model must accept what application middleware authors.
 """
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from luca.agent.core.models import (
     AgentSession,
+    AnyEntry,
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    CompactionEntry,
+    CompactionSource,
     Conversation,
     ExecutionResult,
     ExecutionStatus,
@@ -30,6 +33,7 @@ from luca.agent.core.models import (
     ImageFileId,
     ImageURL,
     Inf,
+    LLMConfig,
     MilliSeconds,
     PrunedEntry,
     RuntimeConfig,
@@ -44,8 +48,10 @@ from luca.agent.core.models import (
     ToolSpec,
     TurnFinish,
     TurnOutcome,
+    TurnStart,
     Usage,
     UserMessage,
+    is_compaction_bracket,
 )
 
 from tests.agent.scenarios import MODEL
@@ -648,3 +654,222 @@ def test_a_signature_survives_a_whole_session_round_trip():
     reloaded = AgentSession.model_validate_json(session.model_dump_json())
 
     assert reloaded.entries["a1"].parts[0].signature == "sig-abc"
+
+
+# ── compaction ─────────────────────────────────────────────────────────────────
+
+
+def test_compaction_entry_is_born_with_nothing_but_its_source():
+    entry = CompactionEntry(
+        id="cmp", parent_id="ts_c", created_at=1000,
+        source=CompactionSource.USER,
+    )
+
+    assert entry == CompactionEntry(
+        id="cmp",
+        parent_id="ts_c",
+        created_at=1000,
+        type="compaction",
+        context_tokens=0,
+        source=CompactionSource.USER,
+        parts=None,
+        compacted_nodes=None,
+        llm_config=None,
+        started_at=None,
+        ended_at=None,
+        metadata={},
+    )
+
+
+def test_compaction_entry_requires_a_source():
+    with pytest.raises(ValidationError):
+        CompactionEntry(id="cmp", created_at=1000)
+
+
+def test_compaction_entry_rejects_the_old_field_names():
+    with pytest.raises(ValidationError):
+        CompactionEntry(
+            id="cmp", created_at=1000, source=CompactionSource.POLICY,
+            summary="…", summarized=["u1"], details={},
+        )
+
+
+def test_compaction_source_members():
+    assert [member.value for member in CompactionSource] == ["user", "policy"]
+
+
+def test_a_committed_compaction_round_trips_inside_a_session():
+    session = AgentSession(
+        id="s_compacted",
+        entries={
+            "cmp": CompactionEntry(
+                id="cmp", parent_id="ts_c", created_at=1000,
+                source=CompactionSource.POLICY,
+                parts=[
+                    TextContent(text="the story so far"),
+                    ImageContent(
+                        source=ImageBase64(data="aGk=", media_type="image/png"),
+                    ),
+                ],
+                compacted_nodes=["u0", "a0"],
+                llm_config=LLMConfig(model="cheap", provider="faux"),
+                started_at=999, ended_at=1000,
+                metadata={"strategy": "turn-brackets"},
+                context_tokens=1_004,
+            ),
+        },
+        active_conversation=Conversation(
+            id="c2", nodes=["cmp"], created_at=1000, updated_at=1000,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    reloaded = AgentSession.model_validate_json(session.model_dump_json())
+
+    assert reloaded == session
+    assert type(reloaded.entries["cmp"]) is CompactionEntry
+
+
+# ── uncommitted templates ──────────────────────────────────────────────────────
+
+
+def test_an_entry_template_carries_no_identity():
+    # `None` means "not yet committed" — a registry's birth draft, a pruned
+    # replacement, a compaction plan's new entry
+    template = CompactionEntry(source=CompactionSource.POLICY)
+
+    assert (template.id, template.parent_id, template.created_at) == (
+        None, None, None,
+    )
+
+
+def test_a_template_still_discriminates_through_the_entry_union():
+    template = PrunedEntry(
+        pruned_entry_type="tool_execution",
+        pruned_entry_id="te1",
+        content=[TextContent(text="[pruned]")],
+    )
+
+    adapter = TypeAdapter(AnyEntry)
+
+    assert adapter.validate_python(
+        template.model_dump(),
+    ) == template
+
+
+# ── the compaction-bracket predicate ───────────────────────────────────────────
+
+
+def test_a_turn_start_followed_by_a_compaction_entry_opens_a_compaction_bracket():
+    entries = {
+        "ts_c": TurnStart(id="ts_c", created_at=1000),
+        "cmp": CompactionEntry(
+            id="cmp", created_at=1000, source=CompactionSource.POLICY,
+        ),
+        "tf_c": TurnFinish(id="tf_c", created_at=1000),
+    }
+
+    assert is_compaction_bracket(["ts_c", "cmp", "tf_c"], entries, 0) is True
+
+
+def test_a_turn_start_followed_by_anything_else_is_conversational():
+    entries = {
+        "ts": TurnStart(id="ts", created_at=1000),
+        "a1": AssistantMessage(
+            id="a1", created_at=1000,
+            parts=[TextContent(text="hi")],
+            llm_config=MODEL, stop_reason="stop",
+        ),
+        "cmp": CompactionEntry(
+            id="cmp", created_at=1000, source=CompactionSource.POLICY,
+        ),
+    }
+
+    # a summary later in the span does NOT make the bracket a compaction one
+    assert is_compaction_bracket(["ts", "a1", "cmp"], entries, 0) is False
+
+
+def test_a_bare_turn_start_is_conversational():
+    entries = {"ts": TurnStart(id="ts", created_at=1000)}
+
+    assert is_compaction_bracket(["ts"], entries, 0) is False
+
+
+# ── turn counting ──────────────────────────────────────────────────────────────
+
+
+def test_turn_count_counts_conversational_brackets_including_the_open_one():
+    session = AgentSession(
+        id="s_turns",
+        entries={
+            "ts1": TurnStart(id="ts1", created_at=1000),
+            "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
+            "ts2": TurnStart(id="ts2", parent_id="tf1", created_at=1000),
+            "tf2": TurnFinish(
+                id="tf2", parent_id="ts2", created_at=1000,
+                outcome=TurnOutcome.ERRORED, error="boom",
+            ),
+            "ts3": TurnStart(id="ts3", parent_id="tf2", created_at=1000),
+        },
+        active_conversation=Conversation(
+            id="c1", nodes=["ts1", "tf1", "ts2", "tf2", "ts3"],
+            created_at=1000, updated_at=1000,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    # a failed bracket counts, and so does the open one before its first
+    # assistant message lands
+    assert session.session_runtime_status.turn_count == 3
+
+
+def test_turn_count_excludes_compaction_brackets():
+    session = AgentSession(
+        id="s_turns_compacted",
+        entries={
+            "ts1": TurnStart(id="ts1", created_at=1000),
+            "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
+            "ts_c": TurnStart(id="ts_c", parent_id="tf1", created_at=1000),
+            "cmp": CompactionEntry(
+                id="cmp", parent_id="ts_c", created_at=1000,
+                source=CompactionSource.POLICY,
+            ),
+            "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=1000),
+        },
+        active_conversation=Conversation(
+            id="c1", nodes=["ts1", "tf1", "ts_c", "cmp", "tf_c"],
+            created_at=1000, updated_at=1000,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert session.session_runtime_status.turn_count == 1
+
+
+def test_turn_count_is_scoped_to_the_active_conversation():
+    # entries outlive their conversation, so counting the store would include
+    # every archived turn
+    session = AgentSession(
+        id="s_turns_archived",
+        entries={
+            "ts0": TurnStart(id="ts0", created_at=900),
+            "tf0": TurnFinish(id="tf0", parent_id="ts0", created_at=900),
+            "cmp": CompactionEntry(
+                id="cmp", created_at=1000, source=CompactionSource.POLICY,
+                parts=[TextContent(text="earlier")], compacted_nodes=["ts0", "tf0"],
+            ),
+            "ts1": TurnStart(id="ts1", parent_id="cmp", created_at=1000),
+            "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
+        },
+        active_conversation=Conversation(
+            id="c2", nodes=["cmp", "ts1", "tf1"], created_at=1000, updated_at=1000,
+        ),
+        conversation_history=[
+            Conversation(
+                id="c1", nodes=["ts0", "tf0"], created_at=900, updated_at=900,
+            ),
+        ],
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert session.session_runtime_status.turn_count == 1

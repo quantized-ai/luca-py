@@ -60,10 +60,16 @@ the agent. Stop iterating and the agent stops.
 ## 2. `RunResult` — where it stopped
 
 ```python
-result.status              # IDLE (turn finished) | AWAITING_APPROVAL (paused at a gate)
-result.outcome             # TurnOutcome if the turn closed this run, else None
+result.status              # the DERIVED status where the run stopped
+result.outcome             # how the last bracket this run closed ended, else None
 result.pending_approvals   # list[ToolExecution] — non-empty iff AWAITING_APPROVAL
 ```
+
+`status` is derived, not assumed: a turn that finished is `IDLE`, a gate is
+`AWAITING_APPROVAL`, and a retry-ready close (a failed turn, a hard step limit)
+is `PENDING`. `outcome` is carried from the close rather than read off the path,
+because after a compaction the closing marker is on the archived conversation
+([12](12-compaction.md)).
 
 No usage on the result — provider usage is recorded per assistant entry in
 `session.usages` ([11](11-context-and-usage.md)).
@@ -103,6 +109,7 @@ text-bearing event exposes `.text`, so one `match` serves every case.
 | `ToolExecuted` | `.tool_call_id`, `.execution` (terminal), `.result_text`, `.is_error` — what the model is told |
 | `FinishReason` | `.finish_reason` |
 | `ApprovalRequired` | `.executions` — emitted as the **last** event before an approval gate |
+| `CompactionScheduled` / `CompactionStarted` / `CompactionFinished` | `.entry` (a deep snapshot) — one compaction's lifecycle ([12](12-compaction.md)) |
 
 The three tool events carry a **deep snapshot** of the durable `ToolExecution`
 at that moment (name/arguments live on `execution.raw_tool_call`); later
@@ -210,8 +217,36 @@ Poll these predicates to decide what to do next:
 The runner **re-derives status from the entries** when it takes ownership of a
 session, so a reloaded or crashed session lands in the right state on its own.
 
+A **closed compaction bracket is transparent** to that derivation: it is
+skipped, and the leaf before it decides. That is what keeps a failed compaction
+from looking retry-ready (a spin) and a completed one from burying a queued
+question. An *open* compaction bracket derives `PENDING` like any open turn —
+which is how a scheduled compaction survives a reload.
+
 **Suspend vs. advance.** Exiting a lazy run's `async with` block *suspends* — it
 closes the engine where it is, re-derives status, and finalizes that handle
 without writing anything. The open turn resumes on a later `run()`. A finalized
-handle is spent; create a fresh `runner.run()` to continue. Next:
-[`05-permissions.md`](05-permissions.md).
+handle is spent; create a fresh `runner.run()` to continue.
+
+## 10. Compaction
+
+The runner takes one more collaborator, and it runs as a step at the top of a
+drive — *before* the conversational bracket opens:
+
+```python
+runner = AgentSessionRunner(session, compaction_policy=MyPolicy())
+
+runner.schedule_compaction()   # optional: arm it explicitly (idempotent, durable)
+await runner.run()             # compacts if due, then drives the turn
+```
+
+The drive order is: flush a parked cancel → resume, skip, or ask the policy →
+run the compaction → then the ordinary turn. At most one compaction per drive,
+and never while a conversational turn is open — an approval pause or a
+crashed-mid-turn bracket is resumed first. `start()` decides at call time, so an
+eager run opens a compaction bracket instead of a `TurnStart` when one is due.
+
+Everything else — the policy contract, the plan, the events, the guarantees —
+is [`12-compaction.md`](12-compaction.md).
+
+Next: [`05-permissions.md`](05-permissions.md).

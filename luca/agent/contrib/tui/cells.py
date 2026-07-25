@@ -11,9 +11,15 @@ from __future__ import annotations
 from rich.markdown import Markdown
 from textual.widgets import Static
 
-from luca.agent.core.models import ExecutionStatus, ToolExecution
+from luca.agent.core.models import CompactionEntry, ExecutionStatus, ToolExecution
 
-from .render import clip_text, format_tool_call, status_label
+from .render import (
+    clip_text,
+    compaction_subtitle,
+    compaction_transcript_text,
+    format_tool_call,
+    status_label,
+)
 
 
 class TranscriptCell(Static):
@@ -103,6 +109,28 @@ class NoticeCell(TranscriptCell):
 
     def __init__(self, text: str, *, error: bool = False) -> None:
         super().__init__(text, classes="-error" if error else None)
+
+
+class CompactionCell(TranscriptCell):
+    """A compaction: the summary that replaced the older span, with how many
+    entries it stands in for as the border subtitle. Nothing is lost — the
+    replaced entries are still in the session, on the archived conversation."""
+
+    role = "compacted"
+
+    DEFAULT_CSS = """
+    CompactionCell {
+        border: round $success;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, entry: CompactionEntry) -> None:
+        super().__init__(compaction_transcript_text(entry))
+        self.border_subtitle = compaction_subtitle(entry)
+
+    def _renderable(self, text: str):
+        return Markdown(text) if text.strip() else ""
 
 
 class ToolCallCell(TranscriptCell):

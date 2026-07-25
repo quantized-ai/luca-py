@@ -16,7 +16,7 @@ Contract semantics:
   `timeout_in_ms`; `None` if unresolved), `status` (PENDING, or a
   terminal-at-birth NOT_FOUND / INVALID / FAILED), `error` (a
   `ToolExecutionError` for terminal births — the registry authors it), and
-  `extras`. It uses placeholder identity (`id=""`, `created_at=0`); the
+  `extras`. It carries no identity — `id` / `created_at` stay `None`; the
   RUNNER stamps `id`, `parent_id`, `created_at`, `ended_at` (when terminal at
   birth), `context_tokens`, and `is_doom_loop_flagged`, so ids and timestamps
   keep flowing through `generate_id()` / `now_ms()`.

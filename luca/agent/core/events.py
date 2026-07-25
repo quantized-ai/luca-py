@@ -13,8 +13,11 @@ Two tiers, selected by the run's `streaming=` flag:
 - DELTA / `*Start` events fire ONLY under `streaming=True`, as tokens arrive:
   `ReasoningStart`/`ReasoningDelta`, `TextStart`/`TextDelta`, `ToolCallStart`.
 
-Plus one lifecycle event, `ApprovalRequired`, emitted as the last event before
-the engine parks for external approval.
+Plus the LIFECYCLE events, which fire in both modes: `ApprovalRequired`,
+emitted as the last event before the engine parks for external approval, and
+the three compaction events (`CompactionScheduled` / `CompactionStarted` /
+`CompactionFinished`), which map one-to-one onto the tool events — same
+lifecycle shape, same payload discipline.
 
 The tool-lifecycle events carry the durable `ToolExecution` itself rather than
 a hand-picked subset of its fields. Every carried execution is a DEEP SNAPSHOT
@@ -38,7 +41,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import ToolExecution
+from .models import AnyEntry, CompactionEntry, ToolExecution, TurnOutcome
 
 
 # ── block events (fire in both modes) ──────────────────────────────────────────
@@ -169,6 +172,58 @@ class ApprovalRequired(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CompactionScheduled(BaseModel):
+    """Emitted at the top of a drive, once the compaction bracket and its
+    entry are on the path — for BOTH sources, since `schedule_compaction()`
+    happens outside any run and has no stream to emit on. `entry.source` says
+    who asked; `started_at` is None on a fresh open and carries the previous
+    stamp on a resume.
+
+    The gap between this and `CompactionStarted` is usually microseconds, but
+    it is a real window a consumer may cancel in — which is why the two are
+    separate events."""
+
+    type: Literal["compaction_scheduled"] = "compaction_scheduled"
+    entry: CompactionEntry  # deep snapshot — never a live ledger reference
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CompactionStarted(BaseModel):
+    """Emitted once `started_at` is stamped, immediately before the policy's
+    LLM call. `entry.llm_config` is still None here and cannot be otherwise:
+    the policy chooses the model — it may be a cheaper one than the session's
+    — and has not been called yet. The model that produced a summary is known
+    at `CompactionFinished`."""
+
+    type: Literal["compaction_started"] = "compaction_started"
+    entry: CompactionEntry  # deep snapshot — never a live ledger reference
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CompactionFinished(BaseModel):
+    """Emitted after the bracket closes or the transition commits — WHATEVER
+    the outcome, exactly as a failed tool execution still emits `ToolExecuted`.
+    For a policy-initiated failure, which degrades silently so the user's turn
+    survives, this is the ONLY signal that anything went wrong.
+
+    `entry.parts` set → summarized; None → nothing was done. `outcome` and
+    `error` come from the closing `TurnFinish`, so no new vocabulary is
+    introduced and there is no separate `CompactionFailed`.
+    `conversation_id` is the new conversation, and None whenever nothing was
+    actually compacted."""
+
+    type: Literal["compaction_finished"] = "compaction_finished"
+    entry: CompactionEntry  # deep snapshot — never a live ledger reference
+    outcome: TurnOutcome
+    error: str | None = None  # detail for TIMED_OUT / ERRORED
+    created: list[AnyEntry] = Field(default_factory=list)  # other plan entries
+    conversation_id: str | None = None  # None if nothing changed
+
+    model_config = ConfigDict(extra="forbid")
+
+
 AgentEvent = Annotated[
     Union[
         ReasoningBlock,
@@ -183,6 +238,9 @@ AgentEvent = Annotated[
         TextDelta,
         ToolCallStart,
         ApprovalRequired,
+        CompactionScheduled,
+        CompactionStarted,
+        CompactionFinished,
     ],
     Field(discriminator="type"),
 ]

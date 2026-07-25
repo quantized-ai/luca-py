@@ -127,4 +127,32 @@ instead of producing invented content:
 > must end up with exactly one correlated output. Rewrite content freely;
 > never drop or re-key a tool message.
 
+## 7. The one path-level rule
+
+Every rule above is per-entry. One is not, because it cannot be decided from a
+single entry: a **compaction bracket** — the whole span
+`turn_start → compaction → [cancel_requested] → turn_finish`, whatever its
+outcome — projects as **nothing**, while a `compaction` entry reached *outside*
+a bracket projects its `parts` as a synthetic user message.
+
+```python
+def project_compaction(self, entry, entries):        # override point
+    if not entry.parts:                              # scheduled, failed, no-op
+        return None
+    return UserMessage(content=[self._content_block(p) for p in entry.parts])
+```
+
+A summary only means something on the path where the history it replaces is
+gone — the new conversation, where the entry sits bare. Inside its bracket it
+is the *record of the operation*, on a path that still holds the originals, so
+an archived conversation projects its originals and no summary.
+
+> ⚠️ **The rule is required, not tidiness.** A cancelled compaction never
+> transitions, so its `turn_finish(CANCELLED)` stays on the active path —
+> without the rule, every later request would carry
+> `[Request interrupted by user]` about a question the model was never shown.
+
+The rule lives on `project()`, which already owns path-level policy; every
+per-entry method keeps its signature. See [`12-compaction.md`](12-compaction.md).
+
 Next: [`11-context-and-usage.md`](11-context-and-usage.md).

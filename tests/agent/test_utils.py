@@ -18,6 +18,7 @@ from luca.agent.core.models import (
     AssistantMessage,
     CancelRequested,
     CompactionEntry,
+    CompactionSource,
     Conversation,
     ConversationStatus,
     ExecutionResult,
@@ -255,8 +256,15 @@ COMPACTED_SESSION = AgentSession(
     entries={
         "cp": CompactionEntry(
             id="cp", created_at=T,
-            summary="The user asked about seating; the agent answered.",
-            summarized=["u0", "a0"],
+            source=CompactionSource.POLICY,
+            parts=[
+                TextContent(
+                    text="The user asked about seating; the agent answered.",
+                ),
+            ],
+            compacted_nodes=["u0", "a0"],
+            llm_config=MODEL,
+            started_at=T, ended_at=T,
         ),
         "te1": ToolExecution(
             id="te1", created_at=T,
@@ -443,6 +451,33 @@ Default: faux/test-model
 NEXT TURN · {STAMP}
 Compaction · replaced 2 entries
   The user asked about seating; the agent answered.
+
+Pruned tool_execution te1
+  [tool output has been pruned]
+
+User
+  thanks
+
+[missing entry missing]
+
+{RULE}
+TOTAL · 0 turns · 0 model calls · 0 tool calls · 0 tokens"""
+
+
+def test_a_compaction_that_produced_nothing_renders_its_header_alone():
+    session = COMPACTED_SESSION.model_copy(deep=True, update={"id": "s_scheduled"})
+    session.entries["cp"] = session.entries["cp"].model_copy(
+        update={"parts": None, "compacted_nodes": None, "ended_at": None},
+    )
+
+    assert pretty_print(session) == f"""\
+LUCA SESSION s_scheduled
+Conversation c1 · idle · 0 turns
+Default: faux/test-model
+{RULE}
+
+NEXT TURN · {STAMP}
+Compaction · replaced 0 entries
 
 Pruned tool_execution te1
   [tool output has been pruned]

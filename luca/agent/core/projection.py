@@ -13,6 +13,13 @@ Projection is deterministic, read-only derivation:
 
 - Walk `conversation.nodes` in order; resolve each id in `entries`; the path
   is the sole ordering authority (`parent_id` is never traversed).
+- One path-level rule lives on `project()` itself, because it cannot be
+  decided from a single entry: a COMPACTION BRACKET (`ts_c cmp [cr] tf_c`,
+  whatever its outcome) projects as nothing, while a `CompactionEntry` outside
+  a bracket projects its `parts` as a synthetic user message. That is what
+  keeps an archived conversation projecting its originals rather than
+  originals-plus-summary, and what stops a cancelled compaction from putting
+  the interrupted marker on the wire.
 - Every per-entry `project_*` method takes `(entry, entries)`: the resolved,
   typed entry plus the full read-only entry mapping, so any projection can
   resolve cross-entry references. `project_pruned` uses it to fetch a
@@ -87,6 +94,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    is_compaction_bracket,
 )
 
 # The synthetic user-role text a CANCELLED TurnFinish projects as — the model's
@@ -115,22 +123,67 @@ class ConversationProjector:
     ) -> list[Message]:
         """Project the ordered conversation path to canonical client messages.
 
+        One path-level rule lives here, and it is POSITIONAL: a compaction
+        bracket — the whole span `ts_c cmp [cr] tf_c`, whatever the outcome —
+        projects as nothing, while a `CompactionEntry` reached OUTSIDE a
+        bracket projects its `parts`. A summary only means something on the
+        path where the history it replaces is gone; inside its bracket the
+        entry is the record of the operation, on a path that still holds the
+        originals. Deciding that needs the path, which the per-entry methods
+        deliberately do not receive.
+
         No adjacent-message merging, role folding, trimming, or token counting
         happens here — a custom projector implements such policy by overriding
         this method. Both inputs are read-only."""
         messages: list[Message] = []
-        for node_id in conversation.nodes:
-            try:
-                entry = entries[node_id]
-            except KeyError:
-                raise ProjectionError(
-                    f"Conversation node {node_id!r} is missing from the entry "
-                    "store."
-                ) from None
+        nodes = conversation.nodes
+        index = 0
+        while index < len(nodes):
+            entry = self._node(nodes[index], entries)
+            if isinstance(entry, TurnStart) and is_compaction_bracket(
+                nodes, entries, index,
+            ):
+                index = self._skip_compaction_bracket(nodes, entries, index)
+                continue
             message = self.project_entry(entry, entries)
             if message is not None:
                 messages.append(message)
+            index += 1
         return messages
+
+    def _skip_compaction_bracket(
+        self,
+        nodes: list[str],
+        entries: Mapping[str, AnyEntry],
+        start: int,
+    ) -> int:
+        """The index just past the compaction bracket opened at `start` — its
+        closing `TurnFinish`, or the end of the path when the bracket is still
+        open.
+
+        Skipping the whole span is what makes projection CORRECT, not merely
+        tidy: `project_turn_finish` emits the interrupted marker for any
+        CANCELLED close, and a cancelled compaction never transitions, so
+        without this every later request would tell the model its question was
+        interrupted — about a question the model was never shown. Nothing is
+        lost by discarding the span: only markers can ever be inside one,
+        because `post_message` raises while a compaction bracket is open."""
+        index = start + 1
+        while index < len(nodes):
+            entry = self._node(nodes[index], entries)
+            index += 1
+            if isinstance(entry, TurnFinish):
+                break
+        return index
+
+    def _node(self, node_id: str, entries: Mapping[str, AnyEntry]) -> AnyEntry:
+        try:
+            return entries[node_id]
+        except KeyError:
+            raise ProjectionError(
+                f"Conversation node {node_id!r} is missing from the entry "
+                "store."
+            ) from None
 
     def project_entry(
         self, entry: AnyEntry, entries: Mapping[str, AnyEntry],
@@ -233,10 +286,19 @@ class ConversationProjector:
 
     def project_compaction(
         self, entry: CompactionEntry, entries: Mapping[str, AnyEntry],
-    ) -> ClientUserMessage:
-        """The durable summary as a synthetic user message; the summarized ids
-        and details are bookkeeping and are not included."""
-        return ClientUserMessage(content=[TextBlock(text=entry.summary)])
+    ) -> ClientUserMessage | None:
+        """The durable summary as a synthetic user message; `compacted_nodes`,
+        `llm_config` and `metadata` are bookkeeping and are not included.
+
+        `None` when the entry carries no content — scheduled, running, a
+        no-op, or failed. `parts` land only at the commit point, so this is
+        also what stops a failed compaction from ever telling the model "here
+        is a summary of the conversation so far"."""
+        if not entry.parts:
+            return None
+        return ClientUserMessage(
+            content=[self._content_block(part) for part in entry.parts],
+        )
 
     def project_pruned(
         self, entry: PrunedEntry, entries: Mapping[str, AnyEntry],

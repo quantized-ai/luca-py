@@ -68,10 +68,12 @@ class AgentMiddlewareMixin:
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,
         AssistantMessage, ToolExecution, TurnStart, TurnFinish,
-        CancelRequested) AND every `ToolExecution` update (approval changes,
-        the RUNNING transition, cancellation stamps, terminal outcomes).
-        Return the (possibly modified) entry — add metadata, stamp external
-        ids, mutate fields before persistence."""
+        CancelRequested, CompactionEntry) AND every update to the two MUTABLE
+        entry types: a `ToolExecution` (approval changes, the RUNNING
+        transition, cancellation stamps, terminal outcomes) and a
+        `CompactionEntry` (the `started_at` stamp, and the summary landing at
+        the commit point). Return the (possibly modified) entry — add
+        metadata, stamp external ids, mutate fields before persistence."""
         return entry
 
     def before_llm_call(

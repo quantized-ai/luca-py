@@ -3,18 +3,25 @@
 The conversation data model (`models`) plus the runtime surface: the
 `AgentSessionRunner` loop, the `ToolRegistry` contract, the `Tool` base
 class and its `ToolContext`, the `ConversationProjector` LLM-projection
-strategy, the system-prompt strategy, and the agent exceptions. Event
+strategy, the `CompactionPolicy` contract, the system-prompt strategy, and
+the agent exceptions. Event
 classes live in `luca.agent.core.events`; the inbound response /
 tool-definition translations in `luca.agent.core.adapter`; the read-only
 `pretty_print` session transcript in `luca.agent.core.utils`.
 """
 
+from .compaction import (
+    CompactionPlan,
+    CompactionPolicy,
+    UsageCounters,
+)
 from .context import CancellationToken, ToolContext
 from .context_manager import PRUNED_TOOL_OUTPUT_MARKER, ContextManager
 from .exceptions import (
     AgentError,
     AlreadyCancellingError,
     CancelledError,
+    CompactionPlanError,
     InvalidToolArguments,
     ProjectionError,
     ToolNotFound,
@@ -30,6 +37,7 @@ from .models import (
     BaseConfigModel,
     CancelRequested,
     CompactionEntry,
+    CompactionSource,
     ContentPart,
     Conversation,
     ConversationStatus,
@@ -94,6 +102,10 @@ __all__ = [
     "CancellationToken",
     "CancelledError",
     "CompactionEntry",
+    "CompactionPlan",
+    "CompactionPlanError",
+    "CompactionPolicy",
+    "CompactionSource",
     "ContentPart",
     "ContextManager",
     "Conversation",
@@ -138,6 +150,7 @@ __all__ = [
     "TurnOutcome",
     "TurnStart",
     "Usage",
+    "UsageCounters",
     "UserMessage",
     "pretty_print",
     "tool",

@@ -38,6 +38,9 @@ from textual.widgets import Footer, Header, Input
 from luca.agent.core import AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
     ApprovalRequired,
+    CompactionFinished,
+    CompactionScheduled,
+    CompactionStarted,
     FinishReason,
     ReasoningBlock,
     ReasoningDelta,
@@ -54,6 +57,7 @@ from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
+    CompactionEntry,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
@@ -70,6 +74,7 @@ from luca.agent.core.projection import tool_message_text
 from .approvals import build_approval_prompts
 from .cells import (
     AssistantCell,
+    CompactionCell,
     NoticeCell,
     ReasoningCell,
     ToolCallCell,
@@ -117,6 +122,7 @@ class AgentApp(App):
         session_dir: str | os.PathLike[str] = ".",
         streaming: bool = True,
         mode: str = "ask",
+        compaction_policy=None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -124,8 +130,10 @@ class AgentApp(App):
         self._workspace = workspace
         self._provider = provider
         self._mode = mode
+        self._compaction_policy = compaction_policy
         self.runner, self.strategy = build_runner(
             session, workspace=workspace, provider=provider, mode=mode,
+            compaction_policy=compaction_policy,
         )
         self._current_run: AgentRun | None = None
         self._live_reasoning: ReasoningCell | None = None
@@ -278,7 +286,25 @@ class AgentApp(App):
                     self._tool_cells[tool_call_id] = cell
                     await self._mount_cell(cell)
                 cell.finish(execution, result_text, is_error)
-            case ToolCallStart() | FinishReason() | ApprovalRequired():
+            case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED):
+                if entry.parts:
+                    await self._mount_cell(CompactionCell(entry))
+                else:
+                    await self._mount_cell(NoticeCell("nothing to compact"))
+            case CompactionFinished(outcome=outcome, error=error):
+                # A policy-initiated failure degrades silently otherwise: this
+                # event is the only place it surfaces.
+                await self._mount_cell(
+                    NoticeCell(
+                        f"compaction {outcome.value}"
+                        + (f": {error}" if error else ""),
+                        error=outcome is not TurnOutcome.CANCELLED,
+                    ),
+                )
+            case (
+                ToolCallStart() | FinishReason() | ApprovalRequired()
+                | CompactionScheduled() | CompactionStarted()
+            ):
                 pass
 
     async def _stream_into(
@@ -344,6 +370,12 @@ class AgentApp(App):
                     except ProjectionError:
                         continue
                     cell.finish(entry, tool_message_text(message), message.is_error)
+            elif isinstance(entry, CompactionEntry):
+                # Only a COMMITTED compaction carries content, and only on the
+                # path where the history it replaced is gone — the same rule
+                # the wire projection follows.
+                if entry.parts:
+                    await self._mount_cell(CompactionCell(entry))
             elif isinstance(entry, TurnFinish):
                 if entry.outcome is TurnOutcome.CANCELLED:
                     await self._mount_cell(NoticeCell("turn cancelled"))
@@ -407,6 +439,7 @@ class AgentApp(App):
         self.runner, self.strategy = build_runner(
             session, workspace=self._workspace,
             provider=self._provider, mode=self._mode,
+            compaction_policy=self._compaction_policy,
         )
         await self.query_one("#transcript", VerticalScroll).remove_children()
         self._live_reasoning = None

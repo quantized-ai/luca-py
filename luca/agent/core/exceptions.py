@@ -2,7 +2,8 @@
 
 A single home for every exception the agent framework raises. `AgentError` is the
 base; `CancelledError` is raised by a `CancellationToken` (see
-`luca.agent.core.context`).
+`luca.agent.core.context`); `CompactionPlanError` is the one rejection the
+compaction step can produce (see `luca.agent.core.compaction`).
 
 An approval pause is NOT an exception: when the permission strategy returns a
 PENDING decision the generator simply ends at the gate, and a later `run()`
@@ -40,6 +41,18 @@ class InvalidToolArguments(AgentError):
     def __init__(self, message: str, errors: list | None = None) -> None:
         super().__init__(message)
         self.errors = errors or []
+
+
+class CompactionPlanError(AgentError):
+    """A `CompactionPlan` the runner refuses to commit: it references an id
+    that does not exist or was not offered to the policy, references one
+    twice, is empty, omits the compaction entry itself, carries no content, or
+    was computed against a conversation that has since moved. Structure only —
+    the runner never judges whether a compaction was worth doing.
+
+    Closes the compaction bracket ERRORED. A user-scheduled compaction raises
+    it to the caller; a policy-initiated one degrades and lets the turn
+    proceed."""
 
 
 class ProjectionError(AgentError):

@@ -10,12 +10,20 @@ tests mirror the approval-modal pattern: submit the command, wait for the
 from textual.widgets import Input
 
 from luca.agent.contrib.tui import AgentApp
-from luca.agent.contrib.tui.cells import AssistantCell, NoticeCell, UserCell
+from luca.agent.contrib.tui.cells import (
+    AssistantCell,
+    CompactionCell,
+    NoticeCell,
+    UserCell,
+)
 from luca.agent.contrib.tui.commands import COMMANDS
 from luca.agent.contrib.tui.screens import PickerScreen
 from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
-from luca.agent.core.models import LLMConfig
+from luca.agent.core.compaction import CompactionPlan
+from luca.agent.core.models import LLMConfig, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
+
+from tests.agent.scenarios import FakeCompactionPolicy
 
 from .helpers import fresh_session, idle_again, submit, wait_until
 
@@ -285,3 +293,49 @@ async def test_quit_saves_and_exits(tmp_path):
         await submit(pilot, "/quit")
 
     assert (tmp_path / f"{session.id}.json").exists()
+
+
+# ── /compact ─────────────────────────────────────────────────────────────────
+
+
+def _fold_everything(session, nodes, entry):
+    return CompactionPlan(
+        entry=entry.model_copy(
+            update={"parts": [TextContent(text="the story so far")]},
+        ),
+        nodes=[entry.id],
+    )
+
+
+async def test_compact_schedules_a_compaction_and_drives_it(tmp_path):
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("ok")])),
+        workspace=tmp_path, session_dir=tmp_path,
+        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+    )
+    async with app.run_test() as pilot:
+        await submit(pilot, "hello")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        await submit(pilot, "/compact")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        assert [cell.text for cell in app.query(CompactionCell)] == [
+            "the story so far",
+        ]
+        archived = app.runner.session.conversation_history[0]
+        # the bracket stayed behind; only the summary carried over
+        assert app.runner.session.active_conversation.nodes == [archived.nodes[-2]]
+
+
+async def test_compact_without_a_policy_reports_it(tmp_path):
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/compact")
+        await pilot.pause()
+
+        assert _notices(app) == [
+            "no compaction policy is configured for this runner",
+        ]
+        assert app.runner.session.entries == {}

@@ -40,7 +40,7 @@ and ignores every other flag — nothing is started, nothing is saved.
 
 | Piece | Behavior |
 |---|---|
-| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
+| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
@@ -59,6 +59,7 @@ typo) is sent to the agent as a normal message, so nothing is swallowed.
 | `/help` | List every command (rendered from the registry, so it never drifts) |
 | `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
 | `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
+| `/compact` | Summarize the history and continue on a new conversation ([12](../../12-compaction.md)). Needs a `compaction_policy=` on the app; without one it says so and changes nothing |
 | `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old `<id>.json` stays on disk |
 | `/quit` | Save and exit (same as `Ctrl+D`) |
 
@@ -84,10 +85,10 @@ thin:
 
 | Module | Role |
 |---|---|
-| `wiring.py` | `build_runner(session, workspace=, provider=, mode=)` — shell + memory plugins, the demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
+| `wiring.py` | `build_runner(session, workspace=, provider=, mode=, compaction_policy=)` — shell + memory plugins, the demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | `build_approval_prompts(execution, strategy)` — pending steps → `ApprovalPrompt`s whose options carry fully-built `ApprovalAnswer`s (the whole gate policy, no UI) |
-| `sessions.py` | `<session-id>.json` load / save / fork |
-| `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text` (the live and replayed transcript share it, so they cannot drift) |
+| `sessions.py` | `<session-id>.json` load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
+| `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift) |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
@@ -136,7 +137,7 @@ tests assert on attributes, not rendered output. See
 key, `faux_hang()` + Esc for cancellation, reload-and-replay for resume.
 
 > ⚠️ **The app owns the wiring.** `AgentApp` builds its runner via
-> `build_runner` — inject behavior through `provider=`, `workspace=`, and
-> `mode=` ("ask" / "yolo"), not by passing a runner.
+> `build_runner` — inject behavior through `provider=`, `workspace=`,
+> `mode=` ("ask" / "yolo") and `compaction_policy=`, not by passing a runner.
 
 Next: back to the [contrib index](../README.md).

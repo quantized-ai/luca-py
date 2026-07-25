@@ -21,6 +21,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    CompactionEntry,
+    CompactionSource,
     Conversation,
     ConversationStatus,
     ExecutionResult,
@@ -715,7 +717,7 @@ def test_append_tool_execution_indexes_by_tool_call_id():
     assert session.tool_executions == {"tc1": ["te1"]}
 
 
-def test_put_execution_stores_the_replacement_and_touches_conversation():
+def test_put_entry_stores_the_replacement_and_touches_conversation():
     session = AgentSession(
         id="s",
         entries={
@@ -741,7 +743,7 @@ def test_put_execution_stores_the_replacement_and_touches_conversation():
         },
     )
 
-    stored = ledger.put_execution(replacement)
+    stored = ledger.put_entry(replacement)
 
     assert stored is replacement
     assert session.entries["te1"] == ToolExecution(
@@ -1070,3 +1072,558 @@ def test_runtime_status_second_open_turn_with_steps():
     # step_count counts only AssistantMessages in the CURRENT (second) open turn
     assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
         SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=2, step_count=1)
+
+
+def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
+    session = AgentSession(
+        id="s",
+        entries={
+            "cmp": CompactionEntry(
+                id="cmp", created_at=0, source=CompactionSource.USER,
+            ),
+        },
+        active_conversation=Conversation(
+            id="c1", nodes=["cmp"], created_at=0, updated_at=0,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+    replacement = session.entries["cmp"].model_copy(update={"started_at": 1000})
+
+    ledger.put_entry(replacement)
+
+    assert session.entries["cmp"] == CompactionEntry(
+        id="cmp", created_at=0, source=CompactionSource.USER, started_at=1000,
+    )
+    assert session.active_conversation.nodes == ["cmp"]
+    assert session.active_conversation.updated_at == 1000
+
+
+def test_put_entry_refuses_an_uncommitted_entry():
+    session = AgentSession(
+        id="s",
+        entries={},
+        active_conversation=Conversation(
+            id="c1", nodes=[], created_at=0, updated_at=0,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    with pytest.raises(AgentError, match="Cannot store an uncommitted entry"):
+        ledger.put_entry(CompactionEntry(source=CompactionSource.USER))
+
+    assert session.entries == {}
+
+
+def test_put_entry_refuses_to_create_an_unknown_entry():
+    session = AgentSession(
+        id="s",
+        entries={},
+        active_conversation=Conversation(
+            id="c1", nodes=[], created_at=0, updated_at=0,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    with pytest.raises(AgentError, match="Cannot update entry 'nope': no such entry"):
+        ledger.put_entry(
+            CompactionEntry(
+                id="nope", created_at=0, source=CompactionSource.USER,
+            ),
+        )
+
+    assert session.entries == {}
+
+
+# ── transition_conversation: the atomic swap ──────────────────────────────────
+
+# The pre-transition shape every transition test starts from: one answered
+# turn on `c1`, a queued question, and an open compaction bracket whose entry
+# is about to receive its content.
+TRANSITION_SESSION = AgentSession(
+    id="s_transition",
+    entries={
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")]),
+        "ts1": TurnStart(id="ts1", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1", parent_id="ts1", created_at=500,
+            parts=[TextContent(text="hello")], llm_config=MODEL, stop_reason="stop",
+        ),
+        "tf1": TurnFinish(id="tf1", parent_id="a1", created_at=500),
+        "u2": UserMessage(
+            id="u2", parent_id="tf1", created_at=500,
+            parts=[TextContent(text="and now?")],
+        ),
+        "ts_c": TurnStart(id="ts_c", parent_id="u2", created_at=600),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=600,
+            source=CompactionSource.POLICY, started_at=600,
+        ),
+    },
+    active_conversation=Conversation(
+        id="c1", nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
+        created_at=500, updated_at=600, status=ConversationStatus.RUNNING,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+SUMMARIZED = CompactionEntry(
+    id="cmp", parent_id="ts_c", created_at=600,
+    source=CompactionSource.POLICY,
+    parts=[TextContent(text="the user said hi")],
+    compacted_nodes=["u1", "ts1", "a1", "tf1"],
+    started_at=600, ended_at=1000, context_tokens=4,
+)
+
+CLOSING = TurnFinish(id="tf_c", parent_id="cmp", created_at=1000)
+
+
+def test_transition_archives_the_outgoing_path_and_installs_the_new_one():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    installed = ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "u2"],
+        ts=1000,
+    )
+
+    assert installed is session.active_conversation
+    assert session.conversation_history == [
+        Conversation(
+            id="c1",
+            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp", "tf_c"],
+            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+        ),
+    ]
+    assert session.active_conversation == Conversation(
+        id="c2", nodes=["cmp", "u2"], created_at=1000, updated_at=1000,
+        status=ConversationStatus.PENDING,
+    )
+    assert session.entries["cmp"] == SUMMARIZED
+    assert session.entries["tf_c"] == CLOSING
+
+
+def test_the_same_conversation_is_never_both_active_and_archived():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[], closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp"], ts=1000,
+    )
+
+    assert session.conversation_history[-1] is not session.active_conversation
+
+
+def test_transition_stores_created_entries_and_indexes_a_created_execution():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+    framing = UserMessage(
+        id="new1", created_at=1000, parts=[TextContent(text="framing")],
+    )
+    execution = ToolExecution(
+        id="new2", parent_id="new1", created_at=1000,
+        tool_call_id="tcX", raw_tool_call=ToolCall(id="tcX", name="add"),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        started_at=1000, ended_at=1000,
+    )
+
+    ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[framing, execution],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["new1", "new2", "cmp"],
+        ts=1000,
+    )
+
+    assert session.entries["new1"] == framing
+    assert session.entries["new2"] == execution
+    assert session.tool_executions == {"tcX": ["new2"]}
+
+
+def test_transition_without_a_closing_marker_archives_the_path_as_it_stands():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    ledger.transition_conversation(
+        updates=[], created=[], closing=None, nodes=["u2"], ts=1000,
+    )
+
+    assert session.conversation_history[-1].nodes == [
+        "u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp",
+    ]
+
+
+def test_the_new_conversation_derives_idle_from_a_carried_completed_turn():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    installed = ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[], closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "ts1", "a1", "tf1"], ts=1000,
+    )
+
+    assert installed.status == ConversationStatus.IDLE
+
+
+def test_the_new_conversation_derives_pending_from_a_carried_user_message():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    installed = ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[], closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "u2"], ts=1000,
+    )
+
+    assert installed.status == ConversationStatus.PENDING
+
+
+def test_the_new_conversation_derives_pending_from_a_carried_failed_turn():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    session.entries["tf1"] = session.entries["tf1"].model_copy(
+        update={"outcome": TurnOutcome.ERRORED, "error": "boom"},
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    installed = ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[], closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "ts1", "a1", "tf1"], ts=1000,
+    )
+
+    assert installed.status == ConversationStatus.PENDING
+
+
+def test_the_new_conversation_derives_idle_when_the_summary_is_the_leaf():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    installed = ledger.transition_conversation(
+        updates=[SUMMARIZED.model_copy(deep=True)],
+        created=[], closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp"], ts=1000,
+    )
+
+    assert installed.status == ConversationStatus.IDLE
+
+
+def test_an_unknown_update_id_raises_before_anything_is_written():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    before = session.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    with pytest.raises(AgentError, match="Cannot update entry 'ghost'"):
+        ledger.transition_conversation(
+            updates=[
+                SUMMARIZED.model_copy(deep=True, update={"id": "ghost"}),
+            ],
+            created=[], closing=CLOSING.model_copy(deep=True),
+            nodes=["cmp"], ts=1000,
+        )
+
+    assert session == before
+
+
+def test_a_created_id_that_already_exists_raises_before_anything_is_written():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    before = session.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    with pytest.raises(AgentError, match="Cannot create entry 'u1'"):
+        ledger.transition_conversation(
+            updates=[],
+            created=[
+                UserMessage(
+                    id="u1", created_at=1000, parts=[TextContent(text="clash")],
+                ),
+            ],
+            closing=None, nodes=["cmp"], ts=1000,
+        )
+
+    assert session == before
+
+
+def test_a_created_entry_with_no_id_raises_before_anything_is_written():
+    session = TRANSITION_SESSION.model_copy(deep=True)
+    before = session.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+
+    with pytest.raises(AgentError, match="Cannot create an entry with no id"):
+        ledger.transition_conversation(
+            updates=[],
+            created=[UserMessage(parts=[TextContent(text="template")])],
+            closing=None, nodes=["cmp"], ts=1000,
+        )
+
+    assert session == before
+
+
+# ── open_compaction_entry: is there a compaction to RESUME? ───────────────────
+
+# One store, many paths: a scheduled compaction, a committed one, the markers
+# that open and close their brackets, and an ordinary turn to contrast with.
+RESUME_SESSION = AgentSession(
+    id="s_resume",
+    entries={
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1", parent_id="ts", created_at=500,
+            parts=[TextContent(text="hello")], llm_config=MODEL, stop_reason="stop",
+        ),
+        "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=600),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=600,
+            source=CompactionSource.USER, started_at=600,
+        ),
+        "cmp_done": CompactionEntry(
+            id="cmp_done", parent_id="ts_c", created_at=600,
+            source=CompactionSource.USER,
+            parts=[TextContent(text="the story so far")],
+            compacted_nodes=["u1"], started_at=600, ended_at=700,
+        ),
+        "cr": CancelRequested(id="cr", parent_id="cmp", created_at=700),
+        "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=700),
+    },
+    active_conversation=Conversation(
+        id="c1", nodes=[], created_at=500, updated_at=700,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def test_no_compaction_to_resume_on_an_empty_path():
+    session = RESUME_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is None
+
+
+def test_no_compaction_to_resume_inside_a_bare_open_conversational_turn():
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is None
+
+
+def test_no_compaction_to_resume_inside_an_open_conversational_turn():
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts", "a1"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is None
+
+
+def test_an_open_compaction_bracket_offers_its_entry():
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts_c", "cmp"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is session.entries["cmp"]
+
+
+def test_a_parked_cancel_inside_the_bracket_still_offers_the_entry():
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts_c", "cmp", "cr"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is session.entries["cmp"]
+
+
+def test_a_closed_compaction_bracket_offers_nothing():
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts_c", "cmp", "tf_c"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is None
+
+
+def test_an_open_bracket_around_a_committed_entry_offers_nothing():
+    # G6: a plan can counterfeit the SHAPE of an interrupted compaction; it
+    # cannot counterfeit a committed entry's content. Resuming this would
+    # re-run compact() over finished work and overwrite `compacted_nodes`.
+    session = RESUME_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u1", "ts_c", "cmp_done"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.open_compaction_entry() is None
+
+
+# ── derive_status: a closed compaction bracket is transparent ─────────────────
+
+# One store, many paths. `cmp` is the compaction entry, `ts_c`/`ts_c2` its
+# openers, and the `tf_c_*` markers its four possible closes.
+STATUS_MATRIX_SESSION = AgentSession(
+    id="s_matrix",
+    entries={
+        "u3": UserMessage(
+            id="u3", created_at=500, parts=[TextContent(text="what is X?")],
+        ),
+        "ts2": TurnStart(id="ts2", parent_id="u3", created_at=500),
+        "tf2_ok": TurnFinish(id="tf2_ok", parent_id="ts2", created_at=500),
+        "tf2_err": TurnFinish(
+            id="tf2_err", parent_id="ts2", created_at=500,
+            outcome=TurnOutcome.ERRORED, error="boom",
+        ),
+        "ts_c": TurnStart(id="ts_c", created_at=600),
+        "cmp": CompactionEntry(
+            id="cmp", parent_id="ts_c", created_at=600,
+            source=CompactionSource.POLICY,
+        ),
+        "cmp_started": CompactionEntry(
+            id="cmp_started", parent_id="ts_c", created_at=600,
+            source=CompactionSource.POLICY, started_at=600,
+        ),
+        "cr": CancelRequested(id="cr", parent_id="cmp", created_at=700),
+        "tf_c_ok": TurnFinish(id="tf_c_ok", parent_id="cmp", created_at=700),
+        "tf_c_cancelled": TurnFinish(
+            id="tf_c_cancelled", parent_id="cmp", created_at=700,
+            outcome=TurnOutcome.CANCELLED,
+        ),
+        "tf_c_err": TurnFinish(
+            id="tf_c_err", parent_id="cmp", created_at=700,
+            outcome=TurnOutcome.ERRORED, error="the policy raised",
+        ),
+        "tf_c_timeout": TurnFinish(
+            id="tf_c_timeout", parent_id="cmp", created_at=700,
+            outcome=TurnOutcome.TIMED_OUT, error="compaction exceeded 0.05s",
+        ),
+        "ts_c2": TurnStart(id="ts_c2", created_at=800),
+        "cmp2": CompactionEntry(
+            id="cmp2", parent_id="ts_c2", created_at=800,
+            source=CompactionSource.USER,
+        ),
+        "tf_c2": TurnFinish(id="tf_c2", parent_id="cmp2", created_at=800),
+        "u5": UserMessage(
+            id="u5", created_at=900, parts=[TextContent(text="still there?")],
+        ),
+    },
+    active_conversation=Conversation(
+        id="c1", nodes=[], created_at=500, updated_at=900,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def test_a_completed_compaction_does_not_bury_a_queued_question():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "tf_c_ok"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_cancelled_compaction_does_not_drop_the_queued_question():
+    # the user cancelled the COMPACTION, not their question
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "tf_c_cancelled"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_failed_compaction_over_a_finished_turn_is_idle_not_retry_ready():
+    # without the skip rule tf_c(ERRORED) reads as a retry-ready turn and a
+    # `while not runner.idle()` loop opens a fresh bracket every drive
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_err"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.IDLE
+
+
+def test_a_timed_out_compaction_over_a_finished_turn_is_idle():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_timeout"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.IDLE
+
+
+def test_a_completed_compaction_over_a_failed_turn_stays_retry_ready():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["tf2_err", "ts_c", "cmp", "tf_c_ok"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_compaction_on_an_otherwise_empty_path_is_idle():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["ts_c", "cmp", "tf_c_ok"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.IDLE
+
+
+def test_two_stacked_closed_compaction_brackets_are_both_skipped():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = [
+        "u3", "ts_c", "cmp", "tf_c_ok", "ts_c2", "cmp2", "tf_c2",
+    ]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_scheduled_compaction_derives_pending():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts_c", "cmp"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_an_interrupted_compaction_derives_pending():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts_c", "cmp_started"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_an_unconsumed_cancel_inside_a_compaction_bracket_derives_cancelling():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "cr"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.CANCELLING
+
+
+def test_a_node_after_the_bracket_ends_the_skip():
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["ts_c", "cmp", "tf_c_ok", "u5"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_closed_conversational_bracket_is_never_skipped():
+    # the regression guard: only a TurnStart whose next node is the compaction
+    # entry opens a compaction bracket
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["u3", "ts2", "tf2_err"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING
+
+
+def test_a_carried_turn_finish_with_no_opener_stops_the_skip():
+    # a policy carried tf2_err without its TurnStart: the ordinary
+    # closed-turn rules apply, so the failed turn is still retry-ready rather
+    # than swallowing the whole path into IDLE
+    session = STATUS_MATRIX_SESSION.model_copy(deep=True)
+    session.active_conversation.nodes = ["cmp", "u3", "tf2_err"]
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    assert ledger.derive_status() == ConversationStatus.PENDING

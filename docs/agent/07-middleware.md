@@ -60,10 +60,12 @@ class AgentMiddlewareMixin:
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,
         AssistantMessage, ToolExecution, TurnStart, TurnFinish,
-        CancelRequested) AND every `ToolExecution` update (approval changes,
-        the RUNNING transition, cancellation stamps, terminal outcomes).
-        Return the (possibly modified) entry — add metadata, stamp external
-        ids, mutate fields before persistence."""
+        CancelRequested, CompactionEntry) AND every update to the two MUTABLE
+        entry types: a `ToolExecution` (approval changes, the RUNNING
+        transition, cancellation stamps, terminal outcomes) and a
+        `CompactionEntry` (the `started_at` stamp, and the summary landing at
+        the commit point). Return the (possibly modified) entry — add
+        metadata, stamp external ids, mutate fields before persistence."""
         return entry
 
     def before_llm_call(
@@ -159,6 +161,15 @@ class AgentMiddlewareMixin:
 > `AssistantMessage` / `Message` (wire types from `luca.client`), not the agent
 > `AssistantMessage` *entry* — the entry is built afterward and passes through
 > `before_entry_written`.
+
+> ⚠️ **The four per-call hooks do NOT fire for a compaction's own LLM request.**
+> `build_model_string`, `build_tool_list`, `before_llm_call` and
+> `after_llm_response` are written in terms of the conversational turn, and a
+> hook has no argument telling it which call it is in — a trailing reminder or
+> a turn-count router would silently corrupt summarization requests. The
+> `CompactionPolicy` owns that request end to end ([12](12-compaction.md)).
+> `before_entry_written` *does* fire for everything a compaction writes,
+> including the mutation that lands the summary.
 
 ## 3. The three big levers
 

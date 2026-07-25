@@ -5,11 +5,16 @@ id/clock, links `parent_id` to the current path leaf, extends
 `Conversation.nodes`, indexes a `ToolExecution` into
 `session.tool_executions`, and touches `Conversation.updated_at` — one code
 path, so the bookkeeping can't drift between call sites.
-`put_execution()` is the only in-place mutation door (`ToolExecution` is the
-only mutable entry): it stores the fully formed replacement the runner hands
-it — the runner owns building the updated copy, stamping `updated_at`, and
-threading it through `before_entry_written` middleware first — and touches
-`Conversation.updated_at`.
+`put_entry()` is the only in-place mutation door, serving both mutable entry
+types (`ToolExecution` and `CompactionEntry`): it stores the fully formed
+replacement the runner hands it — the runner owns building the updated copy,
+stamping `updated_at`, and threading it through `before_entry_written`
+middleware first — and touches `Conversation.updated_at`. It refuses to
+create, so an uncommitted template can never become durable through it.
+`transition_conversation()` archives the active conversation and installs a
+new one over a given path: the only writer of `conversation_history`, the only
+replacer of `active_conversation`, and the atomic region every fallible
+operation must happen before.
 `record_usage()` is the single write door onto `AgentSession.usages`: it
 builds the record itself (conversation id from the active conversation,
 entry id from an entry it verifies is on the path), so the store's key/record
@@ -21,9 +26,10 @@ tool execution, in the `tool_executions` index); only the path stops
 visiting it.
 
 READS. The entry-derived queries — open turn, the execution-lifecycle and
-approval-state subsets, derived status. These are pure functions of the
-session data, equally valid on a freshly deserialized session; they are the
-durable truth the runner's `Conversation.status` cache is re-derived from.
+approval-state subsets, the resumable compaction, derived status. These are
+pure functions of the session data, equally valid on a freshly deserialized
+session; they are the durable truth the runner's `Conversation.status` cache
+is re-derived from.
 Usage and context aggregates deliberately have no reads here: totals are
 trivially derived by the application from `AgentSession.usages` and
 `Entry.context_tokens` over a conversation's nodes.
@@ -54,6 +60,8 @@ from .models import (
     AnyEntry,
     ApprovalStatus,
     CancelRequested,
+    CompactionEntry,
+    Conversation,
     ConversationStatus,
     ExecutionStatus,
     PrunedEntry,
@@ -63,6 +71,7 @@ from .models import (
     TurnStart,
     Usage,
     UserMessage,
+    is_compaction_bracket,
 )
 
 
@@ -99,13 +108,112 @@ class SessionLedger:
             ).append(entry_id)
         return entry
 
-    def put_execution(self, execution: ToolExecution) -> ToolExecution:
-        """Store a fully formed `ToolExecution` replacement under its id and
-        touch `Conversation.updated_at`. The caller has already stamped
-        `updated_at` and run persistence middleware."""
-        self.session.entries[execution.id] = execution
+    def put_entry(self, entry: AnyEntry) -> AnyEntry:
+        """Store a fully formed replacement for an entry that is ALREADY in
+        the store, and touch `Conversation.updated_at`. The one in-place
+        mutation door, serving both mutable entry types (`ToolExecution` and
+        `CompactionEntry`); the caller owns building the copy and threading it
+        through `before_entry_written` first.
+
+        Refuses an uncommitted entry (`id is None`) and an unknown id: an
+        update door must never create — that is `append`'s job, and it is the
+        one place a template could otherwise become durable by accident."""
+        if entry.id is None:
+            raise AgentError(
+                "Cannot store an uncommitted entry: `id` is None. put_entry "
+                "replaces an entry that already exists; new entries are "
+                "created through append()."
+            )
+        if entry.id not in self.session.entries:
+            raise AgentError(
+                f"Cannot update entry {entry.id!r}: no such entry."
+            )
+        self.session.entries[entry.id] = entry
         self.session.active_conversation.updated_at = self.clock()
-        return execution
+        return entry
+
+    def transition_conversation(
+        self,
+        *,
+        updates: list[AnyEntry],
+        created: list[AnyEntry],
+        closing: AnyEntry | None,
+        nodes: list[str],
+        ts: int,
+    ) -> Conversation:
+        """Archive the active conversation and install a new one over `nodes`.
+
+        The only writer of `conversation_history` and the only replacer of
+        `active_conversation`. Deliberately compaction-agnostic — it archives
+        one conversation and installs another, and would serve a fork or a
+        branch unchanged.
+
+        THE ATOMIC REGION. Every fallible operation happens in the
+        precondition block BEFORE the first mutation, after which the
+        remaining steps are plain assignments that cannot fail: no
+        try/except, no rollback. If it can fail it does not belong after the
+        commit point — a transition that failed halfway would leave the same
+        conversation both active and archived, a session that loads fine and
+        has silently lost its history.
+
+        `updates` replace entries already in the store, `created` are brand-new
+        entries whose identity the caller has already stamped, and `closing`
+        (a `TurnFinish`) is appended to the OUTGOING path, not the new one."""
+        outgoing = self.session.active_conversation
+        entries = self.session.entries
+
+        # ── preconditions: fallible, nothing written ────────────────────────
+        for entry in updates:
+            if entry.id is None or entry.id not in entries:
+                raise AgentError(
+                    f"Cannot update entry {entry.id!r} in a transition: no "
+                    "such entry."
+                )
+        minted: set[str] = set()
+        for entry in [*created, *([closing] if closing is not None else [])]:
+            if entry.id is None:
+                raise AgentError(
+                    "Cannot create an entry with no id in a transition; the "
+                    "caller stamps identity before the commit point."
+                )
+            if entry.id in entries or entry.id in minted:
+                raise AgentError(
+                    f"Cannot create entry {entry.id!r} in a transition: the "
+                    "id is already taken."
+                )
+            minted.add(entry.id)
+        conversation_id = self.gen_id()
+
+        # ── THE COMMIT POINT: plain assignments only ────────────────────────
+        for entry in updates:
+            entries[entry.id] = entry
+        for entry in created:
+            entries[entry.id] = entry
+            if isinstance(entry, ToolExecution):
+                self.session.tool_executions.setdefault(
+                    entry.tool_call_id, [],
+                ).append(entry.id)
+        if closing is not None:
+            entries[closing.id] = closing
+            outgoing.nodes.append(closing.id)
+        outgoing.updated_at = ts
+        # Explicit: a drive sets RUNNING on its way in and an archived
+        # conversation is never re-derived again, so leaving it would freeze a
+        # lie in the history.
+        outgoing.status = ConversationStatus.IDLE
+        self.session.conversation_history.append(outgoing)
+        self.session.active_conversation = Conversation(
+            id=conversation_id,
+            nodes=list(nodes),
+            created_at=ts,
+            updated_at=ts,
+            status=ConversationStatus.IDLE,
+        )
+        # A pure read over ids validation already proved resolvable — it
+        # cannot fail, and installing a conversation whose status nobody
+        # derived would be the same frozen lie from the other side.
+        self.session.active_conversation.status = self.derive_status()
+        return self.session.active_conversation
 
     def record_usage(self, entry_id: str, **counters: int) -> Usage:
         """Write the provider-usage record for `entry_id` in the ACTIVE
@@ -285,13 +393,42 @@ class SessionLedger:
                 return entry
         return None
 
+    def open_compaction_entry(self) -> CompactionEntry | None:
+        """The RESUMABLE `CompactionEntry` inside the open bracket, or None.
+
+        `None` means "there is no compaction to resume", for any of three
+        inputs that mean the same thing to every caller: no open bracket at
+        all; an open CONVERSATIONAL turn; or an open compaction-shaped bracket
+        whose entry already has `parts` — a compaction that already committed
+        and whose markers a plan carried, not an interrupted attempt.
+
+        That last test is the one that matters (G6). An open bracket is the
+        SIGNAL that a compaction was interrupted; the entry's own state is the
+        TEST. `parts` land at the commit point and nowhere else — every
+        non-transition ending leaves them None precisely so a failed
+        compaction cannot project — so an entry that has them describes
+        finished work. Keying on bracket shape instead would let a plan
+        counterfeit the shape and make the next drive re-run `compact()` over
+        a committed record, overwriting the `compacted_nodes` that say what
+        that summary replaced."""
+        idx = self.open_turn_index()
+        if idx is None:
+            return None
+        nodes = self.session.active_conversation.nodes
+        entries = self.session.entries
+        if not is_compaction_bracket(nodes, entries, idx):
+            return None
+        entry = entries[nodes[idx + 1]]
+        return None if entry.parts is not None else entry
+
     def derive_status(self) -> ConversationStatus:
         """The authoritative status, computed from the entries (used to
         normalize a loaded session and as the runner guard's source of truth).
         Precedence: an unconsumed cancel beats the approval gate beats the
-        plain open-turn resume; a closed turn is IDLE unless it failed
-        (TIMED_OUT / ERRORED → retry-ready PENDING) or a user message is
-        already queued behind it."""
+        plain open-turn resume; a CLOSED compaction bracket is transparent and
+        is skipped; a closed turn is IDLE unless it failed (TIMED_OUT /
+        ERRORED → retry-ready PENDING) or a user message is already queued
+        behind it."""
         if self.open_turn_index() is not None:
             if self.open_turn_cancel_requested() is not None:
                 return ConversationStatus.CANCELLING
@@ -299,9 +436,10 @@ class SessionLedger:
                 return ConversationStatus.AWAITING_APPROVAL
             return ConversationStatus.PENDING
         nodes = self.session.active_conversation.nodes
-        if not nodes:
+        end = self._before_closed_compaction_brackets()
+        if end == 0:
             return ConversationStatus.IDLE
-        last = self.session.entries[nodes[-1]]
+        last = self.session.entries[nodes[end - 1]]
         if isinstance(last, TurnFinish) and last.outcome in (
             TurnOutcome.TIMED_OUT,
             TurnOutcome.ERRORED,
@@ -310,3 +448,37 @@ class SessionLedger:
         if isinstance(last, UserMessage):
             return ConversationStatus.PENDING
         return ConversationStatus.IDLE
+
+    def _before_closed_compaction_brackets(self) -> int:
+        """The length of the path with every trailing CLOSED compaction
+        bracket dropped — the slice status derives from.
+
+        A compaction bracket is not a conversational turn, and leaving it as
+        the leaf gives two wrong answers, both silent: a FAILED compaction
+        would look retry-ready (`tf_c(ERRORED)` → PENDING) and a polling loop
+        would open a fresh bracket every drive, and a compaction that closed
+        behind a queued user message would bury it (the message stops being
+        the leaf, so it stops deriving PENDING and is silently never
+        answered).
+
+        A trailing `TurnFinish` with no `TurnStart` to anchor it — a policy
+        carried one without its pair — is NOT a compaction bracket: stop
+        skipping and let the ordinary closed-turn rules apply, so a carried
+        `TurnFinish(ERRORED)` still derives retry-ready PENDING rather than
+        swallowing the whole path into IDLE."""
+        nodes = self.session.active_conversation.nodes
+        entries = self.session.entries
+        end = len(nodes)
+        while end > 0 and isinstance(entries[nodes[end - 1]], TurnFinish):
+            start = None
+            for i in range(end - 2, -1, -1):
+                entry = entries[nodes[i]]
+                if isinstance(entry, TurnFinish):
+                    break
+                if isinstance(entry, TurnStart):
+                    start = i
+                    break
+            if start is None or not is_compaction_bracket(nodes, entries, start):
+                break
+            end = start
+        return end

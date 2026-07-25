@@ -20,11 +20,13 @@ responses + middleware doubles → one action → assert the downstream effect.
 """
 
 from luca.agent.core import AgentMiddlewareMixin
+from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
+    CompactionEntry,
     Conversation,
     ExecutionStatus,
     ImageBase64,
@@ -35,6 +37,9 @@ from luca.agent.core.models import (
     TurnFinish,
     UserMessage,
 )
+from luca.agent.core.projection import ConversationProjector
+from luca.client.types import TextBlock
+from luca.client.types import UserMessage as LucaUserMessage
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
@@ -44,8 +49,10 @@ from luca.client.testing import (
 
 from tests.agent.scenarios import (
     MODEL,
+    RICH_IDLE_SESSION,
     AddTool,
     DeterministicRunner,
+    FakeCompactionPolicy,
     FakeToolRegistry,
     MultiplyTool,
     RaisingTool,
@@ -790,3 +797,131 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
     assert runner.session.entries["te1"].status == ExecutionStatus.COMPLETED
     assert runner.session.entries["te1"].result.content[0].text == "3"
     assert runner.session.entries["a2"].parts == [TextContent(text="3")]
+
+
+# ── compaction ────────────────────────────────────────────────────────────────
+
+
+async def test_before_entry_written_sees_every_entry_a_compaction_writes():
+    # The bracket markers, the entry on append AND on both mutations that
+    # change it, and every entry the plan creates.
+    class EntryRecorder:
+        def __init__(self) -> None:
+            self.seen: list[tuple] = []
+
+        def before_entry_written(self, entry):
+            self.seen.append((entry.type, entry.id))
+            return entry
+
+    recorder = EntryRecorder()
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=_frame_and_fold),
+        middleware=[recorder],
+        ids=["ts_c", "cmp", "new1", "tf_c", "c2"], now=1000,
+    )
+
+    runner.schedule_compaction()
+    await runner.run()
+
+    assert recorder.seen == [
+        ("turn_start", "ts_c"),  # the bracket opens
+        ("compaction", "cmp"),  # the entry is appended
+        ("compaction", "cmp"),  # the started_at stamp
+        ("compaction", "cmp"),  # the content mutation, at the commit point
+        ("user", "new1"),  # the entry the plan created
+        ("turn_finish", "tf_c"),  # the bracket closes
+    ]
+
+
+async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
+    # The policy owns its LLM call end to end. A middleware that appends a
+    # trailing reminder, or routes the model by turn count, must not silently
+    # start corrupting summarization requests — it has no argument telling it
+    # which call it is in.
+    class TurnHookCounter:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def before_llm_call(self, messages, system_message):
+            self.calls.append("before_llm_call")
+            return messages, system_message
+
+        def after_llm_response(self, message):
+            self.calls.append("after_llm_response")
+            return message
+
+        def build_model_string(self, model_string, llm_cfg):
+            self.calls.append("build_model_string")
+            return model_string
+
+        def build_tool_list(self, tools):
+            self.calls.append("build_tool_list")
+            return tools
+
+    counter = TurnHookCounter()
+    faux = FauxProvider()
+    faux.set_responses([
+        faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
+    ])
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session, provider=faux,
+        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+        middleware=[counter],
+        ids=["ts_c", "cmp", "tf_c", "c2", "u5", "ts4", "a4", "tf4"], now=1000,
+    )
+
+    runner.schedule_compaction()
+    await runner.run()
+
+    assert counter.calls == []  # a compaction-only drive touched none of them
+
+    runner.post_message("what is X?")
+    await runner.run()
+
+    assert counter.calls == [
+        "build_model_string", "before_llm_call", "build_tool_list",
+        "after_llm_response",
+    ]
+
+
+async def test_before_entry_written_may_redact_the_summary_before_it_persists():
+    class Redactor:
+        def before_entry_written(self, entry):
+            if isinstance(entry, CompactionEntry) and entry.parts:
+                return entry.model_copy(
+                    update={"parts": [TextContent(text="[redacted]")]},
+                )
+            return entry
+
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+        middleware=[Redactor()],
+        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+    )
+
+    runner.schedule_compaction()
+    await runner.run()
+
+    assert runner.session.entries["cmp"].parts == [TextContent(text="[redacted]")]
+    assert ConversationProjector().project(
+        runner.session.active_conversation, runner.session.entries,
+    ) == [LucaUserMessage(content=[TextBlock(text="[redacted]")])]
+
+
+def _fold_everything(session, nodes, entry):
+    return CompactionPlan(
+        entry=entry.model_copy(update={"parts": [TextContent(text="the story")]}),
+        nodes=[entry.id],
+    )
+
+
+def _frame_and_fold(session, nodes, entry):
+    return CompactionPlan(
+        entry=entry.model_copy(update={"parts": [TextContent(text="the story")]}),
+        nodes=[UserMessage(parts=[TextContent(text="[compacted]")]), entry.id],
+    )

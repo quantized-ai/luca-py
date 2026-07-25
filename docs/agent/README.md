@@ -75,6 +75,7 @@ Read top to bottom; each page starts simple and deepens.
 | [`09-plugins.md`](09-plugins.md) | Plugins — bundle a registry + prompt parts + middleware in one object (contrib) |
 | [`10-projection.md`](10-projection.md) | `ConversationProjector` — own the LLM message history and tool-output wording |
 | [`11-context-and-usage.md`](11-context-and-usage.md) | `context_tokens`, the usage store, pruning — and the `ContextManager` seam to improve them |
+| [`12-compaction.md`](12-compaction.md) | `CompactionPolicy` — summarize the older span and keep going, without losing anything |
 | [`contrib/`](contrib/README.md) | Optional packages built on the core — registries, plugins, rule-based resource permissions |
 
 The agent talks to models through [`luca.client`](../client/README.md); you never

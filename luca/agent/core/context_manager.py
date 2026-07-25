@@ -76,8 +76,9 @@ class ContextManager:
         (name + arguments — counted here, never again on the execution); a
         tool execution owns only its model-facing outcome (result content,
         else its structured error message), and is 0 while nonterminal; a
-        compaction owns its summary; a pruned entry owns its replacement
-        content. Markers own nothing.
+        compaction owns its summary `parts` (0 until they land, which is why
+        the runner recalculates when they do); a pruned entry owns its
+        replacement content. Markers own nothing.
 
         Non-text content is counted separately by `_media_tokens`, so
         `_estimate_tokens` and `_model_facing_text` stay text-shaped and
@@ -91,8 +92,8 @@ class ContextManager:
         """Build the `PrunedEntry` template replacing `entry` in a path.
 
         Only terminal `ToolExecution`s are prunable by this default; anything
-        else fails loudly. The returned template carries placeholder identity
-        (`id=""`, `created_at=0`) — the persisting door stamps the real
+        else fails loudly. The returned template carries no identity —
+        `id`/`created_at` stay `None` — the persisting door stamps the real
         `id`/`parent_id`/`created_at` and the runner-side ordering calculates
         `context_tokens` and runs entry middleware, exactly as for any other
         new entry."""
@@ -107,8 +108,6 @@ class ContextManager:
                 f"({entry.status.value}) execution is not prunable."
             )
         return PrunedEntry(
-            id="",
-            created_at=0,
             pruned_entry_type=entry.type,
             pruned_entry_id=entry.id,
             content=[TextContent(text=self.PRUNED_TOOL_OUTPUT_MARKER)],
@@ -152,7 +151,7 @@ class ContextManager:
                 return entry.error.error_message
             return ""
         if isinstance(entry, CompactionEntry):
-            return entry.summary
+            return _text_of(entry.parts or [])
         if isinstance(entry, PrunedEntry):
             return _text_of(entry.content)
         return ""
@@ -172,6 +171,8 @@ class ContextManager:
             return entry.parts
         if isinstance(entry, ToolExecution):
             return entry.result.content if entry.result is not None else []
+        if isinstance(entry, CompactionEntry):
+            return entry.parts or []
         if isinstance(entry, PrunedEntry):
             return entry.content
         return []

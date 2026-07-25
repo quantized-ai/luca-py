@@ -23,6 +23,7 @@ Pydantic v2 idioms only; `extra="forbid"` on every model.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Annotated, Literal, Union
 
@@ -316,9 +317,13 @@ class ToolExecutionError(BaseModel):
 
 
 class Entry(BaseModel):
-    id: str
+    # `id` and `created_at` are None until the entry is COMMITTED: a template a
+    # strategy builds (a registry's birth draft, a `PrunedEntry` replacement, a
+    # compaction plan's new entry) carries no identity, and the persisting door
+    # stamps both. Every entry in `AgentSession.entries` has them.
+    id: str | None = None
     parent_id: str | None = None  # RECOVERY BACKSTOP ONLY — never traversed
-    created_at: int  # unix ms (one clock everywhere)
+    created_at: int | None = None  # unix ms (one clock everywhere)
     type: str  # discriminator: "user" | "assistant" | "tool_execution" | ...
     # Estimated size of THIS entry's model-facing content — intrinsic to the
     # entry and shared by every conversation that references it. Calculated by
@@ -459,11 +464,54 @@ class CancelRequested(Entry):
 # ── compaction ────────────────────────────────────────────────────────────────
 
 
+class CompactionSource(str, Enum):
+    """Who asked for a compaction — the only fact about one that nothing else
+    in the log records, which is why it is stored rather than derived."""
+
+    USER = "user"  # runner.schedule_compaction()
+    POLICY = "policy"  # the policy's should_compact() said so
+
+
 class CompactionEntry(Entry):
+    """The durable, MUTABLE lifecycle record of one compaction attempt — the
+    second mutable entry type alongside `ToolExecution`. Written the moment a
+    compaction is intended, mutated in place as it progresses, and left in its
+    terminal state whether it succeeded or not.
+
+    There is deliberately NO `status` field: the surrounding turn bracket owns
+    how the attempt ended (`TurnFinish.outcome` + `error`) and these fields own
+    what it produced, so nothing can disagree. Every state is readable from the
+    two together:
+
+    | Log state                                | Means                        |
+    |------------------------------------------|------------------------------|
+    | open bracket, `started_at is None`       | scheduled, not yet started   |
+    | open bracket, `started_at` set           | running (or crashed mid-run) |
+    | closed COMPLETED, `parts` set            | succeeded                    |
+    | closed COMPLETED, `parts is None`        | nothing to compact           |
+    | closed ERRORED / TIMED_OUT / CANCELLED   | failed; never retried        |
+
+    `parts` is content, the same `ContentPart` list a `UserMessage` carries, so
+    a summary may be several parts or carry an image. `None` (not `[]`) means
+    nothing has been produced yet — the two are different facts.
+
+    The entry carries into the new conversation while its bracket stays behind,
+    so it has to be self-describing wherever it is read — which is why
+    `started_at` / `ended_at` live here even though the bracket records the
+    same instants."""
+
     type: Literal["compaction"] = "compaction"
-    summary: str
-    summarized: list[str]  # ids this entry replaced — self-describing span
-    details: dict = Field(default_factory=dict)
+
+    source: CompactionSource  # who asked
+
+    parts: list[ContentPart] | None = None  # None → nothing produced yet
+    compacted_nodes: list[str] | None = None  # None → nothing replaced
+    llm_config: LLMConfig | None = None  # what PRODUCED the content
+
+    started_at: int | None = None  # None → scheduled, not yet started
+    ended_at: int | None = None
+
+    metadata: dict = Field(default_factory=dict)  # policy-owned; opaque to core
 
 
 # ── pruning ───────────────────────────────────────────────────────────────────
@@ -503,6 +551,35 @@ AnyEntry = Annotated[
     ],
     Field(discriminator="type"),
 ]
+
+
+def is_compaction_bracket(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+    turn_start_index: int,
+) -> bool:
+    """Is the bracket opened by `nodes[turn_start_index]` a COMPACTION bracket?
+
+    One definition, four consumers — the ledger's resume read and its
+    `derive_status` skip rule, `SessionRuntimeStatus.turn_count`, and
+    `ConversationProjector.project()` — which is why it lives here, upstream of
+    all of them, as a plain function rather than a method on any of them.
+
+    The test is ADJACENCY: the node immediately after the `TurnStart` is a
+    `CompactionEntry`. That pair is written by two consecutive appends, so it
+    is exact by construction. "Contains a `CompactionEntry` anywhere in the
+    span" would be true today too, but it couples a framework classification to
+    policy behavior — the entry outlives its bracket and lands wherever a
+    compaction plan puts it, so a policy that carries a turn marker without its
+    pair could drop a summary inside an ordinary bracket and have it misread as
+    a compaction.
+
+    A bare `TurnStart` (nothing after it) is conversational, and so is any
+    bracket with no `TurnStart` to anchor it."""
+    following = turn_start_index + 1
+    if following >= len(nodes):
+        return False
+    return isinstance(entries.get(nodes[following]), CompactionEntry)
 
 
 # ── runtime context ───────────────────────────────────────────────────────────
@@ -613,7 +690,11 @@ class SessionRuntimeStatus(BaseModel):
     `AgentSession.session_runtime_status` computed field."""
 
     status: ConversationStatus = ConversationStatus.IDLE
-    turn_count: int = 0  # number of TurnStart entries (includes the open turn)
+    # Conversational turns on the ACTIVE conversation, including the open one.
+    # Scoped to the path because entries outlive their conversation (a
+    # compaction archives one and opens another over the same store), and
+    # excluding compaction brackets because a compaction is not a turn.
+    turn_count: int = 0
     step_count: int = 0  # AssistantMessages in the currently open turn
 
     model_config = ConfigDict(extra="forbid")
@@ -622,11 +703,14 @@ class SessionRuntimeStatus(BaseModel):
     def get_runtime_status_from_agent_session(
         cls, session: AgentSession,
     ) -> SessionRuntimeStatus:
-        turn_count = sum(
-            1 for e in session.entries.values() if isinstance(e, TurnStart)
-        )
         nodes = session.active_conversation.nodes
         entries = session.entries
+        turn_count = sum(
+            1
+            for index, node_id in enumerate(nodes)
+            if isinstance(entries[node_id], TurnStart)
+            and not is_compaction_bracket(nodes, entries, index)
+        )
         open_idx: int | None = None
         for i in range(len(nodes) - 1, -1, -1):
             entry = entries[nodes[i]]

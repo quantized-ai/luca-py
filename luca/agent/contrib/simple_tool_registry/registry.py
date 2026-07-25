@@ -63,10 +63,9 @@ def _draft(
     error: ToolExecutionError | None = None,
     extras: dict | None = None,
 ) -> ToolExecution:
-    """A birth draft with placeholder identity — the runner stamps `id`,
+    """A birth draft with no identity — the runner stamps `id`,
     `parent_id`, `created_at`, and `ended_at` (for a terminal birth)."""
     return ToolExecution(
-        id="", created_at=0,
         tool_call_id=call.id,
         raw_tool_call=call,
         tool_spec=tool_spec,

@@ -15,6 +15,7 @@ from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
 from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.cells import (
     AssistantCell,
+    CompactionCell,
     NoticeCell,
     ReasoningCell,
     UserCell,
@@ -27,6 +28,11 @@ from luca.client.testing import (
     faux_error,
     faux_text,
     faux_thinking,
+)
+
+from tests.agent.scenarios import (
+    COMPACTION_FAILED_SESSION,
+    POST_COMPACTION_SESSION,
 )
 
 from .helpers import fresh_session, idle_again, submit, wait_until
@@ -385,3 +391,37 @@ async def test_ctrl_d_saves_and_quits(tmp_path):
 
     assert app.is_running is False
     assert (tmp_path / f"{session.id}.json").exists()
+
+
+async def test_a_resumed_compacted_session_replays_its_summary(tmp_path):
+    # the summary IS the history on the new conversation — replaying nothing
+    # for it would leave the transcript blank above the next message
+    session = POST_COMPACTION_SESSION.model_copy(deep=True)
+    session.active_conversation.status = ConversationStatus.IDLE
+    session.active_conversation.nodes = ["cmp"]
+    app = AgentApp(
+        session, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert [cell.text for cell in app.query(CompactionCell)] == [
+            "The user added 1 and 2 and was answered 3.",
+        ]
+
+
+async def test_a_compaction_that_produced_nothing_replays_no_cell(tmp_path):
+    # the path carries an earlier COMMITTED summary and a FAILED compaction:
+    # only the one with content renders, exactly as the wire projection does
+    session = COMPACTION_FAILED_SESSION.model_copy(deep=True)
+    app = AgentApp(
+        session, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert [cell.text for cell in app.query(CompactionCell)] == [
+            "Earlier: the user asked where to sit.",
+        ]

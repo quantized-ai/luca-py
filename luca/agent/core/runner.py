@@ -46,6 +46,14 @@ than re-opened. Provider usage is recorded per assistant entry in
 `AgentSession.usages[conversation_id][entry_id]` — accessory
 conversation-entry data, never embedded in entries or rolled up on markers.
 
+Compaction — replacing the older span of a conversation with a summary of it —
+is delegated the same way, to the `CompactionPolicy` the runner is constructed
+with (`compaction.py`; `None` = compaction never happens). It runs as a step at
+the top of a drive, before the conversational bracket opens, inside a turn
+bracket of its own; a successful one archives the conversation and installs a
+new one over the path the policy chose, in a single atomic swap. See
+`schedule_compaction()` and `_compaction_step`.
+
 The whole tool lifecycle is delegated to the `ToolRegistry` the runner is
 constructed with (`tool_registry.py`; `None` = toolless agent). The runner
 touches tools through exactly four registry methods: `get_tools` (queried
@@ -102,6 +110,13 @@ from luca.client.exceptions import TimeoutError as ClientTimeoutError
 from luca.client.types import Tool as LucaTool
 
 from . import adapter
+from .compaction import (
+    CompactionPlan,
+    CompactionPolicy,
+    ConversationSnapshot,
+    check_snapshot,
+    validate_plan,
+)
 from .context import CancellationToken, ToolContext
 from .context_manager import ContextManager
 from .models import (
@@ -112,6 +127,8 @@ from .models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    CompactionEntry,
+    CompactionSource,
     Conversation,
     ConversationStatus,
     ExecutionResult,
@@ -135,6 +152,9 @@ from .models import (
 from .events import (
     AgentEvent,
     ApprovalRequired,
+    CompactionFinished,
+    CompactionScheduled,
+    CompactionStarted,
     FinishReason,
     ReasoningBlock,
     ReasoningDelta,
@@ -167,12 +187,16 @@ EventCallback = Callable[[AgentEvent], "None | Awaitable[None]"]
 
 
 class RunResult(BaseModel):
-    """Where a run stopped.
+    """Where a run stopped: the DERIVED status there, plus how the last
+    bracket this run closed ended (`None` if it closed none).
 
-    - Turn completed → `status=IDLE`, `outcome` from the closing TurnFinish
-      (COMPLETED, or CANCELLED for a wind-down).
+    - Turn completed → `status=IDLE`, `outcome` COMPLETED (or CANCELLED for a
+      wind-down).
     - Approval pause → `status=AWAITING_APPROVAL`, `outcome=None`,
       `pending_approvals` non-empty.
+    - Compaction-only drive → `status` from the new (or unchanged) path,
+      `outcome` COMPLETED or CANCELLED. A caller that needs to tell "the agent
+      answered" from "a compaction ran" reads `CompactionFinished`.
 
     Carries no usage: provider consumption lives in
     `AgentSession.usages[conversation_id][entry_id]`, one record per
@@ -186,8 +210,8 @@ class RunResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: ConversationStatus  # IDLE | AWAITING_APPROVAL
-    outcome: TurnOutcome | None  # set iff the bracket closed during this run
+    status: ConversationStatus  # derived where the run stopped
+    outcome: TurnOutcome | None  # set iff a bracket closed during this run
     pending_approvals: list[ToolExecution]  # non-empty iff AWAITING_APPROVAL
 
 
@@ -236,10 +260,21 @@ class AgentRun:
             # background task. The loop is resolved FIRST so a sync-context
             # start() fails before taking the one-engine guard; the bracket
             # opens durably at call time so an immediate cancel() has an open
-            # turn to attach to (the first drive is then the flush).
+            # turn to attach to (the first drive is then the flush) — and
+            # which bracket that is has to be decided here too, or a
+            # policy-driven compaction could never fire for an eager run.
             loop = asyncio.get_running_loop()
             self._runner._begin_run(self)
-            self._runner._ensure_open_turn()
+            try:
+                self._runner._open_bracket_for_start()
+            except BaseException:
+                # `_begin_run` has already taken the one-run guard, and the
+                # three sites that release it are all downstream of
+                # `create_task`, which never runs. Without this the runner is
+                # permanently unusable after one raise from application code
+                # (`should_compact`, or `before_entry_written`).
+                self._runner._end_run(self)
+                raise
             self._task = loop.create_task(self._consume())
 
     # ── the three consumption forms ─────────────────────────────────────────
@@ -483,6 +518,7 @@ class AgentSessionRunner:
         provider=None,
         conversation_projector: ConversationProjector | None = None,
         context_manager: ContextManager | None = None,
+        compaction_policy: CompactionPolicy | None = None,
         middleware: list | None = None,
     ) -> None:
         self.session = session
@@ -499,6 +535,12 @@ class AgentSessionRunner:
         # projector — one object, never serialized, defaults to the simple
         # built-in policy.
         self.context_manager = context_manager or ContextManager()
+        # Compaction's single extension point (compaction.py). `None` means
+        # compaction never happens: `should_compact` is never consulted and
+        # `schedule_compaction()` raises. The policy owns the whole decision —
+        # when, what, with which model, which nodes survive, and whether to
+        # try again; the runner only triggers, stamps and archives.
+        self.compaction_policy = compaction_policy
         # Static parts (str / dict / SystemPromptPart) coerce eagerly — a bad
         # part fails at construction, not mid-turn. Callables resolve per call.
         self.system_prompt_parts = [
@@ -512,6 +554,16 @@ class AgentSessionRunner:
         self.middleware = list(middleware or [])
         self.ledger = SessionLedger(session, self.now_ms, self.generate_id)
         self._active_run: AgentRun | None = None  # first-drive → finalization
+        # Per-run state, reset in `_begin_run`. `_closed_outcome` is how the
+        # LAST bracket this run closed ended — carried rather than re-read
+        # from the path, because after a compaction the closing marker is on
+        # the archived conversation. The two flags belong to the compaction
+        # step: whether it consumed a cancellation (the drive must then stop
+        # without answering the queued turn) and whether it did anything at
+        # all (only then may a re-derived IDLE end the drive).
+        self._closed_outcome: TurnOutcome | None = None
+        self._compaction_consumed_cancel = False
+        self._compaction_ran = False
 
         # Status is a denormalized cache of the entry state — re-derive it from
         # the entries when taking ownership of a (possibly loaded) session so a
@@ -531,7 +583,8 @@ class AgentSessionRunner:
     def __eq__(self, other: object) -> bool:
         """Configuration equivalence: two runners are equal when they would
         drive a session the same way — equal session state and equivalent
-        tool registry, prompt parts, assembler, provider, and middleware.
+        tool registry, prompt parts, assembler, provider, compaction policy,
+        and middleware.
         Collaborators without their own `__eq__` (registries, assemblers,
         middleware) compare by class + instance state rather than
         identity."""
@@ -548,6 +601,7 @@ class AgentSessionRunner:
                 self.conversation_projector, other.conversation_projector,
             )
             and _equivalent(self.context_manager, other.context_manager)
+            and _equivalent(self.compaction_policy, other.compaction_policy)
             and self.provider == other.provider
             and _all_equivalent(self.middleware, other.middleware)
         )
@@ -593,7 +647,9 @@ class AgentSessionRunner:
         after a failed turn (add or clarify before the retry), or behind an
         already-queued message (queueing — consecutive user messages are an
         established shape). An open turn — CANCELLING, AWAITING_APPROVAL, or a
-        resumable bracket — always rejects.
+        resumable bracket — always rejects, and so does an open COMPACTION
+        bracket: a scheduled or in-flight compaction must be driven before the
+        session takes new input, durably, across a reload.
 
         `content` is a bare string (the common case) or an ordered list of
         parts mixing text and images; `before_post_message` sees that list and
@@ -616,6 +672,47 @@ class AgentSessionRunner:
         )
         self._set_status(ConversationStatus.PENDING)
         return message.id
+
+    def schedule_compaction(self) -> str:
+        """Arm the session for compaction: open a compaction bracket, write a
+        `CompactionEntry(source=USER)`, and return its id. Idempotent.
+
+        It does NOT compact — the work happens on the next drive, so the
+        ordinary shape is schedule-then-drive:
+
+            runner.schedule_compaction()
+            await runner.run()
+
+        The intent is therefore DURABLE: a process that dies before the drive
+        leaves a session that still knows a compaction was asked for, and an
+        open bracket already derives PENDING ("work is queued, call run()").
+        The price is that `post_message` — which requires a closed bracket —
+        raises until that drive has run, across a reload; this is exactly the
+        treatment every other open bracket already gets.
+
+        Requires a CLOSED bracket. An open conversational turn (a resumable
+        bracket, AWAITING_APPROVAL, CANCELLING) raises `AgentError`: the
+        appended `TurnStart` would nest inside it, and `open_turn_index()`
+        walks back to the NEAREST one, so the open turn's eventual
+        `TurnFinish` would silently close the wrong bracket. Raises with no
+        `compaction_policy` configured — the runner would open a bracket
+        nothing can close."""
+        if self.compaction_policy is None:
+            raise AgentError(
+                "schedule_compaction requires a compaction_policy; this "
+                "runner was constructed without one."
+            )
+        existing = self.ledger.open_compaction_entry()
+        if existing is not None:
+            return existing.id  # idempotent — nothing is written
+        if self.ledger.open_turn_index() is not None:
+            raise AgentError(
+                f"schedule_compaction requires a closed turn "
+                f"(status={self.status.value})."
+            )
+        entry = self._open_compaction_bracket(CompactionSource.USER)
+        self._set_status(ConversationStatus.PENDING)
+        return entry.id
 
     def pending_approvals(self) -> list[ToolExecution]:
         """The open turn's executions awaiting an out-of-band approval — those
@@ -722,6 +819,13 @@ class AgentSessionRunner:
             session_id=self.session.id,
             model=self.session.session_config.llm_config,
         )
+        # Per-run, so a handle re-driven after an approval pause (or a
+        # suspended lazy run resumed by a fresh `run()`) never reports the
+        # previous bracket's outcome. `None` is correct for a run that closed
+        # nothing.
+        self._closed_outcome = None
+        self._compaction_consumed_cancel = False
+        self._compaction_ran = False
         self._active_run = run
 
     def _end_run(self, run: AgentRun) -> None:
@@ -742,21 +846,48 @@ class AgentSessionRunner:
                 )
             )
 
+    def _open_bracket_for_start(self) -> None:
+        """`start()`'s call-time bracket decision: a COMPACTION bracket when
+        one is due, otherwise the ordinary `TurnStart`.
+
+        This is why `should_compact` is sync. `AgentRun.__init__` opens a
+        bracket synchronously, so without this an eager run would always
+        present the drive with an open conversational turn — and the drive's
+        compaction step skips when it finds one, so a policy-driven compaction
+        would never fire for an eager run at all. An already-scheduled
+        compaction needs nothing special: its bracket is open, so
+        `_ensure_open_turn` is already a no-op.
+
+        A `should_compact` that raises propagates from `start()` — swallowing
+        it would make a broken policy indistinguishable from one that
+        declines, and nothing durable exists yet to record the failure on."""
+        if (
+            self.compaction_policy is not None
+            and self.ledger.open_turn_index() is None
+            and self.compaction_policy.should_compact(self.session)
+        ):
+            self._open_compaction_bracket(CompactionSource.POLICY)
+            return
+        self._ensure_open_turn()
+
     def _build_run_result(self) -> RunResult:
-        """Snapshot where the engine stopped. IDLE → the bracket closed this
-        run (the trailing TurnFinish carries the outcome);
-        AWAITING_APPROVAL → an approval pause (outcome None)."""
+        """Snapshot where the engine stopped: the DERIVED status, plus how the
+        last bracket this run closed ended (None if it closed none).
+
+        Neither can be read off the path any more. After a successful
+        compaction the closing `TurnFinish` is on the ARCHIVED conversation,
+        and after a compaction-only drive the active leaf may be the
+        `CompactionEntry` itself or a carried assistant message — neither has
+        an outcome to read."""
         if self.status == ConversationStatus.AWAITING_APPROVAL:
             return RunResult(
                 status=ConversationStatus.AWAITING_APPROVAL,
                 outcome=None,
                 pending_approvals=self.pending_approvals(),
             )
-        nodes = self.session.active_conversation.nodes
-        finish = self.session.entries[nodes[-1]]
         return RunResult(
-            status=ConversationStatus.IDLE,
-            outcome=finish.outcome,
+            status=self.status,
+            outcome=self._closed_outcome,
             pending_approvals=[],
         )
 
@@ -783,29 +914,58 @@ class AgentSessionRunner:
                 value = getattr(mw, method_name)(value, *ctx_args, **ctx_kwargs)
         return value
 
+    def _complete_entry(self, entry: AnyEntry) -> AnyEntry:
+        """The fallible half of preparing any entry: calculate its
+        `context_tokens` (context calculation is part of preparing a complete
+        entry — it runs BEFORE middleware, and never again after), then thread
+        it through `before_entry_written`."""
+        entry.context_tokens = self.context_manager.calculate_context(entry)
+        return self._run_middlewares("before_entry_written", entry)
+
     def _append(self, build_fn) -> AnyEntry:
-        """Append one entry: build it, calculate its `context_tokens`
-        (context calculation is part of preparing a complete entry — it runs
-        BEFORE middleware, and never again after), run it through
-        `before_entry_written` middleware, then commit to the ledger."""
-        def wrapped(entry_id: str, parent_id: str | None, ts: int) -> AnyEntry:
-            entry = build_fn(entry_id, parent_id, ts)
-            entry.context_tokens = self.context_manager.calculate_context(entry)
-            return self._run_middlewares("before_entry_written", entry)
-        return self.ledger.append(wrapped)
+        """Append one entry: build it, complete it, commit it to the ledger."""
+        return self.ledger.append(
+            lambda entry_id, parent_id, ts: self._complete_entry(
+                build_fn(entry_id, parent_id, ts),
+            )
+        )
+
+    def _prepare(
+        self, build_fn, parent_id: str | None, ts: int,
+    ) -> AnyEntry:
+        """A complete, fully-middlewared entry that is NOT committed — the
+        other half of `_append`, for entries that belong to a conversation
+        which does not exist yet (a compaction plan's). Identity comes from
+        the same hooks; the caller supplies the parent, because the new
+        conversation's leaf is not the active path's."""
+        return self._complete_entry(build_fn(self.generate_id(), parent_id, ts))
+
+    def _persist_entry(
+        self, entry: AnyEntry, *, recalculate: bool = True, **changes,
+    ) -> AnyEntry:
+        """The one in-place update path, for both mutable entry types: copy
+        with `changes`, complete, store. `recalculate=False` runs middleware
+        ONLY — used for a tool execution's final persist, where
+        `_finalize_outcome` has already settled the context and middleware
+        must keep the final say on it."""
+        updated = entry.model_copy(update=changes)
+        updated = (
+            self._complete_entry(updated)
+            if recalculate
+            else self._run_middlewares("before_entry_written", updated)
+        )
+        return self.ledger.put_entry(updated)
 
     def _persist_execution(
-        self, execution: ToolExecution, **changes,
+        self, execution: ToolExecution, *, recalculate: bool = True, **changes,
     ) -> ToolExecution:
-        """The one update door for a `ToolExecution`: build the replacement,
-        stamp `updated_at`, thread `before_entry_written`, store. Every
-        persistence — approval updates, the RUNNING transition, cancellation
-        stamps, terminal outcomes — lands here."""
-        updated = execution.model_copy(
-            update={**changes, "updated_at": self.now_ms()},
+        """`_persist_entry` plus the `ToolExecution`-only `updated_at` stamp.
+        Every execution persistence — approval updates, the RUNNING
+        transition, cancellation stamps, terminal outcomes — lands here."""
+        return self._persist_entry(
+            execution, recalculate=recalculate, **changes,
+            updated_at=self.now_ms(),
         )
-        updated = self._run_middlewares("before_entry_written", updated)
-        return self.ledger.put_execution(updated)
 
     # ── tool-execution outcome machinery ─────────────────────────────────────
 
@@ -876,7 +1036,7 @@ class AgentSessionRunner:
         execution = self._run_middlewares(
             "after_tool_execution", execution, exception,
         )
-        execution = self._persist_execution(execution)
+        execution = self._persist_execution(execution, recalculate=False)
         return execution, self._tool_executed_event(execution)
 
     def _finalize_undispatched(
@@ -971,6 +1131,322 @@ class AgentSessionRunner:
             "before_llm_call", (messages, system_message), unpack_values=True,
         )
 
+    # ── compaction ───────────────────────────────────────────────────────────
+
+    def _open_compaction_bracket(
+        self, source: CompactionSource,
+    ) -> CompactionEntry:
+        """`TurnStart` then `CompactionEntry` — two plain appends, exactly as
+        safe as recording a user message, and adjacent by construction (which
+        is what makes the compaction-bracket predicate exact). Emits nothing;
+        the drive emits `CompactionScheduled`."""
+        self._append(
+            lambda entry_id, parent_id, ts: TurnStart(
+                id=entry_id, parent_id=parent_id, created_at=ts,
+            )
+        )
+        return self._append(
+            lambda entry_id, parent_id, ts: CompactionEntry(
+                id=entry_id, parent_id=parent_id, created_at=ts, source=source,
+            )
+        )
+
+    def _snapshot_conversation(self) -> ConversationSnapshot:
+        """The full active path (G2's input) plus the view handed to the
+        policy: the same path with THIS compaction's `TurnStart` removed.
+
+        Exactly one element, positionally — the tail is `[…, ts_c, cmp]` by
+        construction (the two appends are consecutive, `post_message` raises
+        while the bracket is open, and a parked cancel flushes before the
+        policy is ever reached), so this is a removal, not a filter over
+        types. `cmp` deliberately STAYS in the view: stripping it too would
+        make `plan.nodes = list(nodes)` illegal, trading one invisible
+        requirement for another."""
+        conversation = self.session.active_conversation
+        nodes = tuple(conversation.nodes)
+        bracket = self.ledger.open_turn_index()
+        return ConversationSnapshot(
+            id=conversation.id,
+            nodes=nodes,
+            offered=nodes[:bracket] + nodes[bracket + 1:],
+        )
+
+    async def _compaction_step(
+        self, token: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """The whole compaction operation, run once at the top of a drive,
+        BEFORE the conversational bracket opens.
+
+        Flush a parked cancel first; then resume an interrupted compaction,
+        skip entirely (an open conversational turn — an approval pause, a
+        crash mid-turn, a suspended run — is never carved up by a policy), or
+        ask the policy whether one is due; then run it. The bracket never
+        stays open past the end of a drive that did not crash.
+
+        Everything expensive and failure-prone happens BEFORE the transition,
+        which is what makes the operation safe by construction rather than by
+        recovery logic: a failure here closes the bracket and leaves the
+        conversation exactly as it was, and a crash leaves the bracket open —
+        the resumable state."""
+        if self.compaction_policy is None:
+            return
+
+        entry = self.ledger.open_compaction_entry()
+
+        # 1) FLUSH FIRST. A parked cancel inside an open compaction bracket
+        #    ends it now — no Scheduled, no Started, no policy call.
+        if entry is not None:
+            cancel = self.ledger.open_turn_cancel_requested()
+            if cancel is not None:
+                self._compaction_consumed_cancel = True
+                yield self._close_compaction(entry, cancel.outcome, cancel.error)
+                return
+
+        # 2) RESUME, SKIP, or DECIDE. An open bracket around an entry that
+        #    already has `parts` is NOT resumable (G6) — the ledger's read
+        #    answers None for it, so it lands in the skip branch below and the
+        #    drive treats it as the phantom conversational turn it is.
+        if entry is None:
+            if self.ledger.open_turn_index() is not None:
+                return  # an open conversational turn → not this drive
+            if not self.compaction_policy.should_compact(self.session):
+                return
+            entry = self._open_compaction_bracket(CompactionSource.POLICY)
+        self._compaction_ran = True  # past every early return
+        yield CompactionScheduled(entry=entry.model_copy(deep=True))
+
+        # 3) RUN IT. `started_at` is stamped once, on the first attempt, so a
+        #    resumed compaction keeps the original stamp and the previous
+        #    attempt stays visible in the log.
+        if entry.started_at is None:
+            entry = self._persist_entry(entry, started_at=self.now_ms())
+        yield CompactionStarted(entry=entry.model_copy(deep=True))
+
+        snapshot = self._snapshot_conversation()
+        try:
+            plan = await self._invoke_policy(entry, snapshot.offered, token)
+        except _CompactionEnded as stop:
+            # A cancellation always wins over the deadline that raced it, and
+            # always stops the drive: the cancel is against the drive, not
+            # against the compaction alone. `cancel()` writes the durable
+            # request BEFORE tripping the token, so a token-fired ending
+            # always finds one here and only a deadline reaches the lines
+            # below — which is why they raise the same timeout the
+            # conversational LLM call raises.
+            cancel = self.ledger.open_turn_cancel_requested()
+            if cancel is not None:
+                self._compaction_consumed_cancel = True
+                yield self._close_compaction(entry, cancel.outcome, cancel.error)
+                return
+            yield self._close_compaction(entry, stop.outcome, stop.error)
+            if entry.source == CompactionSource.USER:
+                raise ClientTimeoutError(stop.error) from None
+            return
+        except Exception as exc:
+            yield self._close_compaction(entry, _outcome_for(exc), str(exc))
+            if entry.source == CompactionSource.USER:
+                raise
+            return  # a POLICY failure DEGRADES — the user's turn survives
+
+        if plan is not None:
+            # G2 first, then the usage write, both inside the failure
+            # handling. G2 first because a policy that replaced the active
+            # conversation would otherwise make `record_usage` raise its own
+            # unrelated error and pre-empt the plan rejection; guarded because
+            # an escape here would leave the bracket OPEN — the "resume me"
+            # state — and the next drive would replay the same failing call
+            # with `should_compact` never consulted.
+            try:
+                check_snapshot(session=self.session, snapshot=snapshot)
+                self.ledger.record_usage(entry.id, **plan.usage.model_dump())
+            except Exception as exc:
+                yield self._close_compaction(entry, TurnOutcome.ERRORED, str(exc))
+                if entry.source == CompactionSource.USER:
+                    raise
+                return
+
+        # A cancel that arrived within the grace window DISCARDS the plan.
+        # Unlike the LLM path, which records a within-grace answer: adding a
+        # node is not rewriting what the conversation is.
+        cancel = self.ledger.open_turn_cancel_requested()
+        if cancel is not None:
+            self._compaction_consumed_cancel = True
+            yield self._close_compaction(entry, cancel.outcome, cancel.error)
+            return
+
+        if plan is None:  # the ONE "nothing to do" signal
+            yield self._close_compaction(entry, TurnOutcome.COMPLETED)
+            return
+
+        try:
+            conversation, final, created = self._commit(entry, plan, snapshot)
+        except Exception as exc:
+            yield self._close_compaction(entry, TurnOutcome.ERRORED, str(exc))
+            if entry.source == CompactionSource.USER:
+                raise
+            return
+
+        self._closed_outcome = TurnOutcome.COMPLETED  # _close_turn never ran
+        yield CompactionFinished(
+            entry=final.model_copy(deep=True),
+            outcome=TurnOutcome.COMPLETED,
+            created=[e.model_copy(deep=True) for e in created],
+            conversation_id=conversation.id,
+        )
+
+    async def _invoke_policy(
+        self,
+        entry: CompactionEntry,
+        offered: tuple[str, ...],
+        token: CancellationToken,
+    ) -> CompactionPlan | None:
+        """Call `compact()` under the run's cancellation race and the session's
+        wall-clock deadline.
+
+        The runner races the call itself: `client_completion_timeout_in_ms` is
+        a kwarg the runner passes to the client, and it cannot reach a request
+        the policy makes on its own. The value is converted exactly as the LLM
+        step converts it, so the default (`Inf`) means NO deadline at all —
+        a hung policy hangs the drive until cancelled, identical to the
+        conversational call's default.
+
+        The policy is handed a DEEP COPY of the entry and the LIVE session.
+        The copy is load-bearing: a policy that wrote `parts` onto the live
+        entry and then failed would leave the bracket closed ERRORED, the path
+        unchanged — and the entry projecting a summary of nothing."""
+        config = self.session.session_config.runtime_config
+        grace_ms = config.llm_completion_cancellation_grace_period
+        deadline = _ms_to_seconds(config.client_completion_timeout_in_ms)
+        task = asyncio.ensure_future(
+            self.compaction_policy.compact(
+                self.session, offered, entry.model_copy(deep=True),
+            )
+        )
+        if deadline is None:
+            completed, plan, _ = await _race_cancellation(
+                task, token, grace_ms, None,
+            )
+        else:
+            try:
+                async with asyncio.timeout(deadline) as scope:
+                    completed, plan, _ = await _race_cancellation(
+                        task, token, grace_ms, None,
+                    )
+            except TimeoutError:
+                if not scope.expired():
+                    raise  # the policy's OWN TimeoutError — a normal raise
+                await _kill(task, detach=False)  # idempotent backstop
+                raise _CompactionEnded(
+                    TurnOutcome.TIMED_OUT,
+                    f"compaction exceeded total_timeout={deadline}s",
+                ) from None
+        if not completed:  # the token fired and the grace expired
+            raise _CompactionEnded(TurnOutcome.CANCELLED, None)
+        return plan
+
+    def _close_compaction(
+        self,
+        entry: CompactionEntry,
+        outcome: TurnOutcome,
+        error: str | None = None,
+    ) -> CompactionFinished:
+        """The single NON-TRANSITION ending: stamp `ended_at`, close the
+        bracket on the pre-compaction path, return the event.
+
+        `parts` and `compacted_nodes` stay None — nothing was committed, so
+        nothing may project. Both writes run `before_entry_written` and are
+        therefore fallible; a middleware raise here leaves the bracket open,
+        which is the recoverable state, and propagates."""
+        final = self._persist_entry(entry, ended_at=self.now_ms())
+        self._close_turn(outcome, error)
+        return CompactionFinished(
+            entry=final.model_copy(deep=True),
+            outcome=outcome,
+            error=error,
+            created=[],
+            conversation_id=None,
+        )
+
+    def _commit(
+        self,
+        entry: CompactionEntry,
+        plan: CompactionPlan,
+        snapshot: ConversationSnapshot,
+    ) -> tuple[Conversation, CompactionEntry, list[AnyEntry]]:
+        """Everything fallible, then one infallible door.
+
+        Validation, the context recalculation, entry middleware for the
+        updated compaction entry and every entry the plan creates, and the
+        closing `TurnFinish` are all PREPARED here and stored by
+        `transition_conversation`. In particular the marker is built but not
+        appended: `_close_turn` would put it on the active path and close the
+        bracket COMPLETED ahead of a transition that then failed, leaving a
+        summary projecting onto an unchanged conversation."""
+        validate_plan(
+            plan, entry_id=entry.id, session=self.session, snapshot=snapshot,
+        )
+        ts = self.now_ms()  # ONE timestamp for the whole transition
+        # The bracket is still open — the closing marker is only BUILT below —
+        # and G2 has just proven this is the same index `_snapshot_conversation`
+        # stripped at, so the offered view and the compacted span can never
+        # disagree about where the bracket is.
+        bracket = self.ledger.open_turn_index()
+        carried = {node for node in plan.nodes if isinstance(node, str)}
+        # Over the path BEFORE the bracket, so the compaction's own `ts_c`
+        # never lands in the list of ids this entry replaced.
+        compacted = [
+            node for node in snapshot.nodes[:bracket] if node not in carried
+        ]
+
+        final = self._complete_entry(
+            entry.model_copy(
+                update={
+                    "parts": plan.entry.parts,
+                    "llm_config": plan.entry.llm_config,
+                    "metadata": plan.entry.metadata,
+                    "compacted_nodes": compacted,
+                    "ended_at": ts,
+                },
+            )
+        )
+        nodes: list[str] = []
+        created: list[AnyEntry] = []
+        parent: str | None = None
+        for node in plan.nodes:
+            if isinstance(node, str):
+                parent = node
+            else:
+                built = self._prepare(
+                    lambda entry_id, parent_id, stamp, template=node: (
+                        template.model_copy(
+                            update={
+                                "id": entry_id,
+                                "parent_id": parent_id,
+                                "created_at": stamp,
+                            },
+                        )
+                    ),
+                    parent,
+                    ts,
+                )
+                created.append(built)
+                parent = built.id
+            nodes.append(parent)
+        closing = self._prepare(
+            lambda entry_id, parent_id, stamp: TurnFinish(
+                id=entry_id, parent_id=parent_id, created_at=stamp,
+                outcome=TurnOutcome.COMPLETED,
+            ),
+            self.session.active_conversation.nodes[-1],
+            ts,
+        )
+        # ─────────────────────────── THE TRANSITION ──────────────────────────
+        conversation = self.ledger.transition_conversation(
+            updates=[final], created=created, closing=closing,
+            nodes=nodes, ts=ts,
+        )
+        return conversation, final, created
+
     # ── the engine ───────────────────────────────────────────────────────────
 
     async def _drive(
@@ -979,10 +1455,35 @@ class AgentSessionRunner:
         """The single engine behind both methods; `AgentRun` is its only
         consumer (lazy pulls it directly, eager drains it from the background
         task)."""
+        self._set_status(ConversationStatus.RUNNING)
+
+        # Compaction runs BEFORE the conversational bracket, at most once per
+        # drive (structural: the step sits outside the loop below).
+        async for event in self._compaction_step(token):
+            yield event
+        if self._compaction_consumed_cancel:
+            # The cancel was against the DRIVE. Consuming it and then going on
+            # to answer the queued turn would defy the instruction.
+            return
+        if (
+            self._compaction_ran
+            and self.ledger.derive_status() == ConversationStatus.IDLE
+        ):
+            # A compaction-only drive: a user-scheduled compaction on an
+            # otherwise-finished session was PENDING only because its bracket
+            # was open. With it closed there is nothing to drive, and opening
+            # a turn would call the model with no user input. Gated on the
+            # step having done something, so every other drive is provably
+            # unchanged.
+            return
+
+        # A committed transition installed a NEW conversation whose status
+        # came from derivation, so RUNNING has to be set again — an
+        # application polling status mid-drive would otherwise see PENDING.
+        self._set_status(ConversationStatus.RUNNING)
         # Resume the open turn if one exists; otherwise open a new bracket
         # (an eager run already opened it at start() time).
         self._ensure_open_turn()
-        self._set_status(ConversationStatus.RUNNING)
 
         # Crash recovery: any persisted RUNNING execution has no live task on
         # a fresh drive — terminalize it as INTERRUPTED before anything else
@@ -1353,7 +1854,7 @@ class AgentSessionRunner:
     ) -> tuple[ToolExecution, Exception | None]:
         """One call's guarded birth: delegate to
         `tool_registry.create_execution` with a deep-copied `ToolCall`. The
-        draft comes back with placeholder identity (`id=""`, `created_at=0`)
+        draft comes back with no identity (`id` / `created_at` are `None`)
         for `_create_executions` to stamp. A raise is caught and becomes a
         runner-synthesized FAILED draft (the live exception is returned for
         the outcome middleware); a toolless runner synthesizes NOT_FOUND."""
@@ -1363,7 +1864,6 @@ class AgentSessionRunner:
         if self.tool_registry is None:
             exc: Exception = ToolNotFound(f"Unknown tool: {tc.name!r}.")
             draft = ToolExecution(
-                id="", created_at=0,
                 tool_call_id=raw.id, raw_tool_call=raw,
                 status=ExecutionStatus.NOT_FOUND,
             )
@@ -1373,7 +1873,6 @@ class AgentSessionRunner:
             return await self.tool_registry.create_execution(raw, ctx), None
         except Exception as exc:
             draft = ToolExecution(
-                id="", created_at=0,
                 tool_call_id=raw.id, raw_tool_call=raw,
                 status=ExecutionStatus.FAILED,
             )
@@ -1584,17 +2083,23 @@ class AgentSessionRunner:
         )
 
     def _close_turn(self, outcome: TurnOutcome, error: str | None = None) -> None:
-        """The only TurnFinish writer — normal close, cancel wind-down, and
-        failure close all land here. The status re-derives from the entries
-        (IDLE for COMPLETED/CANCELLED; retry-ready PENDING for a failure).
-        No usage rollup: turn usage is derived from `AgentSession.usages`,
-        never duplicated on the marker."""
+        """The only TurnFinish writer that APPENDS — normal close, cancel
+        wind-down, failure close, and every non-transition compaction ending
+        land here. The status re-derives from the entries (IDLE for
+        COMPLETED/CANCELLED; retry-ready PENDING for a failure), and the
+        outcome is recorded for `RunResult`. No usage rollup: turn usage is
+        derived from `AgentSession.usages`, never duplicated on the marker.
+
+        (A committed compaction is the one close that does NOT come through
+        here: its marker belongs to the outgoing conversation and is written
+        inside the transition — see `_commit`.)"""
         self._append(
             lambda entry_id, parent_id, ts: TurnFinish(
                 id=entry_id, parent_id=parent_id, created_at=ts,
                 outcome=outcome, error=error,
             )
         )
+        self._closed_outcome = outcome
         self._refresh_status()
 
     def _set_status(self, status: ConversationStatus) -> None:
@@ -1602,6 +2107,29 @@ class AgentSessionRunner:
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+
+class _CompactionEnded(Exception):
+    """Internal: the compaction ended before `compact()` returned — the run's
+    cancellation token fired and its grace expired, or the wall-clock deadline
+    did. Carries the outcome the bracket should close with; never escapes the
+    step (a user-scheduled timeout re-raises as a `ClientTimeoutError`, the
+    same type the conversational LLM call's timeout produces)."""
+
+    def __init__(self, outcome: TurnOutcome, error: str | None = None) -> None:
+        super().__init__(error or outcome.value)
+        self.outcome = outcome
+        self.error = error
+
+
+def _outcome_for(exception: Exception) -> TurnOutcome:
+    """How a compaction bracket closes for a live failure — the same
+    TIMED_OUT / ERRORED split the conversational LLM call uses."""
+    return (
+        TurnOutcome.TIMED_OUT
+        if isinstance(exception, ClientTimeoutError)
+        else TurnOutcome.ERRORED
+    )
 
 
 def _equivalent(a: object, b: object) -> bool:

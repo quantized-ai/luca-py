@@ -133,10 +133,13 @@ def build_runner(
     workspace: str | os.PathLike[str] = ".",
     provider=None,
     mode: str = "ask",
+    compaction_policy=None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy. `provider=` is the zero-logic passthrough the tests use
-    to inject a `FauxProvider`."""
+    to inject a `FauxProvider`; `compaction_policy=` is the same for
+    compaction — no policy ships with the demo yet, so `/compact` reports that
+    none is configured until one is passed here."""
     shell = ShellAccessPlugin(workspace=Path(workspace), mode=mode)
     strategy = shell.permission_strategy
     registry = SimpleToolRegistry(
@@ -149,6 +152,7 @@ def build_runner(
         plugins=[MemoryPlugin(), shell],
         system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
+        compaction_policy=compaction_policy,
     )
     return runner, strategy
 

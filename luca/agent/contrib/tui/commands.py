@@ -164,6 +164,20 @@ async def _cmd_new(app: "AgentApp", arg: str) -> None:
     await app._notice(f"saved {old_id}, started new session {new.id}")
 
 
+async def _cmd_compact(app: "AgentApp", arg: str) -> None:
+    """Schedule a compaction, then drive it. Scheduling only writes the
+    bracket and the entry — the summarization happens on the next drive, and
+    the drive loop already runs until the runner is idle."""
+    if app.runner.compaction_policy is None:
+        await app._notice(
+            "no compaction policy is configured for this runner", error=True,
+        )
+        return
+    app.runner.schedule_compaction()
+    await app._notice("compacting the conversation…")
+    app._start_drive()
+
+
 async def _cmd_quit(app: "AgentApp", arg: str) -> None:
     await app._quit()
 
@@ -172,6 +186,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("help", "", "show this help", _cmd_help),
     SlashCommand("model", "[provider:model]", "pick a provider then a model", _cmd_model),
     SlashCommand("reasoning", "[level]", "pick or set the reasoning level", _cmd_reasoning),
+    SlashCommand("compact", "", "summarize the history and continue", _cmd_compact),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_new),
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )

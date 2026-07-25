@@ -152,7 +152,6 @@ class InlineToolRegistry(ToolRegistry):
         self, call: ToolCall, context: ToolContext,
     ) -> ToolExecution:
         return ToolExecution(
-            id="", created_at=0,
             tool_call_id=call.id, raw_tool_call=call,
             tool_spec=self.tools_by_name[call.name].get_tool_spec(),
         )

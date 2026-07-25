@@ -153,7 +153,7 @@ async def test_unknown_tool_births_a_not_found_draft():
     draft = await registry.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id="", created_at=0,
+        id=None, created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
@@ -181,7 +181,7 @@ async def test_invalid_arguments_birth_an_invalid_draft():
     assert draft.error.details["errors"][0]["type"] == "missing"
     assert draft.error.details["errors"][0]["loc"] == ["b"]
     assert draft.extras == {}
-    assert (draft.id, draft.created_at, draft.ended_at) == ("", 0, None)
+    assert (draft.id, draft.created_at, draft.ended_at) == (None, None, None)
 
 
 async def test_raising_approval_context_births_a_failed_draft():
@@ -210,7 +210,7 @@ async def test_healthy_call_births_a_pending_draft_with_approval_context():
     draft = await registry.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id="", created_at=0,
+        id=None, created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=ToolSpec(name="read_file", description="Read a file."),
@@ -391,7 +391,7 @@ async def test_proxy_create_execution_miss_births_a_not_found_draft():
     draft = await proxy.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id="", created_at=0,
+        id=None, created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
