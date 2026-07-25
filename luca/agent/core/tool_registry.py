@@ -51,12 +51,16 @@ class ToolRegistry:
         raise NotImplementedError
 
     async def create_execution(
-        self, call: ToolCall, context: ToolContext,
+        self,
+        call: ToolCall,
+        context: ToolContext,
     ) -> ToolExecution:
         raise NotImplementedError
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         raise NotImplementedError
 

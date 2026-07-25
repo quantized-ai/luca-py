@@ -15,7 +15,8 @@ def json_response(payload: dict, status_code: int = 200) -> Callable[[httpx.Requ
 
 
 def sse_response(
-    chunks: list[bytes], status_code: int = 200,
+    chunks: list[bytes],
+    status_code: int = 200,
 ) -> Callable[[httpx.Request], httpx.Response]:
     body = b"".join(chunks)
 

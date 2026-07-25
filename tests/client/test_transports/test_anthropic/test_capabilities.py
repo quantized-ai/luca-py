@@ -27,41 +27,56 @@ UNKNOWN = get_model_capabilities("some-future-model")
 
 
 def test_the_newest_models_are_adaptive_and_refuse_sampling():
-    assert ADAPTIVE == ModelCapabilities(
-        max_output_tokens=128_000,
-        supports_thinking=True,
-        supports_adaptive_thinking=True,
-        supports_xhigh_effort=True,
-        rejects_sampling_parameters=True,
-        is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            supports_xhigh_effort=True,
+            rejects_sampling_parameters=True,
+            is_known_model=True,
+        )
+        == ADAPTIVE
     )
 
 
 def test_the_4_6_generation_is_adaptive_without_xhigh_or_sampling_refusal():
-    assert ADAPTIVE_NO_XHIGH == ModelCapabilities(
-        max_output_tokens=128_000,
-        supports_thinking=True,
-        supports_adaptive_thinking=True,
-        is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            is_known_model=True,
+        )
+        == ADAPTIVE_NO_XHIGH
     )
 
 
 def test_the_4_5_generation_thinks_but_only_manually():
-    assert MANUAL == ModelCapabilities(
-        max_output_tokens=64_000, supports_thinking=True, is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=64_000,
+            supports_thinking=True,
+            is_known_model=True,
+        )
+        == MANUAL
     )
 
 
 def test_the_3_x_models_are_known_but_cannot_think():
-    assert NO_THINKING == ModelCapabilities(
-        max_output_tokens=4_096, is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=4_096,
+            is_known_model=True,
+        )
+        == NO_THINKING
     )
 
 
 def test_an_unknown_model_gets_the_conservative_record():
     # a model we have never seen is as likely to be old as new, and sending
     # the wrong thinking shape is a hard 400
-    assert UNKNOWN == ModelCapabilities()
+    assert ModelCapabilities() == UNKNOWN
 
 
 def test_a_specific_id_is_not_swallowed_by_a_broader_one():
@@ -192,8 +207,11 @@ def test_any_model_refuses_sampling_while_thinking_is_active():
 def test_sampling_survives_on_a_model_that_accepts_it_with_thinking_off():
     check_sampling(MANUAL, {}, temperature=0.2, top_p=0.9, top_k=40)
     check_sampling(
-        MANUAL, {"thinking": {"type": "disabled"}},
-        temperature=0.2, top_p=None, top_k=None,
+        MANUAL,
+        {"thinking": {"type": "disabled"}},
+        temperature=0.2,
+        top_p=None,
+        top_k=None,
     )
 
 

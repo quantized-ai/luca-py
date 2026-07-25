@@ -14,16 +14,18 @@ RG = "/fake/bin/rg"
 
 
 def match_event(path: str, line_number: int, text: str) -> str:
-    return json.dumps({
-        "type": "match",
-        "data": {
-            "path": {"text": path},
-            "lines": {"text": text + "\n"},
-            "line_number": line_number,
-            "absolute_offset": 0,
-            "submatches": [],
-        },
-    })
+    return json.dumps(
+        {
+            "type": "match",
+            "data": {
+                "path": {"text": path},
+                "lines": {"text": text + "\n"},
+                "line_number": line_number,
+                "absolute_offset": 0,
+                "submatches": [],
+            },
+        }
+    )
 
 
 def make_tool(tmp_path, stdout="", stderr="", code=0):
@@ -46,10 +48,12 @@ def body(result) -> str:
 
 
 async def test_matches_are_grouped_by_file_with_line_numbers(tmp_path, run):
-    stdout = "\n".join([
-        match_event("/workspace/a.py", 3, "first matching line"),
-        match_event("/workspace/b.py", 8, "second matching line"),
-    ])
+    stdout = "\n".join(
+        [
+            match_event("/workspace/a.py", 3, "first matching line"),
+            match_event("/workspace/b.py", 8, "second matching line"),
+        ]
+    )
     tool, calls = make_tool(tmp_path, stdout=stdout)
 
     result = await run(tool, {"pattern": "export"})
@@ -70,17 +74,17 @@ async def test_matches_are_grouped_by_file_with_line_numbers(tmp_path, run):
 
 
 async def test_two_matches_in_the_same_file_share_one_block(tmp_path, run):
-    stdout = "\n".join([
-        match_event("/w/a.py", 1, "one"),
-        match_event("/w/a.py", 5, "two"),
-    ])
+    stdout = "\n".join(
+        [
+            match_event("/w/a.py", 1, "one"),
+            match_event("/w/a.py", 5, "two"),
+        ]
+    )
     tool, _ = make_tool(tmp_path, stdout=stdout)
 
     result = await run(tool, {"pattern": "o"})
 
-    assert body(result) == (
-        "Found 2 matches\n/w/a.py:\n  Line 1: one\n  Line 5: two"
-    )
+    assert body(result) == ("Found 2 matches\n/w/a.py:\n  Line 1: one\n  Line 5: two")
 
 
 # ── scenario 2: no matches ────────────────────────────────────────────────────
@@ -149,9 +153,7 @@ async def test_invalid_regex_surfaces_the_parse_error(tmp_path, run):
 
 
 async def test_101_matches_cap_at_100_without_inventing_a_total(tmp_path, run):
-    stdout = "\n".join(
-        match_event("/w/f.py", n, f"match {n}") for n in range(1, 102)
-    )
+    stdout = "\n".join(match_event("/w/f.py", n, f"match {n}") for n in range(1, 102))
     tool, _ = make_tool(tmp_path, stdout=stdout)
 
     result = await run(tool, {"pattern": "match"})
@@ -159,16 +161,12 @@ async def test_101_matches_cap_at_100_without_inventing_a_total(tmp_path, run):
     assert body(result).startswith("Found 100 matches (more matches available)")
     assert "101" not in body(result).split("\n")[0]
     assert body(result).count("  Line ") == 100
-    assert (
-        "(Results truncated. Consider using a more specific path or pattern.)"
-    ) in body(result)
+    assert ("(Results truncated. Consider using a more specific path or pattern.)") in body(result)
     assert result.metadata == {"truncated": True, "count": 100}
 
 
 async def test_exactly_100_matches_is_a_complete_result(tmp_path, run):
-    stdout = "\n".join(
-        match_event("/w/f.py", n, f"match {n}") for n in range(1, 101)
-    )
+    stdout = "\n".join(match_event("/w/f.py", n, f"match {n}") for n in range(1, 101))
     tool, _ = make_tool(tmp_path, stdout=stdout)
 
     result = await run(tool, {"pattern": "match"})
@@ -226,17 +224,16 @@ def test_permission_resource_defaults_to_the_workdir(tmp_path, perm):
         ResourcePermission(permission="access_directory", resource=str(tmp_path)),
     ]
     assert access.metadata["preview"] == f"Access directory {tmp_path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(tmp_path),
+                    permission="access_directory",
+                    resource=str(tmp_path),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{tmp_path}/*",
+                    permission="access_directory",
+                    resource=f"{tmp_path}/*",
                 ),
             ],
             f"Always allow access to {tmp_path}",
@@ -246,10 +243,7 @@ def test_permission_resource_defaults_to_the_workdir(tmp_path, perm):
         ResourcePermission(permission="grep", resource=str(tmp_path)),
     ]
     assert request.metadata["preview"] == f'Search for "needle" in {tmp_path}'
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="grep", resource=f"{tmp_path}/*")],
             f"Search files under {tmp_path}",

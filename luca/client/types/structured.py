@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 
-ResponseFormat = Union[dict, type, TypeAdapter]
+ResponseFormat = dict | type | TypeAdapter
 
 
 def parse_structured_output(text: str, response_format: Any) -> Any:
@@ -29,7 +29,7 @@ def parse_structured_output(text: str, response_format: Any) -> Any:
         raise StructuredOutputError(
             f"Response is not valid JSON: {e}",
             original_exception=e,
-        )
+        ) from e
 
     try:
         if isinstance(response_format, dict):
@@ -42,7 +42,7 @@ def parse_structured_output(text: str, response_format: Any) -> Any:
         raise StructuredOutputError(
             f"Response did not validate against schema: {e}",
             original_exception=e,
-        )
+        ) from e
 
     raise StructuredOutputError(
         f"Unknown response_format type {type(response_format).__name__}; "

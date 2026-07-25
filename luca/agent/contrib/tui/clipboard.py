@@ -60,14 +60,11 @@ def _capture(target: Path) -> bool:
         return _run(["osascript", "-e", _MACOS_SCRIPT.format(path=target)])
     if system == "Windows":
         return _run(
-            ["powershell", "-NoProfile", "-Command",
-             _WINDOWS_SCRIPT.format(path=target)],
+            ["powershell", "-NoProfile", "-Command", _WINDOWS_SCRIPT.format(path=target)],
         )
     if system == "Linux":
         return _capture_linux(target)
-    raise ClipboardUnavailable(
-        f"Reading the clipboard is not supported on {system}."
-    )
+    raise ClipboardUnavailable(f"Reading the clipboard is not supported on {system}.")
 
 
 def _capture_linux(target: Path) -> bool:
@@ -78,9 +75,7 @@ def _capture_linux(target: Path) -> bool:
             ["xclip", "-selection", "clipboard", "-t", MEDIA_TYPE, "-o"],
             stdout=target,
         )
-    raise ClipboardUnavailable(
-        "Reading the clipboard needs `wl-paste` (Wayland) or `xclip` (X11)."
-    )
+    raise ClipboardUnavailable("Reading the clipboard needs `wl-paste` (Wayland) or `xclip` (X11).")
 
 
 def _run(command: list[str], *, stdout: Path | None = None) -> bool:
@@ -89,20 +84,20 @@ def _run(command: list[str], *, stdout: Path | None = None) -> bool:
     try:
         if stdout is None:
             result = subprocess.run(
-                command, capture_output=True, timeout=_TIMEOUT_SECONDS,
+                command,
+                capture_output=True,
+                timeout=_TIMEOUT_SECONDS,
             )
         else:
             with stdout.open("wb") as handle:
                 result = subprocess.run(
-                    command, stdout=handle, stderr=subprocess.PIPE,
+                    command,
+                    stdout=handle,
+                    stderr=subprocess.PIPE,
                     timeout=_TIMEOUT_SECONDS,
                 )
     except FileNotFoundError:
-        raise ClipboardUnavailable(
-            f"`{command[0]}` is not installed."
-        ) from None
+        raise ClipboardUnavailable(f"`{command[0]}` is not installed.") from None
     except subprocess.TimeoutExpired:
-        raise ClipboardUnavailable(
-            f"`{command[0]}` did not respond."
-        ) from None
+        raise ClipboardUnavailable(f"`{command[0]}` did not respond.") from None
     return result.returncode == 0

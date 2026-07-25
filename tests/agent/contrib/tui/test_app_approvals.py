@@ -41,7 +41,8 @@ async def test_approve_once_runs_the_tool(tmp_path):
     app = AgentApp(
         session,
         provider=scripted(*tool_turn("It is 42.")),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -63,7 +64,9 @@ async def test_approve_once_runs_the_tool(tmp_path):
     # the reloaded session replays the finished tool round
     replayed = AgentApp(
         load_session(session.id, tmp_path),
-        provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with replayed.run_test() as pilot:
         await pilot.pause()
@@ -77,7 +80,8 @@ async def test_deny_rejects_the_call_and_the_model_reacts(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(*tool_turn("Understood, I won't compute it.")),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -98,7 +102,8 @@ async def test_abandon_cancels_the_turn(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(*tool_turn("never sent")[:1]),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -109,9 +114,7 @@ async def test_abandon_cancels_the_turn(tmp_path):
 
         [cell] = app.query(ToolCallCell)
         assert cell.status is ExecutionStatus.CANCELLED
-        assert "turn abandoned — flushing" in [
-            cell.text for cell in app.query(NoticeCell)
-        ]
+        assert "turn abandoned — flushing" in [cell.text for cell in app.query(NoticeCell)]
         assert app.runner.status is ConversationStatus.IDLE
 
 
@@ -119,7 +122,8 @@ async def test_escape_on_the_modal_abandons(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(*tool_turn("never sent")[:1]),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -129,6 +133,4 @@ async def test_escape_on_the_modal_abandons(tmp_path):
         await wait_until(pilot, lambda: idle_again(app))
 
         assert app.runner.status is ConversationStatus.IDLE
-        assert "turn abandoned — flushing" in [
-            cell.text for cell in app.query(NoticeCell)
-        ]
+        assert "turn abandoned — flushing" in [cell.text for cell in app.query(NoticeCell)]

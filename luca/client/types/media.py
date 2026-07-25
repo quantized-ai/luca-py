@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +32,6 @@ class MediaFileId(BaseModel):
 
 
 MediaSource = Annotated[
-    Union[MediaURL, MediaBase64, MediaFileId],
+    MediaURL | MediaBase64 | MediaFileId,
     Field(discriminator="kind"),
 ]

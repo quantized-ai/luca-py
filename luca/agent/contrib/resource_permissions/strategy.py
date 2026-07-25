@@ -45,13 +45,13 @@ from fnmatch import fnmatchcase
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from luca.agent.contrib.simple_tool_registry import PermissionPolicy
 from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ToolExecution,
     ToolKind,
 )
-from luca.agent.contrib.simple_tool_registry import PermissionPolicy
 
 from .mixin import AnswerOption, PermissionRequest, ResourcePermission
 
@@ -176,10 +176,7 @@ class PermissionStrategy(PermissionPolicy):
         pending: list[PermissionRequest] = []
         for request in self.permission_requests(execution):
             pairs = request.resources or [implicit]
-            unresolved = [
-                pair for pair in pairs
-                if self._resolve_pair(execution, pair)[0] == ApprovalOption.PENDING
-            ]
+            unresolved = [pair for pair in pairs if self._resolve_pair(execution, pair)[0] == ApprovalOption.PENDING]
             if not unresolved:
                 continue
             if request.resources:
@@ -189,15 +186,14 @@ class PermissionStrategy(PermissionPolicy):
         return pending
 
     async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision:
-        resolved = [
-            self._resolve_pair(tool_execution, pair)
-            for pair in self._required_pairs(tool_execution)
-        ]
+        resolved = [self._resolve_pair(tool_execution, pair) for pair in self._required_pairs(tool_execution)]
         decision, via = _aggregate(resolved)
         return ApprovalDecision(decision=decision, metadata={"via": via})
 
     def apply_answer(
-        self, execution: ToolExecution, answers: list[ApprovalAnswer],
+        self,
+        execution: ToolExecution,
+        answers: list[ApprovalAnswer],
     ) -> None:
         """Record user answers for one pending execution. Answers are
         verdicts over pairs, NOT replies to requests: ALWAYS-scoped answers
@@ -207,11 +203,7 @@ class PermissionStrategy(PermissionPolicy):
         nothing is a no-op verdict and the call simply stays PENDING.
         Resolution is emergent — the next `decide()` checks coverage."""
         for answer in answers:
-            decision = (
-                ApprovalOption.ALLOW
-                if answer.decision == AnswerDecision.APPROVE
-                else ApprovalOption.DENY
-            )
+            decision = ApprovalOption.ALLOW if answer.decision == AnswerDecision.APPROVE else ApprovalOption.DENY
             for pair in answer.answer_option.resource_permissions:
                 if answer.scope == AnswerScope.ALWAYS:
                     self.add_rule(execution.raw_tool_call.name, pair, decision)
@@ -236,7 +228,9 @@ class PermissionStrategy(PermissionPolicy):
     # ── resolution internals ─────────────────────────────────────────────────
 
     def _resolve_pair(
-        self, execution: ToolExecution, pair: ResourcePermission,
+        self,
+        execution: ToolExecution,
+        pair: ResourcePermission,
     ) -> tuple[ApprovalOption, str]:
         """One pair's (decision, via): ephemeral verdicts first, then the
         rule list with the mode's promotion applied."""
@@ -260,7 +254,9 @@ class PermissionStrategy(PermissionPolicy):
         return pairs
 
     def _match_verdicts(
-        self, execution_id: str, pair: ResourcePermission,
+        self,
+        execution_id: str,
+        pair: ResourcePermission,
     ) -> tuple[ApprovalOption, str] | None:
         """The ephemeral verdict covering `pair`, DENY beating ALLOW among
         matches. Matching uses the same algorithm as rule-resource matching
@@ -282,32 +278,30 @@ class PermissionStrategy(PermissionPolicy):
         return matched, "user"
 
     def _match_rules(
-        self, execution: ToolExecution, pair: ResourcePermission,
+        self,
+        execution: ToolExecution,
+        pair: ResourcePermission,
     ) -> tuple[ApprovalOption, str]:
         """Last-match-wins over the unified rule list. Returns (decision, via);
         no match → PENDING via 'mode'. The tool name comes from the call
         (`raw_tool_call`); the kind from the resolved `tool_spec` snapshot
         (always present here — a call whose tool didn't resolve is terminal at
         birth and never reaches the policy)."""
-        tool_kind = (
-            execution.tool_spec.tool_kind
-            if execution.tool_spec is not None
-            else None
-        )
+        tool_kind = execution.tool_spec.tool_kind if execution.tool_spec is not None else None
         matched: tuple[ApprovalOption, str] | None = None
         for rule in self.rules:
             if isinstance(rule, ToolKindRule):
                 if rule.tool_kind == tool_kind:
                     matched = (rule.decision, "kind_default")
-            elif isinstance(rule, ToolRule):
-                if (
-                    self._tool_matches(rule, execution.raw_tool_call.name)
-                    and rule.resource_permission.permission == pair.permission
-                    and _resource_matches(
-                        pair.resource, rule.resource_permission.resource,
-                    )
-                ):
-                    matched = (rule.decision, "rule")
+            elif isinstance(rule, ToolRule) and (
+                self._tool_matches(rule, execution.raw_tool_call.name)
+                and rule.resource_permission.permission == pair.permission
+                and _resource_matches(
+                    pair.resource,
+                    rule.resource_permission.resource,
+                )
+            ):
+                matched = (rule.decision, "rule")
         if matched is None:
             return ApprovalOption.PENDING, "mode"
         return matched
@@ -318,7 +312,9 @@ class PermissionStrategy(PermissionPolicy):
         return rule.tool_name is None or rule.tool_name == tool_name
 
     def _apply_mode(
-        self, base: ApprovalOption, via: str,
+        self,
+        base: ApprovalOption,
+        via: str,
     ) -> tuple[ApprovalOption, str]:
         if self.mode == PermissionMode.ASK:
             return base, via

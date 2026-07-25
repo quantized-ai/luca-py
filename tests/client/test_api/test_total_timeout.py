@@ -24,20 +24,26 @@ async def test_acompletion_total_timeout_raises_on_a_hung_call():
 
     with pytest.raises(SDKTimeoutError):
         await acompletion(
-            "faux:test-model", [UserMessage(content="hi")],
-            provider=faux, total_timeout=0.05,
+            "faux:test-model",
+            [UserMessage(content="hi")],
+            provider=faux,
+            total_timeout=0.05,
         )
 
 
 async def test_acompletion_total_timeout_is_inert_on_an_instant_response():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
 
     response = await acompletion(
-        "faux:test-model", [UserMessage(content="hi")],
-        provider=faux, total_timeout=60.0,
+        "faux:test-model",
+        [UserMessage(content="hi")],
+        provider=faux,
+        total_timeout=60.0,
     )
 
     assert response.message.content == [TextBlock(text="ok")]
@@ -46,21 +52,23 @@ async def test_acompletion_total_timeout_is_inert_on_an_instant_response():
 
 async def test_stream_total_timeout_emits_one_terminal_error_event():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_text("Hel"), faux_text("lo"), faux_hang()],
-            finish_reason="stop",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_text("Hel"), faux_text("lo"), faux_hang()],
+                finish_reason="stop",
+            ),
+        ]
+    )
     stream = acompletion_stream(
-        "faux:test-model", [UserMessage(content="hi")],
-        provider=faux, total_timeout=0.05,
+        "faux:test-model",
+        [UserMessage(content="hi")],
+        provider=faux,
+        total_timeout=0.05,
     )
 
-    events = []
     async with stream as s:
-        async for event in s:
-            events.append(event)
+        events = [event async for event in s]
 
     assert [e.delta for e in events if e.type == "text_delta"] == ["Hel", "lo"]
     terminals = [e for e in events if e.type in ("finish", "error")]
@@ -72,18 +80,20 @@ async def test_stream_total_timeout_emits_one_terminal_error_event():
 
 async def test_stream_total_timeout_is_inert_on_an_instant_stream():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello")], finish_reason="stop"),
+        ]
+    )
     stream = acompletion_stream(
-        "faux:test-model", [UserMessage(content="hi")],
-        provider=faux, total_timeout=60.0,
+        "faux:test-model",
+        [UserMessage(content="hi")],
+        provider=faux,
+        total_timeout=60.0,
     )
 
-    events = []
     async with stream as s:
-        async for event in s:
-            events.append(event)
+        events = [event async for event in s]
 
     assert events[-1].type == "finish"
     assert events[-1].finish_reason == "stop"

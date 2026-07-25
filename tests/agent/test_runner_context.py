@@ -35,11 +35,13 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-from luca.client.types import TextBlock, ToolMessage
-from luca.client.types import AssistantMessage as LucaAssistantMessage
-from luca.client.types import ToolCall as LucaToolCall
-from luca.client.types import UserMessage as LucaUserMessage
-
+from luca.client.types import (
+    AssistantMessage as LucaAssistantMessage,
+    TextBlock,
+    ToolCall as LucaToolCall,
+    ToolMessage,
+    UserMessage as LucaUserMessage,
+)
 from tests.agent.scenarios import (
     MODEL,
     AddTool,
@@ -83,11 +85,16 @@ def _session(session_id: str) -> AgentSession:
         id=session_id,
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1"], created_at=500, updated_at=500,
+            id="c1",
+            nodes=["u1"],
+            created_at=500,
+            updated_at=500,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -95,18 +102,23 @@ def _session(session_id: str) -> AgentSession:
 
 async def test_the_configured_context_manager_counts_every_new_entry():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = _session("s_fixed")
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
         context_manager=FixedContextManager(),
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -124,13 +136,18 @@ async def test_middleware_has_the_final_say_on_context_tokens():
     session = AgentSession(
         id="s_mw",
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=500, updated_at=500,
+            id="c1",
+            nodes=[],
+            created_at=500,
+            updated_at=500,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, middleware=[ContextOverridingMiddleware()],
-        ids=["u1"], now=1000,
+        session,
+        middleware=[ContextOverridingMiddleware()],
+        ids=["u1"],
+        now=1000,
     )
 
     runner.post_message("A long message the estimator would count differently")
@@ -141,18 +158,23 @@ async def test_middleware_has_the_final_say_on_context_tokens():
 
 async def test_processed_tool_output_reaches_session_event_and_wire_identically():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = _session("s_trunc")
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
         context_manager=TruncatingContextManager(),
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -169,7 +191,7 @@ async def test_processed_tool_output_reaches_session_event_and_wire_identically(
     # context was calculated from the processed content
     assert runner.session.entries["te1"].context_tokens == 4  # 18 // 4
     # event: derived from the same persisted execution
-    executed = [event for event in events if event.type == "tool_executed"][0]
+    executed = next(event for event in events if event.type == "tool_executed")
     assert executed.result_text == "[output truncated]"
     assert executed.is_error is False
     # wire: the second LLM request projects the same processed output
@@ -182,17 +204,21 @@ async def test_processed_tool_output_reaches_session_event_and_wire_identically(
 
 async def test_pruning_machinery_composes_and_reaches_the_next_wire_request():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-        faux_assistant_message([faux_text("Still 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+            faux_assistant_message([faux_text("Still 3.")], finish_reason="stop"),
+        ]
+    )
     session = _session("s_prune")
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
         ids=["ts", "a1", "te1", "a2", "tf", "p1", "u2", "ts2", "a3", "tf2"],
         now=1000,
     )
@@ -215,7 +241,12 @@ async def test_pruning_machinery_composes_and_reaches_the_next_wire_request():
 
     # the path visits the replacement; the original entry is untouched
     assert runner.session.active_conversation.nodes == [
-        "u1", "ts", "a1", "p1", "a2", "tf",
+        "u1",
+        "ts",
+        "a1",
+        "p1",
+        "a2",
+        "tf",
     ]
     assert pruned.parent_id == "a1"  # the original's position, not the leaf
     assert pruned.context_tokens == 11  # len(marker) // 4
@@ -226,9 +257,11 @@ async def test_pruning_machinery_composes_and_reaches_the_next_wire_request():
 
     assert faux.requests[2].messages == [
         LucaUserMessage(content=[TextBlock(text="Add 1 and 2")]),
-        LucaAssistantMessage(content=[
-            LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            ]
+        ),
         ToolMessage(
             tool_call_id="tc1",
             content=[TextBlock(text=PRUNED_TOOL_OUTPUT_MARKER)],

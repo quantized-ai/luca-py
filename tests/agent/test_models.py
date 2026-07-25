@@ -53,7 +53,6 @@ from luca.agent.core.models import (
     UserMessage,
     is_compaction_bracket,
 )
-
 from tests.agent.scenarios import MODEL
 
 
@@ -114,7 +113,8 @@ def test_approval_decision_defaults_stamp_created_at():
 
     assert decision.decision == ApprovalOption.ALLOW
     assert decision.metadata is None
-    assert isinstance(decision.created_at, int) and decision.created_at > 0
+    assert isinstance(decision.created_at, int)
+    assert decision.created_at > 0
 
 
 def test_approval_decision_round_trips_with_metadata():
@@ -172,7 +172,9 @@ def test_tool_execution_error_forbids_unknown_fields():
 
 def test_tool_execution_defaults_to_birth_state():
     execution = ToolExecution(
-        id="te1", created_at=1, tool_call_id="tc1",
+        id="te1",
+        created_at=1,
+        tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1}),
     )
 
@@ -197,15 +199,20 @@ def test_tool_execution_requires_raw_tool_call():
 
 def test_tool_execution_dispatched_and_duration_are_derived():
     undispatched = ToolExecution(
-        id="te1", created_at=1, tool_call_id="tc1",
+        id="te1",
+        created_at=1,
+        tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
     )
     settled = ToolExecution(
-        id="te2", created_at=1, tool_call_id="tc2",
+        id="te2",
+        created_at=1,
+        tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="add"),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000, ended_at=1250,
+        started_at=1000,
+        ended_at=1250,
     )
 
     assert undispatched.dispatched is False
@@ -218,7 +225,9 @@ def test_tool_execution_does_not_enforce_cross_field_invariants():
     # framework conventions, not schema validation: middleware-authored
     # combinations must construct (the application owns the consequences)
     unusual = ToolExecution(
-        id="te1", created_at=1, tool_call_id="tc1",
+        id="te1",
+        created_at=1,
+        tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
         status=ExecutionStatus.COMPLETED,  # no result, error present
         error=ToolExecutionError(error_type="X", error_message="authored"),
@@ -230,14 +239,20 @@ def test_tool_execution_does_not_enforce_cross_field_invariants():
 
 def test_versioned_tool_execution_round_trips_through_json():
     execution = ToolExecution(
-        id="caf0ab9ac", parent_id="d4e5f6a7", created_at=1780495331220,
+        id="caf0ab9ac",
+        parent_id="d4e5f6a7",
+        created_at=1780495331220,
         tool_call_id="toolu_01Tg",
         raw_tool_call=ToolCall(
-            id="toolu_01Tg", name="bash", arguments={"command": "pytest -x -q"},
+            id="toolu_01Tg",
+            name="bash",
+            arguments={"command": "pytest -x -q"},
         ),
         tool_spec=ToolSpec(
-            name="bash", tool_kind=ToolKind.EXECUTE,
-            namespace="builtin.shell_tools", version="0.0.1",
+            name="bash",
+            tool_kind=ToolKind.EXECUTE,
+            namespace="builtin.shell_tools",
+            version="0.0.1",
         ),
         extras={
             "approval_context": {
@@ -251,7 +266,8 @@ def test_versioned_tool_execution_round_trips_through_json():
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[
             ApprovalDecision(
-                decision=ApprovalOption.PENDING, created_at=1780495331220,
+                decision=ApprovalOption.PENDING,
+                created_at=1780495331220,
             ),
             ApprovalDecision(
                 decision=ApprovalOption.ALLOW,
@@ -270,9 +286,13 @@ def test_versioned_tool_execution_round_trips_through_json():
 
 def test_failed_tool_execution_round_trips_with_structured_error():
     execution = ToolExecution(
-        id="te1", created_at=1780495331220, tool_call_id="tc1",
+        id="te1",
+        created_at=1780495331220,
+        tool_call_id="tc1",
         raw_tool_call=ToolCall(
-            id="tc1", name="read_file", arguments={"encoding": "utf-16"},
+            id="tc1",
+            name="read_file",
+            arguments={"encoding": "utf-16"},
         ),
         tool_spec=ToolSpec(name="read_file"),
         status=ExecutionStatus.INVALID,
@@ -329,23 +349,32 @@ def test_turn_outcome_members():
 
 def test_turn_finish_defaults_keep_existing_literals_valid():
     assert TurnFinish(id="tf", created_at=1) == TurnFinish(
-        id="tf", parent_id=None, created_at=1,
-        outcome=TurnOutcome.COMPLETED, error=None,
+        id="tf",
+        parent_id=None,
+        created_at=1,
+        outcome=TurnOutcome.COMPLETED,
+        error=None,
     )
 
 
 def test_turn_finish_round_trips_with_outcome_and_error():
     finish = TurnFinish(
-        id="tf", parent_id="a1", created_at=1780495331220,
-        outcome=TurnOutcome.TIMED_OUT, error="client timeout after 30s",
+        id="tf",
+        parent_id="a1",
+        created_at=1780495331220,
+        outcome=TurnOutcome.TIMED_OUT,
+        error="client timeout after 30s",
     )
     assert TurnFinish.model_validate_json(finish.model_dump_json()) == finish
 
 
 def test_cancel_requested_defaults_to_cancelled_outcome():
     assert CancelRequested(id="cr", created_at=1) == CancelRequested(
-        id="cr", parent_id=None, created_at=1,
-        outcome=TurnOutcome.CANCELLED, error=None,
+        id="cr",
+        parent_id=None,
+        created_at=1,
+        outcome=TurnOutcome.CANCELLED,
+        error=None,
     )
 
 
@@ -356,8 +385,11 @@ def test_cancel_requested_rejects_completed_outcome():
 
 def test_cancel_requested_round_trips():
     entry = CancelRequested(
-        id="cr", parent_id="te1", created_at=1780495331220,
-        outcome=TurnOutcome.ERRORED, error="abandoned at the approval gate",
+        id="cr",
+        parent_id="te1",
+        created_at=1780495331220,
+        outcome=TurnOutcome.ERRORED,
+        error="abandoned at the approval gate",
     )
     assert CancelRequested.model_validate_json(entry.model_dump_json()) == entry
 
@@ -397,7 +429,8 @@ def test_runtime_config_round_trips_with_extras():
 
 def test_session_config_carries_a_default_runtime_config():
     assert SessionConfig(llm_config=MODEL) == SessionConfig(
-        llm_config=MODEL, runtime_config=RuntimeConfig(),
+        llm_config=MODEL,
+        runtime_config=RuntimeConfig(),
     )
 
 
@@ -417,8 +450,11 @@ def test_assistant_message_carries_no_usage_field():
     # AgentSession.usages — never embedded in the entry
     with pytest.raises(ValidationError):
         AssistantMessage(
-            id="a1", created_at=1, parts=[TextContent(text="hi")],
-            llm_config=MODEL, stop_reason="stop",
+            id="a1",
+            created_at=1,
+            parts=[TextContent(text="hi")],
+            llm_config=MODEL,
+            stop_reason="stop",
             usage=Usage(conversation_id="c1", entry_id="a1"),
         )
 
@@ -434,8 +470,13 @@ def test_usage_is_a_self_describing_association_record():
     with pytest.raises(ValidationError):
         Usage(input=10, output=5)
     assert Usage(conversation_id="c1", entry_id="a1") == Usage(
-        conversation_id="c1", entry_id="a1",
-        input=0, output=0, cache_read=0, cache_write=0, total_tokens=0,
+        conversation_id="c1",
+        entry_id="a1",
+        input=0,
+        output=0,
+        cache_read=0,
+        cache_write=0,
+        total_tokens=0,
     )
 
 
@@ -449,14 +490,18 @@ def test_pruned_entry_round_trips_inside_a_session():
         id="s",
         entries={
             "te1": ToolExecution(
-                id="te1", created_at=1, tool_call_id="tc1",
+                id="te1",
+                created_at=1,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=1, ended_at=1,
+                started_at=1,
+                ended_at=1,
             ),
             "p1": PrunedEntry(
-                id="p1", created_at=2,
+                id="p1",
+                created_at=2,
                 pruned_entry_type="tool_execution",
                 pruned_entry_id="te1",
                 content=[TextContent(text="[pruned]")],
@@ -467,13 +512,19 @@ def test_pruned_entry_round_trips_inside_a_session():
         usages={
             "c1": {
                 "a1": Usage(
-                    conversation_id="c1", entry_id="a1",
-                    input=10, output=5, total_tokens=15,
+                    conversation_id="c1",
+                    entry_id="a1",
+                    input=10,
+                    output=5,
+                    total_tokens=15,
                 ),
             },
         },
         active_conversation=Conversation(
-            id="c1", nodes=["p1"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["p1"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -522,7 +573,8 @@ def test_image_source_rejects_an_unknown_kind():
 
 def test_user_message_mixes_image_and_text_parts_in_order():
     message = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[
             ImageContent(
                 source=ImageBase64(data="aGk=", media_type="image/png"),
@@ -572,13 +624,15 @@ def test_an_assistant_message_cannot_carry_an_image():
     # has no ImageBlock, so nothing downstream could project one yet
     with pytest.raises(ValidationError):
         AssistantMessage(
-            id="a1", created_at=1000,
+            id="a1",
+            created_at=1000,
             parts=[
                 ImageContent(
                     source=ImageBase64(data="aGk=", media_type="image/png"),
                 ),
             ],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         )
 
 
@@ -587,26 +641,34 @@ def test_text_is_the_part_both_unions_share():
 
     assert UserMessage(id="u1", created_at=1, parts=[text]).parts == [text]
     assert AssistantMessage(
-        id="a1", created_at=1, parts=[text], llm_config=MODEL, stop_reason="stop",
+        id="a1",
+        created_at=1,
+        parts=[text],
+        llm_config=MODEL,
+        stop_reason="stop",
     ).parts == [text]
 
 
 def test_an_assistant_message_round_trips_every_part_type():
     message = AssistantMessage(
-        id="a1", created_at=1000,
+        id="a1",
+        created_at=1000,
         parts=[
             ThinkingContent(thinking="let me add"),
             TextContent(text="adding now"),
             ToolCall(id="tc1", name="add", arguments={"a": 1}),
         ],
-        llm_config=MODEL, stop_reason="tool_use",
+        llm_config=MODEL,
+        stop_reason="tool_use",
     )
 
     reloaded = AssistantMessage.model_validate_json(message.model_dump_json())
 
     assert reloaded == message
     assert [type(part) for part in reloaded.parts] == [
-        ThinkingContent, TextContent, ToolCall,
+        ThinkingContent,
+        TextContent,
+        ToolCall,
     ]
 
 
@@ -615,7 +677,9 @@ def test_an_assistant_message_round_trips_every_part_type():
 
 def test_thinking_content_defaults_to_unsigned_and_unredacted():
     assert ThinkingContent(thinking="hmm") == ThinkingContent(
-        thinking="hmm", signature=None, redacted=False,
+        thinking="hmm",
+        signature=None,
+        redacted=False,
     )
 
 
@@ -637,16 +701,21 @@ def test_a_signature_survives_a_whole_session_round_trip():
         id="s_sig",
         entries={
             "a1": AssistantMessage(
-                id="a1", created_at=1000,
+                id="a1",
+                created_at=1000,
                 parts=[
                     ThinkingContent(thinking="reasoning", signature="sig-abc"),
                     TextContent(text="the answer"),
                 ],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["a1"], created_at=1000, updated_at=1000,
+            id="c1",
+            nodes=["a1"],
+            created_at=1000,
+            updated_at=1000,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -661,7 +730,9 @@ def test_a_signature_survives_a_whole_session_round_trip():
 
 def test_compaction_entry_is_born_with_nothing_but_its_source():
     entry = CompactionEntry(
-        id="cmp", parent_id="ts_c", created_at=1000,
+        id="cmp",
+        parent_id="ts_c",
+        created_at=1000,
         source=CompactionSource.USER,
     )
 
@@ -689,8 +760,12 @@ def test_compaction_entry_requires_a_source():
 def test_compaction_entry_rejects_the_old_field_names():
     with pytest.raises(ValidationError):
         CompactionEntry(
-            id="cmp", created_at=1000, source=CompactionSource.POLICY,
-            summary="…", summarized=["u1"], details={},
+            id="cmp",
+            created_at=1000,
+            source=CompactionSource.POLICY,
+            summary="…",
+            summarized=["u1"],
+            details={},
         )
 
 
@@ -703,7 +778,9 @@ def test_a_committed_compaction_round_trips_inside_a_session():
         id="s_compacted",
         entries={
             "cmp": CompactionEntry(
-                id="cmp", parent_id="ts_c", created_at=1000,
+                id="cmp",
+                parent_id="ts_c",
+                created_at=1000,
                 source=CompactionSource.POLICY,
                 parts=[
                     TextContent(text="the story so far"),
@@ -713,13 +790,17 @@ def test_a_committed_compaction_round_trips_inside_a_session():
                 ],
                 compacted_nodes=["u0", "a0"],
                 llm_config=LLMConfig(model="cheap", provider="faux"),
-                started_at=999, ended_at=1000,
+                started_at=999,
+                ended_at=1000,
                 metadata={"strategy": "turn-brackets"},
                 context_tokens=1_004,
             ),
         },
         active_conversation=Conversation(
-            id="c2", nodes=["cmp"], created_at=1000, updated_at=1000,
+            id="c2",
+            nodes=["cmp"],
+            created_at=1000,
+            updated_at=1000,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -739,7 +820,9 @@ def test_an_entry_template_carries_no_identity():
     template = CompactionEntry(source=CompactionSource.POLICY)
 
     assert (template.id, template.parent_id, template.created_at) == (
-        None, None, None,
+        None,
+        None,
+        None,
     )
 
 
@@ -752,9 +835,12 @@ def test_a_template_still_discriminates_through_the_entry_union():
 
     adapter = TypeAdapter(AnyEntry)
 
-    assert adapter.validate_python(
-        template.model_dump(),
-    ) == template
+    assert (
+        adapter.validate_python(
+            template.model_dump(),
+        )
+        == template
+    )
 
 
 # ── the compaction-bracket predicate ───────────────────────────────────────────
@@ -764,7 +850,9 @@ def test_a_turn_start_followed_by_a_compaction_entry_opens_a_compaction_bracket(
     entries = {
         "ts_c": TurnStart(id="ts_c", created_at=1000),
         "cmp": CompactionEntry(
-            id="cmp", created_at=1000, source=CompactionSource.POLICY,
+            id="cmp",
+            created_at=1000,
+            source=CompactionSource.POLICY,
         ),
         "tf_c": TurnFinish(id="tf_c", created_at=1000),
     }
@@ -776,12 +864,16 @@ def test_a_turn_start_followed_by_anything_else_is_conversational():
     entries = {
         "ts": TurnStart(id="ts", created_at=1000),
         "a1": AssistantMessage(
-            id="a1", created_at=1000,
+            id="a1",
+            created_at=1000,
             parts=[TextContent(text="hi")],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "cmp": CompactionEntry(
-            id="cmp", created_at=1000, source=CompactionSource.POLICY,
+            id="cmp",
+            created_at=1000,
+            source=CompactionSource.POLICY,
         ),
     }
 
@@ -806,14 +898,19 @@ def test_turn_count_counts_conversational_brackets_including_the_open_one():
             "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
             "ts2": TurnStart(id="ts2", parent_id="tf1", created_at=1000),
             "tf2": TurnFinish(
-                id="tf2", parent_id="ts2", created_at=1000,
-                outcome=TurnOutcome.ERRORED, error="boom",
+                id="tf2",
+                parent_id="ts2",
+                created_at=1000,
+                outcome=TurnOutcome.ERRORED,
+                error="boom",
             ),
             "ts3": TurnStart(id="ts3", parent_id="tf2", created_at=1000),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts1", "tf1", "ts2", "tf2", "ts3"],
-            created_at=1000, updated_at=1000,
+            id="c1",
+            nodes=["ts1", "tf1", "ts2", "tf2", "ts3"],
+            created_at=1000,
+            updated_at=1000,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -831,14 +928,18 @@ def test_turn_count_excludes_compaction_brackets():
             "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
             "ts_c": TurnStart(id="ts_c", parent_id="tf1", created_at=1000),
             "cmp": CompactionEntry(
-                id="cmp", parent_id="ts_c", created_at=1000,
+                id="cmp",
+                parent_id="ts_c",
+                created_at=1000,
                 source=CompactionSource.POLICY,
             ),
             "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=1000),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts1", "tf1", "ts_c", "cmp", "tf_c"],
-            created_at=1000, updated_at=1000,
+            id="c1",
+            nodes=["ts1", "tf1", "ts_c", "cmp", "tf_c"],
+            created_at=1000,
+            updated_at=1000,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -855,18 +956,27 @@ def test_turn_count_is_scoped_to_the_active_conversation():
             "ts0": TurnStart(id="ts0", created_at=900),
             "tf0": TurnFinish(id="tf0", parent_id="ts0", created_at=900),
             "cmp": CompactionEntry(
-                id="cmp", created_at=1000, source=CompactionSource.POLICY,
-                parts=[TextContent(text="earlier")], compacted_nodes=["ts0", "tf0"],
+                id="cmp",
+                created_at=1000,
+                source=CompactionSource.POLICY,
+                parts=[TextContent(text="earlier")],
+                compacted_nodes=["ts0", "tf0"],
             ),
             "ts1": TurnStart(id="ts1", parent_id="cmp", created_at=1000),
             "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
         },
         active_conversation=Conversation(
-            id="c2", nodes=["cmp", "ts1", "tf1"], created_at=1000, updated_at=1000,
+            id="c2",
+            nodes=["cmp", "ts1", "tf1"],
+            created_at=1000,
+            updated_at=1000,
         ),
         conversation_history=[
             Conversation(
-                id="c1", nodes=["ts0", "tf0"], created_at=900, updated_at=900,
+                id="c1",
+                nodes=["ts0", "tf0"],
+                created_at=900,
+                updated_at=900,
             ),
         ],
         session_config=SessionConfig(llm_config=MODEL),

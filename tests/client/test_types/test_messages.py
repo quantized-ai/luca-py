@@ -12,7 +12,6 @@ from luca.client.types import (
     UserMessage,
 )
 
-
 message_adapter = TypeAdapter(Message)
 
 

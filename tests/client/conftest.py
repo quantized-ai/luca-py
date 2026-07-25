@@ -32,9 +32,16 @@ def clear_provider_cache():
 def no_real_env(monkeypatch):
     """Strip provider env vars so forgotten api_key= can't hit a real provider."""
     for var in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
-        "GROQ_API_KEY", "DEEPSEEK_API_KEY", "TOGETHER_API_KEY",
-        "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "TOGETHER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_VERSION",
     ):
         monkeypatch.delenv(var, raising=False)

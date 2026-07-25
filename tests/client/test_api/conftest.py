@@ -1,6 +1,7 @@
 """StubProvider — installed into PROVIDERS under name 'stub'."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 
@@ -23,9 +24,9 @@ class StubProvider(BaseProvider, ChatCompletionMixin):
     default_base_url = "https://stub.test/v1"
     default_api_key_env_var = "STUB_API_KEY"
 
-    instantiations: list[dict] = []
-    instances: list = []
-    _scripted_responses: list = []
+    instantiations: ClassVar[list[dict]] = []
+    instances: ClassVar[list] = []
+    _scripted_responses: ClassVar[list] = []
 
     def __init__(self, **kwargs):
         StubProvider.instantiations.append(dict(kwargs))
@@ -66,8 +67,11 @@ class StubProvider(BaseProvider, ChatCompletionMixin):
         return self._pop()
 
     # no-ops
-    def close(self): pass
-    async def aclose(self): pass
+    def close(self):
+        pass
+
+    async def aclose(self):
+        pass
 
 
 @pytest.fixture

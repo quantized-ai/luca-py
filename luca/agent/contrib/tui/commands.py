@@ -39,14 +39,14 @@ class SlashCommand:
     name: str
     usage: str  # argument hint shown by /help, e.g. "[provider:model]"
     summary: str
-    handler: Callable[["AgentApp", str], Awaitable[None]]
+    handler: Callable[[AgentApp, str], Awaitable[None]]
 
 
 def _current_model_line(cfg: LLMConfig) -> str:
     return f"{cfg.provider}:{cfg.model} (reasoning: {cfg.reasoning or 'provider-default'})"
 
 
-def _apply(app: "AgentApp", **updates: str) -> None:
+def _apply(app: AgentApp, **updates: str) -> None:
     """Reassign the session's next-turn config. The runner reads it fresh at the
     top of each turn, so a change while idle takes effect on the next message."""
     cfg = app.runner.session.session_config.llm_config
@@ -54,23 +54,21 @@ def _apply(app: "AgentApp", **updates: str) -> None:
     app._refresh_status()
 
 
-async def _cmd_help(app: "AgentApp", arg: str) -> None:
+async def _cmd_help(app: AgentApp, arg: str) -> None:
     width = max(len(f"/{c.name} {c.usage}".rstrip()) for c in COMMANDS)
-    lines = [
-        f"{f'/{c.name} {c.usage}'.rstrip():<{width}}  {c.summary}"
-        for c in COMMANDS
-    ]
+    lines = [f"{f'/{c.name} {c.usage}'.rstrip():<{width}}  {c.summary}" for c in COMMANDS]
     await app._notice("\n".join(lines))
 
 
-async def _cmd_model(app: "AgentApp", arg: str) -> None:
+async def _cmd_model(app: AgentApp, arg: str) -> None:
     cfg = app.runner.session.session_config.llm_config
     if arg:
         if ":" in arg:
             provider, model = arg.split(":", 1)
             if not provider or not model:
                 await app._notice(
-                    f"invalid model spec {arg!r}; use provider:model", error=True,
+                    f"invalid model spec {arg!r}; use provider:model",
+                    error=True,
                 )
                 return
             _apply(app, provider=provider, model=model)
@@ -89,7 +87,9 @@ async def _cmd_model(app: "AgentApp", arg: str) -> None:
     def open_provider_step(highlight: str | None) -> None:
         app.push_screen(
             PickerScreen(
-                "Select a provider", list(RECOMMENDED_MODELS), current=highlight,
+                "Select a provider",
+                list(RECOMMENDED_MODELS),
+                current=highlight,
             ),
             picked_provider,
         )
@@ -121,7 +121,7 @@ async def _cmd_model(app: "AgentApp", arg: str) -> None:
     open_provider_step(cfg.provider)
 
 
-async def _cmd_reasoning(app: "AgentApp", arg: str) -> None:
+async def _cmd_reasoning(app: AgentApp, arg: str) -> None:
     levels = list(get_args(Reasoning))
     cfg = app.runner.session.session_config.llm_config
     if arg:
@@ -143,14 +143,15 @@ async def _cmd_reasoning(app: "AgentApp", arg: str) -> None:
 
     app.push_screen(
         PickerScreen(
-            "Select a reasoning level", levels,
+            "Select a reasoning level",
+            levels,
             current=cfg.reasoning or "provider-default",
         ),
         chosen,
     )
 
 
-async def _cmd_new(app: "AgentApp", arg: str) -> None:
+async def _cmd_new(app: AgentApp, arg: str) -> None:
     old_id = app.runner.session.id
     save_session(app.runner.session, app._session_dir)
     # Carry both halves of the session config forward, not just the model: the
@@ -164,13 +165,14 @@ async def _cmd_new(app: "AgentApp", arg: str) -> None:
     await app._notice(f"saved {old_id}, started new session {new.id}")
 
 
-async def _cmd_compact(app: "AgentApp", arg: str) -> None:
+async def _cmd_compact(app: AgentApp, arg: str) -> None:
     """Schedule a compaction, then drive it. Scheduling only writes the
     bracket and the entry — the summarization happens on the next drive, and
     the drive loop already runs until the runner is idle."""
     if app.runner.compaction_policy is None:
         await app._notice(
-            "no compaction policy is configured for this runner", error=True,
+            "no compaction policy is configured for this runner",
+            error=True,
         )
         return
     app.runner.schedule_compaction()
@@ -178,7 +180,7 @@ async def _cmd_compact(app: "AgentApp", arg: str) -> None:
     app._start_drive()
 
 
-async def _cmd_quit(app: "AgentApp", arg: str) -> None:
+async def _cmd_quit(app: AgentApp, arg: str) -> None:
     await app._quit()
 
 
@@ -194,7 +196,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
 _BY_NAME = {c.name: c for c in COMMANDS}
 
 
-async def dispatch(app: "AgentApp", text: str) -> bool:
+async def dispatch(app: AgentApp, text: str) -> bool:
     """Run `/name arg` if `name` is registered. Returns True when handled;
     False leaves the text for the caller to send as a normal message, so a
     path like `/etc/hosts` or a typo is never swallowed."""

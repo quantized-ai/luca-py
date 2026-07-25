@@ -10,7 +10,7 @@ exceptions — they arrive as a normal ChatCompletionResponse / FinishEvent with
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .types.messages import AssistantMessage
@@ -82,11 +82,13 @@ class ProviderAPIError(ClientError):
     """5xx / generic upstream failure."""
 
 
-class ConnectionError(ClientError):
+# These two deliberately shadow the builtins: they are part of the public
+# exception surface and are always reached as luca.client.exceptions.<Name>.
+class ConnectionError(ClientError):  # noqa: A001
     """Network error reaching the provider."""
 
 
-class TimeoutError(ClientError):
+class TimeoutError(ClientError):  # noqa: A001
     """Request timed out."""
 
 
@@ -103,7 +105,7 @@ class StreamError(ClientError):
         *,
         provider: str | None = None,
         original_exception: BaseException | None = None,
-        partial_message: "AssistantMessage | None" = None,
+        partial_message: AssistantMessage | None = None,
     ) -> None:
         super().__init__(message, provider=provider, original_exception=original_exception)
         self.partial_message = partial_message

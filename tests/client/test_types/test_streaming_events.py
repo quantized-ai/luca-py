@@ -2,23 +2,12 @@
 
 import pytest
 
-from luca.client.types import (
-    AssistantMessage,
-    FinishEvent,
-    StartEvent,
-    StreamEvent,
-    TextBlock,
-    TextDeltaEvent,
-    ToolCall,
-    Usage,
-)
 from luca.client.types.streaming import (
     RawBlockStart,
     RawBlockStop,
     RawFinish,
     RawTextDelta,
     RawToolArgumentsDelta,
-    RawUsage,
     _ChatCompletionAccumulator,
 )
 

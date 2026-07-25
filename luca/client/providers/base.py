@@ -33,7 +33,7 @@ class BaseProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         transport_class: type | None = None,
-        transport: "BaseTransport | None" = None,
+        transport: BaseTransport | None = None,
         timeout: float | None = 60.0,
         http_client: httpx.Client | None = None,
         async_http_client: httpx.AsyncClient | None = None,
@@ -70,7 +70,7 @@ class BaseProvider:
         )
 
     @property
-    def transport(self) -> "BaseTransport":
+    def transport(self) -> BaseTransport:
         return self._transport
 
     def close(self) -> None:
@@ -79,13 +79,13 @@ class BaseProvider:
     async def aclose(self) -> None:
         await self._transport.aclose()
 
-    def __enter__(self) -> "BaseProvider":
+    def __enter__(self) -> BaseProvider:
         return self
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    async def __aenter__(self) -> "BaseProvider":
+    async def __aenter__(self) -> BaseProvider:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -96,21 +96,25 @@ class ChatCompletionMixin:
     """Provider-level chat completion. Forwards every method to the transport."""
 
     def completion(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionResponse":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
         return self._transport.completion(request)  # type: ignore[attr-defined]
 
     async def acompletion(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionResponse":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
         return await self._transport.acompletion(request)  # type: ignore[attr-defined]
 
     def completion_stream(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionStream":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionStream:
         return self._transport.completion_stream(request)  # type: ignore[attr-defined]
 
     def acompletion_stream(
-        self, request: "ChatCompletionRequest",
-    ) -> "AsyncChatCompletionStream":
+        self,
+        request: ChatCompletionRequest,
+    ) -> AsyncChatCompletionStream:
         return self._transport.acompletion_stream(request)  # type: ignore[attr-defined]

@@ -7,8 +7,6 @@ tests mirror the approval-modal pattern: submit the command, wait for the
 `LLMConfig`.
 """
 
-from textual.widgets import Input
-
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.cells import (
     AssistantCell,
@@ -22,7 +20,6 @@ from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
-
 from tests.agent.scenarios import FakeCompactionPolicy
 
 from .helpers import fresh_session, idle_again, submit, wait_until
@@ -76,7 +73,7 @@ async def test_help_lists_every_command(tmp_path):
 
 async def test_model_drills_down_provider_then_model(tmp_path):
     # provider step highlights index 0 (anthropic); model step index 0.
-    provider = list(RECOMMENDED_MODELS)[0]
+    provider = next(iter(RECOMMENDED_MODELS))
     model = RECOMMENDED_MODELS[provider][0]
     app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
     async with app.run_test() as pilot:
@@ -206,7 +203,9 @@ async def test_reasoning_picker_sets_the_level(tmp_path):
         await wait_until(pilot, lambda: not isinstance(app.screen, PickerScreen))
 
         assert _config(app) == LLMConfig(
-            model="fake-model", provider="faux", reasoning="none",
+            model="fake-model",
+            provider="faux",
+            reasoning="none",
         )
 
 
@@ -229,7 +228,8 @@ async def test_new_starts_a_fresh_session_keeping_the_model_and_clearing_history
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("hi back")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "hello")
@@ -262,7 +262,8 @@ async def test_an_unknown_command_is_sent_as_a_normal_message(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("ok")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "/nope")
@@ -275,7 +276,8 @@ async def test_a_path_like_message_is_not_swallowed(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("ok")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "/etc/hosts is missing an entry")
@@ -311,7 +313,8 @@ async def test_compact_schedules_a_compaction_and_drives_it(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("ok")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
         compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
     )
     async with app.run_test() as pilot:

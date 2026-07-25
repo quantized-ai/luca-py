@@ -17,8 +17,6 @@ Invariants tested:
 
 import warnings
 
-import pytest
-
 from luca.agent.core.models import (
     AgentSession,
     Conversation,
@@ -36,7 +34,6 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-
 from tests.agent.scenarios import AddTool, DeterministicRunner, FakeToolRegistry
 
 MODEL = LLMConfig(model="test-model", provider="faux")
@@ -61,17 +58,22 @@ def _session(runtime_config: RuntimeConfig | None = None) -> AgentSession:
 
 def test_runtime_status_step_count_counts_assistant_messages_in_open_turn():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
     session = _session()
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     status_before_run = runner.session.session_runtime_status
@@ -81,22 +83,25 @@ def test_runtime_status_step_count_counts_assistant_messages_in_open_turn():
 
 async def test_runtime_status_turn_count_includes_open_turn():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello.")], finish_reason="stop"),
+        ]
+    )
     session = _session()
     runner = DeterministicRunner(
-        session, provider=faux,
-        ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
-        step_count_mid_turn = None
         async for _ in run:
             # After TurnStart + first AssistantMessage appended:
             status = runner.session.session_runtime_status
             if status.turn_count == 1:
-                step_count_mid_turn = status.step_count
+                pass
 
     final = runner.session.session_runtime_status
     assert final.turn_count == 1  # TurnStart was written
@@ -108,17 +113,22 @@ async def test_runtime_status_turn_count_includes_open_turn():
 
 async def test_hard_max_steps_closes_turn_with_errored():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        # Second response would be needed but the turn closes before it.
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            # Second response would be needed but the turn closes before it.
+        ]
+    )
     session = _session(RuntimeConfig(hard_max_steps=1))
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "tf"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -132,21 +142,26 @@ async def test_hard_max_steps_closes_turn_with_errored():
 
 async def test_hard_max_steps_allows_exactly_n_steps_before_closing():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        # Third response cut off by hard_max_steps=2
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            # Third response cut off by hard_max_steps=2
+        ]
+    )
     session = _session(RuntimeConfig(hard_max_steps=2))
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "tf"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -160,20 +175,27 @@ async def test_hard_max_steps_allows_exactly_n_steps_before_closing():
 
 async def test_soft_max_steps_with_limit_sets_tool_choice_none():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        soft_max_steps=1,
-        limit_tool_choice_on_soft_max_steps_reached=True,
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            soft_max_steps=1,
+            limit_tool_choice_on_soft_max_steps_reached=True,
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -186,20 +208,27 @@ async def test_soft_max_steps_with_limit_sets_tool_choice_none():
 
 async def test_soft_max_steps_without_limit_does_not_restrict_tool_choice():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        soft_max_steps=1,
-        limit_tool_choice_on_soft_max_steps_reached=False,
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            soft_max_steps=1,
+            limit_tool_choice_on_soft_max_steps_reached=False,
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -213,24 +242,31 @@ async def test_soft_max_steps_without_limit_does_not_restrict_tool_choice():
 
 async def test_doom_loop_not_flagged_before_threshold():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        doom_loop_threshold=3,
-        limit_tool_choice_on_doom_loop_flagged=False,  # isolate flagging only
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            doom_loop_threshold=3,
+            limit_tool_choice_on_doom_loop_flagged=False,  # isolate flagging only
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -243,28 +279,35 @@ async def test_doom_loop_not_flagged_before_threshold():
 
 async def test_doom_loop_flagged_at_threshold():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc3")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        doom_loop_threshold=3,
-        limit_tool_choice_on_doom_loop_flagged=False,  # isolate flagging only
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            doom_loop_threshold=3,
+            limit_tool_choice_on_doom_loop_flagged=False,  # isolate flagging only
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -279,28 +322,35 @@ async def test_doom_loop_flagged_at_threshold():
 
 async def test_doom_loop_not_flagged_when_different_args():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 9, "b": 9}, id="tc3")],  # different args
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        doom_loop_threshold=3,
-        limit_tool_choice_on_doom_loop_flagged=False,
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 9, "b": 9}, id="tc3")],  # different args
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            doom_loop_threshold=3,
+            limit_tool_choice_on_doom_loop_flagged=False,
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -311,28 +361,35 @@ async def test_doom_loop_not_flagged_when_different_args():
 
 async def test_doom_loop_with_limit_sets_tool_choice_none():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc3")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
-    session = _session(RuntimeConfig(
-        doom_loop_threshold=3,
-        limit_tool_choice_on_doom_loop_flagged=True,
-    ))
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = _session(
+        RuntimeConfig(
+            doom_loop_threshold=3,
+            limit_tool_choice_on_doom_loop_flagged=True,
+        )
+    )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "te3", "a4", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -347,21 +404,26 @@ async def test_doom_loop_with_limit_sets_tool_choice_none():
 
 async def test_doom_loop_disabled_when_threshold_is_inf():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
     session = _session(RuntimeConfig(doom_loop_threshold=-1))  # Inf = disabled
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"],
+        now=1000,
     )
 
     await runner.run()

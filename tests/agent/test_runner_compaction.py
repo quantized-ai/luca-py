@@ -50,18 +50,14 @@ from luca.agent.core.models import (
     TextContent,
     TurnFinish,
     TurnOutcome,
-    TurnStart,
     Usage,
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
 from luca.agent.core.runner import RunResult
-from luca.client.exceptions import ProviderAPIError
-from luca.client.exceptions import TimeoutError as ClientTimeoutError
+from luca.client.exceptions import ProviderAPIError, TimeoutError as ClientTimeoutError
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
-from luca.client.types import TextBlock
-from luca.client.types import UserMessage as LucaUserMessage
-
+from luca.client.types import TextBlock, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
     CANCEL_PARKED_SESSION,
     CHEAP,
@@ -112,7 +108,7 @@ class CancellingPolicy(FakeCompactionPolicy):
         except asyncio.CancelledError:
             self.hard_cancelled = True
             raise
-        return None
+        return
 
 
 # ── plan builders (the policy's judgment, scripted) ───────────────────────────
@@ -218,7 +214,9 @@ def carry_the_same_id_twice(session, nodes, entry):
 
 def empty_plan(session, nodes, entry):
     return CompactionPlan(
-        entry=entry.model_copy(update={"parts": SUMMARY}), nodes=[], usage=USAGE,
+        entry=entry.model_copy(update={"parts": SUMMARY}),
+        nodes=[],
+        usage=USAGE,
     )
 
 
@@ -257,7 +255,10 @@ def image_only_summary(session, nodes, entry):
 
 def replace_the_active_conversation(session, nodes, entry):
     session.active_conversation = Conversation(
-        id="c9", nodes=list(nodes), created_at=1000, updated_at=1000,
+        id="c9",
+        nodes=list(nodes),
+        created_at=1000,
+        updated_at=1000,
     )
     return CompactionPlan(
         entry=entry.model_copy(update={"parts": SUMMARY}),
@@ -268,7 +269,9 @@ def replace_the_active_conversation(session, nodes, entry):
 
 def append_to_the_active_path(session, nodes, entry):
     session.entries["late"] = UserMessage(
-        id="late", created_at=999, parts=[TextContent(text="late")],
+        id="late",
+        created_at=999,
+        parts=[TextContent(text="late")],
     )
     session.active_conversation.nodes.append("late")
     return CompactionPlan(
@@ -319,7 +322,8 @@ async def test_the_transition_archives_the_old_path_and_installs_the_new_one():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -330,11 +334,16 @@ async def test_the_transition_archives_the_old_path_and_installs_the_new_one():
         Conversation(
             id="c1",
             nodes=[*RICH_IDLE_NODES, "ts_c", "cmp", "tf_c"],
-            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
     ]
     assert runner.session.active_conversation == Conversation(
-        id="c2", nodes=["cmp"], created_at=1000, updated_at=1000,
+        id="c2",
+        nodes=["cmp"],
+        created_at=1000,
+        updated_at=1000,
         status=ConversationStatus.IDLE,
     )
 
@@ -345,7 +354,8 @@ async def test_every_carried_and_compacted_entry_is_unmutated():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -361,7 +371,8 @@ async def test_compacted_nodes_lists_exactly_the_replaced_ids_in_path_order():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -376,10 +387,12 @@ async def test_the_bracket_stays_behind_and_only_the_entry_carries_over():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(
-            should=True, plan=fold_and_keep_the_question,
+            should=True,
+            plan=fold_and_keep_the_question,
         ),
         provider=_answering_provider(),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -396,7 +409,8 @@ async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable(
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -404,9 +418,7 @@ async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable(
 
     assert runner.session.entries["te0"] == RICH_SESSION.entries["te0"]
     assert runner.session.entries["u0"] == RICH_SESSION.entries["u0"]
-    assert runner.session.conversation_history[0] == (
-        RICH_SESSION.conversation_history[0]
-    )
+    assert runner.session.conversation_history[0] == (RICH_SESSION.conversation_history[0])
 
 
 async def test_the_execution_index_and_the_old_usage_records_survive():
@@ -414,7 +426,8 @@ async def test_the_execution_index_and_the_old_usage_records_survive():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -425,8 +438,11 @@ async def test_the_execution_index_and_the_old_usage_records_survive():
     assert runner.session.usages["c1"] == {
         **RICH_SESSION.usages["c1"],
         "cmp": Usage(
-            conversation_id="c1", entry_id="cmp",
-            input=500, output=40, total_tokens=540,
+            conversation_id="c1",
+            entry_id="cmp",
+            input=500,
+            output=40,
+            total_tokens=540,
         ),
     }
     assert "c2" not in runner.session.usages
@@ -437,7 +453,8 @@ async def test_the_entry_is_self_describing_on_the_new_path():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -463,23 +480,33 @@ async def test_a_plan_with_created_entries_stamps_and_threads_them_in_order():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=frame_then_summarize),
-        ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
     await runner.run()
 
     assert runner.session.active_conversation.nodes == [
-        "new1", "cmp", "new2", "a2",
+        "new1",
+        "cmp",
+        "new2",
+        "a2",
     ]
     # ids in plan order, `parent_id` threaded left to right, one shared
     # `created_at` for the whole transition
     assert runner.session.entries["new1"] == UserMessage(
-        id="new1", parent_id=None, created_at=1000, context_tokens=4,
+        id="new1",
+        parent_id=None,
+        created_at=1000,
+        context_tokens=4,
         parts=[TextContent(text="[history compacted]")],
     )
     assert runner.session.entries["new2"] == UserMessage(
-        id="new2", parent_id="cmp", created_at=1000, context_tokens=5,
+        id="new2",
+        parent_id="cmp",
+        created_at=1000,
+        context_tokens=5,
         parts=[TextContent(text="[continue from here]")],
     )
 
@@ -491,7 +518,8 @@ async def test_a_plan_that_opens_with_a_created_entry_gives_it_no_parent():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=frame_then_summarize),
-        ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -505,7 +533,8 @@ async def test_a_plan_may_reorder_carried_ids():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=reorder_the_path),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -520,7 +549,8 @@ async def test_a_fold_everything_plan_leaves_the_compaction_entry_as_the_leaf():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -539,7 +569,8 @@ async def test_a_keep_last_assistant_plan_leaves_an_assistant_leaf():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=keep_the_last_assistant),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -557,8 +588,10 @@ async def test_a_full_carry_plan_commits_with_an_empty_compacted_span():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=full_carry)
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -567,7 +600,8 @@ async def test_a_full_carry_plan_commits_with_an_empty_compacted_span():
     # `[]`, not None — nothing was replaced, and that is the policy's call
     assert runner.session.entries["cmp"].compacted_nodes == []
     assert runner.session.active_conversation.nodes == [
-        *RICH_IDLE_NODES, "cmp",
+        *RICH_IDLE_NODES,
+        "cmp",
     ]
 
 
@@ -579,7 +613,8 @@ async def test_a_span_of_only_a_previous_summary_is_committed():
         compaction_policy=FakeCompactionPolicy(
             plan=summarize_only_the_previous_summary,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -593,11 +628,14 @@ async def test_the_next_request_projects_only_the_new_path():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, plan=fold_and_keep_the_question,
+            should=True,
+            plan=fold_and_keep_the_question,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -613,7 +651,8 @@ async def test_the_compacted_session_round_trips_through_json():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -631,7 +670,8 @@ async def test_the_events_are_scheduled_started_finished():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -641,14 +681,19 @@ async def test_the_events_are_scheduled_started_finished():
     assert events == [
         CompactionScheduled(
             entry=CompactionEntry(
-                id="cmp", parent_id="ts_c", created_at=1000,
+                id="cmp",
+                parent_id="ts_c",
+                created_at=1000,
                 source=CompactionSource.USER,
             ),
         ),
         CompactionStarted(
             entry=CompactionEntry(
-                id="cmp", parent_id="ts_c", created_at=1000,
-                source=CompactionSource.USER, started_at=1000,
+                id="cmp",
+                parent_id="ts_c",
+                created_at=1000,
+                source=CompactionSource.USER,
+                started_at=1000,
             ),
         ),
         CompactionFinished(
@@ -665,8 +710,10 @@ async def test_the_policy_is_handed_a_deep_copy_and_the_live_session():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -681,8 +728,10 @@ async def test_the_policy_is_offered_the_path_without_the_bracket_turn_start():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -699,9 +748,11 @@ async def test_a_policy_that_writes_to_its_copy_and_fails_cannot_inject_a_summar
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(
-            mutate=True, raises=ValueError("kaboom"),
+            mutate=True,
+            raises=ValueError("kaboom"),
         ),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -710,9 +761,11 @@ async def test_a_policy_that_writes_to_its_copy_and_fails_cannot_inject_a_summar
 
     assert runner.session.entries["cmp"].parts is None
     assert ConversationProjector().project(
-        runner.session.active_conversation, runner.session.entries,
+        runner.session.active_conversation,
+        runner.session.entries,
     ) == ConversationProjector().project(
-        RICH_IDLE_SESSION.active_conversation, RICH_IDLE_SESSION.entries,
+        RICH_IDLE_SESSION.active_conversation,
+        RICH_IDLE_SESSION.entries,
     )
 
 
@@ -722,8 +775,10 @@ async def test_a_policy_that_writes_to_its_copy_and_fails_cannot_inject_a_summar
 async def test_a_policy_returning_none_closes_completed_without_transitioning():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=None),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=None),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -731,7 +786,10 @@ async def test_a_policy_returning_none_closes_completed_without_transitioning():
         events = [event async for event in run]
 
     assert runner.session.active_conversation.nodes == [
-        *RICH_IDLE_NODES, "ts_c", "cmp", "tf_c",
+        *RICH_IDLE_NODES,
+        "ts_c",
+        "cmp",
+        "tf_c",
     ]
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.COMPLETED
@@ -739,7 +797,9 @@ async def test_a_policy_returning_none_closes_completed_without_transitioning():
     assert events[-1] == CompactionFinished(
         entry=runner.session.entries["cmp"],
         outcome=TurnOutcome.COMPLETED,
-        error=None, created=[], conversation_id=None,
+        error=None,
+        created=[],
+        conversation_id=None,
     )
 
 
@@ -747,13 +807,18 @@ async def test_scheduling_on_an_empty_session_compacts_nothing():
     session = AgentSession(
         id="s_fresh",
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=500, updated_at=500,
+            id="c1",
+            nodes=[],
+            created_at=500,
+            updated_at=500,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=None),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=None),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -771,9 +836,11 @@ async def test_a_noop_compaction_does_not_bury_a_queued_message():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=True, plan=None),
-        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -800,12 +867,15 @@ async def test_a_noop_compaction_does_not_bury_a_queued_message():
     ],
 )
 async def test_a_malformed_plan_is_refused_and_the_conversation_is_unchanged(
-    plan, message,
+    plan,
+    message,
 ):
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=plan),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=plan),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -814,7 +884,10 @@ async def test_a_malformed_plan_is_refused_and_the_conversation_is_unchanged(
 
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.active_conversation.nodes == [
-        *RICH_IDLE_NODES, "ts_c", "cmp", "tf_c",
+        *RICH_IDLE_NODES,
+        "ts_c",
+        "cmp",
+        "tf_c",
     ]
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
     assert message in runner.session.entries["tf_c"].error
@@ -829,12 +902,14 @@ async def test_a_plan_computed_against_a_replaced_conversation_is_refused():
         compaction_policy=FakeCompactionPolicy(
             plan=replace_the_active_conversation,
         ),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
     with pytest.raises(
-        CompactionPlanError, match="the active conversation changed",
+        CompactionPlanError,
+        match="the active conversation changed",
     ):
         await runner.run()
 
@@ -850,7 +925,8 @@ async def test_a_plan_computed_against_a_path_that_moved_is_refused():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=append_to_the_active_path),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -865,8 +941,10 @@ async def test_a_plan_computed_against_a_path_that_moved_is_refused():
 async def test_an_image_only_summary_is_committed():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=image_only_summary),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=image_only_summary),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -881,8 +959,10 @@ async def test_usage_is_recorded_for_a_rejected_plan():
     # spend would be the worse outcome
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=carry_an_unknown_id),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=carry_an_unknown_id),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -890,8 +970,11 @@ async def test_usage_is_recorded_for_a_rejected_plan():
         await runner.run()
 
     assert runner.session.usages["c1"]["cmp"] == Usage(
-        conversation_id="c1", entry_id="cmp",
-        input=500, output=40, total_tokens=540,
+        conversation_id="c1",
+        entry_id="cmp",
+        input=500,
+        output=40,
+        total_tokens=540,
     )
 
 
@@ -902,12 +985,14 @@ async def test_a_policy_that_replaced_the_conversation_still_gets_g2s_error():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(plan=replace_the_active_conversation),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
     with pytest.raises(
-        CompactionPlanError, match="the active conversation changed under the plan",
+        CompactionPlanError,
+        match="the active conversation changed under the plan",
     ):
         await runner.run()
 
@@ -915,8 +1000,10 @@ async def test_a_policy_that_replaced_the_conversation_still_gets_g2s_error():
 async def test_a_rejected_plan_leaves_the_entry_projecting_nothing():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=empty_plan),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=empty_plan),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -924,9 +1011,11 @@ async def test_a_rejected_plan_leaves_the_entry_projecting_nothing():
         await runner.run()
 
     assert ConversationProjector().project(
-        runner.session.active_conversation, runner.session.entries,
+        runner.session.active_conversation,
+        runner.session.entries,
     ) == ConversationProjector().project(
-        RICH_IDLE_SESSION.active_conversation, RICH_IDLE_SESSION.entries,
+        RICH_IDLE_SESSION.active_conversation,
+        RICH_IDLE_SESSION.entries,
     )
 
 
@@ -938,7 +1027,8 @@ async def test_a_user_policy_raise_closes_errored_and_propagates():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -946,8 +1036,11 @@ async def test_a_user_policy_raise_closes_errored_and_propagates():
         await runner.run()
 
     assert runner.session.entries["tf_c"] == TurnFinish(
-        id="tf_c", parent_id="cmp", created_at=1000,
-        outcome=TurnOutcome.ERRORED, error="kaboom",
+        id="tf_c",
+        parent_id="cmp",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="kaboom",
     )
     assert runner.idle()  # the closed bracket is transparent — no spin
 
@@ -957,18 +1050,24 @@ async def test_an_iterated_user_failure_yields_finished_before_raising():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
     events = []
 
-    with pytest.raises(ValueError, match="kaboom"):
+    # The append loop is load-bearing: the error fires mid-iteration and the
+    # assertions below read the events captured before it, which a comprehension
+    # would discard. Hence the PERF401/PT012 suppressions.
+    with pytest.raises(ValueError, match="kaboom"):  # noqa: PT012
         async with runner.run() as run:
             async for event in run:
-                events.append(event)
+                events.append(event)  # noqa: PERF401
 
     assert [event.type for event in events] == [
-        "compaction_scheduled", "compaction_started", "compaction_finished",
+        "compaction_scheduled",
+        "compaction_started",
+        "compaction_finished",
     ]
     assert events[-1].outcome == TurnOutcome.ERRORED
     assert events[-1].error == "kaboom"
@@ -978,11 +1077,14 @@ async def test_a_policy_source_failure_degrades_and_the_queued_turn_still_runs()
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, raises=ValueError("kaboom"),
+            should=True,
+            raises=ValueError("kaboom"),
         ),
-        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -995,7 +1097,13 @@ async def test_a_policy_source_failure_degrades_and_the_queued_turn_still_runs()
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
     # the failed compaction bracket AND the new turn both land on c1
     assert runner.session.active_conversation.nodes[-7:] == [
-        "u4", "ts_c", "cmp", "tf_c", "ts4", "a4", "tf4",
+        "u4",
+        "ts_c",
+        "cmp",
+        "tf_c",
+        "ts4",
+        "a4",
+        "tf4",
     ]
     assert runner.session.conversation_history == RICH_SESSION.conversation_history
     assert len(faux.requests) == 1
@@ -1005,11 +1113,14 @@ async def test_a_degraded_failure_is_only_visible_on_the_event_stream():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, raises=ValueError("kaboom"),
+            should=True,
+            raises=ValueError("kaboom"),
         ),
-        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -1028,7 +1139,8 @@ async def test_a_client_timeout_from_the_policy_closes_timed_out():
         compaction_policy=FakeCompactionPolicy(
             raises=ClientTimeoutError("the summarization call timed out"),
         ),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1045,7 +1157,8 @@ async def test_a_provider_error_from_the_policy_closes_errored():
         compaction_policy=FakeCompactionPolicy(
             raises=ProviderAPIError("upstream is down"),
         ),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1062,8 +1175,10 @@ async def test_the_policy_deadline_closes_timed_out_and_a_user_compaction_raises
     )
     policy = FakeCompactionPolicy(hang=True)
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1081,9 +1196,11 @@ async def test_the_policy_deadline_degrades_for_a_policy_source_compaction():
         client_completion_timeout_in_ms=50,
     )
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=True, hang=True),
-        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -1102,9 +1219,11 @@ async def test_middleware_raising_during_preparation_leaves_the_path_unchanged()
 
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
         middleware=[RefusesTheSummary()],
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1125,9 +1244,11 @@ async def test_middleware_raising_while_closing_a_failed_bracket_leaves_it_open(
 
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
+        session,
+        compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
         middleware=[RefusesTheClose()],
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1140,19 +1261,34 @@ async def test_middleware_raising_while_closing_a_failed_bracket_leaves_it_open(
 
 async def test_repeated_policy_failures_burn_one_attempt_per_drive():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
-        faux_assistant_message([faux_text("Still 42.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
+            faux_assistant_message([faux_text("Still 42.")], finish_reason="stop"),
+        ]
+    )
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, raises=ValueError("kaboom"),
+            should=True,
+            raises=ValueError("kaboom"),
         ),
         ids=[
-            "ts_c", "cmp", "tf_c", "ts4", "a4", "tf4",
-            "u5", "ts_c2", "cmp2", "tf_c2", "ts5", "a5", "tf5",
+            "ts_c",
+            "cmp",
+            "tf_c",
+            "ts4",
+            "a4",
+            "tf4",
+            "u5",
+            "ts_c2",
+            "cmp2",
+            "tf_c2",
+            "ts5",
+            "a5",
+            "tf5",
         ],
         now=1000,
     )
@@ -1174,8 +1310,10 @@ async def test_cancelling_between_scheduled_and_started_closes_cancelled():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "cr", "tf_c"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "cr", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1196,8 +1334,10 @@ async def test_cancelling_mid_summary_closes_cancelled_and_tears_the_policy_down
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = CancellingPolicy()
     runner = DeterministicRunner(
-        session, compaction_policy=policy,
-        ids=["ts_c", "cmp", "cr", "tf_c"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "cr", "tf_c"],
+        now=1000,
     )
     policy.runner = runner
     runner.schedule_compaction()
@@ -1215,9 +1355,11 @@ async def test_a_cancel_stops_the_drive_and_the_queued_message_is_not_answered()
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
-        ids=["ts_c", "cmp", "cr", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "cr", "tf_c"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -1233,9 +1375,11 @@ async def test_the_run_after_a_cancelled_compaction_carries_no_interrupted_marke
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=[True, False], plan=fold_everything),
-        ids=["ts_c", "cmp", "cr", "tf_c", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "cr", "tf_c", "ts4", "a4", "tf4"],
+        now=1000,
     )
     async with runner.run() as run:
         async for event in run:
@@ -1255,7 +1399,10 @@ async def test_a_parked_cancel_flushes_without_calling_the_policy():
     session = COMPACTION_CANCEL_PARKED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy, ids=["tf_c"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["tf_c"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -1272,7 +1419,8 @@ async def test_an_immediate_cancel_on_start_parks_the_compaction_flush():
     runner = DeterministicRunner(
         session,
         compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
-        ids=["ts_c", "cmp", "cr", "tf_c"], now=1000,
+        ids=["ts_c", "cmp", "cr", "tf_c"],
+        now=1000,
     )
     run = runner.start()  # start() opened a COMPACTION bracket
 
@@ -1280,7 +1428,10 @@ async def test_an_immediate_cancel_on_start_parks_the_compaction_flush():
     result = await run
 
     assert runner.session.active_conversation.nodes[-4:] == [
-        "ts_c", "cmp", "cr", "tf_c",
+        "ts_c",
+        "cmp",
+        "cr",
+        "tf_c",
     ]
     assert result.outcome == TurnOutcome.CANCELLED
 
@@ -1288,7 +1439,10 @@ async def test_an_immediate_cancel_on_start_parks_the_compaction_flush():
 async def test_a_second_cancel_inside_a_compaction_bracket_raises():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=["cr"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=["cr"],
+        now=1000,
     )
 
     runner.cancel()
@@ -1300,7 +1454,10 @@ async def test_a_second_cancel_inside_a_compaction_bracket_raises():
 async def test_run_result_after_a_cancelled_compaction():
     session = COMPACTION_CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=["tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=["tf_c"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -1313,7 +1470,8 @@ async def test_run_result_after_a_cancelled_compaction():
 
 
 @pytest.mark.parametrize(
-    "outcome", [TurnOutcome.ERRORED, TurnOutcome.TIMED_OUT],
+    "outcome",
+    [TurnOutcome.ERRORED, TurnOutcome.TIMED_OUT],
 )
 async def test_a_cancel_with_a_non_cancelled_outcome_still_stops_the_drive(outcome):
     # `cancel()` takes its outcome as an argument and only COMPLETED is
@@ -1322,9 +1480,11 @@ async def test_a_cancel_with_a_non_cancelled_outcome_still_stops_the_drive(outco
     faux = _answering_provider()
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["cr", "tf_c"], now=1000,
+        ids=["cr", "tf_c"],
+        now=1000,
     )
     runner.cancel(outcome)
 
@@ -1343,7 +1503,8 @@ async def test_a_scheduled_compaction_survives_a_reload_and_resumes_in_place():
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_and_keep_the_question),
         provider=_answering_provider(),
-        ids=["tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     assert runner.pending()
@@ -1360,7 +1521,8 @@ async def test_an_interrupted_compaction_keeps_its_original_started_at():
         session,
         compaction_policy=FakeCompactionPolicy(plan=fold_and_keep_the_question),
         provider=_answering_provider(),
-        ids=["tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     assert runner.pending()  # the stale RUNNING self-healed at construction
@@ -1374,7 +1536,10 @@ async def test_a_closed_failed_bracket_is_never_retried():
     session = COMPACTION_FAILED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy, ids=[], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=[],
+        now=1000,
     )
 
     assert runner.idle()
@@ -1389,8 +1554,11 @@ async def test_a_closed_completed_bracket_does_not_bury_a_queued_message():
     session = COMPACTION_BURIED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=False)
     runner = DeterministicRunner(
-        session, provider=faux, compaction_policy=policy,
-        ids=["ts4", "a4", "tf4"], now=1000,
+        session,
+        provider=faux,
+        compaction_policy=policy,
+        ids=["ts4", "a4", "tf4"],
+        now=1000,
     )
 
     assert runner.pending()
@@ -1409,8 +1577,11 @@ async def test_a_committed_compaction_inside_a_counterfeit_bracket_is_not_re_run
     committed = session.entries["cmp"].model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_everything)
     runner = DeterministicRunner(
-        session, provider=_answering_provider(), compaction_policy=policy,
-        ids=["a4", "tf4"], now=1000,
+        session,
+        provider=_answering_provider(),
+        compaction_policy=policy,
+        ids=["a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -1424,7 +1595,10 @@ async def test_schedule_compaction_raises_on_a_counterfeit_bracket():
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
     session.active_conversation.nodes = ["ts3", "cmp", "u4"]
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=[], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="requires a closed turn"):
@@ -1436,8 +1610,10 @@ async def test_schedule_compaction_raises_on_a_counterfeit_bracket():
 async def test_suspending_a_lazy_run_mid_compaction_leaves_the_bracket_open():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1458,8 +1634,10 @@ async def test_an_on_event_raise_during_started_leaves_the_bracket_open():
 
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1474,17 +1652,21 @@ async def test_a_reloaded_compacted_session_drives_normally():
     faux = _answering_provider()
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=False),
-        ids=["ts4", "a4", "tf4"], now=1000,
+        ids=["ts4", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
 
     assert faux.requests[0].messages == [
-        LucaUserMessage(content=[
-            TextBlock(text="The user added 1 and 2 and was answered 3."),
-        ]),
+        LucaUserMessage(
+            content=[
+                TextBlock(text="The user added 1 and 2 and was answered 3."),
+            ]
+        ),
         LucaUserMessage(content=[TextBlock(text="What is X?")]),
     ]
 
@@ -1496,17 +1678,24 @@ async def test_a_carried_trailing_user_message_keeps_driving():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, plan=fold_and_keep_the_question,
+            should=True,
+            plan=fold_and_keep_the_question,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     result = await runner.run()
 
     assert runner.session.active_conversation.nodes == [
-        "cmp", "u4", "ts4", "a4", "tf4",
+        "cmp",
+        "u4",
+        "ts4",
+        "a4",
+        "tf4",
     ]
     assert result == RunResult(
         status=ConversationStatus.IDLE,
@@ -1522,9 +1711,11 @@ async def test_a_folded_trailing_user_message_is_committed_and_the_question_is_l
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     await runner.run()
@@ -1540,9 +1731,11 @@ async def test_a_trailing_turn_finish_gives_a_compaction_only_drive():
     faux = _answering_provider()
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -1560,9 +1753,11 @@ async def test_a_carried_failed_turn_finish_is_retried_in_the_same_drive():
     faux = _answering_provider()
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(plan=carry_the_failed_turn_finish),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -1571,7 +1766,13 @@ async def test_a_carried_failed_turn_finish_is_retried_in_the_same_drive():
     # the carried TurnFinish(ERRORED) leaf derives PENDING → the drive retries
     assert len(faux.requests) == 1
     assert runner.session.active_conversation.nodes == [
-        "cmp", "u2", "ts2", "tf2", "ts4", "a4", "tf4",
+        "cmp",
+        "u2",
+        "ts2",
+        "tf2",
+        "ts4",
+        "a4",
+        "tf4",
     ]
 
 
@@ -1579,11 +1780,14 @@ async def test_a_carried_phantom_open_turn_is_committed_as_given():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=True, plan=carry_a_phantom_open_turn,
+            should=True,
+            plan=carry_a_phantom_open_turn,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -1591,7 +1795,11 @@ async def test_a_carried_phantom_open_turn_is_committed_as_given():
     # ts3 came over without its TurnFinish: the drive resumes a turn that
     # never happened. The hazard is the policy's — core commits it as given.
     assert runner.session.active_conversation.nodes == [
-        "cmp", "ts3", "u4", "a4", "tf4",
+        "cmp",
+        "ts3",
+        "u4",
+        "a4",
+        "tf4",
     ]
     assert len(faux.requests) == 1
 
@@ -1603,11 +1811,15 @@ async def test_a_phantom_bracket_around_the_summary_is_driven_as_a_turn():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(
-        should=True, plan=bracket_the_summary_with_a_carried_turn_start,
+        should=True,
+        plan=bracket_the_summary_with_a_carried_turn_start,
     )
     runner = DeterministicRunner(
-        session, provider=faux, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c", "c2", "a4", "tf4"], now=1000,
+        session,
+        provider=faux,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c", "c2", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -1615,7 +1827,11 @@ async def test_a_phantom_bracket_around_the_summary_is_driven_as_a_turn():
     assert len(policy.seen) == 1  # compact() ran once, not twice
     assert runner.session.entries["cmp"].compacted_nodes is not None
     assert runner.session.active_conversation.nodes == [
-        "ts3", "cmp", "u4", "a4", "tf4",
+        "ts3",
+        "cmp",
+        "u4",
+        "a4",
+        "tf4",
     ]
     assert len(faux.requests) == 1
 
@@ -1626,7 +1842,9 @@ async def test_a_phantom_bracket_around_the_summary_is_driven_as_a_turn():
 def test_schedule_compaction_writes_the_bracket_and_the_entry():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=["ts_c", "cmp"],
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=["ts_c", "cmp"],
         now=1000,
     )
 
@@ -1635,7 +1853,9 @@ def test_schedule_compaction_writes_the_bracket_and_the_entry():
     assert entry_id == "cmp"
     assert runner.session.active_conversation.nodes == [*RICH_IDLE_NODES, "ts_c", "cmp"]
     assert runner.session.entries["cmp"] == CompactionEntry(
-        id="cmp", parent_id="ts_c", created_at=1000,
+        id="cmp",
+        parent_id="ts_c",
+        created_at=1000,
         source=CompactionSource.USER,
     )
     assert runner.pending()
@@ -1644,7 +1864,9 @@ def test_schedule_compaction_writes_the_bracket_and_the_entry():
 def test_schedule_compaction_is_idempotent():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=["ts_c", "cmp"],
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=["ts_c", "cmp"],
         now=1000,
     )
     runner.schedule_compaction()
@@ -1657,7 +1879,10 @@ def test_schedule_compaction_is_idempotent():
 def test_schedule_compaction_rejects_an_open_conversational_turn():
     session = CLEARED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=[], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="requires a closed turn"):
@@ -1669,7 +1894,10 @@ def test_schedule_compaction_rejects_an_open_conversational_turn():
 def test_schedule_compaction_rejects_an_approval_gate():
     session = GATED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=[], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="status=awaiting_approval"):
@@ -1689,7 +1917,10 @@ def test_schedule_compaction_without_a_policy_raises():
 def test_post_message_is_illegal_while_a_compaction_is_scheduled():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=[], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="post_message requires a closed turn"):
@@ -1699,9 +1930,11 @@ def test_post_message_is_illegal_while_a_compaction_is_scheduled():
 async def test_post_message_is_legal_once_the_compaction_has_been_driven():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
         provider=_answering_provider(),
-        ids=["tf_c", "c2", "u5"], now=1000,
+        ids=["tf_c", "c2", "u5"],
+        now=1000,
     )
 
     await runner.run()
@@ -1714,11 +1947,14 @@ async def test_start_opens_a_compaction_bracket_when_one_is_due():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(
-            should=[True, False], plan=fold_and_keep_the_question,
+            should=[True, False],
+            plan=fold_and_keep_the_question,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     run = runner.start()
@@ -1726,10 +1962,16 @@ async def test_start_opens_a_compaction_bracket_when_one_is_due():
 
     # no bare TurnStart was opened before the compaction bracket
     assert runner.session.conversation_history[-1].nodes[-3:] == [
-        "ts_c", "cmp", "tf_c",
+        "ts_c",
+        "cmp",
+        "tf_c",
     ]
     assert runner.session.active_conversation.nodes == [
-        "cmp", "u4", "ts4", "a4", "tf4",
+        "cmp",
+        "u4",
+        "ts4",
+        "a4",
+        "tf4",
     ]
 
 
@@ -1737,7 +1979,10 @@ async def test_start_with_an_already_scheduled_compaction_opens_nothing_extra():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy, ids=["tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["tf_c", "c2"],
+        now=1000,
     )
 
     run = runner.start()
@@ -1751,7 +1996,10 @@ async def test_a_scheduled_compaction_wins_over_the_policy():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy, ids=["tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=["tf_c", "c2"],
+        now=1000,
     )
 
     await runner.run()
@@ -1766,9 +2014,12 @@ async def test_should_compact_is_not_consulted_while_a_turn_is_open():
     session = CLEARED_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_everything)
     runner = DeterministicRunner(
-        session, provider=faux, compaction_policy=policy,
+        session,
+        provider=faux,
+        compaction_policy=policy,
         tool_registry=None,
-        ids=["a2", "tf"], now=1000,
+        ids=["a2", "tf"],
+        now=1000,
     )
 
     await runner.run()
@@ -1781,7 +2032,10 @@ async def test_should_compact_is_not_consulted_on_an_idle_session():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_everything)
     runner = DeterministicRunner(
-        session, compaction_policy=policy, ids=[], now=1000,
+        session,
+        compaction_policy=policy,
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="Nothing to run"):
@@ -1795,8 +2049,11 @@ async def test_at_most_one_compaction_per_drive():
     session = RICH_SESSION.model_copy(deep=True)
     policy = FakeCompactionPolicy(should=True, plan=fold_and_keep_the_question)
     runner = DeterministicRunner(
-        session, provider=faux, compaction_policy=policy,
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        session,
+        provider=faux,
+        compaction_policy=policy,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     await runner.run()
@@ -1813,7 +2070,10 @@ async def test_a_should_compact_that_raises_propagates_from_run():
 
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=Exploding(), ids=[], now=1000,
+        session,
+        compaction_policy=Exploding(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(RuntimeError, match="bad threshold arithmetic"):
@@ -1828,8 +2088,11 @@ async def test_a_should_compact_that_raises_from_start_leaves_the_runner_usable(
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux, compaction_policy=Exploding(),
-        ids=["ts4", "a4", "tf4"], now=1000,
+        session,
+        provider=faux,
+        compaction_policy=Exploding(),
+        ids=["ts4", "a4", "tf4"],
+        now=1000,
     )
 
     with pytest.raises(RuntimeError, match="bad threshold arithmetic"):
@@ -1845,9 +2108,11 @@ def test_two_runners_with_different_policies_are_not_equal():
     session = RICH_SESSION.model_copy(deep=True)
 
     assert DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(should=True),
+        session,
+        compaction_policy=FakeCompactionPolicy(should=True),
     ) != DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(should=False),
+        session,
+        compaction_policy=FakeCompactionPolicy(should=False),
     )
 
 
@@ -1855,9 +2120,11 @@ def test_two_runners_with_equivalent_policies_are_equal():
     session = RICH_SESSION.model_copy(deep=True)
 
     assert DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(should=True),
+        session,
+        compaction_policy=FakeCompactionPolicy(should=True),
     ) == DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(should=True),
+        session,
+        compaction_policy=FakeCompactionPolicy(should=True),
     )
 
 
@@ -1867,8 +2134,10 @@ def test_two_runners_with_equivalent_policies_are_equal():
 async def test_no_usage_is_recorded_when_the_policy_returns_none():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=None),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=None),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -1880,12 +2149,14 @@ async def test_no_usage_is_recorded_when_the_policy_returns_none():
 async def test_no_usage_is_recorded_when_the_policy_raises():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(raises=ValueError("x")),
-        ids=["ts_c", "cmp", "tf_c"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(raises=ValueError("x")),
+        ids=["ts_c", "cmp", "tf_c"],
+        now=1000,
     )
     runner.schedule_compaction()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="x"):
         await runner.run()
 
     assert "cmp" not in runner.session.usages["c1"]
@@ -1894,8 +2165,10 @@ async def test_no_usage_is_recorded_when_the_policy_raises():
 async def test_the_context_tokens_are_recalculated_when_the_parts_land():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1914,9 +2187,11 @@ async def test_middleware_has_the_final_say_on_the_summarys_context_tokens():
 
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
         middleware=[Overrides()],
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -1931,11 +2206,14 @@ async def test_middleware_has_the_final_say_on_the_summarys_context_tokens():
 async def test_run_result_after_a_compaction_then_a_turn_reports_the_turn():
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=_answering_provider(),
+        session,
+        provider=_answering_provider(),
         compaction_policy=FakeCompactionPolicy(
-            should=True, plan=fold_and_keep_the_question,
+            should=True,
+            plan=fold_and_keep_the_question,
         ),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -1955,8 +2233,10 @@ async def test_a_deadline_that_does_not_expire_lets_the_compaction_commit():
         client_completion_timeout_in_ms=30_000,
     )
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -1969,8 +2249,10 @@ async def test_a_deadline_that_does_not_expire_lets_the_compaction_commit():
 async def test_the_compaction_events_fire_in_streaming_mode_too():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(plan=fold_everything),
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
     runner.schedule_compaction()
 
@@ -1978,14 +2260,19 @@ async def test_the_compaction_events_fire_in_streaming_mode_too():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "compaction_scheduled", "compaction_started", "compaction_finished",
+        "compaction_scheduled",
+        "compaction_started",
+        "compaction_finished",
     ]
 
 
 def test_schedule_compaction_rejects_a_parked_cancel():
     session = CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, compaction_policy=FakeCompactionPolicy(), ids=[], now=1000,
+        session,
+        compaction_policy=FakeCompactionPolicy(),
+        ids=[],
+        now=1000,
     )
 
     with pytest.raises(AgentError, match="status=cancelling"):
@@ -1999,7 +2286,9 @@ def test_schedule_compaction_rejects_a_parked_cancel():
 
 def _answering_provider() -> FauxProvider:
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
+        ]
+    )
     return faux

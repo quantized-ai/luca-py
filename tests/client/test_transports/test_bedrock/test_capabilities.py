@@ -42,36 +42,47 @@ def test_every_region_prefix_and_a_bare_id_reach_the_same_model():
 
 
 def test_a_gateway_namespace_is_stripped_before_the_region_prefix():
-    assert normalize_model_id("bedrock/us.meta.llama3-3-70b-instruct-v1:0") == (
-        "meta.llama3-3-70b-instruct-v1:0"
-    )
+    assert normalize_model_id("bedrock/us.meta.llama3-3-70b-instruct-v1:0") == ("meta.llama3-3-70b-instruct-v1:0")
 
 
 # ── the table ────────────────────────────────────────────────────────────────
 
 
 def test_nova_is_known_with_no_reasoning_and_a_ten_thousand_ceiling():
-    assert NOVA == ModelCapabilities(
-        max_output_tokens=10_000, is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=10_000,
+            is_known_model=True,
+        )
+        == NOVA
     )
 
 
 def test_llama_is_known_with_no_reasoning_and_an_eight_thousand_ceiling():
-    assert LLAMA == ModelCapabilities(
-        max_output_tokens=8_192, is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=8_192,
+            is_known_model=True,
+        )
+        == LLAMA
     )
 
 
 def test_a_dated_anthropic_profile_resolves_to_the_thinking_tier():
-    assert ANTHROPIC_MANUAL == ModelCapabilities(
-        max_output_tokens=64_000, supports_thinking=True, is_known_model=True,
+    assert (
+        ModelCapabilities(
+            max_output_tokens=64_000,
+            supports_thinking=True,
+            is_known_model=True,
+        )
+        == ANTHROPIC_MANUAL
     )
 
 
 def test_an_unknown_model_is_conservative_and_flagged():
     # The default record is all-false with the smallest ceiling and
     # is_known_model=False — the whole object pins that.
-    assert UNKNOWN == ModelCapabilities()
+    assert ModelCapabilities() == UNKNOWN
 
 
 # ── the resolver ─────────────────────────────────────────────────────────────
@@ -119,5 +130,7 @@ def test_sampling_is_refused_while_thinking_is_active():
         check_sampling(
             ANTHROPIC_MANUAL,
             {"thinking": {"type": "enabled", "budget_tokens": 2000}},
-            temperature=0.2, top_p=None, top_k=None,
+            temperature=0.2,
+            top_p=None,
+            top_k=None,
         )

@@ -33,6 +33,20 @@ import pytest
 from pydantic import ValidationError
 
 from luca.agent.core.context import CancellationToken
+from luca.agent.core.events import (
+    FinishReason,
+    ReasoningBlock,
+    ReasoningDelta,
+    ReasoningStart,
+    TextBlock,
+    TextDelta,
+    TextStart,
+    ToolCallReceived,
+    ToolCallStart,
+    ToolExecuted,
+    ToolExecutionStarted,
+)
+from luca.agent.core.exceptions import AgentError
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
@@ -58,20 +72,6 @@ from luca.agent.core.models import (
     Usage,
     UserMessage,
 )
-from luca.agent.core.events import (
-    FinishReason,
-    ReasoningBlock,
-    ReasoningDelta,
-    ReasoningStart,
-    TextBlock,
-    TextDelta,
-    TextStart,
-    ToolCallReceived,
-    ToolCallStart,
-    ToolExecuted,
-    ToolExecutionStarted,
-)
-from luca.agent.core.exceptions import AgentError
 from luca.agent.core.runner import AgentSessionRunner
 from luca.client.testing import (
     FauxProvider,
@@ -80,9 +80,7 @@ from luca.client.testing import (
     faux_thinking,
     faux_tool_call,
 )
-from luca.client.types import Tool as LucaTool
-from luca.client.types import Usage as ClientUsage
-
+from luca.client.types import Tool as LucaTool, Usage as ClientUsage
 from tests.agent.scenarios import (
     MODEL,
     AddTool,
@@ -106,9 +104,11 @@ MULTIPLY_SPEC = ToolSpec(name="multiply", description="Multiply two numbers.")
 
 async def test_single_text_response_no_tools():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s1",
         entries={
@@ -118,7 +118,10 @@ async def test_single_text_response_no_tools():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -134,9 +137,12 @@ async def test_single_text_response_no_tools():
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
             "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
             "a1": AssistantMessage(
-                id="a1", parent_id="ts", created_at=1000,
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
                 parts=[TextContent(text="Hello!")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
                 context_tokens=1,  # len("Hello!") // 4
             ),
             "tf": TurnFinish(id="tf", parent_id="a1", created_at=1000),
@@ -144,7 +150,10 @@ async def test_single_text_response_no_tools():
         tool_executions={},
         usages={"c1": {"a1": Usage(conversation_id="c1", entry_id="a1")}},
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "tf"], created_at=500, updated_at=1000,
+            id="c1",
+            nodes=["u1", "ts", "a1", "tf"],
+            created_at=500,
+            updated_at=1000,
             status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=MODEL),
@@ -153,9 +162,11 @@ async def test_single_text_response_no_tools():
 
 async def test_run_passes_projected_tools_to_client():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_tools",
         entries={
@@ -165,8 +176,11 @@ async def test_run_passes_projected_tools_to_client():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -179,58 +193,73 @@ async def test_run_passes_projected_tools_to_client():
 
 async def test_reasoning_plus_tool_call_then_text():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_thinking("Let me add."),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_thinking("Let me add."), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s3",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
         },
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    running = birth.model_copy(update={
-        "status": ExecutionStatus.RUNNING,
-        "approval_status": ApprovalStatus.ALLOWED,
-        "approval_decisions": [ALLOW_1000],
-        "started_at": 1000,
-        "updated_at": 1000,
-    })
-    final = running.model_copy(update={
-        "status": ExecutionStatus.COMPLETED,
-        "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-        "ended_at": 1000,
-    })
+    running = birth.model_copy(
+        update={
+            "status": ExecutionStatus.RUNNING,
+            "approval_status": ApprovalStatus.ALLOWED,
+            "approval_decisions": [ALLOW_1000],
+            "started_at": 1000,
+            "updated_at": 1000,
+        }
+    )
+    final = running.model_copy(
+        update={
+            "status": ExecutionStatus.COMPLETED,
+            "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
+            "ended_at": 1000,
+        }
+    )
     assert events == [
         ReasoningBlock(text="Let me add."),
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=birth),
         ToolExecutionStarted(tool_call_id="tc1", execution=running),
         ToolExecuted(
-            tool_call_id="tc1", execution=final, result_text="3", is_error=False,
+            tool_call_id="tc1",
+            execution=final,
+            result_text="3",
+            is_error=False,
         ),
         TextBlock(text="It's 3."),
         FinishReason(finish_reason="stop"),
@@ -239,35 +268,48 @@ async def test_reasoning_plus_tool_call_then_text():
         id="s3",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
             "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
             "a1": AssistantMessage(
-                id="a1", parent_id="ts", created_at=1000,
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
                 parts=[
                     ThinkingContent(thinking="Let me add."),
                     ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 ],
-                llm_config=MODEL, stop_reason="tool_use",
+                llm_config=MODEL,
+                stop_reason="tool_use",
                 context_tokens=7,  # (thinking + name + JSON args) // 4
             ),
             "te1": final,
             "a2": AssistantMessage(
-                id="a2", parent_id="te1", created_at=1000,
+                id="a2",
+                parent_id="te1",
+                created_at=1000,
                 parts=[TextContent(text="It's 3.")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
                 context_tokens=1,  # len("It's 3.") // 4
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
         tool_executions={"tc1": ["te1"]},
-        usages={"c1": {
-            "a1": Usage(conversation_id="c1", entry_id="a1"),
-            "a2": Usage(conversation_id="c1", entry_id="a2"),
-        }},
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+            }
+        },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+            id="c1",
+            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -275,19 +317,19 @@ async def test_reasoning_plus_tool_call_then_text():
 
 async def test_multi_turn_two_tool_rounds_then_text():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_thinking("First add."),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_thinking("Now multiply."),
-             faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Done: 12")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_thinking("First add."), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_thinking("Now multiply."), faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done: 12")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s4",
         entries={
@@ -297,68 +339,86 @@ async def test_multi_turn_two_tool_rounds_then_text():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool(), MultiplyTool()]),
+        session,
+        tool_registry=FakeToolRegistry([AddTool(), MultiplyTool()]),
         provider=faux,
-        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"], now=1000,
+        ids=["ts", "a1", "te1", "a2", "te2", "a3", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     add_birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    add_running = add_birth.model_copy(update={
-        "status": ExecutionStatus.RUNNING,
-        "approval_status": ApprovalStatus.ALLOWED,
-        "approval_decisions": [ALLOW_1000],
-        "started_at": 1000,
-        "updated_at": 1000,
-    })
-    add_final = add_running.model_copy(update={
-        "status": ExecutionStatus.COMPLETED,
-        "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-        "ended_at": 1000,
-    })
+    add_running = add_birth.model_copy(
+        update={
+            "status": ExecutionStatus.RUNNING,
+            "approval_status": ApprovalStatus.ALLOWED,
+            "approval_decisions": [ALLOW_1000],
+            "started_at": 1000,
+            "updated_at": 1000,
+        }
+    )
+    add_final = add_running.model_copy(
+        update={
+            "status": ExecutionStatus.COMPLETED,
+            "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
+            "ended_at": 1000,
+        }
+    )
     multiply_birth = ToolExecution(
-        id="te2", parent_id="a2", created_at=1000,
+        id="te2",
+        parent_id="a2",
+        created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
         tool_spec=MULTIPLY_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    multiply_running = multiply_birth.model_copy(update={
-        "status": ExecutionStatus.RUNNING,
-        "approval_status": ApprovalStatus.ALLOWED,
-        "approval_decisions": [ALLOW_1000],
-        "started_at": 1000,
-        "updated_at": 1000,
-    })
-    multiply_final = multiply_running.model_copy(update={
-        "status": ExecutionStatus.COMPLETED,
-        "result": ExecutionResult(content=[TextContent(text="12")], is_error=False),
-        "ended_at": 1000,
-    })
+    multiply_running = multiply_birth.model_copy(
+        update={
+            "status": ExecutionStatus.RUNNING,
+            "approval_status": ApprovalStatus.ALLOWED,
+            "approval_decisions": [ALLOW_1000],
+            "started_at": 1000,
+            "updated_at": 1000,
+        }
+    )
+    multiply_final = multiply_running.model_copy(
+        update={
+            "status": ExecutionStatus.COMPLETED,
+            "result": ExecutionResult(content=[TextContent(text="12")], is_error=False),
+            "ended_at": 1000,
+        }
+    )
     assert events == [
         ReasoningBlock(text="First add."),
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=add_birth),
         ToolExecutionStarted(tool_call_id="tc1", execution=add_running),
         ToolExecuted(
-            tool_call_id="tc1", execution=add_final,
-            result_text="3", is_error=False,
+            tool_call_id="tc1",
+            execution=add_final,
+            result_text="3",
+            is_error=False,
         ),
         ReasoningBlock(text="Now multiply."),
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc2", execution=multiply_birth),
         ToolExecutionStarted(tool_call_id="tc2", execution=multiply_running),
         ToolExecuted(
-            tool_call_id="tc2", execution=multiply_final,
-            result_text="12", is_error=False,
+            tool_call_id="tc2",
+            execution=multiply_final,
+            result_text="12",
+            is_error=False,
         ),
         TextBlock(text="Done: 12"),
         FinishReason(finish_reason="stop"),
@@ -369,42 +429,56 @@ async def test_multi_turn_two_tool_rounds_then_text():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="Go")]),
             "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
             "a1": AssistantMessage(
-                id="a1", parent_id="ts", created_at=1000,
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
                 parts=[
                     ThinkingContent(thinking="First add."),
                     ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 ],
-                llm_config=MODEL, stop_reason="tool_use",
+                llm_config=MODEL,
+                stop_reason="tool_use",
                 context_tokens=7,  # (thinking + name + JSON args) // 4
             ),
             "te1": add_final,
             "a2": AssistantMessage(
-                id="a2", parent_id="te1", created_at=1000,
+                id="a2",
+                parent_id="te1",
+                created_at=1000,
                 parts=[
                     ThinkingContent(thinking="Now multiply."),
                     ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
                 ],
-                llm_config=MODEL, stop_reason="tool_use",
+                llm_config=MODEL,
+                stop_reason="tool_use",
                 context_tokens=9,  # (thinking + name + JSON args) // 4
             ),
             "te2": multiply_final,
             "a3": AssistantMessage(
-                id="a3", parent_id="te2", created_at=1000,
+                id="a3",
+                parent_id="te2",
+                created_at=1000,
                 parts=[TextContent(text="Done: 12")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
                 context_tokens=2,  # len("Done: 12") // 4
             ),
             "tf": TurnFinish(id="tf", parent_id="a3", created_at=1000),
         },
         tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
-        usages={"c1": {
-            "a1": Usage(conversation_id="c1", entry_id="a1"),
-            "a2": Usage(conversation_id="c1", entry_id="a2"),
-            "a3": Usage(conversation_id="c1", entry_id="a3"),
-        }},
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+                "a3": Usage(conversation_id="c1", entry_id="a3"),
+            }
+        },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "te1", "a2", "te2", "a3", "tf"],
-            created_at=0, updated_at=1000, status=ConversationStatus.IDLE,
+            id="c1",
+            nodes=["u1", "ts", "a1", "te1", "a2", "te2", "a3", "tf"],
+            created_at=0,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -412,21 +486,26 @@ async def test_multi_turn_two_tool_rounds_then_text():
 
 async def test_provider_usage_is_recorded_per_assistant_entry():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-            usage=ClientUsage(
-                input_tokens=10, output_tokens=5, total_tokens=15,
-                cached_input_tokens=2, cache_write_tokens=1,
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+                usage=ClientUsage(
+                    input_tokens=10,
+                    output_tokens=5,
+                    total_tokens=15,
+                    cached_input_tokens=2,
+                    cache_write_tokens=1,
+                ),
             ),
-        ),
-        faux_assistant_message(
-            [faux_text("It's 3.")],
-            finish_reason="stop",
-            usage=ClientUsage(input_tokens=20, output_tokens=7, total_tokens=27),
-        ),
-    ])
+            faux_assistant_message(
+                [faux_text("It's 3.")],
+                finish_reason="stop",
+                usage=ClientUsage(input_tokens=20, output_tokens=7, total_tokens=27),
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_usage",
         entries={
@@ -436,8 +515,11 @@ async def test_provider_usage_is_recorded_per_assistant_entry():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -448,19 +530,29 @@ async def test_provider_usage_is_recorded_per_assistant_entry():
     assert runner.session.usages == {
         "c1": {
             "a1": Usage(
-                conversation_id="c1", entry_id="a1",
-                input=10, output=5, cache_read=2, cache_write=1,
+                conversation_id="c1",
+                entry_id="a1",
+                input=10,
+                output=5,
+                cache_read=2,
+                cache_write=1,
                 total_tokens=15,
             ),
             "a2": Usage(
-                conversation_id="c1", entry_id="a2",
-                input=20, output=7, cache_read=0, cache_write=0,
+                conversation_id="c1",
+                entry_id="a2",
+                input=20,
+                output=7,
+                cache_read=0,
+                cache_write=0,
                 total_tokens=27,
             ),
         },
     }
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="a2", created_at=1000,
+        id="tf",
+        parent_id="a2",
+        created_at=1000,
     )
 
 
@@ -469,27 +561,33 @@ async def test_provider_usage_is_recorded_per_assistant_entry():
 
 async def test_streaming_produces_same_session_as_run():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_thinking("Let me add."),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_thinking("Let me add."), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s5",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
         },
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run(streaming=True) as run:
@@ -499,48 +597,65 @@ async def test_streaming_produces_same_session_as_run():
         id="s5",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
             "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
             "a1": AssistantMessage(
-                id="a1", parent_id="ts", created_at=1000,
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
                 parts=[
                     ThinkingContent(thinking="Let me add."),
                     ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 ],
-                llm_config=MODEL, stop_reason="tool_use",
+                llm_config=MODEL,
+                stop_reason="tool_use",
                 context_tokens=7,  # (thinking + name + JSON args) // 4
             ),
             "te1": ToolExecution(
-                id="te1", parent_id="a1", created_at=1000,
+                id="te1",
+                parent_id="a1",
+                created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 tool_spec=ADD_SPEC,
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(
-                    content=[TextContent(text="3")], is_error=False,
+                    content=[TextContent(text="3")],
+                    is_error=False,
                 ),
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ALLOW_1000],
-                started_at=1000, ended_at=1000,
+                started_at=1000,
+                ended_at=1000,
                 updated_at=1000,
             ),
             "a2": AssistantMessage(
-                id="a2", parent_id="te1", created_at=1000,
+                id="a2",
+                parent_id="te1",
+                created_at=1000,
                 parts=[TextContent(text="It's 3.")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
                 context_tokens=1,  # len("It's 3.") // 4
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
         tool_executions={"tc1": ["te1"]},
-        usages={"c1": {
-            "a1": Usage(conversation_id="c1", entry_id="a1"),
-            "a2": Usage(conversation_id="c1", entry_id="a2"),
-        }},
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+            }
+        },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+            id="c1",
+            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -548,14 +663,15 @@ async def test_streaming_produces_same_session_as_run():
 
 async def test_streaming_emits_delta_then_block_events_in_order():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_thinking("Let me add."),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_thinking("Let me add."), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s6",
         entries={
@@ -565,32 +681,41 @@ async def test_streaming_emits_delta_then_block_events_in_order():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run(streaming=True) as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    running = birth.model_copy(update={
-        "status": ExecutionStatus.RUNNING,
-        "approval_status": ApprovalStatus.ALLOWED,
-        "approval_decisions": [ALLOW_1000],
-        "started_at": 1000,
-        "updated_at": 1000,
-    })
-    final = running.model_copy(update={
-        "status": ExecutionStatus.COMPLETED,
-        "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-        "ended_at": 1000,
-    })
+    running = birth.model_copy(
+        update={
+            "status": ExecutionStatus.RUNNING,
+            "approval_status": ApprovalStatus.ALLOWED,
+            "approval_decisions": [ALLOW_1000],
+            "started_at": 1000,
+            "updated_at": 1000,
+        }
+    )
+    final = running.model_copy(
+        update={
+            "status": ExecutionStatus.COMPLETED,
+            "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
+            "ended_at": 1000,
+        }
+    )
     assert events == [
         ReasoningStart(),
         ReasoningDelta(text="Let me add."),
@@ -600,7 +725,10 @@ async def test_streaming_emits_delta_then_block_events_in_order():
         ToolCallReceived(tool_call_id="tc1", execution=birth),
         ToolExecutionStarted(tool_call_id="tc1", execution=running),
         ToolExecuted(
-            tool_call_id="tc1", execution=final, result_text="3", is_error=False,
+            tool_call_id="tc1",
+            execution=final,
+            result_text="3",
+            is_error=False,
         ),
         TextStart(),
         TextDelta(text="It's 3."),
@@ -614,12 +742,15 @@ async def test_streaming_emits_delta_then_block_events_in_order():
 
 async def test_unknown_tool_records_not_found_and_skips_strategy():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("nope", {"x": 1}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("nope", {"x": 1}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_unknown",
         entries={
@@ -631,15 +762,20 @@ async def test_unknown_tool_records_not_found_and_skips_strategy():
     registry = FakeToolRegistry([AddTool()], decisions=[])  # empty script:
     # any decide() would raise
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="nope", arguments={"x": 1}),
         tool_spec=None,  # no partial specification is fabricated
@@ -656,8 +792,10 @@ async def test_unknown_tool_records_not_found_and_skips_strategy():
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=birth),
         ToolExecuted(
-            tool_call_id="tc1", execution=final,
-            result_text="Unknown tool: 'nope'.", is_error=True,
+            tool_call_id="tc1",
+            execution=final,
+            result_text="Unknown tool: 'nope'.",
+            is_error=True,
         ),
         TextBlock(text="ok"),
         FinishReason(finish_reason="stop"),
@@ -669,13 +807,15 @@ async def test_unknown_tool_records_not_found_and_skips_strategy():
 
 async def test_raising_tool_records_failed_with_structured_error():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("boom", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("boom", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_boom",
         entries={
@@ -685,8 +825,11 @@ async def test_raising_tool_records_failed_with_structured_error():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([RaisingTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([RaisingTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -695,7 +838,9 @@ async def test_raising_tool_records_failed_with_structured_error():
     assert events[2] == ToolExecutionStarted(
         tool_call_id="tc1",
         execution=ToolExecution(
-            id="te1", parent_id="a1", created_at=1000,
+            id="te1",
+            parent_id="a1",
+            created_at=1000,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="boom", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="boom", description="Always raises."),
@@ -709,7 +854,9 @@ async def test_raising_tool_records_failed_with_structured_error():
     assert events[3] == ToolExecuted(
         tool_call_id="tc1",
         execution=ToolExecution(
-            id="te1", parent_id="a1", created_at=1000,
+            id="te1",
+            parent_id="a1",
+            created_at=1000,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="boom", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="boom", description="Always raises."),
@@ -721,7 +868,8 @@ async def test_raising_tool_records_failed_with_structured_error():
             ),
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
-            started_at=1000, ended_at=1000,
+            started_at=1000,
+            ended_at=1000,
             updated_at=1000,
             context_tokens=1,  # len("kaboom") // 4
         ),
@@ -735,12 +883,15 @@ async def test_raising_tool_records_failed_with_structured_error():
 
 async def test_invalid_arguments_record_invalid_and_skip_strategy():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_badargs",
         entries={
@@ -752,8 +903,11 @@ async def test_invalid_arguments_record_invalid_and_skip_strategy():
     registry = FakeToolRegistry([AddTool()], decisions=[])  # empty script:
     # any decide() would raise
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -783,13 +937,15 @@ async def test_rich_is_error_result_is_still_completed():
     # is_error is the TOOL's verdict about its result — the framework received
     # a result, so the execution is COMPLETED, not FAILED.
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("report", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("report", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_rich",
         entries={
@@ -799,8 +955,11 @@ async def test_rich_is_error_result_is_still_completed():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([RichErrorTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([RichErrorTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -813,7 +972,8 @@ async def test_rich_is_error_result_is_still_completed():
     assert runner.session.entries["te1"].error is None
     assert runner.session.entries["te1"].result == ExecutionResult(
         content=[TextContent(text="disk full")],
-        metadata={"code": 28}, is_error=True,
+        metadata={"code": 28},
+        is_error=True,
     )
     assert runner.idle()
 
@@ -822,13 +982,15 @@ async def test_stop_finish_with_tool_calls_still_executes_the_round():
     # the round keys off the tool_calls themselves: a provider misclassifying
     # the finish as "stop" must not leave dangling tool_use blocks behind
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="stop",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="stop",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_stop_with_calls",
         entries={
@@ -838,8 +1000,11 @@ async def test_stop_finish_with_tool_calls_still_executes_the_round():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -847,8 +1012,12 @@ async def test_stop_finish_with_tool_calls_still_executes_the_round():
 
     assert events[0] == FinishReason(finish_reason="stop")  # recorded verbatim
     assert [event.type for event in events] == [
-        "finish_reason", "tool_call_received", "tool_execution_started",
-        "tool_executed", "text_block", "finish_reason",
+        "finish_reason",
+        "tool_call_received",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert len(faux.requests) == 2
     assert runner.session.entries["te1"].status == ExecutionStatus.COMPLETED
@@ -859,9 +1028,11 @@ async def test_stop_finish_with_tool_calls_still_executes_the_round():
 async def test_tool_use_finish_with_no_calls_closes_the_turn():
     # the inverse misclassification must not loop the model forever
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hmm.")], finish_reason="tool_use"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hmm.")], finish_reason="tool_use"),
+        ]
+    )
     session = AgentSession(
         id="s_tool_use_no_calls",
         entries={
@@ -871,8 +1042,11 @@ async def test_tool_use_finish_with_no_calls_closes_the_turn():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -901,11 +1075,17 @@ async def test_post_message_sets_pending():
     assert msg_id == "u1"
     assert runner.pending()
     assert runner.session.entries["u1"] == UserMessage(
-        id="u1", parent_id=None, created_at=1000, parts=[TextContent(text="Hello")],
+        id="u1",
+        parent_id=None,
+        created_at=1000,
+        parts=[TextContent(text="Hello")],
         context_tokens=1,  # len("Hello") // 4
     )
     assert runner.session.active_conversation == Conversation(
-        id="c1", nodes=["u1"], created_at=900, updated_at=1000,
+        id="c1",
+        nodes=["u1"],
+        created_at=900,
+        updated_at=1000,
         status=ConversationStatus.PENDING,
     )
 
@@ -927,7 +1107,9 @@ async def test_post_message_queues_behind_a_pending_message():
     assert runner.pending()
     assert runner.session.active_conversation.nodes == ["u1", "u2"]
     assert runner.session.entries["u2"] == UserMessage(
-        id="u2", parent_id="u1", created_at=1000,
+        id="u2",
+        parent_id="u1",
+        created_at=1000,
         parts=[TextContent(text="Second")],
         context_tokens=1,  # len("Second") // 4
     )
@@ -948,7 +1130,9 @@ async def test_post_message_accepts_a_part_list_and_keeps_its_order():
     runner.post_message([image, TextContent(text="Hello")])
 
     assert runner.session.entries["u1"] == UserMessage(
-        id="u1", parent_id=None, created_at=1000,
+        id="u1",
+        parent_id=None,
+        created_at=1000,
         parts=[image, TextContent(text="Hello")],
         context_tokens=1_001,  # IMAGE_TOKENS + len("Hello") // 4
     )
@@ -1011,12 +1195,19 @@ async def test_post_message_validates_raw_dicts_into_parts():
     )
     runner = DeterministicRunner(session, ids=["u1"], now=1000)
 
-    runner.post_message([
-        {"type": "image", "source": {
-            "kind": "base64", "data": "aGk=", "media_type": "image/png",
-        }},
-        {"type": "text", "text": "what is this?"},
-    ])
+    runner.post_message(
+        [
+            {
+                "type": "image",
+                "source": {
+                    "kind": "base64",
+                    "data": "aGk=",
+                    "media_type": "image/png",
+                },
+            },
+            {"type": "text", "text": "what is this?"},
+        ]
+    )
 
     assert runner.session.entries["u1"].parts == [
         ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
@@ -1053,13 +1244,15 @@ async def test_run_when_idle_raises():
 
 async def test_tool_receives_tool_context():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("capture", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("capture", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     tool = CapturingTool()
     session = AgentSession(
         id="s_ctx",
@@ -1070,8 +1263,11 @@ async def test_tool_receives_tool_context():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([tool]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([tool]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -1094,13 +1290,15 @@ async def test_event_snapshots_do_not_track_later_ledger_updates():
     # RUNNING state even after the ledger entry reached COMPLETED — events
     # carry deep snapshots, never live references.
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_snapshots",
         entries={
@@ -1110,8 +1308,11 @@ async def test_event_snapshots_do_not_track_later_ledger_updates():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -1131,13 +1332,15 @@ async def test_event_snapshots_do_not_track_later_ledger_updates():
 
 async def test_completed_session_round_trips_and_rederives_status():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_rt",
         entries={
@@ -1147,8 +1350,11 @@ async def test_completed_session_round_trips_and_rederives_status():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
     async with runner.run() as run:
         _ = [event async for event in run]
@@ -1161,7 +1367,9 @@ async def test_completed_session_round_trips_and_rederives_status():
     assert reloaded == runner.session
     # a fresh production runner over the reloaded data re-derives the status
     rebuilt = AgentSessionRunner(
-        reloaded, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
+        reloaded,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
     )
     assert rebuilt.status == ConversationStatus.IDLE
 

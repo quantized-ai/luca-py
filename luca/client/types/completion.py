@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -10,7 +10,7 @@ from .catalog import ModelCost, ModelInfo
 from .content import TextBlock
 from .messages import AssistantMessage, Message
 from .reasoning import Reasoning
-from .structured import ResponseFormat, parse_structured_output
+from .structured import parse_structured_output
 from .tools import Tool, ToolChoice
 
 
@@ -25,7 +25,7 @@ class UsageCost(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @classmethod
-    def compute(cls, usage: "Usage", cost: ModelCost) -> "UsageCost":
+    def compute(cls, usage: Usage, cost: ModelCost) -> UsageCost:
         def _per_m(tokens: int | None, rate: float | None) -> float:
             if tokens is None or rate is None:
                 return 0.0
@@ -65,7 +65,7 @@ class ChatCompletionRequest(BaseModel):
     model: str
     provider: str | None = None
     messages: list[Message] = Field(default_factory=list)
-    system_message: Union[str, list[TextBlock]] | None = None
+    system_message: str | list[TextBlock] | None = None
     tools: list[Tool] | None = None
     tool_choice: ToolChoice | None = None
     response_format: Any | None = None  # ResponseFormat is Union[dict, type, TypeAdapter] — accept Any
@@ -74,7 +74,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = None
     top_k: int | None = None
     max_tokens: int | None = None
-    stop: Union[str, list[str]] | None = None
+    stop: str | list[str] | None = None
     seed: int | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
@@ -89,7 +89,7 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: bool | None = None
     user: str | None = None
 
-    model_info: Union[ModelInfo, dict] | None = None
+    model_info: ModelInfo | dict | None = None
 
     metadata: dict | None = None
     # Raw provider-specific options, keyed by provider name. Only the
@@ -124,11 +124,7 @@ class ChatCompletionResponse(BaseModel):
         # Defer to pydantic's __getattr__ for private attrs, declared fields,
         # declared methods, and dunders — pydantic handles PrivateAttr lookup
         # in __pydantic_private__ and we MUST NOT intercept that.
-        if (
-            name.startswith("_")
-            or name in _RESPONSE_DECLARED_FIELDS
-            or name in _RESPONSE_DECLARED_METHODS
-        ):
+        if name.startswith("_") or name in _RESPONSE_DECLARED_FIELDS or name in _RESPONSE_DECLARED_METHODS:
             return super().__getattr__(name)
 
         # Forward unknown attribute lookups to self.message. Reach the message
@@ -140,10 +136,12 @@ class ChatCompletionResponse(BaseModel):
         try:
             return getattr(message, name)
         except AttributeError:
+            # `from None`: the delegated lookup failing is the implementation
+            # detail this message already explains; chaining it just adds noise.
             raise AttributeError(
                 f"{type(self).__name__!r} object has no attribute {name!r} "
                 f"(also not found on self.message: {type(message).__name__})"
-            )
+            ) from None
 
     def parse(self) -> Any:
         if self._response_format is None:
@@ -154,7 +152,5 @@ class ChatCompletionResponse(BaseModel):
         # Concatenate text blocks; ignore thinking / refusal / tool_call.
         from .content import TextBlock as _TextBlock
 
-        text = "".join(
-            block.text for block in self.message.content if isinstance(block, _TextBlock)
-        )
+        text = "".join(block.text for block in self.message.content if isinstance(block, _TextBlock))
         return parse_structured_output(text, self._response_format)

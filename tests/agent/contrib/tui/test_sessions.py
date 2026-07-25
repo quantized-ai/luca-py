@@ -1,6 +1,7 @@
 """Session persistence helpers."""
 
 import pytest
+from pydantic_core import PydanticSerializationError
 
 from luca.agent.contrib.tui.sessions import (
     fork_session,
@@ -52,7 +53,7 @@ def test_a_failed_save_leaves_the_previous_file_intact(tmp_path):
     before = session_path(session.id, tmp_path).read_text()
     session.entries["broken"] = object()  # a value model_dump_json cannot write
 
-    with pytest.raises(Exception):
+    with pytest.raises(PydanticSerializationError, match="Unable to serialize unknown type"):
         save_session(session, tmp_path)
 
     assert session_path(session.id, tmp_path).read_text() == before

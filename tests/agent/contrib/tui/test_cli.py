@@ -16,18 +16,30 @@ def test_default_args():
     args = arg_parser().parse_args([])
 
     assert (args.conversation, args.fork, args.no_streaming, args.faux) == (
-        None, False, False, False,
+        None,
+        False,
+        False,
+        False,
     )
     assert args.pretty_print is False
     assert (args.model, args.provider, args.reasoning) == (
-        None, None, None,
+        None,
+        None,
+        None,
     )
 
 
 def test_model_and_reasoning_override_the_fresh_session():
-    session = build_session(arg_parser().parse_args([
-        "--model", "moonshotai/kimi-k2.7-code", "--reasoning", "high",
-    ]))
+    session = build_session(
+        arg_parser().parse_args(
+            [
+                "--model",
+                "moonshotai/kimi-k2.7-code",
+                "--reasoning",
+                "high",
+            ]
+        )
+    )
 
     assert session.session_config.llm_config == LLMConfig(
         model="moonshotai/kimi-k2.7-code",
@@ -37,9 +49,14 @@ def test_model_and_reasoning_override_the_fresh_session():
 
 
 def test_provider_override_is_passed_through_as_is():
-    session = build_session(arg_parser().parse_args([
-        "--provider", "quantized",
-    ]))
+    session = build_session(
+        arg_parser().parse_args(
+            [
+                "--provider",
+                "quantized",
+            ]
+        )
+    )
 
     llm = session.session_config.llm_config
     assert llm.provider == "quantized"
@@ -51,17 +68,30 @@ def test_provider_override_applies_on_resume(tmp_path, monkeypatch):
     session = fresh_session()
     save_session(session)
 
-    resumed = build_session(arg_parser().parse_args([
-        "--conversation", session.id, "--provider", "quantized",
-    ]))
+    resumed = build_session(
+        arg_parser().parse_args(
+            [
+                "--conversation",
+                session.id,
+                "--provider",
+                "quantized",
+            ]
+        )
+    )
 
     assert resumed.session_config.llm_config.provider == "quantized"
 
 
 def test_model_override_composes_with_faux():
-    session = build_session(arg_parser().parse_args([
-        "--faux", "--model", "moonshotai/kimi-k2.7-code",
-    ]))
+    session = build_session(
+        arg_parser().parse_args(
+            [
+                "--faux",
+                "--model",
+                "moonshotai/kimi-k2.7-code",
+            ]
+        )
+    )
 
     llm = session.session_config.llm_config
     assert llm.model == "moonshotai/kimi-k2.7-code"
@@ -73,9 +103,16 @@ def test_model_override_applies_on_resume(tmp_path, monkeypatch):
     session = fresh_session()
     save_session(session)
 
-    resumed = build_session(arg_parser().parse_args([
-        "--conversation", session.id, "--model", "moonshotai/kimi-k2.7-code",
-    ]))
+    resumed = build_session(
+        arg_parser().parse_args(
+            [
+                "--conversation",
+                session.id,
+                "--model",
+                "moonshotai/kimi-k2.7-code",
+            ]
+        )
+    )
 
     llm = resumed.session_config.llm_config
     assert llm.model == "moonshotai/kimi-k2.7-code"
@@ -89,7 +126,9 @@ def test_faux_session_uses_the_faux_model():
 
 
 def test_main_prints_the_resume_hint_after_the_app_exits(
-    tmp_path, monkeypatch, capsys,
+    tmp_path,
+    monkeypatch,
+    capsys,
 ):
     monkeypatch.chdir(tmp_path)
     seen: dict[str, str] = {}
@@ -106,13 +145,17 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
 
 
 def test_pretty_print_writes_the_transcript_and_never_starts_the_app(
-    tmp_path, monkeypatch, capsys,
+    tmp_path,
+    monkeypatch,
+    capsys,
 ):
     monkeypatch.chdir(tmp_path)
     session = fresh_session()
     save_session(session)
     monkeypatch.setattr(
-        AgentApp, "run", lambda self: pytest.fail("the app must not start"),
+        AgentApp,
+        "run",
+        lambda self: pytest.fail("the app must not start"),
     )
 
     main(["--conversation", session.id, "--pretty-print"])

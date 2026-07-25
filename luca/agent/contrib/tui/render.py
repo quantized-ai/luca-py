@@ -83,11 +83,7 @@ def user_transcript_text(parts: Iterable[ContentPart]) -> str:
         if isinstance(part, TextContent):
             lines.append(part.text)
         elif isinstance(part, ImageContent):
-            label = (
-                part.metadata.get("name")
-                or part.source.media_type
-                or "image"
-            )
+            label = part.metadata.get("name") or part.source.media_type or "image"
             lines.append(f"[image: {label}]")
     return "\n".join(lines)
 

@@ -58,8 +58,7 @@ from luca.agent.core import (
 )
 
 from .patch import AddOp, DeleteOp, PatchError, UpdateOp, apply_update, parse_patch
-from .replace import OldStringAmbiguous, OldStringNotFound
-from .replace import replace as replace_text
+from .replace import OldStringAmbiguous, OldStringNotFound, replace as replace_text
 
 DEFAULT_READ_LIMIT = 2_000
 MAX_LINE_LENGTH = 2_000
@@ -74,15 +73,40 @@ SUPPORTED_IMAGE_MIMES = {
 
 KNOWN_BINARY_EXTENSIONS = {
     # archives
-    ".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz", ".xz", ".zip",
+    ".7z",
+    ".bz2",
+    ".gz",
+    ".rar",
+    ".tar",
+    ".tgz",
+    ".xz",
+    ".zip",
     # executables, libraries, object files
-    ".a", ".bin", ".dll", ".dylib", ".exe", ".lib", ".o", ".so",
+    ".a",
+    ".bin",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".lib",
+    ".o",
+    ".so",
     # bytecode
-    ".class", ".jar", ".pyc", ".pyo", ".war",
+    ".class",
+    ".jar",
+    ".pyc",
+    ".pyo",
+    ".war",
     # office documents
-    ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
     # misc
-    ".db", ".sqlite", ".wasm",
+    ".db",
+    ".sqlite",
+    ".wasm",
 }
 
 SEARCH_MAX_RESULTS = 100
@@ -144,9 +168,7 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
     namespace = "contrib.shell"
 
     def __init__(self, workdir: str | os.PathLike[str] | None = None) -> None:
-        self.workdir = (
-            Path(os.path.normpath(workdir)) if workdir is not None else Path.cwd()
-        )
+        self.workdir = Path(os.path.normpath(workdir)) if workdir is not None else Path.cwd()
 
     def _resolve(self, path: str) -> Path:
         candidate = Path(path)
@@ -172,7 +194,8 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         return PermissionRequest(
             resources=[
                 ResourcePermission(
-                    permission="access_directory", resource=str(directory),
+                    permission="access_directory",
+                    resource=str(directory),
                 )
                 for directory in unique
             ],
@@ -180,10 +203,12 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
                 AnswerOption(
                     resource_permissions=[
                         ResourcePermission(
-                            permission="access_directory", resource=str(directory),
+                            permission="access_directory",
+                            resource=str(directory),
                         ),
                         ResourcePermission(
-                            permission="access_directory", resource=f"{directory}/*",
+                            permission="access_directory",
+                            resource=f"{directory}/*",
                         ),
                     ],
                     metadata={"preview": f"Always allow access to {directory}"},
@@ -194,20 +219,27 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         )
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         raise NotImplementedError
 
     async def execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
             return await self._run(args, context, cancellation_token=cancellation_token)
         except ShellToolError as error:
             return ExecutionResult(
-                content=[TextContent(text=str(error))], is_error=True,
+                content=[TextContent(text=str(error))],
+                is_error=True,
             )
 
 
@@ -229,7 +261,9 @@ class RipgrepTool(ShellTool):
         return binary
 
     async def _run_ripgrep(
-        self, argv: list[str], cwd: Path,
+        self,
+        argv: list[str],
+        cwd: Path,
     ) -> tuple[str, str, int]:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -305,25 +339,36 @@ class ReadTool(ShellTool):
         self.tracker = tracker or FileReadTracker()
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
-        return [self._access_request(self._access_scope(path)), PermissionRequest(
-            resources=[ResourcePermission(permission="read", resource=str(path))],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="read", resource=f"{path.parent}/*",
-                    )],
-                    metadata={"preview": f"Read files under {path.parent}"},
-                ),
-            ],
-            metadata={"preview": f"Read {path}"},
-        )]
+        return [
+            self._access_request(self._access_scope(path)),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="read", resource=str(path))],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="read",
+                                resource=f"{path.parent}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Read files under {path.parent}"},
+                    ),
+                ],
+                metadata={"preview": f"Read {path}"},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
         return await asyncio.to_thread(self._read, path, args["offset"], args["limit"])
@@ -352,7 +397,10 @@ class ReadTool(ShellTool):
         message = f"File not found: {path}"
         if path.parent.is_dir():
             siblings = difflib.get_close_matches(
-                path.name, os.listdir(path.parent), n=3, cutoff=0.6,
+                path.name,
+                os.listdir(path.parent),
+                n=3,
+                cutoff=0.6,
             )
             if siblings:
                 listed = "\n".join(f"  {path.parent / name}" for name in siblings)
@@ -389,9 +437,7 @@ class ReadTool(ShellTool):
 
     def _read_directory(self, path: Path, offset: int, limit: int) -> ExecutionResult:
         names = sorted(os.listdir(path))
-        entries = [
-            name + "/" if (path / name).is_dir() else name for name in names
-        ]
+        entries = [name + "/" if (path / name).is_dir() else name for name in names]
         total = len(entries)
         if offset > total and not (offset == 1 and total == 0):
             raise ShellToolError(
@@ -402,13 +448,11 @@ class ReadTool(ShellTool):
         truncated = last < total
         body = "\n".join(page)
         if truncated:
-            body += (
-                f"\n\n(Showing entries {offset}-{last} of {total}."
-                f" Use offset={last + 1} to continue.)"
-            )
+            body += f"\n\n(Showing entries {offset}-{last} of {total}. Use offset={last + 1} to continue.)"
         text = f"<path>{path}</path>\n<type>directory</type>\n<entries>\n{body}\n</entries>"
         return ExecutionResult(
-            content=[TextContent(text=text)], metadata={"truncated": truncated},
+            content=[TextContent(text=text)],
+            metadata={"truncated": truncated},
         )
 
     def _read_text(self, path: Path, offset: int, limit: int) -> ExecutionResult:
@@ -428,7 +472,10 @@ class ReadTool(ShellTool):
             else:
                 if offset == 1 and seen == 0:
                     return self._file_result(
-                        path, [], "(End of file - total 0 lines)", truncated=False,
+                        path,
+                        [],
+                        "(End of file - total 0 lines)",
+                        truncated=False,
                     )
                 raise ShellToolError(
                     f"Offset {offset} is out of range for this file ({seen} lines)",
@@ -440,17 +487,13 @@ class ReadTool(ShellTool):
                 lineno, raw = pending
                 text_line = raw.rstrip("\n")
                 if len(text_line) > MAX_LINE_LENGTH:
-                    text_line = (
-                        text_line[:MAX_LINE_LENGTH]
-                        + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
-                    )
+                    text_line = text_line[:MAX_LINE_LENGTH] + f"... (line truncated to {MAX_LINE_LENGTH} chars)"
                 encoded = f"{lineno}: {text_line}"
                 size = len(encoded.encode("utf-8")) + 1
                 if rendered and used + size > MAX_BYTES:
                     truncated = True
                     note = (
-                        f"(Output capped at 50 KB. Showing lines {offset}-{last}."
-                        f" Use offset={last + 1} to continue.)"
+                        f"(Output capped at 50 KB. Showing lines {offset}-{last}. Use offset={last + 1} to continue.)"
                     )
                     break
                 rendered.append(encoded)
@@ -463,21 +506,24 @@ class ReadTool(ShellTool):
                     else:
                         truncated = True
                         total = last + 1 + sum(1 for _ in iterator)
-                        note = (
-                            f"(Showing lines {offset}-{last} of {total}."
-                            f" Use offset={last + 1} to continue.)"
-                        )
+                        note = f"(Showing lines {offset}-{last} of {total}. Use offset={last + 1} to continue.)"
                     break
                 pending = next(iterator, None)
         return self._file_result(path, rendered, note, truncated=truncated)
 
     def _file_result(
-        self, path: Path, rendered: list[str], note: str, *, truncated: bool,
+        self,
+        path: Path,
+        rendered: list[str],
+        note: str,
+        *,
+        truncated: bool,
     ) -> ExecutionResult:
         body = "\n".join(rendered) + "\n\n" if rendered else ""
         text = f"<path>{path}</path>\n<type>file</type>\n<content>\n{body}{note}\n</content>"
         return ExecutionResult(
-            content=[TextContent(text=text)], metadata={"truncated": truncated},
+            content=[TextContent(text=text)],
+            metadata={"truncated": truncated},
         )
 
 
@@ -519,25 +565,36 @@ class GlobTool(RipgrepTool):
         )
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         root = self._resolve(args["path"]) if args.get("path") else self.workdir
-        return [self._access_request(root), PermissionRequest(
-            resources=[ResourcePermission(permission="glob", resource=str(root))],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="glob", resource=f"{root}/*",
-                    )],
-                    metadata={"preview": f"Search files under {root}"},
-                ),
-            ],
-            metadata={"preview": f'Find files matching "{args["pattern"]}" in {root}'},
-        )]
+        return [
+            self._access_request(root),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="glob", resource=str(root))],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="glob",
+                                resource=f"{root}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Search files under {root}"},
+                    ),
+                ],
+                metadata={"preview": f'Find files matching "{args["pattern"]}" in {root}'},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         root = self._resolve(args["path"]) if args.get("path") else self.workdir
         if not root.exists():
@@ -548,8 +605,10 @@ class GlobTool(RipgrepTool):
             self._rg_binary(),
             "--files",
             "--hidden",
-            "--glob", "!**/.git/**",
-            "--glob", args["pattern"],
+            "--glob",
+            "!**/.git/**",
+            "--glob",
+            args["pattern"],
         ]
         stdout, stderr, code = await self._run_ripgrep(argv, root)
         if code not in (0, 1):
@@ -610,26 +669,37 @@ class GrepTool(RipgrepTool):
         )
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         target = self._resolve(args["path"]) if args.get("path") else self.workdir
         scope = self._access_scope(target)
-        return [self._access_request(scope), PermissionRequest(
-            resources=[ResourcePermission(permission="grep", resource=str(target))],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="grep", resource=f"{scope}/*",
-                    )],
-                    metadata={"preview": f"Search files under {scope}"},
-                ),
-            ],
-            metadata={"preview": f'Search for "{args["pattern"]}" in {target}'},
-        )]
+        return [
+            self._access_request(scope),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="grep", resource=str(target))],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="grep",
+                                resource=f"{scope}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Search files under {scope}"},
+                    ),
+                ],
+                metadata={"preview": f'Search for "{args["pattern"]}" in {target}'},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         target = self._resolve(args["path"]) if args.get("path") else self.workdir
         if not target.exists():
@@ -638,7 +708,8 @@ class GrepTool(RipgrepTool):
             self._rg_binary(),
             "--json",
             "--hidden",
-            "--glob", "!**/.git/**",
+            "--glob",
+            "!**/.git/**",
         ]
         if args.get("include"):
             argv += ["--glob", args["include"]]
@@ -659,10 +730,7 @@ class GrepTool(RipgrepTool):
         grouped: dict[str, list[str]] = {}
         for file_path, line_number, preview in matches:
             grouped.setdefault(file_path, []).append(f"  Line {line_number}: {preview}")
-        blocks = [
-            f"{file_path}:\n" + "\n".join(lines)
-            for file_path, lines in grouped.items()
-        ]
+        blocks = [f"{file_path}:\n" + "\n".join(lines) for file_path, lines in grouped.items()]
         text = header + "\n" + "\n\n".join(blocks)
         if more:
             text += "\n\n(Results truncated. Consider using a more specific path or pattern.)"
@@ -737,25 +805,36 @@ class EditTool(ShellTool):
         self.tracker = tracker or FileReadTracker()
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
-        return [self._access_request(path.parent), PermissionRequest(
-            resources=[ResourcePermission(permission="edit", resource=str(path))],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="edit", resource=f"{path.parent}/*",
-                    )],
-                    metadata={"preview": f"Edit files under {path.parent}"},
-                ),
-            ],
-            metadata={"preview": f"Edit {path}"},
-        )]
+        return [
+            self._access_request(path.parent),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="edit", resource=str(path))],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="edit",
+                                resource=f"{path.parent}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Edit files under {path.parent}"},
+                    ),
+                ],
+                metadata={"preview": f"Edit {path}"},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
         old_string, new_string = args["old_string"], args["new_string"]
@@ -782,7 +861,11 @@ class EditTool(ShellTool):
             )
         async with _file_lock(path):
             return await asyncio.to_thread(
-                self._edit, path, old_string, new_string, args["replace_all"],
+                self._edit,
+                path,
+                old_string,
+                new_string,
+                args["replace_all"],
             )
 
     def _create(self, path: Path, content: str) -> ExecutionResult:
@@ -799,12 +882,16 @@ class EditTool(ShellTool):
         )
 
     def _edit(
-        self, path: Path, old_string: str, new_string: str, replace_all: bool,
+        self,
+        path: Path,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,
     ) -> ExecutionResult:
         raw = path.read_bytes()
         bom = raw.startswith(_BOM_BYTES)
         if bom:
-            raw = raw[len(_BOM_BYTES):]
+            raw = raw[len(_BOM_BYTES) :]
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -825,8 +912,7 @@ class EditTool(ShellTool):
             ) from None
         except OldStringAmbiguous:
             raise ShellToolError(
-                "Found multiple matches for old_string. Provide more surrounding"
-                " context to make the match unique.",
+                "Found multiple matches for old_string. Provide more surrounding context to make the match unique.",
             ) from None
         diff = _unified_diff(working, updated, str(path), str(path))
         final = updated.replace("\n", "\r\n") if crlf else updated
@@ -879,25 +965,36 @@ class WriteTool(ShellTool):
         self.tracker = tracker or FileReadTracker()
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
-        return [self._access_request(path.parent), PermissionRequest(
-            resources=[ResourcePermission(permission="write", resource=str(path))],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="write", resource=f"{path.parent}/*",
-                    )],
-                    metadata={"preview": f"Write files under {path.parent}"},
-                ),
-            ],
-            metadata={"preview": f"Write {path}"},
-        )]
+        return [
+            self._access_request(path.parent),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="write", resource=str(path))],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="write",
+                                resource=f"{path.parent}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Write files under {path.parent}"},
+                    ),
+                ],
+                metadata={"preview": f"Write {path}"},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
         existed = path.exists()
@@ -925,7 +1022,7 @@ class WriteTool(ShellTool):
                     bom = stream.read(len(_BOM_BYTES)) == _BOM_BYTES
             if content.startswith(_BOM_CHAR):
                 bom = True
-                content = content[len(_BOM_CHAR):]
+                content = content[len(_BOM_CHAR) :]
             data = (_BOM_BYTES if bom else b"") + content.encode("utf-8")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -982,40 +1079,56 @@ class ApplyPatchTool(ShellTool):
         )
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         try:
             ops = parse_patch(args["patch_text"])
         except PatchError:
-            return [PermissionRequest(
-                resources=[],
-                metadata={"preview": "Apply patch (invalid patch text)"},
-            )]
+            return [
+                PermissionRequest(
+                    resources=[],
+                    metadata={"preview": "Apply patch (invalid patch text)"},
+                )
+            ]
         resources: list[ResourcePermission] = []
         labels: list[str] = []
         directories: list[Path] = []
         for op in ops:
             resolved = self._resolve(op.path)
-            resources.append(ResourcePermission(
-                permission="apply_patch", resource=str(resolved),
-            ))
+            resources.append(
+                ResourcePermission(
+                    permission="apply_patch",
+                    resource=str(resolved),
+                )
+            )
             labels.append(op.path)
             directories.append(resolved.parent)
             if isinstance(op, UpdateOp) and op.move_to:
                 destination = self._resolve(op.move_to)
-                resources.append(ResourcePermission(
-                    permission="apply_patch", resource=str(destination),
-                ))
+                resources.append(
+                    ResourcePermission(
+                        permission="apply_patch",
+                        resource=str(destination),
+                    )
+                )
                 labels.append(op.move_to)
                 directories.append(destination.parent)
-        return [self._access_request(*directories), PermissionRequest(
-            resources=resources,
-            metadata={"preview": f"Apply patch to {', '.join(labels)}"},
-        )]
+        return [
+            self._access_request(*directories),
+            PermissionRequest(
+                resources=resources,
+                metadata={"preview": f"Apply patch to {', '.join(labels)}"},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         patch_text = args["patch_text"]
         if not patch_text.strip():
@@ -1034,25 +1147,29 @@ class ApplyPatchTool(ShellTool):
             self._commit(plan)
             summary.append(f"{plan['letter']} {plan['display']}")
             diff = _unified_diff(
-                plan["before"], plan["after"], plan["path"], plan["display"],
+                plan["before"],
+                plan["after"],
+                plan["path"],
+                plan["display"],
             )
-            files.append({
-                "path": plan["path"],
-                "type": plan["type"],
-                "patch": diff,
-                "additions": sum(
-                    1 for line in diff.splitlines()
-                    if line.startswith("+") and not line.startswith("+++")
-                ),
-                "deletions": sum(
-                    1 for line in diff.splitlines()
-                    if line.startswith("-") and not line.startswith("---")
-                ),
-                "move_to": plan["move_to"],
-            })
+            files.append(
+                {
+                    "path": plan["path"],
+                    "type": plan["type"],
+                    "patch": diff,
+                    "additions": sum(
+                        1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")
+                    ),
+                    "deletions": sum(
+                        1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
+                    ),
+                    "move_to": plan["move_to"],
+                }
+            )
         text = "Success. Updated the following files:\n" + "\n".join(summary)
         return ExecutionResult(
-            content=[TextContent(text=text)], metadata={"files": files},
+            content=[TextContent(text=text)],
+            metadata={"files": files},
         )
 
     def _verify(self, op) -> dict:
@@ -1085,7 +1202,7 @@ class ApplyPatchTool(ShellTool):
         raw = source.read_bytes()
         bom = raw.startswith(_BOM_BYTES)
         if bom:
-            raw = raw[len(_BOM_BYTES):]
+            raw = raw[len(_BOM_BYTES) :]
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -1239,27 +1356,38 @@ class BashTool(ShellTool):
         )
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         command = args["command"].strip()
         head = command.split()[0]
         workdir = self._resolve(args["workdir"]) if args.get("workdir") else self.workdir
-        return [self._access_request(workdir), PermissionRequest(
-            resources=[ResourcePermission(permission="bash", resource=command)],
-            answer_options=[
-                AnswerOption(
-                    resource_permissions=[ResourcePermission(
-                        permission="bash", resource=f"{head} *",
-                    )],
-                    metadata={"preview": f"Run any '{head}' command"},
-                ),
-            ],
-            metadata={"preview": f"Run command: {command}"},
-        )]
+        return [
+            self._access_request(workdir),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="bash", resource=command)],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="bash",
+                                resource=f"{head} *",
+                            )
+                        ],
+                        metadata={"preview": f"Run any '{head}' command"},
+                    ),
+                ],
+                metadata={"preview": f"Run command: {command}"},
+            ),
+        ]
 
     async def _run(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         workdir = self._resolve(args["workdir"]) if args.get("workdir") else self.workdir
         if not workdir.exists():
@@ -1269,7 +1397,9 @@ class BashTool(ShellTool):
         timeout_ms = args.get("timeout") or BASH_DEFAULT_TIMEOUT_MS
         try:
             process = await asyncio.create_subprocess_exec(
-                self.shell, "-c", args["command"],
+                self.shell,
+                "-c",
+                args["command"],
                 cwd=workdir,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
@@ -1279,7 +1409,9 @@ class BashTool(ShellTool):
         except OSError as error:
             raise ShellToolError(f"Failed to start shell: {error}") from error
         output, outcome = await self._collect(
-            process, timeout_ms, cancellation_token,
+            process,
+            timeout_ms,
+            cancellation_token,
         )
         return self._render(output, outcome, process, timeout_ms)
 
@@ -1360,13 +1492,12 @@ class BashTool(ShellTool):
         lines = output.split("\n")
         if lines and lines[-1] == "":
             lines.pop()
-        if (
-            len(lines) <= BASH_MAX_OUTPUT_LINES
-            and len(output.encode("utf-8")) <= BASH_MAX_OUTPUT_BYTES
-        ):
+        if len(lines) <= BASH_MAX_OUTPUT_LINES and len(output.encode("utf-8")) <= BASH_MAX_OUTPUT_BYTES:
             return output, False, None
         handle, output_path = tempfile.mkstemp(
-            prefix="bash_output_", suffix=".txt", dir=self.output_dir,
+            prefix="bash_output_",
+            suffix=".txt",
+            dir=self.output_dir,
         )
         with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as stream:
             stream.write(output)
@@ -1374,8 +1505,5 @@ class BashTool(ShellTool):
         data = preview.encode("utf-8")
         if len(data) > BASH_MAX_OUTPUT_BYTES:
             preview = data[-BASH_MAX_OUTPUT_BYTES:].decode("utf-8", errors="replace")
-        text = (
-            "...output truncated...\n\n"
-            f"Full output saved to: {output_path}\n\n{preview}"
-        )
+        text = f"...output truncated...\n\nFull output saved to: {output_path}\n\n{preview}"
         return text, True, output_path

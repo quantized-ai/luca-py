@@ -38,15 +38,13 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
-from luca.client.types import TextBlock
-from luca.client.types import UserMessage as LucaUserMessage
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
     faux_text,
     faux_tool_call,
 )
-
+from luca.client.types import TextBlock, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
     MODEL,
     RICH_IDLE_SESSION,
@@ -70,9 +68,11 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
             return "faux:override-model"  # client strips the provider prefix
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_ms",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -80,7 +80,10 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[ModelStringMiddleware()],
     )
 
@@ -100,9 +103,11 @@ async def test_middleware_build_tool_list_return_used_for_llm_call():
             return tools[:1]  # keep only the first tool
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_tl",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Go")])},
@@ -110,8 +115,11 @@ async def test_middleware_build_tool_list_return_used_for_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool(), MultiplyTool()]),
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool(), MultiplyTool()]),
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[FilterToolsMiddleware()],
     )
 
@@ -129,14 +137,18 @@ async def test_middleware_build_tool_list_return_used_for_llm_call():
 async def test_middleware_before_llm_call_return_used_for_llm_call():
     class SystemOverrideMiddleware:
         def before_llm_call(
-            self, messages: list, system_message,
+            self,
+            messages: list,
+            system_message,
         ) -> tuple[list, str | None]:
             return messages, "OVERRIDE SYSTEM"
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_llm",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -144,7 +156,10 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[SystemOverrideMiddleware()],
     )
 
@@ -166,9 +181,11 @@ async def test_middleware_after_llm_response_return_stored_in_session():
             return message.model_copy(update={"content": new_content})
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("original text")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("original text")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_llm_resp",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -176,7 +193,10 @@ async def test_middleware_after_llm_response_return_stored_in_session():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[ResponseMiddleware()],
     )
 
@@ -201,7 +221,9 @@ async def test_middleware_before_post_message_return_stored_in_entry():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, ids=["u1"], now=1000,
+        session,
+        ids=["u1"],
+        now=1000,
         middleware=[UpperCaseMiddleware()],
     )
 
@@ -226,7 +248,10 @@ async def test_before_post_message_sees_every_part_including_images():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, ids=["u1"], now=1000, middleware=[middleware],
+        session,
+        ids=["u1"],
+        now=1000,
+        middleware=[middleware],
     )
     image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
 
@@ -246,7 +271,10 @@ async def test_before_post_message_can_drop_a_part():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, ids=["u1"], now=1000, middleware=[TextOnlyMiddleware()],
+        session,
+        ids=["u1"],
+        now=1000,
+        middleware=[TextOnlyMiddleware()],
     )
     image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
 
@@ -266,14 +294,18 @@ async def test_before_post_message_can_add_a_part():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, ids=["u1"], now=1000, middleware=[ReminderMiddleware()],
+        session,
+        ids=["u1"],
+        now=1000,
+        middleware=[ReminderMiddleware()],
     )
     image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
 
     runner.post_message([image])
 
     assert runner.session.entries["u1"].parts == [
-        image, TextContent(text="be concise"),
+        image,
+        TextContent(text="be concise"),
     ]
 
 
@@ -288,9 +320,11 @@ async def test_middleware_before_entry_written_return_stored_in_session():
             return entry
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_bew",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -298,7 +332,10 @@ async def test_middleware_before_entry_written_return_stored_in_session():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[MarkTurnFinishMiddleware()],
     )
 
@@ -325,12 +362,15 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
 
     recorder = ExecutionStatusRecorder()
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("3")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_bew_exec",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -338,8 +378,11 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[recorder],
     )
 
@@ -360,17 +403,22 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
 async def test_middleware_before_permission_check_modified_execution_is_seen_and_persisted():
     class EnrichContextMiddleware:
         def before_permission_check(self, execution: ToolExecution) -> ToolExecution:
-            return execution.model_copy(update={
-                "extras": {**execution.extras, "mw_enriched": True},
-            })
+            return execution.model_copy(
+                update={
+                    "extras": {**execution.extras, "mw_enriched": True},
+                }
+            )
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("3")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_bpc",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -382,8 +430,11 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
         decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)],
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[EnrichContextMiddleware()],
     )
 
@@ -404,17 +455,22 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
     # Strategy says DENY; middleware overrides to ALLOW → tool runs
     class OverrideDecisionMiddleware:
         def after_permission_decision(
-            self, decision: ApprovalDecision, execution: ToolExecution,
+            self,
+            decision: ApprovalDecision,
+            execution: ToolExecution,
         ) -> ApprovalDecision:
             return decision.model_copy(update={"decision": ApprovalOption.ALLOW})
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 2, "b": 3}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("5")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 2, "b": 3}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("5")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_apd",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -426,8 +482,11 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
         decisions=[ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000)],
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[OverrideDecisionMiddleware()],
     )
 
@@ -450,19 +509,26 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
     class Args10xMiddleware:
         def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
             arguments = execution.raw_tool_call.arguments
-            return execution.model_copy(update={
-                "raw_tool_call": execution.raw_tool_call.model_copy(update={
-                    "arguments": {"a": arguments["a"] * 10, "b": arguments["b"] * 10},
-                }),
-            })
+            return execution.model_copy(
+                update={
+                    "raw_tool_call": execution.raw_tool_call.model_copy(
+                        update={
+                            "arguments": {"a": arguments["a"] * 10, "b": arguments["b"] * 10},
+                        }
+                    ),
+                }
+            )
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("30")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("30")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_bte",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -470,8 +536,11 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[Args10xMiddleware()],
     )
 
@@ -500,28 +569,38 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
 
     recorder = StatusRecorder()
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("nope", {"x": 1}, id="tc1"),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc2"),
-             faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc3")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("nope", {"x": 1}, id="tc1"),
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc2"),
+                    faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc3"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_bte_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
-    registry = FakeToolRegistry([AddTool(), MultiplyTool()], decisions=[
-        ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # tc2
-        ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000),  # tc3
-    ])
+    registry = FakeToolRegistry(
+        [AddTool(), MultiplyTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # tc2
+            ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000),  # tc3
+        ],
+    )
     runner = DeterministicRunner(
-        session, tool_registry=registry,
-        provider=faux, ids=["ts", "a1", "te1", "te2", "te3", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "te3", "a2", "tf"],
+        now=1000,
         middleware=[recorder],
     )
 
@@ -541,21 +620,30 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
 async def test_middleware_after_tool_execution_return_persisted():
     class ResultTransformMiddleware:
         def after_tool_execution(
-            self, execution: ToolExecution, exception: Exception | None = None,
+            self,
+            execution: ToolExecution,
+            exception: Exception | None = None,
         ) -> ToolExecution:
-            return execution.model_copy(update={
-                "result": execution.result.model_copy(update={
-                    "content": [TextContent(text="RESULT_MODIFIED")],
-                }),
-            })
+            return execution.model_copy(
+                update={
+                    "result": execution.result.model_copy(
+                        update={
+                            "content": [TextContent(text="RESULT_MODIFIED")],
+                        }
+                    ),
+                }
+            )
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_ate",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -563,8 +651,11 @@ async def test_middleware_after_tool_execution_return_persisted():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[ResultTransformMiddleware()],
     )
 
@@ -587,27 +678,35 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
             self.seen: list[tuple[str, ExecutionStatus, type | None]] = []
 
         def after_tool_execution(
-            self, execution: ToolExecution, exception: Exception | None = None,
+            self,
+            execution: ToolExecution,
+            exception: Exception | None = None,
         ) -> ToolExecution:
-            self.seen.append((
-                execution.tool_call_id,
-                execution.status,
-                type(exception) if exception is not None else None,
-            ))
+            self.seen.append(
+                (
+                    execution.tool_call_id,
+                    execution.status,
+                    type(exception) if exception is not None else None,
+                )
+            )
             return execution
 
     recorder = OutcomeRecorder()
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("nope", {}, id="tc1"),
-             faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2"),
-             faux_tool_call("boom", {"a": 1, "b": 2}, id="tc3"),
-             faux_tool_call("add", {"a": 1, "b": 2}, id="tc4")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("nope", {}, id="tc1"),
+                    faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2"),
+                    faux_tool_call("boom", {"a": 1, "b": 2}, id="tc3"),
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc4"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_ate_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
@@ -623,8 +722,11 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
         ],
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "te2", "te3", "te4", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "te3", "te4", "a2", "tf"],
+        now=1000,
         middleware=[recorder],
     )
 
@@ -656,9 +758,11 @@ async def test_middlewares_applied_in_order_second_receives_first_output():
             return model_string + "-v2"
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_order",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -666,7 +770,10 @@ async def test_middlewares_applied_in_order_second_receives_first_output():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[AppendV1Middleware(), AppendV2Middleware()],
     )
 
@@ -689,9 +796,11 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
             return messages, (system_message or "") + self.suffix
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_order2",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
@@ -699,7 +808,10 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         middleware=[AddSuffixMiddleware("-A"), AddSuffixMiddleware("-B")],
     )
 
@@ -753,7 +865,9 @@ async def test_mixin_subclass_partial_override_does_not_clobber_post_message():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, ids=["u1"], now=1000,
+        session,
+        ids=["u1"],
+        now=1000,
         middleware=[OnlyResponse()],
     )
 
@@ -769,12 +883,15 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
             return model_string + "-routed"
 
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("3")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mw_mixin_run",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
@@ -782,8 +899,11 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         middleware=[OnlyModelSuffix()],
     )
 
@@ -819,7 +939,8 @@ async def test_before_entry_written_sees_every_entry_a_compaction_writes():
         session,
         compaction_policy=FakeCompactionPolicy(plan=_frame_and_fold),
         middleware=[recorder],
-        ids=["ts_c", "cmp", "new1", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "new1", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -862,15 +983,19 @@ async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
 
     counter = TurnHookCounter()
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("X is 42.")], finish_reason="stop"),
+        ]
+    )
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, provider=faux,
+        session,
+        provider=faux,
         compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
         middleware=[counter],
-        ids=["ts_c", "cmp", "tf_c", "c2", "u5", "ts4", "a4", "tf4"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2", "u5", "ts4", "a4", "tf4"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -882,7 +1007,9 @@ async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
     await runner.run()
 
     assert counter.calls == [
-        "build_model_string", "before_llm_call", "build_tool_list",
+        "build_model_string",
+        "before_llm_call",
+        "build_tool_list",
         "after_llm_response",
     ]
 
@@ -901,7 +1028,8 @@ async def test_before_entry_written_may_redact_the_summary_before_it_persists():
         session,
         compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
         middleware=[Redactor()],
-        ids=["ts_c", "cmp", "tf_c", "c2"], now=1000,
+        ids=["ts_c", "cmp", "tf_c", "c2"],
+        now=1000,
     )
 
     runner.schedule_compaction()
@@ -909,7 +1037,8 @@ async def test_before_entry_written_may_redact_the_summary_before_it_persists():
 
     assert runner.session.entries["cmp"].parts == [TextContent(text="[redacted]")]
     assert ConversationProjector().project(
-        runner.session.active_conversation, runner.session.entries,
+        runner.session.active_conversation,
+        runner.session.entries,
     ) == [LucaUserMessage(content=[TextBlock(text="[redacted]")])]
 
 

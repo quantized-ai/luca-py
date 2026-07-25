@@ -21,7 +21,8 @@ def _ensure_loaded() -> None:
         from ._data import default_records
 
         for info in default_records():
-            assert info.provider is not None and info.model is not None
+            assert info.provider is not None
+            assert info.model is not None
             _store[(info.provider, info.model)] = info
         _loaded = True
 
@@ -32,7 +33,9 @@ def get(provider: str, model: str) -> ModelInfo | None:
 
 
 def list_records(
-    *, provider: str | None = None, supports: str | None = None,
+    *,
+    provider: str | None = None,
+    supports: str | None = None,
 ) -> list[ModelInfo]:
     _ensure_loaded()
     records = list(_store.values())

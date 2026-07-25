@@ -1,7 +1,5 @@
 """AnthropicTransport.completion_stream() — sync."""
 
-import pytest
-
 from luca.client.types import (
     ChatCompletionRequest,
     ThinkingBlock,
@@ -18,19 +16,32 @@ def _sse(event_type: str, data: str) -> bytes:
 
 def test_anthropic_streaming_text_block(anthropic_transport_factory):
     chunks = [
-        _sse("message_start", '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}'),
-        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}'),
+        _sse(
+            "message_start",
+            '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}',
+        ),
+        _sse(
+            "content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}'
+        ),
+        _sse(
+            "content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}'
+        ),
+        _sse(
+            "content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}'
+        ),
         _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
-        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}'),
+        _sse(
+            "message_delta",
+            '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}',
+        ),
         _sse("message_stop", '{"type":"message_stop"}'),
     ]
     client = make_sync_client(sse_response(chunks))
     transport = anthropic_transport_factory(http_client=client)
 
     req = ChatCompletionRequest(
-        model="claude-test", provider="anthropic",
+        model="claude-test",
+        provider="anthropic",
         messages=[UserMessage(content="hi")],
     )
     with transport.completion_stream(req) as s:
@@ -50,19 +61,35 @@ def test_anthropic_streaming_text_block(anthropic_transport_factory):
 
 def test_anthropic_streaming_tool_use(anthropic_transport_factory):
     chunks = [
-        _sse("message_start", '{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}'),
-        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\""}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\\"NYC\\"}"}}'),
+        _sse(
+            "message_start",
+            '{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}',
+        ),
+        _sse(
+            "content_block_start",
+            '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}',
+        ),
+        _sse(
+            "content_block_delta",
+            '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\""}}',
+        ),
+        _sse(
+            "content_block_delta",
+            '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\\"NYC\\"}"}}',
+        ),
         _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
-        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}'),
+        _sse(
+            "message_delta",
+            '{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}',
+        ),
         _sse("message_stop", '{"type":"message_stop"}'),
     ]
     client = make_sync_client(sse_response(chunks))
     transport = anthropic_transport_factory(http_client=client)
 
     req = ChatCompletionRequest(
-        model="claude-test", provider="anthropic",
+        model="claude-test",
+        provider="anthropic",
         messages=[UserMessage(content="weather?")],
     )
     with transport.completion_stream(req) as s:
@@ -80,12 +107,27 @@ def test_anthropic_streaming_tool_use(anthropic_transport_factory):
 def test_anthropic_streaming_thinking_carries_the_signature(anthropic_transport_factory):
     # the signature arrives as its own delta just before content_block_stop
     chunks = [
-        _sse("message_start", '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}'),
-        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me think"}}'),
-        _sse("content_block_delta", '{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}'),
+        _sse(
+            "message_start",
+            '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}',
+        ),
+        _sse(
+            "content_block_start",
+            '{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+        ),
+        _sse(
+            "content_block_delta",
+            '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me think"}}',
+        ),
+        _sse(
+            "content_block_delta",
+            '{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}',
+        ),
         _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
-        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}'),
+        _sse(
+            "message_delta",
+            '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}',
+        ),
         _sse("message_stop", '{"type":"message_stop"}'),
     ]
     transport = anthropic_transport_factory(
@@ -94,14 +136,17 @@ def test_anthropic_streaming_thinking_carries_the_signature(anthropic_transport_
 
     with transport.completion_stream(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
         ),
     ) as stream:
         collect_events_with_snapshots(stream)
         [block] = stream.message.content
 
     assert block == ThinkingBlock(
-        text="let me think", signature="sig-abc", redacted=False,
+        text="let me think",
+        signature="sig-abc",
+        redacted=False,
     )
 
 
@@ -111,10 +156,19 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
     # a redacted block arrives whole in content_block_start with no deltas —
     # if the start event drops `data` the payload is gone for good
     chunks = [
-        _sse("message_start", '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}'),
-        _sse("content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"encrypted-payload"}}'),
+        _sse(
+            "message_start",
+            '{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}',
+        ),
+        _sse(
+            "content_block_start",
+            '{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"encrypted-payload"}}',
+        ),
         _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
-        _sse("message_delta", '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}'),
+        _sse(
+            "message_delta",
+            '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}',
+        ),
         _sse("message_stop", '{"type":"message_stop"}'),
     ]
     transport = anthropic_transport_factory(
@@ -123,14 +177,17 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
 
     with transport.completion_stream(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
         ),
     ) as stream:
         collect_events_with_snapshots(stream)
         [block] = stream.message.content
 
     assert block == ThinkingBlock(
-        text="", signature="encrypted-payload", redacted=True,
+        text="",
+        signature="encrypted-payload",
+        redacted=True,
     )
     assert transport._project_assistant_message(stream.message)["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},

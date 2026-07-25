@@ -72,13 +72,12 @@ class ShellAccessPlugin:
         mode: PermissionMode | str = PermissionMode.ASK,
     ) -> None:
         self.workspace = _absolute(workspace)
-        self.additional_directories = [
-            _absolute(directory) for directory in additional_directories or []
-        ]
+        self.additional_directories = [_absolute(directory) for directory in additional_directories or []]
         self.mode = PermissionMode(mode)
         self.tracker = FileReadTracker()
         self.permission_strategy = PermissionStrategy(
-            mode=self.mode, rules=self._default_rules(),
+            mode=self.mode,
+            rules=self._default_rules(),
         )
         self.tools: list[Tool] = [
             ReadTool(workdir=self.workspace, tracker=self.tracker),
@@ -92,7 +91,8 @@ class ShellAccessPlugin:
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
         return SimpleToolRegistry(
-            tools=list(self.tools), permission_policy=self.permission_strategy,
+            tools=list(self.tools),
+            permission_policy=self.permission_strategy,
         )
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list[str]:
@@ -100,25 +100,29 @@ class ShellAccessPlugin:
         if self.additional_directories:
             listing = ", ".join(str(d) for d in self.additional_directories)
             additional = f"\nYou may also access: {listing}."
-        return [SHELL_SYSTEM_PROMPT_TEMPLATE.format(
-            workspace=self.workspace, additional=additional,
-        )]
+        return [
+            SHELL_SYSTEM_PROMPT_TEMPLATE.format(
+                workspace=self.workspace,
+                additional=additional,
+            )
+        ]
 
     def _default_rules(self) -> list[ToolRule]:
         """ALLOW rules for the read tier over each permitted root: the root
         itself plus `<root>/*` (fnmatch `*` crosses `/`, so the glob covers
         every depth)."""
-        rules: list[ToolRule] = []
-        for directory in [self.workspace, *self.additional_directories]:
-            for permission in READ_TIER_PERMISSIONS:
-                for resource in (str(directory), f"{directory}/*"):
-                    rules.append(ToolRule(
-                        resource_permission=ResourcePermission(
-                            permission=permission, resource=resource,
-                        ),
-                        decision=ApprovalOption.ALLOW,
-                    ))
-        return rules
+        return [
+            ToolRule(
+                resource_permission=ResourcePermission(
+                    permission=permission,
+                    resource=resource,
+                ),
+                decision=ApprovalOption.ALLOW,
+            )
+            for directory in [self.workspace, *self.additional_directories]
+            for permission in READ_TIER_PERMISSIONS
+            for resource in (str(directory), f"{directory}/*")
+        ]
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:

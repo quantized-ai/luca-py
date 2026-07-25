@@ -91,7 +91,9 @@ class SimpleToolRegistry(ToolRegistry):
     """A static tool list gated by one `PermissionPolicy`."""
 
     def __init__(
-        self, tools: list[Tool], permission_policy: PermissionPolicy,
+        self,
+        tools: list[Tool],
+        permission_policy: PermissionPolicy,
     ) -> None:
         self.tools = list(tools)
         self.permission_policy = permission_policy
@@ -101,7 +103,9 @@ class SimpleToolRegistry(ToolRegistry):
         return list(self.tools)
 
     async def create_execution(
-        self, call: ToolCall, context: ToolContext,
+        self,
+        call: ToolCall,
+        context: ToolContext,
     ) -> ToolExecution:
         tool = self.tools_by_name.get(call.name)
         if tool is None:
@@ -116,9 +120,7 @@ class SimpleToolRegistry(ToolRegistry):
                 status=ExecutionStatus.INVALID,
                 error=ToolExecutionError(
                     error_type="InvalidToolArguments",
-                    error_message=(
-                        f"Arguments for tool {call.name!r} are invalid."
-                    ),
+                    error_message=(f"Arguments for tool {call.name!r} are invalid."),
                     details={
                         "errors": json.loads(exc.json(include_url=False)),
                     },
@@ -128,7 +130,8 @@ class SimpleToolRegistry(ToolRegistry):
         if hasattr(tool, "get_approval_context"):
             try:
                 extras["approval_context"] = await tool.get_approval_context(
-                    args.model_dump(), context,
+                    args.model_dump(),
+                    context,
                 )
             except Exception as exc:
                 return _draft(
@@ -149,7 +152,9 @@ class SimpleToolRegistry(ToolRegistry):
         )
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         return await self.permission_policy.decide(tool_execution)
 
@@ -172,7 +177,9 @@ class SimpleToolRegistry(ToolRegistry):
                 errors=json.loads(exc.json(include_url=False)),
             ) from exc
         return await tool.execute(
-            args.model_dump(), context, cancellation_token=cancellation_token,
+            args.model_dump(),
+            context,
+            cancellation_token=cancellation_token,
         )
 
 
@@ -194,16 +201,16 @@ class ProxyToolRegistry(ToolRegistry):
         for registry in self.registries:
             for tool in registry.get_tools(agent_session):
                 if tool.name in route:
-                    raise ValueError(
-                        f"Duplicate tool name across registries: {tool.name!r}."
-                    )
+                    raise ValueError(f"Duplicate tool name across registries: {tool.name!r}.")
                 route[tool.name] = registry
                 tools.append(tool)
         self._route = route
         return tools
 
     async def create_execution(
-        self, call: ToolCall, context: ToolContext,
+        self,
+        call: ToolCall,
+        context: ToolContext,
     ) -> ToolExecution:
         child = self._route.get(call.name)
         if child is None:
@@ -211,7 +218,9 @@ class ProxyToolRegistry(ToolRegistry):
         return await child.create_execution(call, context)
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         child = self._route.get(tool_execution.raw_tool_call.name)
         if child is None:
@@ -232,5 +241,7 @@ class ProxyToolRegistry(ToolRegistry):
         if child is None:
             raise ToolNotFound(f"Unknown tool: {name!r}.")
         return await child.execute(
-            tool_execution, context, cancellation_token=cancellation_token,
+            tool_execution,
+            context,
+            cancellation_token=cancellation_token,
         )

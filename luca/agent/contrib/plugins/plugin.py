@@ -27,7 +27,8 @@ from luca.agent.core.system_prompt import SystemPromptPartInput
 
 class BasePlugin:
     def get_tool_registry(
-        self, agent_session: AgentSession,
+        self,
+        agent_session: AgentSession,
     ) -> ToolRegistry | None:
         """The registry bundling this plugin's tools — added as a child of
         the runner's composed `ProxyToolRegistry`. A multi-registry plugin
@@ -35,7 +36,8 @@ class BasePlugin:
         return None
 
     def get_system_prompt_parts(
-        self, agent_session: AgentSession,
+        self,
+        agent_session: AgentSession,
     ) -> list[SystemPromptPartInput]:
         """Parts to append to `system_prompt_parts` — any form the runner
         constructor accepts (str / dict / `SystemPromptPart` / callable),

@@ -59,7 +59,8 @@ class ApprovalScreen(ModalScreen[PromptOption]):
             if prompt.resources:
                 yield Label(
                     "resources: " + ", ".join(prompt.resources),
-                    markup=False, id="approval-resources",
+                    markup=False,
+                    id="approval-resources",
                 )
             yield Label(prompt.preview, markup=False, id="approval-preview")
             with VerticalScroll(id="approval-options"):
@@ -123,7 +124,11 @@ class PickerScreen(ModalScreen[str | None]):
     """
 
     def __init__(
-        self, title: str, options: list[str], *, current: str | None = None,
+        self,
+        title: str,
+        options: list[str],
+        *,
+        current: str | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -131,24 +136,19 @@ class PickerScreen(ModalScreen[str | None]):
         self._current = current
 
     def compose(self) -> ComposeResult:
-        labels = [
-            f"{opt} (current)" if opt == self._current else opt
-            for opt in self._options
-        ]
+        labels = [f"{opt} (current)" if opt == self._current else opt for opt in self._options]
         with Container(id="picker-dialog"):
             yield Label(self._title, markup=False, id="picker-title")
             yield OptionList(*labels, id="picker-options")
 
     def on_mount(self) -> None:
         options = self.query_one("#picker-options", OptionList)
-        options.highlighted = (
-            self._options.index(self._current)
-            if self._current in self._options else 0
-        )
+        options.highlighted = self._options.index(self._current) if self._current in self._options else 0
         options.focus()
 
     def on_option_list_option_selected(
-        self, event: OptionList.OptionSelected,
+        self,
+        event: OptionList.OptionSelected,
     ) -> None:
         event.stop()
         self.dismiss(self._options[event.option_index])

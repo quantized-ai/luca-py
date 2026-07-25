@@ -13,8 +13,6 @@ guess, and the caller decides what to do with `is_known_model`.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...exceptions import UnsupportedParameterError
@@ -22,12 +20,19 @@ from ...types.reasoning import Reasoning
 
 # Fraction of a model's output budget spent on reasoning, per level.
 BUDGET_PERCENTAGES: dict[str, float] = {
-    "minimal": 0.02, "low": 0.1, "medium": 0.3, "high": 0.6, "xhigh": 0.9,
+    "minimal": 0.02,
+    "low": 0.1,
+    "medium": 0.3,
+    "high": 0.6,
+    "xhigh": 0.9,
 }
 # Adaptive models take a word. `xhigh` degrades to `max` where unsupported.
 ADAPTIVE_EFFORTS: dict[str, str] = {
-    "minimal": "low", "low": "low", "medium": "medium",
-    "high": "high", "xhigh": "xhigh",
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
 }
 MIN_THINKING_BUDGET = 1024
 MIN_COMPLETION_TOKENS = 1024
@@ -57,33 +62,41 @@ _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
     (
         ("claude-opus-4-8", "claude-opus-4-7", "claude-fable-5", "claude-sonnet-5"),
         ModelCapabilities(
-            max_output_tokens=128_000, supports_thinking=True,
-            supports_adaptive_thinking=True, supports_xhigh_effort=True,
-            rejects_sampling_parameters=True, is_known_model=True,
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            supports_xhigh_effort=True,
+            rejects_sampling_parameters=True,
+            is_known_model=True,
         ),
     ),
     (
         ("claude-sonnet-4-6", "claude-opus-4-6"),
         ModelCapabilities(
-            max_output_tokens=128_000, supports_thinking=True,
-            supports_adaptive_thinking=True, is_known_model=True,
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
         ("claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"),
         ModelCapabilities(
-            max_output_tokens=64_000, supports_thinking=True, is_known_model=True,
+            max_output_tokens=64_000,
+            supports_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
         ("claude-opus-4-1", "claude-opus-4-0", "claude-sonnet-4-0"),
         ModelCapabilities(
-            max_output_tokens=32_000, supports_thinking=True, is_known_model=True,
+            max_output_tokens=32_000,
+            supports_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
-        ("claude-3-5-sonnet", "claude-3-5-haiku", "claude-3-opus",
-         "claude-3-sonnet", "claude-3-haiku"),
+        ("claude-3-5-sonnet", "claude-3-5-haiku", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku"),
         ModelCapabilities(max_output_tokens=4_096, is_known_model=True),
     ),
 )
@@ -130,9 +143,7 @@ def resolve_reasoning(
     Returns `({}, max_tokens)` when no thinking should be requested at all, so
     a caller who never asked for reasoning keeps the plain wire shape."""
     resolved_max = max_tokens or (
-        capabilities.max_output_tokens
-        if capabilities.is_known_model
-        else UNKNOWN_MAX_OUTPUT_TOKENS
+        capabilities.max_output_tokens if capabilities.is_known_model else UNKNOWN_MAX_OUTPUT_TOKENS
     )
 
     if reasoning is None or reasoning == "provider-default":
@@ -153,7 +164,8 @@ def resolve_reasoning(
     budget = min(max(budget, MIN_THINKING_BUDGET), capabilities.max_output_tokens)
     if max_tokens is None:
         resolved_max = min(
-            budget + MIN_COMPLETION_TOKENS, capabilities.max_output_tokens,
+            budget + MIN_COMPLETION_TOKENS,
+            capabilities.max_output_tokens,
         )
     else:
         # The caller's cap is a billing contract: shrink the budget to fit
@@ -184,8 +196,11 @@ def check_sampling(
     while thinking is active. Refused rather than stripped — a silently
     dropped temperature changes the output with nothing to notice."""
     conflicting = [
-        name for name, value in (
-            ("temperature", temperature), ("top_p", top_p), ("top_k", top_k),
+        name
+        for name, value in (
+            ("temperature", temperature),
+            ("top_p", top_p),
+            ("top_k", top_k),
         )
         if value is not None
     ]
@@ -194,11 +209,9 @@ def check_sampling(
     names = ", ".join(conflicting)
     if capabilities.rejects_sampling_parameters:
         raise UnsupportedParameterError(
-            f"{names} cannot be set on {model!r}; the model does not accept "
-            "sampling controls.",
+            f"{names} cannot be set on {model!r}; the model does not accept sampling controls.",
         )
     if thinking.get("thinking", {}).get("type") not in (None, "disabled"):
         raise UnsupportedParameterError(
-            f"{names} cannot be set while extended thinking is active on "
-            f"{model!r}.",
+            f"{names} cannot be set while extended thinking is active on {model!r}.",
         )

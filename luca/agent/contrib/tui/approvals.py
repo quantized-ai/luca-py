@@ -24,8 +24,8 @@ from pydantic import BaseModel, ConfigDict
 from luca.agent.contrib.resource_permissions import (
     AnswerDecision,
     AnswerOption,
-    ApprovalAnswer,
     AnswerScope,
+    ApprovalAnswer,
     PermissionRequest,
     PermissionStrategy,
     ResourcePermission,
@@ -47,10 +47,7 @@ class PromptOption(BaseModel):
 
     @property
     def is_deny(self) -> bool:
-        return (
-            self.answer is not None
-            and self.answer.decision is AnswerDecision.DENY
-        )
+        return self.answer is not None and self.answer.decision is AnswerDecision.DENY
 
 
 class ApprovalPrompt(BaseModel):
@@ -88,25 +85,31 @@ def _build_options(request: PermissionRequest) -> list[PromptOption]:
         PromptOption(
             label="Approve once",
             answer=ApprovalAnswer(
-                answer_option=exact, decision=AnswerDecision.APPROVE,
+                answer_option=exact,
+                decision=AnswerDecision.APPROVE,
             ),
         ),
     ]
-    for option in request.answer_options:
-        options.append(PromptOption(
+    options.extend(
+        PromptOption(
             label=_option_label(option),
             answer=ApprovalAnswer(
                 answer_option=option,
                 decision=AnswerDecision.APPROVE,
                 scope=AnswerScope.ALWAYS,
             ),
-        ))
-    options.append(PromptOption(
-        label="Deny",
-        answer=ApprovalAnswer(
-            answer_option=exact, decision=AnswerDecision.DENY,
-        ),
-    ))
+        )
+        for option in request.answer_options
+    )
+    options.append(
+        PromptOption(
+            label="Deny",
+            answer=ApprovalAnswer(
+                answer_option=exact,
+                decision=AnswerDecision.DENY,
+            ),
+        )
+    )
     options.append(PromptOption(label=ABANDON_LABEL, answer=None))
     return options
 
@@ -119,20 +122,24 @@ def build_approval_prompts(
     name = execution.raw_tool_call.name
     requests = strategy.pending_requests(execution)
     if not requests:  # resourceless tool without the mixin (add/subtract/…)
-        requests = [PermissionRequest(
-            resources=[ResourcePermission(permission=name)],
-            metadata={"preview": f"Run {name}"},
-        )]
+        requests = [
+            PermissionRequest(
+                resources=[ResourcePermission(permission=name)],
+                metadata={"preview": f"Run {name}"},
+            )
+        ]
     prompts: list[ApprovalPrompt] = []
     for index, request in enumerate(requests):
         resources = [_pair_label(pair) for pair in request.resources]
         preview = request.metadata.get("preview") or ", ".join(resources)
-        prompts.append(ApprovalPrompt(
-            tool_name=name,
-            step=index + 1,
-            total_steps=len(requests),
-            resources=resources,
-            preview=preview,
-            options=_build_options(request),
-        ))
+        prompts.append(
+            ApprovalPrompt(
+                tool_name=name,
+                step=index + 1,
+                total_steps=len(requests),
+                resources=resources,
+                preview=preview,
+                options=_build_options(request),
+            )
+        )
     return prompts

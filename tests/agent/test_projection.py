@@ -9,6 +9,8 @@ Projection errors fail loudly (ProjectionError) — never silent omissions or
 synthetic fallbacks.
 """
 
+from typing import ClassVar
+
 import pytest
 
 from luca.agent.core.exceptions import ProjectionError
@@ -46,17 +48,17 @@ from luca.agent.core.projection import (
     tool_message_text,
 )
 from luca.client.types import (
+    AssistantMessage as LucaAssistantMessage,
+    ImageBlock as LucaImageBlock,
     MediaBase64,
     MediaFileId,
     MediaURL,
     TextBlock,
     ThinkingBlock,
+    ToolCall as LucaToolCall,
     ToolMessage,
+    UserMessage as LucaUserMessage,
 )
-from luca.client.types import AssistantMessage as LucaAssistantMessage
-from luca.client.types import ImageBlock as LucaImageBlock
-from luca.client.types import ToolCall as LucaToolCall
-from luca.client.types import UserMessage as LucaUserMessage
 
 PROJECTOR = ConversationProjector()
 
@@ -82,7 +84,8 @@ def test_turn_markers_are_dropped():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Hi")]),
         "ts": TurnStart(id="ts", created_at=1001),
         "a1": AssistantMessage(
-            id="a1", created_at=1002,
+            id="a1",
+            created_at=1002,
             parts=[TextContent(text="Hey there")],
             llm_config=MODEL,
             stop_reason="stop",
@@ -90,7 +93,10 @@ def test_turn_markers_are_dropped():
         "tf": TurnFinish(id="tf", created_at=1003),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "tf"], created_at=1000, updated_at=1003,
+        id="c1",
+        nodes=["u1", "ts", "a1", "tf"],
+        created_at=1000,
+        updated_at=1003,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -102,11 +108,14 @@ def test_turn_markers_are_dropped():
 def test_full_tool_call_turn():
     entries = {
         "u1": UserMessage(
-            id="u1", created_at=1000, parts=[TextContent(text="Add 1 and 2")],
+            id="u1",
+            created_at=1000,
+            parts=[TextContent(text="Add 1 and 2")],
         ),
         "ts": TurnStart(id="ts", created_at=1001),
         "a1": AssistantMessage(
-            id="a1", created_at=1002,
+            id="a1",
+            created_at=1002,
             parts=[
                 ThinkingContent(thinking="Use the add tool."),
                 ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -115,7 +124,8 @@ def test_full_tool_call_turn():
             stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", created_at=1003,
+            id="te1",
+            created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add"),
@@ -125,10 +135,12 @@ def test_full_tool_call_turn():
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1003),
             ],
-            started_at=1003, ended_at=1003,
+            started_at=1003,
+            ended_at=1003,
         ),
         "a2": AssistantMessage(
-            id="a2", created_at=1004,
+            id="a2",
+            created_at=1004,
             parts=[TextContent(text="The answer is 3.")],
             llm_config=MODEL,
             stop_reason="stop",
@@ -136,15 +148,20 @@ def test_full_tool_call_turn():
         "tf": TurnFinish(id="tf", created_at=1005),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1", "a2", "tf"], created_at=1000, updated_at=1005,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
+        created_at=1000,
+        updated_at=1005,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="Add 1 and 2")]),
-        LucaAssistantMessage(content=[
-            ThinkingBlock(text="Use the add tool."),
-            LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                ThinkingBlock(text="Use the add tool."),
+                LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            ]
+        ),
         ToolMessage(tool_call_id="tc1", content=[TextBlock(text="3")]),
         LucaAssistantMessage(content=[TextBlock(text="The answer is 3.")]),
     ]
@@ -153,13 +170,16 @@ def test_full_tool_call_turn():
 def test_compaction_renders_as_synthetic_user_message():
     entries = {
         "cmp": CompactionEntry(
-            id="cmp", created_at=2000,
+            id="cmp",
+            created_at=2000,
             source=CompactionSource.POLICY,
             parts=[TextContent(text="## Goal\nFix the failing test suite.")],
             compacted_nodes=["u1", "a1"],
         ),
         "u2": UserMessage(
-            id="u2", created_at=2001, parts=[TextContent(text="What next?")],
+            id="u2",
+            created_at=2001,
+            parts=[TextContent(text="What next?")],
         ),
     }
     conversation = Conversation(id="c1", nodes=["cmp", "u2"], created_at=2000, updated_at=2001)
@@ -173,7 +193,8 @@ def test_compaction_renders_as_synthetic_user_message():
 def test_a_summary_carrying_an_image_projects_both_blocks_in_order():
     entries = {
         "cmp": CompactionEntry(
-            id="cmp", created_at=2000,
+            id="cmp",
+            created_at=2000,
             source=CompactionSource.POLICY,
             parts=[
                 TextContent(text="Earlier: a screenshot of the failure."),
@@ -187,20 +208,26 @@ def test_a_summary_carrying_an_image_projects_both_blocks_in_order():
     conversation = Conversation(id="c1", nodes=["cmp"], created_at=2000, updated_at=2000)
 
     assert PROJECTOR.project(conversation, entries) == [
-        LucaUserMessage(content=[
-            TextBlock(text="Earlier: a screenshot of the failure."),
-            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
-        ]),
+        LucaUserMessage(
+            content=[
+                TextBlock(text="Earlier: a screenshot of the failure."),
+                LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            ]
+        ),
     ]
 
 
 def test_a_compaction_with_no_parts_projects_nothing():
     entries = {
         "cmp": CompactionEntry(
-            id="cmp", created_at=2000, source=CompactionSource.USER,
+            id="cmp",
+            created_at=2000,
+            source=CompactionSource.USER,
         ),
         "u2": UserMessage(
-            id="u2", created_at=2001, parts=[TextContent(text="What next?")],
+            id="u2",
+            created_at=2001,
+            parts=[TextContent(text="What next?")],
         ),
     }
     conversation = Conversation(id="c1", nodes=["cmp", "u2"], created_at=2000, updated_at=2001)
@@ -212,7 +239,10 @@ def test_a_compaction_with_no_parts_projects_nothing():
 
 def test_a_compaction_with_empty_parts_projects_nothing():
     entry = CompactionEntry(
-        id="cmp", created_at=2000, source=CompactionSource.USER, parts=[],
+        id="cmp",
+        created_at=2000,
+        source=CompactionSource.USER,
+        parts=[],
     )
 
     assert PROJECTOR.project_compaction(entry, {"cmp": entry}) is None
@@ -227,7 +257,8 @@ def test_a_subclass_can_replace_project_compaction():
 
     entries = {
         "cmp": CompactionEntry(
-            id="cmp", created_at=2000,
+            id="cmp",
+            created_at=2000,
             source=CompactionSource.POLICY,
             parts=[TextContent(text="everything so far")],
             compacted_nodes=["u1"],
@@ -251,18 +282,26 @@ def test_a_cancelled_compaction_bracket_projects_nothing_at_all():
         "u4": UserMessage(id="u4", created_at=2000, parts=[TextContent(text="what is X?")]),
         "ts_c": TurnStart(id="ts_c", parent_id="u4", created_at=2001),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=2002,
-            source=CompactionSource.POLICY, started_at=2002, ended_at=2003,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=2002,
+            source=CompactionSource.POLICY,
+            started_at=2002,
+            ended_at=2003,
         ),
         "cr": CancelRequested(id="cr", parent_id="cmp", created_at=2003),
         "tf_c": TurnFinish(
-            id="tf_c", parent_id="cr", created_at=2003,
+            id="tf_c",
+            parent_id="cr",
+            created_at=2003,
             outcome=TurnOutcome.CANCELLED,
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u4", "ts_c", "cmp", "cr", "tf_c"],
-        created_at=2000, updated_at=2003,
+        id="c1",
+        nodes=["u4", "ts_c", "cmp", "cr", "tf_c"],
+        created_at=2000,
+        updated_at=2003,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -277,16 +316,22 @@ def test_an_archived_conversation_projects_its_originals_and_no_summary():
         "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
         "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=2001),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=2002,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=2002,
             source=CompactionSource.POLICY,
             parts=[TextContent(text="the user said hello")],
             compacted_nodes=["u1"],
-            started_at=2002, ended_at=2002,
+            started_at=2002,
+            ended_at=2002,
         ),
         "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=2002),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts_c", "cmp", "tf_c"], created_at=2000, updated_at=2002,
+        id="c1",
+        nodes=["u1", "ts_c", "cmp", "tf_c"],
+        created_at=2000,
+        updated_at=2002,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -298,16 +343,22 @@ def test_the_new_conversation_projects_the_summary_as_a_user_message():
     # the same entry, one node later: on the path where the originals are gone
     entries = {
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=2002,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=2002,
             source=CompactionSource.POLICY,
             parts=[TextContent(text="the user said hello")],
             compacted_nodes=["u1"],
-            started_at=2002, ended_at=2002,
+            started_at=2002,
+            ended_at=2002,
         ),
         "u4": UserMessage(id="u4", created_at=2003, parts=[TextContent(text="and now?")]),
     }
     conversation = Conversation(
-        id="c2", nodes=["cmp", "u4"], created_at=2002, updated_at=2003,
+        id="c2",
+        nodes=["cmp", "u4"],
+        created_at=2002,
+        updated_at=2003,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -321,23 +372,36 @@ def test_two_stacked_closed_compaction_brackets_are_both_skipped():
         "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
         "ts_a": TurnStart(id="ts_a", parent_id="u1", created_at=2001),
         "cmp_a": CompactionEntry(
-            id="cmp_a", parent_id="ts_a", created_at=2002,
-            source=CompactionSource.POLICY, started_at=2002, ended_at=2002,
+            id="cmp_a",
+            parent_id="ts_a",
+            created_at=2002,
+            source=CompactionSource.POLICY,
+            started_at=2002,
+            ended_at=2002,
         ),
         "tf_a": TurnFinish(id="tf_a", parent_id="cmp_a", created_at=2002),
         "ts_b": TurnStart(id="ts_b", parent_id="tf_a", created_at=2003),
         "cmp_b": CompactionEntry(
-            id="cmp_b", parent_id="ts_b", created_at=2004,
-            source=CompactionSource.USER, started_at=2004, ended_at=2004,
+            id="cmp_b",
+            parent_id="ts_b",
+            created_at=2004,
+            source=CompactionSource.USER,
+            started_at=2004,
+            ended_at=2004,
         ),
         "tf_b": TurnFinish(
-            id="tf_b", parent_id="cmp_b", created_at=2004,
-            outcome=TurnOutcome.ERRORED, error="kaboom",
+            id="tf_b",
+            parent_id="cmp_b",
+            created_at=2004,
+            outcome=TurnOutcome.ERRORED,
+            error="kaboom",
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts_a", "cmp_a", "tf_a", "ts_b", "cmp_b", "tf_b"],
-        created_at=2000, updated_at=2004,
+        id="c1",
+        nodes=["u1", "ts_a", "cmp_a", "tf_a", "ts_b", "cmp_b", "tf_b"],
+        created_at=2000,
+        updated_at=2004,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -350,12 +414,17 @@ def test_an_open_compaction_bracket_is_skipped_to_the_end_of_the_path():
         "u1": UserMessage(id="u1", created_at=2000, parts=[TextContent(text="hello")]),
         "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=2001),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=2002,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=2002,
             source=CompactionSource.USER,
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts_c", "cmp"], created_at=2000, updated_at=2002,
+        id="c1",
+        nodes=["u1", "ts_c", "cmp"],
+        created_at=2000,
+        updated_at=2002,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -371,12 +440,17 @@ def test_a_conversational_cancelled_bracket_still_projects_the_marker():
         "ts": TurnStart(id="ts", parent_id="u1", created_at=2001),
         "cr": CancelRequested(id="cr", parent_id="ts", created_at=2002),
         "tf": TurnFinish(
-            id="tf", parent_id="cr", created_at=2002,
+            id="tf",
+            parent_id="cr",
+            created_at=2002,
             outcome=TurnOutcome.CANCELLED,
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "cr", "tf"], created_at=2000, updated_at=2002,
+        id="c1",
+        nodes=["u1", "ts", "cr", "tf"],
+        created_at=2000,
+        updated_at=2002,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -393,22 +467,29 @@ def test_cancelled_turn_finish_projects_as_interrupted_marker():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Go")]),
         "ts": TurnStart(id="ts", created_at=1001),
         "a1": AssistantMessage(
-            id="a1", created_at=1002,
+            id="a1",
+            created_at=1002,
             parts=[TextContent(text="Working on it…")],
             llm_config=MODEL,
             stop_reason="stop",
         ),
         "cr": CancelRequested(id="cr", created_at=1003),
         "tf": TurnFinish(
-            id="tf", created_at=1004,
+            id="tf",
+            created_at=1004,
             outcome=TurnOutcome.CANCELLED,
         ),
         "u2": UserMessage(
-            id="u2", created_at=1005, parts=[TextContent(text="Try again")],
+            id="u2",
+            created_at=1005,
+            parts=[TextContent(text="Try again")],
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "cr", "tf", "u2"], created_at=1000, updated_at=1005,
+        id="c1",
+        nodes=["u1", "ts", "a1", "cr", "tf", "u2"],
+        created_at=1000,
+        updated_at=1005,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -426,35 +507,45 @@ def test_failed_turn_finish_is_dropped_but_its_content_projects():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Add")]),
         "ts": TurnStart(id="ts", created_at=1001),
         "a1": AssistantMessage(
-            id="a1", created_at=1002,
+            id="a1",
+            created_at=1002,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
             llm_config=MODEL,
             stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", created_at=1003,
+            id="te1",
+            created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=1003, ended_at=1003,
+            started_at=1003,
+            ended_at=1003,
         ),
         "tf": TurnFinish(
-            id="tf", created_at=1004,
-            outcome=TurnOutcome.TIMED_OUT, error="client timeout",
+            id="tf",
+            created_at=1004,
+            outcome=TurnOutcome.TIMED_OUT,
+            error="client timeout",
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1", "tf"], created_at=1000, updated_at=1004,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "tf"],
+        created_at=1000,
+        updated_at=1004,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="Add")]),
-        LucaAssistantMessage(content=[
-            LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            ]
+        ),
         ToolMessage(tool_call_id="tc1", content=[TextBlock(text="3")]),
     ]
 
@@ -464,12 +555,17 @@ def test_errored_turn_finish_is_dropped():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Hi")]),
         "ts": TurnStart(id="ts", created_at=1001),
         "tf": TurnFinish(
-            id="tf", created_at=1002,
-            outcome=TurnOutcome.ERRORED, error="provider 500",
+            id="tf",
+            created_at=1002,
+            outcome=TurnOutcome.ERRORED,
+            error="provider 500",
         ),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "tf"], created_at=1000, updated_at=1002,
+        id="c1",
+        nodes=["u1", "ts", "tf"],
+        created_at=1000,
+        updated_at=1002,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
@@ -488,12 +584,13 @@ def test_missing_entry_id_fails_loudly():
 
 
 def _execution(**overrides) -> ToolExecution:
-    base = dict(
-        id="te1", created_at=1000,
-        tool_call_id="tc1",
-        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        tool_spec=ToolSpec(name="add"),
-    )
+    base = {
+        "id": "te1",
+        "created_at": 1000,
+        "tool_call_id": "tc1",
+        "raw_tool_call": ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        "tool_spec": ToolSpec(name="add"),
+    }
     return ToolExecution(**{**base, **overrides})
 
 
@@ -505,7 +602,8 @@ def test_completed_projects_result_content_and_preserves_is_error():
             metadata={"path": "/tmp/missing.txt"},
             is_error=True,
         ),
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
 
     # is_error=True is the TOOL's verdict; the execution is still COMPLETED
@@ -553,13 +651,15 @@ def test_invalid_projects_message_plus_validation_errors():
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
         tool_call_id="tc1",
-        content=[TextBlock(
-            text=(
-                "Arguments for tool 'add' are invalid.\n"
-                '[{"type": "missing", "loc": ["b"], "msg": "Field required", '
-                '"input": {"a": 1}}]'
-            ),
-        )],
+        content=[
+            TextBlock(
+                text=(
+                    "Arguments for tool 'add' are invalid.\n"
+                    '[{"type": "missing", "loc": ["b"], "msg": "Field required", '
+                    '"input": {"a": 1}}]'
+                ),
+            )
+        ],
         is_error=True,
     )
 
@@ -572,17 +672,17 @@ def test_failed_projects_error_type_and_message():
             error_message="Connection to api.example.com was closed.",
             details={"phase": "execution"},
         ),
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
         tool_call_id="tc1",
-        content=[TextBlock(
-            text=(
-                "Tool execution failed: ConnectionError: "
-                "Connection to api.example.com was closed."
-            ),
-        )],
+        content=[
+            TextBlock(
+                text=("Tool execution failed: ConnectionError: Connection to api.example.com was closed."),
+            )
+        ],
         is_error=True,
     )
 
@@ -590,19 +690,23 @@ def test_failed_projects_error_type_and_message():
 def test_status_only_terminals_project_their_placeholders():
     rejected = _execution(
         status=ExecutionStatus.REJECTED,
-        approval_status=ApprovalStatus.REJECTED, ended_at=1001,
+        approval_status=ApprovalStatus.REJECTED,
+        ended_at=1001,
     )
     cancelled = _execution(
         status=ExecutionStatus.CANCELLED,
-        cancel_signalled_at=1001, ended_at=1001,
+        cancel_signalled_at=1001,
+        ended_at=1001,
     )
     interrupted = _execution(
         status=ExecutionStatus.INTERRUPTED,
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
     timed_out = _execution(
         status=ExecutionStatus.TIMED_OUT,
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(rejected, {}) == ToolMessage(
@@ -653,7 +757,8 @@ def test_projection_preserves_tool_call_id_correlation():
         tool_call_id="toolu_0abc",
         raw_tool_call=ToolCall(id="toolu_0abc", name="add", arguments={}),
         status=ExecutionStatus.TIMED_OUT,
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}).tool_call_id == "toolu_0abc"
@@ -663,18 +768,19 @@ def test_projection_is_deterministic_for_the_same_execution():
     execution = _execution(
         status=ExecutionStatus.FAILED,
         error=ToolExecutionError(error_type="ValueError", error_message="kaboom"),
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
 
-    assert PROJECTOR.project_tool_execution(execution, {}) == \
-        PROJECTOR.project_tool_execution(execution, {})
+    assert PROJECTOR.project_tool_execution(execution, {}) == PROJECTOR.project_tool_execution(execution, {})
 
 
 def test_projection_does_not_mutate_the_execution():
     execution = _execution(
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
     snapshot = execution.model_copy(deep=True)
 
@@ -688,14 +794,15 @@ def test_projection_does_not_mutate_the_execution():
 
 def test_subclass_can_change_status_only_wording_via_class_attribute():
     class TersePlacebo(ConversationProjector):
-        STATUS_ONLY_OUTPUTS = {
+        STATUS_ONLY_OUTPUTS: ClassVar[dict[ExecutionStatus, str]] = {
             **ConversationProjector.STATUS_ONLY_OUTPUTS,
             ExecutionStatus.REJECTED: "The user declined this tool call.",
         }
 
     execution = _execution(
         status=ExecutionStatus.REJECTED,
-        approval_status=ApprovalStatus.REJECTED, ended_at=1001,
+        approval_status=ApprovalStatus.REJECTED,
+        ended_at=1001,
     )
 
     assert TersePlacebo().project_tool_execution(execution, {}) == ToolMessage(
@@ -717,13 +824,15 @@ def test_subclass_can_replace_project_tool_execution_wholesale():
     execution = _execution(
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="secret")]),
-        started_at=1000, ended_at=1001,
+        started_at=1000,
+        ended_at=1001,
     )
     conversation = Conversation(id="c1", nodes=["te1"], created_at=1000, updated_at=1000)
 
     assert Redacting().project(conversation, {"te1": execution}) == [
         ToolMessage(
-            tool_call_id="tc1", content=[TextBlock(text="[redacted]")],
+            tool_call_id="tc1",
+            content=[TextBlock(text="[redacted]")],
             is_error=False,
         ),
     ]
@@ -734,7 +843,9 @@ def test_subclass_can_change_the_cancelled_turn_marker():
         CANCELLED_TURN_MARKER = "[Solicitud interrumpida por el usuario]"
 
     finish = TurnFinish(
-        id="tf", created_at=1000, outcome=TurnOutcome.CANCELLED,
+        id="tf",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
     )
 
     assert Localized().project_turn_finish(finish, {}) == LucaUserMessage(
@@ -753,29 +864,34 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Add")]),
         "ts": TurnStart(id="ts", created_at=1001),
         "a1": AssistantMessage(
-            id="a1", created_at=1002,
+            id="a1",
+            created_at=1002,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
             llm_config=MODEL,
             stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", created_at=1003,
+            id="te1",
+            created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=1003, ended_at=1003,
+            started_at=1003,
+            ended_at=1003,
         ),
         "p1": PrunedEntry(
-            id="p1", created_at=2000,
+            id="p1",
+            created_at=2000,
             pruned_entry_type="tool_execution",
             pruned_entry_id="te1",
             content=[TextContent(text="[tool output has been pruned to reduce context]")],
         ),
         "a2": AssistantMessage(
-            id="a2", created_at=1004,
+            id="a2",
+            created_at=1004,
             parts=[TextContent(text="The answer is 3.")],
             llm_config=MODEL,
             stop_reason="stop",
@@ -783,15 +899,19 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
         "tf": TurnFinish(id="tf", created_at=1005),
     }
     conversation = Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "p1", "a2", "tf"],  # p1 replaced te1
-        created_at=1000, updated_at=2000,
+        id="c1",
+        nodes=["u1", "ts", "a1", "p1", "a2", "tf"],  # p1 replaced te1
+        created_at=1000,
+        updated_at=2000,
     )
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="Add")]),
-        LucaAssistantMessage(content=[
-            LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            ]
+        ),
         ToolMessage(
             tool_call_id="tc1",
             content=[TextBlock(text="[tool output has been pruned to reduce context]")],
@@ -804,11 +924,14 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
 def test_pruned_user_message_projects_with_the_user_role():
     entries = {
         "u1": UserMessage(
-            id="u1", created_at=1000, parts=[TextContent(text="a very long prompt")],
+            id="u1",
+            created_at=1000,
+            parts=[TextContent(text="a very long prompt")],
         ),
     }
     pruned = PrunedEntry(
-        id="p1", created_at=2000,
+        id="p1",
+        created_at=2000,
         pruned_entry_type="user",
         pruned_entry_id="u1",
         content=[TextContent(text="[pruned]")],
@@ -822,13 +945,16 @@ def test_pruned_user_message_projects_with_the_user_role():
 def test_pruned_assistant_message_projects_with_the_assistant_role():
     entries = {
         "a1": AssistantMessage(
-            id="a1", created_at=1000,
+            id="a1",
+            created_at=1000,
             parts=[TextContent(text="a very long answer")],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
     }
     pruned = PrunedEntry(
-        id="p1", created_at=2000,
+        id="p1",
+        created_at=2000,
         pruned_entry_type="assistant",
         pruned_entry_id="a1",
         content=[TextContent(text="[pruned]")],
@@ -841,7 +967,8 @@ def test_pruned_assistant_message_projects_with_the_assistant_role():
 
 def test_pruned_entry_with_a_missing_referent_fails_loudly():
     pruned = PrunedEntry(
-        id="p1", created_at=2000,
+        id="p1",
+        created_at=2000,
         pruned_entry_type="tool_execution",
         pruned_entry_id="ghost",
         content=[TextContent(text="[pruned]")],
@@ -856,7 +983,8 @@ def test_pruned_entry_with_a_mismatched_type_fails_loudly():
         "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="hi")]),
     }
     pruned = PrunedEntry(
-        id="p1", created_at=2000,
+        id="p1",
+        created_at=2000,
         pruned_entry_type="tool_execution",  # the referent is 'user'
         pruned_entry_id="u1",
         content=[TextContent(text="[pruned]")],
@@ -869,7 +997,8 @@ def test_pruned_entry_with_a_mismatched_type_fails_loudly():
 def test_pruned_entry_with_an_unprojectable_source_fails_loudly():
     entries = {"ts": TurnStart(id="ts", created_at=1000)}
     pruned = PrunedEntry(
-        id="p1", created_at=2000,
+        id="p1",
+        created_at=2000,
         pruned_entry_type="turn_start",
         pruned_entry_id="ts",
         content=[TextContent(text="[pruned]")],
@@ -883,18 +1012,24 @@ def test_pruned_entry_with_an_unprojectable_source_fails_loudly():
 
 
 def test_tool_message_text_uses_string_content_directly():
-    assert tool_message_text(
-        ToolMessage(tool_call_id="tc1", content="plain output"),
-    ) == "plain output"
+    assert (
+        tool_message_text(
+            ToolMessage(tool_call_id="tc1", content="plain output"),
+        )
+        == "plain output"
+    )
 
 
 def test_tool_message_text_concatenates_text_blocks_in_order():
-    assert tool_message_text(
-        ToolMessage(
-            tool_call_id="tc1",
-            content=[TextBlock(text="first "), TextBlock(text="second")],
-        ),
-    ) == "first second"
+    assert (
+        tool_message_text(
+            ToolMessage(
+                tool_call_id="tc1",
+                content=[TextBlock(text="first "), TextBlock(text="second")],
+            ),
+        )
+        == "first second"
+    )
 
 
 # ── image parts ────────────────────────────────────────────────────────────────
@@ -903,7 +1038,8 @@ def test_tool_message_text_concatenates_text_blocks_in_order():
 def test_user_message_projects_image_and_text_parts_in_order():
     entries = {
         "u1": UserMessage(
-            id="u1", created_at=1,
+            id="u1",
+            created_at=1,
             parts=[
                 ImageContent(
                     source=ImageBase64(data="aGk=", media_type="image/png"),
@@ -965,7 +1101,8 @@ def test_subclass_can_rewrite_image_media_only():
 
     entries = {
         "u1": UserMessage(
-            id="u1", created_at=1,
+            id="u1",
+            created_at=1,
             parts=[
                 ImageContent(
                     source=ImageBase64(data="aGk=", media_type="image/png"),
@@ -992,18 +1129,22 @@ def test_subclass_can_rewrite_image_media_only():
 def test_completed_execution_projects_image_result_content():
     entries = {
         "te1": ToolExecution(
-            id="te1", created_at=1,
+            id="te1",
+            created_at=1,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
             status=ExecutionStatus.COMPLETED,
-            result=ExecutionResult(content=[
-                ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
-                    metadata={"name": "shot.png"},
-                ),
-                TextContent(text="shot.png"),
-            ]),
-            started_at=1, ended_at=1,
+            result=ExecutionResult(
+                content=[
+                    ImageContent(
+                        source=ImageBase64(data="aGk=", media_type="image/png"),
+                        metadata={"name": "shot.png"},
+                    ),
+                    TextContent(text="shot.png"),
+                ]
+            ),
+            started_at=1,
+            ended_at=1,
         ),
     }
 
@@ -1031,15 +1172,18 @@ def test_tool_message_text_marks_an_image_rather_than_dropping_it():
 def test_pruned_entry_can_carry_an_image_replacement():
     entries = {
         "te1": ToolExecution(
-            id="te1", created_at=1,
+            id="te1",
+            created_at=1,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="original")]),
-            started_at=1, ended_at=1,
+            started_at=1,
+            ended_at=1,
         ),
         "p1": PrunedEntry(
-            id="p1", created_at=2,
+            id="p1",
+            created_at=2,
             pruned_entry_type="tool_execution",
             pruned_entry_id="te1",
             content=[
@@ -1063,36 +1207,44 @@ def test_assistant_thinking_projects_with_its_signature():
     # the signature is what lets a provider accept a replayed thinking block
     entries = {
         "a1": AssistantMessage(
-            id="a1", created_at=1,
+            id="a1",
+            created_at=1,
             parts=[
                 ThinkingContent(thinking="reasoning", signature="sig-abc"),
                 TextContent(text="the answer"),
             ],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
     }
     conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
 
     assert PROJECTOR.project(conversation, entries) == [
-        LucaAssistantMessage(content=[
-            ThinkingBlock(text="reasoning", signature="sig-abc"),
-            TextBlock(text="the answer"),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                ThinkingBlock(text="reasoning", signature="sig-abc"),
+                TextBlock(text="the answer"),
+            ]
+        ),
     ]
 
 
 def test_a_redacted_thinking_part_projects_as_redacted():
     entries = {
         "a1": AssistantMessage(
-            id="a1", created_at=1,
+            id="a1",
+            created_at=1,
             parts=[ThinkingContent(thinking="", signature="enc", redacted=True)],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
     }
     conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
 
     assert PROJECTOR.project(conversation, entries) == [
-        LucaAssistantMessage(content=[
-            ThinkingBlock(text="", signature="enc", redacted=True),
-        ]),
+        LucaAssistantMessage(
+            content=[
+                ThinkingBlock(text="", signature="enc", redacted=True),
+            ]
+        ),
     ]

@@ -25,10 +25,7 @@ from collections.abc import Callable
 from .models import SessionConfig, SessionRuntimeStatus, SystemPromptPart
 
 SystemPromptPartLike = SystemPromptPart | str | dict
-SystemPromptPartInput = (
-    SystemPromptPartLike
-    | Callable[[SessionConfig, SessionRuntimeStatus], SystemPromptPartLike]
-)
+SystemPromptPartInput = SystemPromptPartLike | Callable[[SessionConfig, SessionRuntimeStatus], SystemPromptPartLike]
 
 
 def coerce_system_prompt_part(value: SystemPromptPartLike) -> SystemPromptPart:
@@ -41,10 +38,7 @@ def coerce_system_prompt_part(value: SystemPromptPartLike) -> SystemPromptPart:
         return SystemPromptPart(text=value)
     if isinstance(value, dict):
         return SystemPromptPart.model_validate(value)
-    raise TypeError(
-        "system prompt part must be a SystemPromptPart, str, or dict "
-        f"(got {type(value).__name__})"
-    )
+    raise TypeError(f"system prompt part must be a SystemPromptPart, str, or dict (got {type(value).__name__})")
 
 
 class SystemPromptAssembler:

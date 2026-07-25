@@ -33,7 +33,6 @@ from luca.client.testing import (
     faux_tool_call,
 )
 
-
 # ── demo math tools ────────────────────────────────────────────────────────────
 # Resourceless tools without the permission mixin: the approval layer
 # synthesizes a plain "run <name>" request for them, exercising the
@@ -51,8 +50,11 @@ class AddTool(Tool):
     Args = BinaryOp
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
 
@@ -63,8 +65,11 @@ class SubtractTool(Tool):
     Args = BinaryOp
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] - args["b"])
 
@@ -75,8 +80,11 @@ class MultiplyTool(Tool):
     Args = BinaryOp
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
 
@@ -90,7 +98,8 @@ SYSTEM_PROMPT = (
 
 def default_model() -> LLMConfig:
     return LLMConfig(
-        model="openai/gpt-5.4-mini", provider="openrouter",
+        model="openai/gpt-5.4-mini",
+        provider="openrouter",
         reasoning="medium",
     )
 
@@ -162,20 +171,22 @@ def build_faux_provider() -> FauxProvider:
     gated `multiply` call, then the wrap-up. A second user message exhausts
     the script (the faux raises), which the app surfaces as a turn error."""
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [
-                faux_thinking(
-                    "The user wants arithmetic — I should multiply.",
-                    signature="faux-signature",
-                ),
-                faux_tool_call("multiply", {"a": 6, "b": 7}, id="tc_faux_1"),
-            ],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message(
-            [faux_text("The product is 42 (via the multiply tool).")],
-            finish_reason="stop",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_thinking(
+                        "The user wants arithmetic — I should multiply.",
+                        signature="faux-signature",
+                    ),
+                    faux_tool_call("multiply", {"a": 6, "b": 7}, id="tc_faux_1"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_text("The product is 42 (via the multiply tool).")],
+                finish_reason="stop",
+            ),
+        ]
+    )
     return faux

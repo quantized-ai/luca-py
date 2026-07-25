@@ -117,12 +117,17 @@ class FakeToolRegistry(ToolRegistry):
         return list(self.tools)
 
     async def create_execution(
-        self, call: ToolCall, context: ToolContext,
+        self,
+        call: ToolCall,
+        context: ToolContext,
     ) -> ToolExecution:
         def draft(status, tool_spec=None, error=None, extras=None):
             return ToolExecution(
-                tool_call_id=call.id, raw_tool_call=call,
-                tool_spec=tool_spec, status=status, error=error,
+                tool_call_id=call.id,
+                raw_tool_call=call,
+                tool_spec=tool_spec,
+                status=status,
+                error=error,
                 extras=extras or {},
             )
 
@@ -144,9 +149,7 @@ class FakeToolRegistry(ToolRegistry):
                 tool_spec=tool_spec,
                 error=ToolExecutionError(
                     error_type="InvalidToolArguments",
-                    error_message=(
-                        f"Arguments for tool {call.name!r} are invalid."
-                    ),
+                    error_message=(f"Arguments for tool {call.name!r} are invalid."),
                     details={
                         "errors": json.loads(exc.json(include_url=False)),
                     },
@@ -156,7 +159,8 @@ class FakeToolRegistry(ToolRegistry):
         if hasattr(tool, "get_approval_context"):
             try:
                 extras["approval_context"] = await tool.get_approval_context(
-                    args.model_dump(), context,
+                    args.model_dump(),
+                    context,
                 )
             except Exception as exc:
                 return draft(
@@ -169,16 +173,21 @@ class FakeToolRegistry(ToolRegistry):
                     ),
                 )
         return draft(
-            ExecutionStatus.PENDING, tool_spec=tool_spec, extras=extras,
+            ExecutionStatus.PENDING,
+            tool_spec=tool_spec,
+            extras=extras,
         )
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         self.seen.append(tool_execution)
         if self.decisions is None:
             return ApprovalDecision(
-                decision=ApprovalOption.ALLOW, created_at=self.now,
+                decision=ApprovalOption.ALLOW,
+                created_at=self.now,
             )
         return self.decisions.pop(0)
 
@@ -203,7 +212,9 @@ class FakeToolRegistry(ToolRegistry):
                 errors=json.loads(exc.json(include_url=False)),
             ) from exc
         return await tool.execute(
-            args.model_dump(), context, cancellation_token=cancellation_token,
+            args.model_dump(),
+            context,
+            cancellation_token=cancellation_token,
         )
 
 
@@ -291,8 +302,10 @@ class DeterministicRunner(AgentSessionRunner):
         self._ids = iter(ids)
         self._now = now
         super().__init__(
-            session, tool_registry,
-            system_prompt_parts, system_prompt_assembler,
+            session,
+            tool_registry,
+            system_prompt_parts,
+            system_prompt_assembler,
             provider=provider,
             conversation_projector=conversation_projector,
             context_manager=context_manager,
@@ -327,8 +340,11 @@ class AddTool(Tool):
     Args = BinaryArgs
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
 
@@ -339,8 +355,11 @@ class MultiplyTool(Tool):
     Args = BinaryArgs
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
 
@@ -355,8 +374,11 @@ class CapturingTool(Tool):
         self.tokens: list[CancellationToken] = []
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.seen.append(context)
         self.tokens.append(cancellation_token)
@@ -382,8 +404,11 @@ class ReadFileTool(Tool):
         }
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return f"contents of {args['path']}"
 
@@ -394,8 +419,11 @@ class RaisingTool(Tool):
     Args = BinaryArgs
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         raise ValueError("kaboom")
 
@@ -408,8 +436,11 @@ class RichErrorTool(Tool):
     Args = BinaryArgs
 
     async def execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         return ExecutionResult(
             content=[TextContent(text="disk full")],
@@ -427,16 +458,23 @@ GATED_SESSION = AgentSession(
     id="s_gated",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="Add 1 and 2")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=500,
+            id="a1",
+            parent_id="ts",
+            created_at=500,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=500,
+            id="te1",
+            parent_id="a1",
+            created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add", description="Add two numbers."),
@@ -451,7 +489,10 @@ GATED_SESSION = AgentSession(
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1"], created_at=500, updated_at=500,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1"],
+        created_at=500,
+        updated_at=500,
         status=ConversationStatus.AWAITING_APPROVAL,
     ),
     session_config=SessionConfig(llm_config=MODEL),
@@ -465,16 +506,23 @@ CLEARED_SESSION = AgentSession(
     id="s_cleared",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="Add 1 and 2")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=500,
+            id="a1",
+            parent_id="ts",
+            created_at=500,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=500,
+            id="te1",
+            parent_id="a1",
+            created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add", description="Add two numbers."),
@@ -490,7 +538,10 @@ CLEARED_SESSION = AgentSession(
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1"], created_at=500, updated_at=600,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1"],
+        created_at=500,
+        updated_at=600,
         status=ConversationStatus.PENDING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
@@ -518,7 +569,9 @@ STALE_RUNNING_SESSION.active_conversation.status = ConversationStatus.RUNNING
 # FLUSH: wind down the executions, close the turn CANCELLED — no LLM call.
 CANCEL_PARKED_SESSION = GATED_SESSION.model_copy(deep=True, update={"id": "s_parked"})
 CANCEL_PARKED_SESSION.entries["cr"] = CancelRequested(
-    id="cr", parent_id="te1", created_at=600,
+    id="cr",
+    parent_id="te1",
+    created_at=600,
 )
 CANCEL_PARKED_SESSION.active_conversation.nodes.append("cr")
 CANCEL_PARKED_SESSION.active_conversation.updated_at = 600
@@ -532,17 +585,24 @@ POST_FAILURE_SESSION = AgentSession(
     id="s_failed",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="Add 1 and 2")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
         "tf": TurnFinish(
-            id="tf", parent_id="ts", created_at=500,
+            id="tf",
+            parent_id="ts",
+            created_at=500,
             outcome=TurnOutcome.TIMED_OUT,
             error="completion exceeded total_timeout=0.05s",
         ),
     },
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "tf"], created_at=500, updated_at=500,
+        id="c1",
+        nodes=["u1", "ts", "tf"],
+        created_at=500,
+        updated_at=500,
         status=ConversationStatus.PENDING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
@@ -557,16 +617,23 @@ RUNNING_ORPHAN_SESSION = AgentSession(
     id="s_orphan",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="Add 1 and 2")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=500,
+            id="a1",
+            parent_id="ts",
+            created_at=500,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=500,
+            id="te1",
+            parent_id="a1",
+            created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add", description="Add two numbers."),
@@ -582,7 +649,10 @@ RUNNING_ORPHAN_SESSION = AgentSession(
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1"], created_at=500, updated_at=500,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1"],
+        created_at=500,
+        updated_at=500,
         status=ConversationStatus.RUNNING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
@@ -605,19 +675,27 @@ RICH_SESSION = AgentSession(
     entries={
         # on c0 only — replaced by cmp0, still in the store
         "u0": UserMessage(
-            id="u0", created_at=400, parts=[TextContent(text="Where do I sit?")],
+            id="u0",
+            created_at=400,
+            parts=[TextContent(text="Where do I sit?")],
         ),
         "a0": AssistantMessage(
-            id="a0", parent_id="u0", created_at=400,
+            id="a0",
+            parent_id="u0",
+            created_at=400,
             parts=[TextContent(text="Row 4.")],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         # the pruned referent: in the store, on no path
         "te0": ToolExecution(
-            id="te0", created_at=400,
+            id="te0",
+            created_at=400,
             tool_call_id="tc0",
             raw_tool_call=ToolCall(
-                id="tc0", name="read_file", arguments={"path": "/etc/motd"},
+                id="tc0",
+                name="read_file",
+                arguments={"path": "/etc/motd"},
             ),
             tool_spec=ToolSpec(name="read_file", description="Read a file."),
             status=ExecutionStatus.COMPLETED,
@@ -626,22 +704,28 @@ RICH_SESSION = AgentSession(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=400),
             ],
-            started_at=400, ended_at=400, updated_at=400,
+            started_at=400,
+            ended_at=400,
+            updated_at=400,
         ),
         "cmp0": CompactionEntry(
-            id="cmp0", created_at=500,
+            id="cmp0",
+            created_at=500,
             source=CompactionSource.POLICY,
             parts=[
                 TextContent(text="Earlier: the user asked where to sit."),
             ],
             compacted_nodes=["u0", "a0"],
             llm_config=CHEAP,
-            started_at=500, ended_at=500,
+            started_at=500,
+            ended_at=500,
             metadata={"strategy": "turn-brackets"},
             context_tokens=9,
         ),
         "u1": UserMessage(
-            id="u1", parent_id="cmp0", created_at=500,
+            id="u1",
+            parent_id="cmp0",
+            created_at=500,
             parts=[
                 TextContent(text="Add 1 and 2, and look at this"),
                 ImageContent(
@@ -651,19 +735,26 @@ RICH_SESSION = AgentSession(
         ),
         "ts1": TurnStart(id="ts1", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts1", created_at=500,
+            id="a1",
+            parent_id="ts1",
+            created_at=500,
             parts=[
                 ThinkingContent(thinking="Both tools.", signature="sig-1"),
                 TextContent(text="On it."),
                 ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 ToolCall(
-                    id="tc2", name="read_file", arguments={"path": "/etc/hosts"},
+                    id="tc2",
+                    name="read_file",
+                    arguments={"path": "/etc/hosts"},
                 ),
             ],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=500,
+            id="te1",
+            parent_id="a1",
+            created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add", description="Add two numbers."),
@@ -673,13 +764,19 @@ RICH_SESSION = AgentSession(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500, ended_at=500, updated_at=500,
+            started_at=500,
+            ended_at=500,
+            updated_at=500,
         ),
         "te2": ToolExecution(
-            id="te2", parent_id="te1", created_at=500,
+            id="te2",
+            parent_id="te1",
+            created_at=500,
             tool_call_id="tc2",
             raw_tool_call=ToolCall(
-                id="tc2", name="read_file", arguments={"path": "/etc/hosts"},
+                id="tc2",
+                name="read_file",
+                arguments={"path": "/etc/hosts"},
             ),
             tool_spec=ToolSpec(name="read_file", description="Read a file."),
             status=ExecutionStatus.FAILED,
@@ -692,47 +789,68 @@ RICH_SESSION = AgentSession(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500, ended_at=500, updated_at=500,
+            started_at=500,
+            ended_at=500,
+            updated_at=500,
         ),
         "pr1": PrunedEntry(
-            id="pr1", parent_id="te2", created_at=500,
+            id="pr1",
+            parent_id="te2",
+            created_at=500,
             pruned_entry_type="tool_execution",
             pruned_entry_id="te0",
             content=[TextContent(text="[tool output has been pruned]")],
             context_tokens=7,
         ),
         "a2": AssistantMessage(
-            id="a2", parent_id="pr1", created_at=500,
+            id="a2",
+            parent_id="pr1",
+            created_at=500,
             parts=[TextContent(text="1 + 2 = 3.")],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "tf1": TurnFinish(id="tf1", parent_id="a2", created_at=500),
         "u2": UserMessage(
-            id="u2", parent_id="tf1", created_at=500,
+            id="u2",
+            parent_id="tf1",
+            created_at=500,
             parts=[TextContent(text="And 2 + 2?")],
         ),
         "ts2": TurnStart(id="ts2", parent_id="u2", created_at=500),
         "tf2": TurnFinish(
-            id="tf2", parent_id="ts2", created_at=500,
-            outcome=TurnOutcome.ERRORED, error="provider error",
+            id="tf2",
+            parent_id="ts2",
+            created_at=500,
+            outcome=TurnOutcome.ERRORED,
+            error="provider error",
         ),
         "u3": UserMessage(
-            id="u3", parent_id="tf2", created_at=500,
+            id="u3",
+            parent_id="tf2",
+            created_at=500,
             parts=[TextContent(text="Never mind — multiply 3 by 4.")],
         ),
         "ts3": TurnStart(id="ts3", parent_id="u3", created_at=500),
         "a3": AssistantMessage(
-            id="a3", parent_id="ts3", created_at=500,
+            id="a3",
+            parent_id="ts3",
+            created_at=500,
             parts=[
                 ToolCall(id="tc3", name="multiply", arguments={"a": 3, "b": 4}),
             ],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te3": ToolExecution(
-            id="te3", parent_id="a3", created_at=500,
+            id="te3",
+            parent_id="a3",
+            created_at=500,
             tool_call_id="tc3",
             raw_tool_call=ToolCall(
-                id="tc3", name="multiply", arguments={"a": 3, "b": 4},
+                id="tc3",
+                name="multiply",
+                arguments={"a": 3, "b": 4},
             ),
             tool_spec=ToolSpec(name="multiply", description="Multiply."),
             status=ExecutionStatus.REJECTED,
@@ -740,60 +858,103 @@ RICH_SESSION = AgentSession(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.DENY, created_at=500),
             ],
-            ended_at=500, updated_at=500,
+            ended_at=500,
+            updated_at=500,
         ),
         "cr1": CancelRequested(id="cr1", parent_id="te3", created_at=500),
         "tf3": TurnFinish(
-            id="tf3", parent_id="cr1", created_at=500,
+            id="tf3",
+            parent_id="cr1",
+            created_at=500,
             outcome=TurnOutcome.CANCELLED,
         ),
         "u4": UserMessage(
-            id="u4", parent_id="tf3", created_at=500,
+            id="u4",
+            parent_id="tf3",
+            created_at=500,
             parts=[TextContent(text="What is X?")],
         ),
     },
     tool_executions={
-        "tc0": ["te0"], "tc1": ["te1"], "tc2": ["te2"], "tc3": ["te3"],
+        "tc0": ["te0"],
+        "tc1": ["te1"],
+        "tc2": ["te2"],
+        "tc3": ["te3"],
     },
     usages={
         "c0": {
             "a0": Usage(
-                conversation_id="c0", entry_id="a0",
-                input=10, output=5, total_tokens=15,
+                conversation_id="c0",
+                entry_id="a0",
+                input=10,
+                output=5,
+                total_tokens=15,
             ),
             "cmp0": Usage(
-                conversation_id="c0", entry_id="cmp0",
-                input=20, output=8, total_tokens=28,
+                conversation_id="c0",
+                entry_id="cmp0",
+                input=20,
+                output=8,
+                total_tokens=28,
             ),
         },
         "c1": {
             "a1": Usage(
-                conversation_id="c1", entry_id="a1",
-                input=40, output=12, total_tokens=52,
+                conversation_id="c1",
+                entry_id="a1",
+                input=40,
+                output=12,
+                total_tokens=52,
             ),
             "a2": Usage(
-                conversation_id="c1", entry_id="a2",
-                input=60, output=6, total_tokens=66,
+                conversation_id="c1",
+                entry_id="a2",
+                input=60,
+                output=6,
+                total_tokens=66,
             ),
             "a3": Usage(
-                conversation_id="c1", entry_id="a3",
-                input=80, output=9, total_tokens=89,
+                conversation_id="c1",
+                entry_id="a3",
+                input=80,
+                output=9,
+                total_tokens=89,
             ),
         },
     },
     active_conversation=Conversation(
         id="c1",
         nodes=[
-            "cmp0", "u1", "ts1", "a1", "te1", "te2", "pr1", "a2", "tf1",
-            "u2", "ts2", "tf2",
-            "u3", "ts3", "a3", "te3", "cr1", "tf3",
+            "cmp0",
+            "u1",
+            "ts1",
+            "a1",
+            "te1",
+            "te2",
+            "pr1",
+            "a2",
+            "tf1",
+            "u2",
+            "ts2",
+            "tf2",
+            "u3",
+            "ts3",
+            "a3",
+            "te3",
+            "cr1",
+            "tf3",
             "u4",
         ],
-        created_at=500, updated_at=500, status=ConversationStatus.PENDING,
+        created_at=500,
+        updated_at=500,
+        status=ConversationStatus.PENDING,
     ),
     conversation_history=[
         Conversation(
-            id="c0", nodes=["u0", "a0"], created_at=400, updated_at=400,
+            id="c0",
+            nodes=["u0", "a0"],
+            created_at=400,
+            updated_at=400,
             status=ConversationStatus.IDLE,
         ),
     ],
@@ -811,13 +972,19 @@ RICH_IDLE_SESSION.active_conversation.status = ConversationStatus.IDLE
 # durable, nothing has started. Derived status: PENDING — an open bracket
 # already means "work is queued, call run()".
 COMPACTION_SCHEDULED_SESSION = RICH_SESSION.model_copy(
-    deep=True, update={"id": "s_scheduled"},
+    deep=True,
+    update={"id": "s_scheduled"},
 )
 COMPACTION_SCHEDULED_SESSION.entries["ts_c"] = TurnStart(
-    id="ts_c", parent_id="u4", created_at=600,
+    id="ts_c",
+    parent_id="u4",
+    created_at=600,
 )
 COMPACTION_SCHEDULED_SESSION.entries["cmp"] = CompactionEntry(
-    id="cmp", parent_id="ts_c", created_at=600, source=CompactionSource.USER,
+    id="cmp",
+    parent_id="ts_c",
+    created_at=600,
+    source=CompactionSource.USER,
 )
 COMPACTION_SCHEDULED_SESSION.active_conversation.nodes += ["ts_c", "cmp"]
 COMPACTION_SCHEDULED_SESSION.active_conversation.updated_at = 600
@@ -826,48 +993,56 @@ COMPACTION_SCHEDULED_SESSION.active_conversation.updated_at = 600
 # persisted status is a stale RUNNING that construction self-heals. The next
 # drive resumes THIS entry — no second bracket.
 COMPACTION_INTERRUPTED_SESSION = COMPACTION_SCHEDULED_SESSION.model_copy(
-    deep=True, update={"id": "s_interrupted"},
+    deep=True,
+    update={"id": "s_interrupted"},
 )
-COMPACTION_INTERRUPTED_SESSION.entries["cmp"] = (
-    COMPACTION_INTERRUPTED_SESSION.entries["cmp"].model_copy(
-        update={"started_at": 600},
-    )
+COMPACTION_INTERRUPTED_SESSION.entries["cmp"] = COMPACTION_INTERRUPTED_SESSION.entries["cmp"].model_copy(
+    update={"started_at": 600},
 )
-COMPACTION_INTERRUPTED_SESSION.active_conversation.status = (
-    ConversationStatus.RUNNING
-)
+COMPACTION_INTERRUPTED_SESSION.active_conversation.status = ConversationStatus.RUNNING
 
 # The user cancelled a scheduled compaction and the process stopped before any
 # drive consumed it. The next run() is the FLUSH: close the bracket, no policy
 # call. Derived status: CANCELLING.
 COMPACTION_CANCEL_PARKED_SESSION = COMPACTION_SCHEDULED_SESSION.model_copy(
-    deep=True, update={"id": "s_compaction_cancelled"},
+    deep=True,
+    update={"id": "s_compaction_cancelled"},
 )
 COMPACTION_CANCEL_PARKED_SESSION.entries["cr"] = CancelRequested(
-    id="cr", parent_id="cmp", created_at=700,
+    id="cr",
+    parent_id="cmp",
+    created_at=700,
 )
 COMPACTION_CANCEL_PARKED_SESSION.active_conversation.nodes.append("cr")
-COMPACTION_CANCEL_PARKED_SESSION.active_conversation.status = (
-    ConversationStatus.CANCELLING
-)
+COMPACTION_CANCEL_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
 
 # A compaction that FAILED and closed. The bracket is closed, so it is never
 # retried — and the skip rule derives IDLE from the turn before it, which is
 # what stops a `while not runner.idle()` loop from opening a fresh bracket
 # every drive forever.
 COMPACTION_FAILED_SESSION = RICH_IDLE_SESSION.model_copy(
-    deep=True, update={"id": "s_compaction_failed"},
+    deep=True,
+    update={"id": "s_compaction_failed"},
 )
 COMPACTION_FAILED_SESSION.entries["ts_c"] = TurnStart(
-    id="ts_c", parent_id="tf3", created_at=600,
+    id="ts_c",
+    parent_id="tf3",
+    created_at=600,
 )
 COMPACTION_FAILED_SESSION.entries["cmp"] = CompactionEntry(
-    id="cmp", parent_id="ts_c", created_at=600,
-    source=CompactionSource.POLICY, started_at=600, ended_at=700,
+    id="cmp",
+    parent_id="ts_c",
+    created_at=600,
+    source=CompactionSource.POLICY,
+    started_at=600,
+    ended_at=700,
 )
 COMPACTION_FAILED_SESSION.entries["tf_c"] = TurnFinish(
-    id="tf_c", parent_id="cmp", created_at=700,
-    outcome=TurnOutcome.ERRORED, error="the policy raised",
+    id="tf_c",
+    parent_id="cmp",
+    created_at=700,
+    outcome=TurnOutcome.ERRORED,
+    error="the policy raised",
 )
 COMPACTION_FAILED_SESSION.active_conversation.nodes += ["ts_c", "cmp", "tf_c"]
 COMPACTION_FAILED_SESSION.active_conversation.updated_at = 700
@@ -877,15 +1052,16 @@ COMPACTION_FAILED_SESSION.active_conversation.status = ConversationStatus.IDLE
 # leaf. Without the skip rule this session derives IDLE and the question is
 # silently never answered. Derived status: PENDING.
 COMPACTION_BURIED_SESSION = COMPACTION_SCHEDULED_SESSION.model_copy(
-    deep=True, update={"id": "s_buried"},
+    deep=True,
+    update={"id": "s_buried"},
 )
-COMPACTION_BURIED_SESSION.entries["cmp"] = (
-    COMPACTION_BURIED_SESSION.entries["cmp"].model_copy(
-        update={"started_at": 600, "ended_at": 700},
-    )
+COMPACTION_BURIED_SESSION.entries["cmp"] = COMPACTION_BURIED_SESSION.entries["cmp"].model_copy(
+    update={"started_at": 600, "ended_at": 700},
 )
 COMPACTION_BURIED_SESSION.entries["tf_c"] = TurnFinish(
-    id="tf_c", parent_id="cmp", created_at=700,
+    id="tf_c",
+    parent_id="cmp",
+    created_at=700,
 )
 COMPACTION_BURIED_SESSION.active_conversation.nodes.append("tf_c")
 COMPACTION_BURIED_SESSION.active_conversation.updated_at = 700
@@ -895,29 +1071,56 @@ COMPACTION_BURIED_SESSION.active_conversation.status = ConversationStatus.PENDIN
 # it ran in, `c2` active over the summary plus the question it kept. Every
 # compacted entry is still in `entries`; nothing was destroyed.
 POST_COMPACTION_SESSION = RICH_SESSION.model_copy(
-    deep=True, update={"id": "s_post_compaction"},
+    deep=True,
+    update={"id": "s_post_compaction"},
 )
 POST_COMPACTION_SESSION.entries["ts_c"] = TurnStart(
-    id="ts_c", parent_id="u4", created_at=600,
+    id="ts_c",
+    parent_id="u4",
+    created_at=600,
 )
 POST_COMPACTION_SESSION.entries["cmp"] = CompactionEntry(
-    id="cmp", parent_id="ts_c", created_at=600,
+    id="cmp",
+    parent_id="ts_c",
+    created_at=600,
     source=CompactionSource.POLICY,
     parts=[TextContent(text="The user added 1 and 2 and was answered 3.")],
     compacted_nodes=[
-        "cmp0", "u1", "ts1", "a1", "te1", "te2", "pr1", "a2", "tf1",
-        "u2", "ts2", "tf2", "u3", "ts3", "a3", "te3", "cr1", "tf3",
+        "cmp0",
+        "u1",
+        "ts1",
+        "a1",
+        "te1",
+        "te2",
+        "pr1",
+        "a2",
+        "tf1",
+        "u2",
+        "ts2",
+        "tf2",
+        "u3",
+        "ts3",
+        "a3",
+        "te3",
+        "cr1",
+        "tf3",
     ],
     llm_config=CHEAP,
-    started_at=600, ended_at=700,
+    started_at=600,
+    ended_at=700,
     context_tokens=10,
 )
 POST_COMPACTION_SESSION.entries["tf_c"] = TurnFinish(
-    id="tf_c", parent_id="cmp", created_at=700,
+    id="tf_c",
+    parent_id="cmp",
+    created_at=700,
 )
 POST_COMPACTION_SESSION.usages["c1"]["cmp"] = Usage(
-    conversation_id="c1", entry_id="cmp",
-    input=500, output=40, total_tokens=540,
+    conversation_id="c1",
+    entry_id="cmp",
+    input=500,
+    output=40,
+    total_tokens=540,
 )
 _OUTGOING = POST_COMPACTION_SESSION.active_conversation
 _OUTGOING.nodes += ["ts_c", "cmp", "tf_c"]
@@ -925,6 +1128,9 @@ _OUTGOING.updated_at = 700
 _OUTGOING.status = ConversationStatus.IDLE
 POST_COMPACTION_SESSION.conversation_history.append(_OUTGOING)
 POST_COMPACTION_SESSION.active_conversation = Conversation(
-    id="c2", nodes=["cmp", "u4"], created_at=700, updated_at=700,
+    id="c2",
+    nodes=["cmp", "u4"],
+    created_at=700,
+    updated_at=700,
     status=ConversationStatus.PENDING,
 )

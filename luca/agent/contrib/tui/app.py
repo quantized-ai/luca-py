@@ -27,7 +27,7 @@ import asyncio
 import base64
 import os
 from pathlib import Path
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -58,6 +58,7 @@ from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
     CompactionEntry,
+    ContentPart,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
@@ -67,7 +68,6 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     UserMessage,
-    ContentPart,
 )
 from luca.agent.core.projection import tool_message_text
 
@@ -98,7 +98,7 @@ _CellT = TypeVar("_CellT", bound=TranscriptCell)
 class AgentApp(App):
     TITLE = "luca"
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel_run", "Cancel turn"),
         Binding("ctrl+v", "paste_image", "Attach image", priority=True),
         Binding("ctrl+d", "save_quit", "Quit", priority=True),
@@ -132,7 +132,10 @@ class AgentApp(App):
         self._mode = mode
         self._compaction_policy = compaction_policy
         self.runner, self.strategy = build_runner(
-            session, workspace=workspace, provider=provider, mode=mode,
+            session,
+            workspace=workspace,
+            provider=provider,
+            mode=mode,
             compaction_policy=compaction_policy,
         )
         self._current_run: AgentRun | None = None
@@ -153,7 +156,8 @@ class AgentApp(App):
             placeholder="Message the agent — Enter to send, /help for commands",
             id="prompt",
             suggester=SuggestFromList(
-                [f"/{command.name}" for command in COMMANDS], case_sensitive=False,
+                [f"/{command.name}" for command in COMMANDS],
+                case_sensitive=False,
             ),
         )
         yield Footer()
@@ -251,11 +255,14 @@ class AgentApp(App):
                 self._live_reasoning = None
             case ReasoningDelta(text=text):
                 self._live_reasoning = await self._stream_into(
-                    self._live_reasoning, ReasoningCell, text,
+                    self._live_reasoning,
+                    ReasoningCell,
+                    text,
                 )
             case ReasoningBlock(text=text, redacted=redacted):
                 await self._settle_cell(
-                    self._live_reasoning, ReasoningCell,
+                    self._live_reasoning,
+                    ReasoningCell,
                     REDACTED_REASONING_MARKER if redacted else text,
                 )
                 self._live_reasoning = None
@@ -263,7 +270,9 @@ class AgentApp(App):
                 self._live_text = None
             case TextDelta(text=text):
                 self._live_text = await self._stream_into(
-                    self._live_text, AssistantCell, text,
+                    self._live_text,
+                    AssistantCell,
+                    text,
                 )
             case TextBlock(text=text):
                 await self._settle_cell(self._live_text, AssistantCell, text)
@@ -277,8 +286,10 @@ class AgentApp(App):
                 if cell is not None:
                     cell.mark_running(execution)
             case ToolExecuted(
-                tool_call_id=tool_call_id, execution=execution,
-                result_text=result_text, is_error=is_error,
+                tool_call_id=tool_call_id,
+                execution=execution,
+                result_text=result_text,
+                is_error=is_error,
             ):
                 cell = self._tool_cells.get(tool_call_id)
                 if cell is None:  # e.g. an orphan recovered on resume
@@ -296,19 +307,18 @@ class AgentApp(App):
                 # event is the only place it surfaces.
                 await self._mount_cell(
                     NoticeCell(
-                        f"compaction {outcome.value}"
-                        + (f": {error}" if error else ""),
+                        f"compaction {outcome.value}" + (f": {error}" if error else ""),
                         error=outcome is not TurnOutcome.CANCELLED,
                     ),
                 )
-            case (
-                ToolCallStart() | FinishReason() | ApprovalRequired()
-                | CompactionScheduled() | CompactionStarted()
-            ):
+            case ToolCallStart() | FinishReason() | ApprovalRequired() | CompactionScheduled() | CompactionStarted():
                 pass
 
     async def _stream_into(
-        self, cell: _CellT | None, cell_class: type[_CellT], delta: str,
+        self,
+        cell: _CellT | None,
+        cell_class: type[_CellT],
+        delta: str,
     ) -> _CellT | None:
         """Append a delta, mounting the cell on the first visible one so a
         whitespace-only block never gets a cell."""
@@ -322,7 +332,10 @@ class AgentApp(App):
         return cell
 
     async def _settle_cell(
-        self, cell: _CellT | None, cell_class: type[_CellT], text: str,
+        self,
+        cell: _CellT | None,
+        cell_class: type[_CellT],
+        text: str,
     ) -> None:
         """Settle a streamed cell against its completed block (or mount it
         whole when not streaming). Blank text never survives: providers emit
@@ -361,11 +374,13 @@ class AgentApp(App):
                 self._tool_cells[entry.tool_call_id] = cell
                 await self._mount_cell(cell)
                 if entry.status not in (
-                    ExecutionStatus.PENDING, ExecutionStatus.RUNNING,
+                    ExecutionStatus.PENDING,
+                    ExecutionStatus.RUNNING,
                 ):
                     try:
                         message = self.runner.conversation_projector.project_tool_execution(
-                            entry, entries,
+                            entry,
+                            entries,
                         )
                     except ProjectionError:
                         continue
@@ -376,9 +391,8 @@ class AgentApp(App):
                 # the wire projection follows.
                 if entry.parts:
                     await self._mount_cell(CompactionCell(entry))
-            elif isinstance(entry, TurnFinish):
-                if entry.outcome is TurnOutcome.CANCELLED:
-                    await self._mount_cell(NoticeCell("turn cancelled"))
+            elif isinstance(entry, TurnFinish) and entry.outcome is TurnOutcome.CANCELLED:
+                await self._mount_cell(NoticeCell("turn cancelled"))
 
     # ── actions ────────────────────────────────────────────────────────────────
 
@@ -437,8 +451,10 @@ class AgentApp(App):
         scripted provider is stateful and already spent, which is a demo-only
         edge (real runs pass provider=None and build fresh clients per turn)."""
         self.runner, self.strategy = build_runner(
-            session, workspace=self._workspace,
-            provider=self._provider, mode=self._mode,
+            session,
+            workspace=self._workspace,
+            provider=self._provider,
+            mode=self._mode,
             compaction_policy=self._compaction_policy,
         )
         await self.query_one("#transcript", VerticalScroll).remove_children()

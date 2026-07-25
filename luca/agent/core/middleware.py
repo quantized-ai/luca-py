@@ -28,15 +28,14 @@ request hook.
 
 from __future__ import annotations
 
-from luca.client.types.messages import AssistantMessage as ClientAssistantMessage
-from luca.client.types.messages import Message
+from luca.client.types.messages import AssistantMessage as ClientAssistantMessage, Message
 
 from .models import (
     AnyEntry,
     ApprovalDecision,
+    ContentPart,
     LLMConfig,
     ToolExecution,
-    ContentPart,
 )
 
 try:
@@ -89,7 +88,8 @@ class AgentMiddlewareMixin:
         return messages, system_message
 
     def after_llm_response(
-        self, message: ClientAssistantMessage,
+        self,
+        message: ClientAssistantMessage,
     ) -> ClientAssistantMessage:
         """After the LLM responds, before the AssistantMessage is recorded.
         Fires on every round — both tool-call rounds and final answers. Return
@@ -97,7 +97,8 @@ class AgentMiddlewareMixin:
         return message
 
     def before_permission_check(
-        self, execution: ToolExecution,
+        self,
+        execution: ToolExecution,
     ) -> ToolExecution:
         """Before the registry's decide() is asked about an execution.
         Return the (possibly modified) execution — it is what decide() sees

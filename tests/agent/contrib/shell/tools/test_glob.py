@@ -131,8 +131,7 @@ async def test_exactly_100_results_is_treated_as_truncated(tmp_path, run):
 
     assert result.metadata == {"truncated": True, "count": 100}
     assert (
-        "(Results are truncated: showing first 100 results."
-        " Consider using a more specific path or pattern.)"
+        "(Results are truncated: showing first 100 results. Consider using a more specific path or pattern.)"
     ) in body(result)
 
 
@@ -203,17 +202,16 @@ def test_permission_resource_defaults_to_the_workdir(tmp_path, perm):
         ResourcePermission(permission="access_directory", resource=str(tmp_path)),
     ]
     assert access.metadata["preview"] == f"Access directory {tmp_path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(tmp_path),
+                    permission="access_directory",
+                    resource=str(tmp_path),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{tmp_path}/*",
+                    permission="access_directory",
+                    resource=f"{tmp_path}/*",
                 ),
             ],
             f"Always allow access to {tmp_path}",
@@ -223,10 +221,7 @@ def test_permission_resource_defaults_to_the_workdir(tmp_path, perm):
         ResourcePermission(permission="glob", resource=str(tmp_path)),
     ]
     assert request.metadata["preview"] == f'Find files matching "*.ts" in {tmp_path}'
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="glob", resource=f"{tmp_path}/*")],
             f"Search files under {tmp_path}",
@@ -241,12 +236,11 @@ def test_permission_resource_uses_the_explicit_search_directory(tmp_path, perm):
 
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(tmp_path / "src"),
+            permission="access_directory",
+            resource=str(tmp_path / "src"),
         ),
     ]
     assert request.resources == [
         ResourcePermission(permission="glob", resource=str(tmp_path / "src")),
     ]
-    assert request.metadata["preview"] == (
-        f'Find files matching "*.py" in {tmp_path / "src"}'
-    )
+    assert request.metadata["preview"] == (f'Find files matching "*.py" in {tmp_path / "src"}')

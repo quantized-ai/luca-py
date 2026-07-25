@@ -80,8 +80,11 @@ class Tool:
         )
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         """The simple override point: do the work, return text for the LLM.
         The `context` carries the session id and active model; the
@@ -90,14 +93,19 @@ class Tool:
         raise NotImplementedError
 
     async def execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         """Run the tool and wrap the output. Override for is_error / metadata /
         multi-block results. Timing is recorded by the runner on the
         `ToolExecution` (`started_at` / `ended_at`), not on the result."""
         output = await self._execute(
-            args, context, cancellation_token=cancellation_token,
+            args,
+            context,
+            cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
 
@@ -149,7 +157,9 @@ def tool_class(
         args_model = arguments
     else:
         args_model = create_model(
-            f"{name}_args", __config__=ConfigDict(extra="forbid"), **arguments,
+            f"{name}_args",
+            __config__=ConfigDict(extra="forbid"),
+            **arguments,
         )
 
     async def _execute(self: Tool, args: dict, context: ToolContext) -> str:
@@ -165,7 +175,9 @@ def tool_class(
     if get_approval_context is not None:
 
         async def _get_approval_context(
-            self: Tool, args: dict, context: ToolContext,
+            self: Tool,
+            args: dict,
+            context: ToolContext,
         ) -> dict:
             return await get_approval_context(args, context)
 

@@ -57,7 +57,7 @@ def _parse_headers(raw: bytes) -> dict[str, str]:
     while p < len(raw):
         name_len = raw[p]
         p += 1
-        name = raw[p:p + name_len].decode()
+        name = raw[p : p + name_len].decode()
         p += name_len
         value_type = raw[p]
         p += 1
@@ -65,9 +65,9 @@ def _parse_headers(raw: bytes) -> dict[str, str]:
             raise StreamError(
                 f"Unexpected Bedrock event header type {value_type} for {name!r}",
             )
-        value_len = struct.unpack(">H", raw[p:p + 2])[0]
+        value_len = struct.unpack(">H", raw[p : p + 2])[0]
         p += 2
-        headers[name] = raw[p:p + value_len].decode()
+        headers[name] = raw[p : p + value_len].decode()
         p += value_len
     return headers
 
@@ -83,12 +83,12 @@ def _take_frame(buf: bytearray) -> tuple[dict[str, str], bytes] | None:
     prelude_crc = struct.unpack(">I", buf[8:12])[0]
     if zlib.crc32(bytes(buf[:8])) != prelude_crc:
         raise StreamError("Bedrock event stream prelude CRC mismatch")
-    message_crc = struct.unpack(">I", buf[total_len - 4:total_len])[0]
-    if zlib.crc32(bytes(buf[:total_len - 4])) != message_crc:
+    message_crc = struct.unpack(">I", buf[total_len - 4 : total_len])[0]
+    if zlib.crc32(bytes(buf[: total_len - 4])) != message_crc:
         raise StreamError("Bedrock event stream message CRC mismatch")
 
-    headers = _parse_headers(bytes(buf[12:12 + header_len]))
-    payload = bytes(buf[12 + header_len:total_len - 4])
+    headers = _parse_headers(bytes(buf[12 : 12 + header_len]))
+    payload = bytes(buf[12 + header_len : total_len - 4])
     del buf[:total_len]
     return headers, payload
 
@@ -107,7 +107,9 @@ def _dispatch(state: _BedrockParserState, headers: dict, payload: bytes) -> Iter
 
 
 def _ensure_start(
-    state: _BedrockParserState, index: int, block_type: str,
+    state: _BedrockParserState,
+    index: int,
+    block_type: str,
 ) -> Iterator[RawStreamEvent]:
     if index not in state.started:
         state.started.add(index)
@@ -115,7 +117,9 @@ def _ensure_start(
 
 
 def _process_event(
-    state: _BedrockParserState, event_type: str, data: dict,
+    state: _BedrockParserState,
+    event_type: str,
+    data: dict,
 ) -> Iterator[RawStreamEvent]:
     if event_type == "contentBlockStart":
         idx = data.get("contentBlockIndex", 0)
@@ -124,8 +128,10 @@ def _process_event(
             tool = start["toolUse"]
             state.started.add(idx)
             yield RawBlockStart(
-                index=idx, block_type="tool_call",
-                tool_id=tool.get("toolUseId"), tool_name=tool.get("name"),
+                index=idx,
+                block_type="tool_call",
+                tool_id=tool.get("toolUseId"),
+                tool_name=tool.get("name"),
             )
 
     elif event_type == "contentBlockDelta":
@@ -136,7 +142,8 @@ def _process_event(
             yield RawTextDelta(index=idx, text=delta["text"])
         elif "toolUse" in delta:
             yield RawToolArgumentsDelta(
-                index=idx, arguments_delta=delta["toolUse"].get("input", ""),
+                index=idx,
+                arguments_delta=delta["toolUse"].get("input", ""),
             )
         elif "reasoningContent" in delta:
             rc = delta["reasoningContent"]
@@ -149,8 +156,10 @@ def _process_event(
             elif "redactedContent" in rc and idx not in state.started:
                 state.started.add(idx)
                 yield RawBlockStart(
-                    index=idx, block_type="thinking",
-                    signature=rc["redactedContent"], redacted=True,
+                    index=idx,
+                    block_type="thinking",
+                    signature=rc["redactedContent"],
+                    redacted=True,
                 )
 
     elif event_type == "contentBlockStop":
@@ -166,13 +175,15 @@ def _process_event(
 
     elif event_type == "metadata":
         usage = data.get("usage") or {}
-        yield RawUsage(usage=Usage(
-            input_tokens=usage.get("inputTokens", 0),
-            output_tokens=usage.get("outputTokens", 0),
-            total_tokens=usage.get("totalTokens", 0),
-            cached_input_tokens=usage.get("cacheReadInputTokens"),
-            cache_write_tokens=usage.get("cacheWriteInputTokens"),
-        ))
+        yield RawUsage(
+            usage=Usage(
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+                total_tokens=usage.get("totalTokens", 0),
+                cached_input_tokens=usage.get("cacheReadInputTokens"),
+                cache_write_tokens=usage.get("cacheWriteInputTokens"),
+            )
+        )
 
 
 def _safe_json(payload: bytes) -> dict | None:

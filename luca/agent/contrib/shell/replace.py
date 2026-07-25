@@ -159,7 +159,7 @@ def context_aware_replacer(content: str, find: str) -> Iterator[str]:
         if window[-1].strip() != find_lines[-1].strip():
             continue
         checked = matched = 0
-        for window_line, find_line in zip(window[1:-1], find_lines[1:-1]):
+        for window_line, find_line in zip(window[1:-1], find_lines[1:-1], strict=False):
             if not find_line.strip():
                 continue
             checked += 1
@@ -193,7 +193,11 @@ def _disproportionate(candidate: str, old_string: str) -> bool:
 
 
 def replace(
-    content: str, old_string: str, new_string: str, *, replace_all: bool = False,
+    content: str,
+    old_string: str,
+    new_string: str,
+    *,
+    replace_all: bool = False,
 ) -> tuple[str, int]:
     """Apply the first usable candidate and return `(new_content, count)`.
 

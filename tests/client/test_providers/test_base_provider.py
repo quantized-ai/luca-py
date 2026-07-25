@@ -29,16 +29,28 @@ class ProviderCase:
 
 CASES = [
     ProviderCase(
-        "openai", OpenAIProvider, "openai",
-        "https://api.openai.com/v1", "OPENAI_API_KEY", OpenAITransport,
+        "openai",
+        OpenAIProvider,
+        "openai",
+        "https://api.openai.com/v1",
+        "OPENAI_API_KEY",
+        OpenAITransport,
     ),
     ProviderCase(
-        "anthropic", AnthropicProvider, "anthropic",
-        "https://api.anthropic.com", "ANTHROPIC_API_KEY", AnthropicTransport,
+        "anthropic",
+        AnthropicProvider,
+        "anthropic",
+        "https://api.anthropic.com",
+        "ANTHROPIC_API_KEY",
+        AnthropicTransport,
     ),
     ProviderCase(
-        "openrouter", OpenRouterProvider, "openrouter",
-        "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", OpenRouterTransport,
+        "openrouter",
+        OpenRouterProvider,
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+        OpenRouterTransport,
     ),
 ]
 

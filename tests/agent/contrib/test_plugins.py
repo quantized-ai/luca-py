@@ -35,7 +35,10 @@ def make_session() -> AgentSession:
     return AgentSession(
         id="s_plugins",
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=500, updated_at=500,
+            id="c1",
+            nodes=[],
+            created_at=500,
+            updated_at=500,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -51,8 +54,11 @@ class PingTool(Tool):
     Args = NoArgs
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return "pong"
 
@@ -73,7 +79,8 @@ class FullPlugin:
 
     def __init__(self) -> None:
         self.registry = SimpleToolRegistry(
-            tools=[PingTool()], permission_policy=YoloPermissionPolicy(),
+            tools=[PingTool()],
+            permission_policy=YoloPermissionPolicy(),
         )
         self.middleware = RecordingMiddleware()
         self.sessions_seen: list[AgentSession] = []
@@ -108,19 +115,23 @@ class RegistrylessPlugin:
 
 def test_user_registry_and_plugin_registries_land_in_one_proxy_in_order():
     user_registry = SimpleToolRegistry(
-        tools=[EchoTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[EchoTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     plugin = FullPlugin()
     session = make_session()
 
     runner = PluginAgentSessionRunner(
-        session, tool_registry=user_registry, plugins=[plugin],
+        session,
+        tool_registry=user_registry,
+        plugins=[plugin],
     )
 
     assert type(runner.tool_registry) is ProxyToolRegistry
     assert runner.tool_registry.registries == [user_registry, plugin.registry]
     assert [tool.name for tool in runner.tool_registry.get_tools(session)] == [
-        "echo", "ping",
+        "echo",
+        "ping",
     ]
 
 
@@ -134,7 +145,8 @@ def test_without_a_user_registry_the_proxy_holds_only_plugin_registries():
 
 def test_none_registry_contributes_nothing():
     runner = PluginAgentSessionRunner(
-        make_session(), plugins=[RegistrylessPlugin()],
+        make_session(),
+        plugins=[RegistrylessPlugin()],
     )
 
     assert runner.tool_registry.registries == []
@@ -163,7 +175,8 @@ def test_hooks_are_duck_typed_and_receive_the_session():
     session = make_session()
 
     runner = PluginAgentSessionRunner(
-        session, plugins=[PartsOnlyPlugin(), plugin],
+        session,
+        plugins=[PartsOnlyPlugin(), plugin],
     )
 
     assert plugin.sessions_seen == [session]
@@ -186,7 +199,8 @@ def test_base_plugin_defaults_contribute_nothing():
 
 def test_plugin_runner_equals_a_directly_configured_runner():
     user_registry = SimpleToolRegistry(
-        tools=[EchoTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[EchoTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     plugin = FullPlugin()
     session = make_session()

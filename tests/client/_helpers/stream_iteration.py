@@ -7,9 +7,14 @@ pointing at the final mutated state. Always use these helpers for assertions.
 
 from __future__ import annotations
 
-_DELTA_TYPES = frozenset({
-    "text_delta", "thinking_delta", "tool_call_delta", "refusal_delta",
-})
+_DELTA_TYPES = frozenset(
+    {
+        "text_delta",
+        "thinking_delta",
+        "tool_call_delta",
+        "refusal_delta",
+    }
+)
 
 
 def _snapshot_if_delta(event):
@@ -25,7 +30,4 @@ def collect_events_with_snapshots(stream):
 
 
 async def acollect_events_with_snapshots(stream):
-    out = []
-    async for ev in stream:
-        out.append(_snapshot_if_delta(ev))
-    return out
+    return [_snapshot_if_delta(ev) async for ev in stream]

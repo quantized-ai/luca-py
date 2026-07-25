@@ -51,29 +51,40 @@ ANSWERED_SESSION = AgentSession(
     id="s_answered",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=T, parts=[TextContent(text="Hello there")],
+            id="u1",
+            created_at=T,
+            parts=[TextContent(text="Hello there")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=T,
+            id="a1",
+            parent_id="ts",
+            created_at=T,
             parts=[
                 ThinkingContent(thinking="A greeting.", signature="sig"),
                 TextContent(text="Hi! How can I help?"),
             ],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "tf": TurnFinish(id="tf", parent_id="a1", created_at=T),
     },
     usages={
         "c1": {
             "a1": Usage(
-                conversation_id="c1", entry_id="a1",
-                input=10, output=5, total_tokens=15,
+                conversation_id="c1",
+                entry_id="a1",
+                input=10,
+                output=5,
+                total_tokens=15,
             ),
         },
     },
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "tf"], created_at=T, updated_at=T,
+        id="c1",
+        nodes=["u1", "ts", "a1", "tf"],
+        created_at=T,
+        updated_at=T,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -85,16 +96,21 @@ TOOLS_SESSION = AgentSession(
     id="s_tools",
     entries={
         "u1": UserMessage(
-            id="u1", created_at=T, parts=[TextContent(text="what's on disk?")],
+            id="u1",
+            created_at=T,
+            parts=[TextContent(text="what's on disk?")],
         ),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=T,
+            id="a1",
+            parent_id="ts",
+            created_at=T,
             parts=[
                 ThinkingContent(thinking="Look around.", redacted=True),
                 ToolCall(id="tc1", name="read", arguments={"file_path": "/"}),
                 ToolCall(
-                    id="tc2", name="read",
+                    id="tc2",
+                    name="read",
                     arguments={
                         "file_path": "/Users/santiagobasulto/code/python-py",
                         "offset": 1,
@@ -102,10 +118,13 @@ TOOLS_SESSION = AgentSession(
                     },
                 ),
             ],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=T,
+            id="te1",
+            parent_id="a1",
+            created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={"file_path": "/"}),
             tool_spec=ToolSpec(name="read"),
@@ -113,21 +132,26 @@ TOOLS_SESSION = AgentSession(
             approval_status=ApprovalStatus.REJECTED,
             approval_decisions=[
                 ApprovalDecision(
-                    decision=ApprovalOption.PENDING, metadata={"via": "mode"},
+                    decision=ApprovalOption.PENDING,
+                    metadata={"via": "mode"},
                     created_at=T,
                 ),
                 ApprovalDecision(
-                    decision=ApprovalOption.DENY, metadata={"via": "user"},
+                    decision=ApprovalOption.DENY,
+                    metadata={"via": "user"},
                     created_at=T,
                 ),
             ],
             ended_at=T,
         ),
         "te2": ToolExecution(
-            id="te2", parent_id="te1", created_at=T,
+            id="te2",
+            parent_id="te1",
+            created_at=T,
             tool_call_id="tc2",
             raw_tool_call=ToolCall(
-                id="tc2", name="read",
+                id="tc2",
+                name="read",
                 arguments={
                     "file_path": "/Users/santiagobasulto/code/python-py",
                     "offset": 1,
@@ -142,16 +166,21 @@ TOOLS_SESSION = AgentSession(
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[
                 ApprovalDecision(
-                    decision=ApprovalOption.ALLOW, metadata={"via": "rule"},
+                    decision=ApprovalOption.ALLOW,
+                    metadata={"via": "rule"},
                     created_at=T,
                 ),
             ],
-            started_at=T, ended_at=T + 2,
+            started_at=T,
+            ended_at=T + 2,
         ),
         "a2": AssistantMessage(
-            id="a2", parent_id="te2", created_at=T,
+            id="a2",
+            parent_id="te2",
+            created_at=T,
             parts=[TextContent(text="Three entries.")],
-            llm_config=MODEL, stop_reason="stop",
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "tf": TurnFinish(id="tf", parent_id="a2", created_at=T),
     },
@@ -159,16 +188,22 @@ TOOLS_SESSION = AgentSession(
     usages={
         "c1": {
             "a1": Usage(
-                conversation_id="c1", entry_id="a1", total_tokens=1200,
+                conversation_id="c1",
+                entry_id="a1",
+                total_tokens=1200,
             ),
             "a2": Usage(
-                conversation_id="c1", entry_id="a2", total_tokens=340,
+                conversation_id="c1",
+                entry_id="a2",
+                total_tokens=340,
             ),
         },
     },
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
-        created_at=T, updated_at=T,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+        created_at=T,
+        updated_at=T,
     ),
     session_config=SessionConfig(
         llm_config=MODEL.model_copy(update={"reasoning": "medium"}),
@@ -183,23 +218,33 @@ FAILED_SESSION = AgentSession(
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="add")]),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=T,
+            id="a1",
+            parent_id="ts",
+            created_at=T,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=T,
+            id="te1",
+            parent_id="a1",
+            created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             status=ExecutionStatus.FAILED,
             error=ToolExecutionError(
-                error_type="ValueError", error_message="kaboom",
+                error_type="ValueError",
+                error_message="kaboom",
             ),
-            started_at=T, ended_at=T + 7,
+            started_at=T,
+            ended_at=T + 7,
         ),
         "tf": TurnFinish(
-            id="tf", parent_id="te1", created_at=T,
-            outcome=TurnOutcome.ERRORED, error="the model gave up",
+            id="tf",
+            parent_id="te1",
+            created_at=T,
+            outcome=TurnOutcome.ERRORED,
+            error="the model gave up",
         ),
         # Retry-ready PENDING accepts a post_message: it sits behind the closed
         # bracket with no TurnStart of its own until the next run.
@@ -207,8 +252,11 @@ FAILED_SESSION = AgentSession(
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1", "tf", "u2"],
-        created_at=T, updated_at=T, status=ConversationStatus.PENDING,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "tf", "u2"],
+        created_at=T,
+        updated_at=T,
+        status=ConversationStatus.PENDING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -221,19 +269,25 @@ OPEN_SESSION = AgentSession(
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="add")]),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=T,
+            id="a1",
+            parent_id="ts",
+            created_at=T,
             parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=T,
+            id="te1",
+            parent_id="a1",
+            created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
             status=ExecutionStatus.PENDING,
             approval_status=ApprovalStatus.PENDING,
             approval_decisions=[
                 ApprovalDecision(
-                    decision=ApprovalOption.PENDING, metadata={"via": "mode"},
+                    decision=ApprovalOption.PENDING,
+                    metadata={"via": "mode"},
                     created_at=T,
                 ),
             ],
@@ -242,8 +296,11 @@ OPEN_SESSION = AgentSession(
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts", "a1", "te1", "cr"],
-        created_at=T, updated_at=T, status=ConversationStatus.CANCELLING,
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "cr"],
+        created_at=T,
+        updated_at=T,
+        status=ConversationStatus.CANCELLING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -255,7 +312,8 @@ COMPACTED_SESSION = AgentSession(
     id="s_compacted",
     entries={
         "cp": CompactionEntry(
-            id="cp", created_at=T,
+            id="cp",
+            created_at=T,
             source=CompactionSource.POLICY,
             parts=[
                 TextContent(
@@ -264,26 +322,35 @@ COMPACTED_SESSION = AgentSession(
             ],
             compacted_nodes=["u0", "a0"],
             llm_config=MODEL,
-            started_at=T, ended_at=T,
+            started_at=T,
+            ended_at=T,
         ),
         "te1": ToolExecution(
-            id="te1", created_at=T,
+            id="te1",
+            created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="a very long listing")]),
-            started_at=T, ended_at=T + 1,
+            started_at=T,
+            ended_at=T + 1,
         ),
         "pr": PrunedEntry(
-            id="pr", parent_id="te1", created_at=T,
-            pruned_entry_type="tool_execution", pruned_entry_id="te1",
+            id="pr",
+            parent_id="te1",
+            created_at=T,
+            pruned_entry_type="tool_execution",
+            pruned_entry_id="te1",
             content=[TextContent(text="[tool output has been pruned]")],
         ),
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="thanks")]),
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["cp", "pr", "u1", "missing"], created_at=T, updated_at=T,
+        id="c1",
+        nodes=["cp", "pr", "u1", "missing"],
+        created_at=T,
+        updated_at=T,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -299,23 +366,31 @@ BIG_OUTPUT_SESSION = AgentSession(
     id="s_big",
     entries={
         "a1": AssistantMessage(
-            id="a1", created_at=T,
+            id="a1",
+            created_at=T,
             parts=[ToolCall(id="tc1", name="ls", arguments={})],
-            llm_config=MODEL, stop_reason="tool_use",
+            llm_config=MODEL,
+            stop_reason="tool_use",
         ),
         "te1": ToolExecution(
-            id="te1", parent_id="a1", created_at=T,
+            id="te1",
+            parent_id="a1",
+            created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="ls", arguments={}),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text=LISTING)]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=T, ended_at=T + 1,
+            started_at=T,
+            ended_at=T + 1,
         ),
     },
     tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
-        id="c1", nodes=["a1", "te1"], created_at=T, updated_at=T,
+        id="c1",
+        nodes=["a1", "te1"],
+        created_at=T,
+        updated_at=T,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -328,7 +403,9 @@ EMPTY_SESSION = AgentSession(
 
 
 def test_an_answered_turn_renders_frame_messages_and_totals():
-    assert pretty_print(ANSWERED_SESSION) == f"""\
+    assert (
+        pretty_print(ANSWERED_SESSION)
+        == f"""\
 LUCA SESSION s_answered
 Conversation c1 · idle · 1 turn
 Default: faux/test-model
@@ -347,10 +424,13 @@ Assistant · step 1 · faux/test-model
 
 {RULE}
 TOTAL · 1 turn · 1 model call · 0 tool calls · 15 tokens"""
+    )
 
 
 def test_tool_calls_render_as_a_tree_of_approvals_and_outcomes():
-    assert pretty_print(TOOLS_SESSION) == f"""\
+    assert (
+        pretty_print(TOOLS_SESSION)
+        == f"""\
 LUCA SESSION s_tools
 Conversation c1 · idle · 1 turn
 Default: faux/test-model · reasoning medium
@@ -385,10 +465,13 @@ Assistant · step 2 · faux/test-model
 
 {RULE}
 TOTAL · 1 turn · 2 model calls · 2 tool calls · 1,540 tokens"""
+    )
 
 
 def test_a_failure_shows_the_structured_error_and_the_queued_retry_message():
-    assert pretty_print(FAILED_SESSION) == f"""\
+    assert (
+        pretty_print(FAILED_SESSION)
+        == f"""\
 LUCA SESSION s_failed
 Conversation c1 · pending · 1 turn
 Default: faux/test-model
@@ -414,10 +497,13 @@ User
 
 {RULE}
 TOTAL · 1 turn · 1 model call · 1 tool call · 0 tokens"""
+    )
 
 
 def test_an_open_turn_shows_the_pending_gate_and_no_outcome():
-    assert pretty_print(OPEN_SESSION) == f"""\
+    assert (
+        pretty_print(OPEN_SESSION)
+        == f"""\
 LUCA SESSION s_open
 Conversation c1 · cancelling · 1 turn
 Default: faux/test-model
@@ -439,10 +525,13 @@ Cancel requested · cancelled
 
 {RULE}
 TOTAL · 1 turn · 1 model call · 1 tool call · 0 tokens"""
+    )
 
 
 def test_compaction_pruning_and_a_missing_node_render_in_path_order():
-    assert pretty_print(COMPACTED_SESSION) == f"""\
+    assert (
+        pretty_print(COMPACTED_SESSION)
+        == f"""\
 LUCA SESSION s_compacted
 Conversation c1 · idle · 0 turns
 Default: faux/test-model
@@ -462,6 +551,7 @@ User
 
 {RULE}
 TOTAL · 0 turns · 0 model calls · 0 tool calls · 0 tokens"""
+    )
 
 
 def test_a_compaction_that_produced_nothing_renders_its_header_alone():
@@ -470,7 +560,9 @@ def test_a_compaction_that_produced_nothing_renders_its_header_alone():
         update={"parts": None, "compacted_nodes": None, "ended_at": None},
     )
 
-    assert pretty_print(session) == f"""\
+    assert (
+        pretty_print(session)
+        == f"""\
 LUCA SESSION s_scheduled
 Conversation c1 · idle · 0 turns
 Default: faux/test-model
@@ -489,10 +581,13 @@ User
 
 {RULE}
 TOTAL · 0 turns · 0 model calls · 0 tool calls · 0 tokens"""
+    )
 
 
 def test_a_big_tool_result_is_clipped_by_line_and_by_width():
-    assert pretty_print(BIG_OUTPUT_SESSION) == f"""\
+    assert (
+        pretty_print(BIG_OUTPUT_SESSION)
+        == f"""\
 LUCA SESSION s_big
 Conversation c1 · idle · 0 turns
 Default: faux/test-model
@@ -520,12 +615,16 @@ Assistant · step 1 · faux/test-model
 
 {RULE}
 TOTAL · 0 turns · 1 model call · 1 tool call · 0 tokens"""
+    )
 
 
 def test_an_empty_session_prints_only_the_frame():
-    assert pretty_print(EMPTY_SESSION) == f"""\
+    assert (
+        pretty_print(EMPTY_SESSION)
+        == f"""\
 LUCA SESSION s_empty
 Conversation c1 · idle · 0 turns
 Default: faux/test-model
 {RULE}
 TOTAL · 0 turns · 0 model calls · 0 tool calls · 0 tokens"""
+    )

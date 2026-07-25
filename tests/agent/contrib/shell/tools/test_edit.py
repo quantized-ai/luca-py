@@ -33,9 +33,14 @@ async def test_unique_replacement(tmp_path, run):
     target = tmp_path / "greeting.txt"
     target.write_text("Hello World\nGoodbye Moon\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "greeting.txt", "old_string": "World", "new_string": "Turtle",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "greeting.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+        },
+    )
 
     assert result.is_error is False
     assert body(result) == f"Edited file: {target}"
@@ -53,14 +58,18 @@ async def test_ambiguous_match_fails_and_leaves_the_file_unchanged(tmp_path, run
     target = tmp_path / "f.txt"
     target.write_text("Hello World\nGoodbye World\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "World", "new_string": "Turtle",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == (
-        "Found multiple matches for old_string. Provide more surrounding"
-        " context to make the match unique."
+        "Found multiple matches for old_string. Provide more surrounding context to make the match unique."
     )
     assert target.read_text() == "Hello World\nGoodbye World\n"
 
@@ -72,12 +81,15 @@ async def test_replace_all_replaces_every_occurrence(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("Hello World\nGoodbye World\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt",
-        "old_string": "World",
-        "new_string": "Turtle",
-        "replace_all": True,
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+            "replace_all": True,
+        },
+    )
 
     assert target.read_text() == "Hello Turtle\nGoodbye Turtle\n"
     assert result.metadata["replacements"] == 2
@@ -87,9 +99,14 @@ async def test_replace_all_replaces_every_occurrence(tmp_path, run):
 
 
 async def test_empty_old_string_creates_the_file_and_parents(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "file_path": "sub/dir/new.txt", "old_string": "", "new_string": "content\n",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "sub/dir/new.txt",
+            "old_string": "",
+            "new_string": "content\n",
+        },
+    )
 
     target = tmp_path / "sub/dir/new.txt"
     assert result.is_error is False
@@ -106,9 +123,14 @@ async def test_empty_old_string_on_an_existing_file_fails(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(b"original bytes")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "", "new_string": "replacement",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "",
+            "new_string": "replacement",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == (
@@ -123,9 +145,14 @@ async def test_empty_old_string_on_an_existing_file_fails(tmp_path, run):
 
 
 async def test_missing_file_reports_not_found(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "file_path": "missing.txt", "old_string": "a", "new_string": "b",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "missing.txt",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == f"File not found: {tmp_path / 'missing.txt'}"
@@ -134,9 +161,14 @@ async def test_missing_file_reports_not_found(tmp_path, run):
 async def test_directory_target_reports_not_a_file(tmp_path, run):
     (tmp_path / "adir").mkdir()
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": "adir", "old_string": "a", "new_string": "b",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "adir",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == f"Path is a directory, not a file: {tmp_path / 'adir'}"
@@ -149,9 +181,14 @@ async def test_unmatched_old_string_fails_and_leaves_the_file_unchanged(tmp_path
     target = tmp_path / "f.txt"
     target.write_text("Hello World\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "Missing", "new_string": "Anything",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "Missing",
+            "new_string": "Anything",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == (
@@ -165,14 +202,17 @@ async def test_identical_old_and_new_strings_fail(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("Hello\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "Hello", "new_string": "Hello",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "Hello",
+            "new_string": "Hello",
+        },
+    )
 
     assert result.is_error is True
-    assert body(result) == (
-        "No changes to apply: old_string and new_string are identical."
-    )
+    assert body(result) == ("No changes to apply: old_string and new_string are identical.")
 
 
 # ── scenario 8: multiline replacement ─────────────────────────────────────────
@@ -182,11 +222,14 @@ async def test_multiline_replacement(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("line1\nline2\nline3\n")
 
-    await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt",
-        "old_string": "line2",
-        "new_string": "new line 2\nextra line",
-    })
+    await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "line2",
+            "new_string": "new line 2\nextra line",
+        },
+    )
 
     assert target.read_text() == "line1\nnew line 2\nextra line\nline3\n"
 
@@ -198,11 +241,14 @@ async def test_lf_arguments_edit_a_crlf_file_and_crlf_survives(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(b"Hello World\r\nGoodbye World\r\n")
 
-    await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt",
-        "old_string": "Hello World\nGoodbye World",
-        "new_string": "First\nSecond",
-    })
+    await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "Hello World\nGoodbye World",
+            "new_string": "First\nSecond",
+        },
+    )
 
     assert target.read_bytes() == b"First\r\nSecond\r\n"
 
@@ -211,11 +257,14 @@ async def test_crlf_arguments_edit_an_lf_file_and_lf_survives(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(b"Hello World\nGoodbye World\n")
 
-    await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt",
-        "old_string": "Hello World\r\nGoodbye World",
-        "new_string": "First\r\nSecond",
-    })
+    await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "Hello World\r\nGoodbye World",
+            "new_string": "First\r\nSecond",
+        },
+    )
 
     assert target.read_bytes() == b"First\nSecond\n"
 
@@ -224,12 +273,15 @@ async def test_replace_all_over_a_crlf_file_stays_crlf(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(b"x World\r\ny World\r\n")
 
-    await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt",
-        "old_string": "World",
-        "new_string": "Turtle",
-        "replace_all": True,
-    })
+    await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+            "replace_all": True,
+        },
+    )
 
     assert target.read_bytes() == b"x Turtle\r\ny Turtle\r\n"
 
@@ -241,9 +293,14 @@ async def test_bom_is_preserved_and_absent_from_the_diff(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(BOM + b"Hello World\nSecond\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "Hello World", "new_string": "Hi",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "Hello World",
+            "new_string": "Hi",
+        },
+    )
 
     assert target.read_bytes() == BOM + b"Hi\nSecond\n"
     assert "﻿" not in result.metadata["diff"]
@@ -253,25 +310,20 @@ async def test_bom_is_preserved_and_absent_from_the_diff(tmp_path, run):
 
 
 async def test_loose_block_anchor_below_the_threshold_is_rejected(tmp_path, run):
-    content = (
-        "def start():\n"
-        "    value = compute(1, 2)\n"
-        "    return value * OFFSET\n"
-        "def end():\n"
-    )
+    content = "def start():\n    value = compute(1, 2)\n    return value * OFFSET\ndef end():\n"
     target = tmp_path / "f.py"
     target.write_text(content)
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.py",
-        "old_string": (
-            "def start():\n"
-            "    completely unrelated body here\n"
-            "    nothing in common with the file\n"
-            "def end():"
-        ),
-        "new_string": "def start():\n    pass\ndef end():",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.py",
+            "old_string": (
+                "def start():\n    completely unrelated body here\n    nothing in common with the file\ndef end():"
+            ),
+            "new_string": "def start():\n    pass\ndef end():",
+        },
+    )
 
     assert result.is_error is True
     assert "Could not find old_string" in body(result)
@@ -302,14 +354,17 @@ async def test_editing_an_unread_file_fails_without_changing_it(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("Hello World\n")
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": "f.txt", "old_string": "World", "new_string": "Turtle",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "f.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+        },
+    )
 
     assert result.is_error is True
-    assert body(result) == (
-        f"File has not been read yet: read {target} before editing it."
-    )
+    assert body(result) == (f"File has not been read yet: read {target} before editing it.")
     assert target.read_text() == "Hello World\n"
 
 
@@ -320,11 +375,14 @@ async def test_line_trimmed_match_corrects_wrong_indentation(tmp_path, run):
     target = tmp_path / "f.py"
     target.write_text("def f():\n    return 42\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.py",
-        "old_string": "        return 42",
-        "new_string": "    return 43",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.py",
+            "old_string": "        return 42",
+            "new_string": "    return 43",
+        },
+    )
 
     assert result.is_error is False
     assert target.read_text() == "def f():\n    return 43\n"
@@ -334,9 +392,14 @@ async def test_whitespace_normalized_match(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("a  b   c\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "old_string": "a b c", "new_string": "d e f",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "old_string": "a b c",
+            "new_string": "d e f",
+        },
+    )
 
     assert result.is_error is False
     assert target.read_text() == "d e f\n"
@@ -346,9 +409,14 @@ async def test_escape_normalized_match(tmp_path, run):
     target = tmp_path / "f.sh"
     target.write_text('say "hi"\n')
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.sh", "old_string": 'say \\"hi\\"', "new_string": 'say "bye"',
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.sh",
+            "old_string": 'say \\"hi\\"',
+            "new_string": 'say "bye"',
+        },
+    )
 
     assert result.is_error is False
     assert target.read_text() == 'say "bye"\n'
@@ -358,11 +426,14 @@ async def test_block_anchor_match_with_similar_middle_is_accepted(tmp_path, run)
     target = tmp_path / "f.py"
     target.write_text("first\n    middle = 1\nlast\n")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.py",
-        "old_string": "first\n    middle = 2\nlast",
-        "new_string": "first\n    middle = 3\nlast",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.py",
+            "old_string": "first\n    middle = 2\nlast",
+            "new_string": "first\n    middle = 3\nlast",
+        },
+    )
 
     assert result.is_error is False
     assert target.read_text() == "first\n    middle = 3\nlast\n"
@@ -375,35 +446,44 @@ def test_args_require_paths_and_forbid_extras():
     with pytest.raises(ValidationError):
         EditTool.Args.model_validate({"old_string": "a", "new_string": "b"})
     with pytest.raises(ValidationError):
-        EditTool.Args.model_validate({
-            "file_path": "f", "old_string": "a", "new_string": "b", "surprise": 1,
-        })
+        EditTool.Args.model_validate(
+            {
+                "file_path": "f",
+                "old_string": "a",
+                "new_string": "b",
+                "surprise": 1,
+            }
+        )
 
 
 # ── permission resource ───────────────────────────────────────────────────────
 
 
 def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
-    [access, request] = perm(make_tool(tmp_path), {
-        "file_path": "greeting.txt", "old_string": "World", "new_string": "Turtle",
-    })
+    [access, request] = perm(
+        make_tool(tmp_path),
+        {
+            "file_path": "greeting.txt",
+            "old_string": "World",
+            "new_string": "Turtle",
+        },
+    )
 
     path = tmp_path / "greeting.txt"
     assert access.resources == [
         ResourcePermission(permission="access_directory", resource=str(tmp_path)),
     ]
     assert access.metadata["preview"] == f"Access directory {tmp_path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(tmp_path),
+                    permission="access_directory",
+                    resource=str(tmp_path),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{tmp_path}/*",
+                    permission="access_directory",
+                    resource=f"{tmp_path}/*",
                 ),
             ],
             f"Always allow access to {tmp_path}",
@@ -413,10 +493,7 @@ def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
         ResourcePermission(permission="edit", resource=str(path)),
     ]
     assert request.metadata["preview"] == f"Edit {path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="edit", resource=f"{tmp_path}/*")],
             f"Edit files under {tmp_path}",
@@ -425,13 +502,19 @@ def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
 
 
 def test_permission_resource_for_a_create(tmp_path, perm):
-    [access, request] = perm(make_tool(tmp_path), {
-        "file_path": "sub/new.txt", "old_string": "", "new_string": "content",
-    })
+    [access, request] = perm(
+        make_tool(tmp_path),
+        {
+            "file_path": "sub/new.txt",
+            "old_string": "",
+            "new_string": "content",
+        },
+    )
 
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(tmp_path / "sub"),
+            permission="access_directory",
+            resource=str(tmp_path / "sub"),
         ),
     ]
     assert request.resources == [

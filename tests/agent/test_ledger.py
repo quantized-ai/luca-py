@@ -14,6 +14,7 @@ reconstructed from the `approval_decisions` audit log.
 import pytest
 
 from luca.agent.core.exceptions import AgentError
+from luca.agent.core.ledger import SessionLedger
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
@@ -41,8 +42,6 @@ from luca.agent.core.models import (
     Usage,
     UserMessage,
 )
-from luca.agent.core.ledger import SessionLedger
-
 from tests.agent.scenarios import MODEL
 
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
@@ -73,7 +72,10 @@ def test_open_turn_index_is_none_after_turn_finish():
             "tf": TurnFinish(id="tf", created_at=2),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "tf"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -93,7 +95,10 @@ def test_open_turn_index_finds_unclosed_turn_start():
             "ts2": TurnStart(id="ts2", created_at=4),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts1", "tf1", "u2", "ts2"], created_at=0, updated_at=4,
+            id="c1",
+            nodes=["u1", "ts1", "tf1", "u2", "ts2"],
+            created_at=0,
+            updated_at=4,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -138,7 +143,10 @@ def test_derive_status_pending_with_open_turn_and_no_executions():
             "ts": TurnStart(id="ts", created_at=1),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts"], created_at=0, updated_at=1,
+            id="c1",
+            nodes=["u1", "ts"],
+            created_at=0,
+            updated_at=1,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -153,7 +161,9 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -162,7 +172,10 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "te1"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -179,7 +192,9 @@ def test_derive_status_pending_when_execution_was_never_processed():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -188,7 +203,10 @@ def test_derive_status_pending_when_execution_was_never_processed():
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "te1"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -203,7 +221,9 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -212,7 +232,10 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "te1"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -229,7 +252,9 @@ def test_derive_status_pending_with_orphaned_running_execution():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.RUNNING,
@@ -239,7 +264,10 @@ def test_derive_status_pending_with_orphaned_running_execution():
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1"], created_at=0, updated_at=3,
+            id="c1",
+            nodes=["ts", "te1"],
+            created_at=0,
+            updated_at=3,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -257,7 +285,10 @@ def test_derive_status_idle_after_closed_turn():
             "tf": TurnFinish(id="tf", created_at=2),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "tf"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -274,7 +305,9 @@ def test_derive_status_cancelling_beats_awaiting_approval():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -284,7 +317,10 @@ def test_derive_status_cancelling_beats_awaiting_approval():
             "cr": CancelRequested(id="cr", created_at=3),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1", "cr"], created_at=0, updated_at=3,
+            id="c1",
+            nodes=["ts", "te1", "cr"],
+            created_at=0,
+            updated_at=3,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -301,12 +337,17 @@ def test_derive_status_pending_after_timed_out_turn():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "ts": TurnStart(id="ts", created_at=1),
             "tf": TurnFinish(
-                id="tf", created_at=2,
-                outcome=TurnOutcome.TIMED_OUT, error="client timeout",
+                id="tf",
+                created_at=2,
+                outcome=TurnOutcome.TIMED_OUT,
+                error="client timeout",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "tf"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -322,12 +363,17 @@ def test_derive_status_pending_after_errored_turn():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "ts": TurnStart(id="ts", created_at=1),
             "tf": TurnFinish(
-                id="tf", created_at=2,
-                outcome=TurnOutcome.ERRORED, error="boom",
+                id="tf",
+                created_at=2,
+                outcome=TurnOutcome.ERRORED,
+                error="boom",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "tf"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -346,12 +392,16 @@ def test_derive_status_idle_after_cancelled_turn():
             "ts": TurnStart(id="ts", created_at=1),
             "cr": CancelRequested(id="cr", created_at=2),
             "tf": TurnFinish(
-                id="tf", created_at=3,
+                id="tf",
+                created_at=3,
                 outcome=TurnOutcome.CANCELLED,
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "cr", "tf"], created_at=0, updated_at=3,
+            id="c1",
+            nodes=["u1", "ts", "cr", "tf"],
+            created_at=0,
+            updated_at=3,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -372,17 +422,22 @@ MATRIX_SESSION = AgentSession(
     entries={
         "ts": TurnStart(id="ts", created_at=1),
         "te_done": ToolExecution(
-            id="te_done", created_at=2, tool_call_id="tc0",
+            id="te_done",
+            created_at=2,
+            tool_call_id="tc0",
             raw_tool_call=ToolCall(id="tc0", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=ToolSpec(name="add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
-            started_at=3, ended_at=3,
+            started_at=3,
+            ended_at=3,
         ),
         "te_undecided": ToolExecution(
-            id="te_undecided", created_at=4, tool_call_id="tc1",
+            id="te_undecided",
+            created_at=4,
+            tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
             tool_spec=ToolSpec(name="add"),
             status=ExecutionStatus.PENDING,
@@ -390,7 +445,9 @@ MATRIX_SESSION = AgentSession(
             approval_decisions=[],
         ),
         "te_awaiting": ToolExecution(
-            id="te_awaiting", created_at=5, tool_call_id="tc2",
+            id="te_awaiting",
+            created_at=5,
+            tool_call_id="tc2",
             raw_tool_call=ToolCall(id="tc2", name="multiply"),
             tool_spec=ToolSpec(name="multiply"),
             status=ExecutionStatus.PENDING,
@@ -398,7 +455,9 @@ MATRIX_SESSION = AgentSession(
             approval_decisions=[PENDING_1000],
         ),
         "te_ready": ToolExecution(
-            id="te_ready", created_at=6, tool_call_id="tc3",
+            id="te_ready",
+            created_at=6,
+            tool_call_id="tc3",
             raw_tool_call=ToolCall(id="tc3", name="subtract"),
             tool_spec=ToolSpec(name="subtract"),
             status=ExecutionStatus.PENDING,
@@ -406,7 +465,9 @@ MATRIX_SESSION = AgentSession(
             approval_decisions=[ALLOW_1000],
         ),
         "te_running": ToolExecution(
-            id="te_running", created_at=7, tool_call_id="tc4",
+            id="te_running",
+            created_at=7,
+            tool_call_id="tc4",
             raw_tool_call=ToolCall(id="tc4", name="add"),
             tool_spec=ToolSpec(name="add"),
             status=ExecutionStatus.RUNNING,
@@ -416,12 +477,17 @@ MATRIX_SESSION = AgentSession(
         ),
     },
     tool_executions={
-        "tc0": ["te_done"], "tc1": ["te_undecided"], "tc2": ["te_awaiting"],
-        "tc3": ["te_ready"], "tc4": ["te_running"],
+        "tc0": ["te_done"],
+        "tc1": ["te_undecided"],
+        "tc2": ["te_awaiting"],
+        "tc3": ["te_ready"],
+        "tc4": ["te_running"],
     },
     active_conversation=Conversation(
-        id="c1", nodes=["ts", "te_done", "te_undecided", "te_awaiting", "te_ready", "te_running"],
-        created_at=0, updated_at=8,
+        id="c1",
+        nodes=["ts", "te_done", "te_undecided", "te_awaiting", "te_ready", "te_running"],
+        created_at=0,
+        updated_at=8,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -467,7 +533,10 @@ def test_execution_subsets_are_empty_without_open_turn():
             "tf": TurnFinish(id="tf", created_at=2),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "tf"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -490,7 +559,9 @@ def test_approval_state_is_read_from_approval_status_not_the_log():
         entries={
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
-                id="te1", created_at=2, tool_call_id="tc1",
+                id="te1",
+                created_at=2,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -499,7 +570,10 @@ def test_approval_state_is_read_from_approval_status_not_the_log():
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "te1"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "te1"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -521,14 +595,20 @@ def test_open_turn_cancel_requested_finds_the_unconsumed_entry():
             "cr": CancelRequested(id="cr", created_at=2, error="user hit ESC"),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "cr"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["ts", "cr"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     assert ledger.open_turn_cancel_requested() == CancelRequested(
-        id="cr", created_at=2, outcome=TurnOutcome.CANCELLED, error="user hit ESC",
+        id="cr",
+        created_at=2,
+        outcome=TurnOutcome.CANCELLED,
+        error="user hit ESC",
     )
 
 
@@ -541,14 +621,18 @@ def test_open_turn_cancel_requested_ignores_consumed_instances():
             "ts1": TurnStart(id="ts1", created_at=1),
             "cr": CancelRequested(id="cr", created_at=2),
             "tf1": TurnFinish(
-                id="tf1", created_at=3,
+                id="tf1",
+                created_at=3,
                 outcome=TurnOutcome.CANCELLED,
             ),
             "u2": UserMessage(id="u2", created_at=4, parts=[TextContent(text="go")]),
             "ts2": TurnStart(id="ts2", created_at=5),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts1", "cr", "tf1", "u2", "ts2"], created_at=0, updated_at=5,
+            id="c1",
+            nodes=["ts1", "cr", "tf1", "u2", "ts2"],
+            created_at=0,
+            updated_at=5,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -564,12 +648,16 @@ def test_open_turn_cancel_requested_is_none_without_open_turn():
             "ts": TurnStart(id="ts", created_at=1),
             "cr": CancelRequested(id="cr", created_at=2),
             "tf": TurnFinish(
-                id="tf", created_at=3,
+                id="tf",
+                created_at=3,
                 outcome=TurnOutcome.CANCELLED,
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["ts", "cr", "tf"], created_at=0, updated_at=3,
+            id="c1",
+            nodes=["ts", "cr", "tf"],
+            created_at=0,
+            updated_at=3,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -586,24 +674,39 @@ def test_record_usage_builds_the_record_and_indexes_it_by_conversation():
         id="s",
         entries={
             "a1": AssistantMessage(
-                id="a1", created_at=1, parts=[TextContent(text="hi")],
-                llm_config=MODEL, stop_reason="stop",
+                id="a1",
+                created_at=1,
+                parts=[TextContent(text="hi")],
+                llm_config=MODEL,
+                stop_reason="stop",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["a1"], created_at=0, updated_at=1,
+            id="c1",
+            nodes=["a1"],
+            created_at=0,
+            updated_at=1,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     record = ledger.record_usage(
-        "a1", input=10, output=5, cache_read=2, total_tokens=15,
+        "a1",
+        input=10,
+        output=5,
+        cache_read=2,
+        total_tokens=15,
     )
 
     assert record == Usage(
-        conversation_id="c1", entry_id="a1",
-        input=10, output=5, cache_read=2, cache_write=0, total_tokens=15,
+        conversation_id="c1",
+        entry_id="a1",
+        input=10,
+        output=5,
+        cache_read=2,
+        cache_write=0,
+        total_tokens=15,
     )
     assert session.usages == {"c1": {"a1": record}}
 
@@ -613,12 +716,18 @@ def test_record_usage_replaces_the_pair_record_on_re_record():
         id="s",
         entries={
             "a1": AssistantMessage(
-                id="a1", created_at=1, parts=[TextContent(text="hi")],
-                llm_config=MODEL, stop_reason="stop",
+                id="a1",
+                created_at=1,
+                parts=[TextContent(text="hi")],
+                llm_config=MODEL,
+                stop_reason="stop",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["a1"], created_at=0, updated_at=1,
+            id="c1",
+            nodes=["a1"],
+            created_at=0,
+            updated_at=1,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -630,7 +739,10 @@ def test_record_usage_replaces_the_pair_record_on_re_record():
     assert session.usages == {
         "c1": {
             "a1": Usage(
-                conversation_id="c1", entry_id="a1", input=20, total_tokens=20,
+                conversation_id="c1",
+                entry_id="a1",
+                input=20,
+                total_tokens=20,
             ),
         },
     }
@@ -640,7 +752,10 @@ def test_record_usage_rejects_a_missing_entry():
     session = AgentSession(
         id="s",
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=0, updated_at=0,
+            id="c1",
+            nodes=[],
+            created_at=0,
+            updated_at=0,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -655,12 +770,18 @@ def test_record_usage_rejects_an_entry_outside_the_conversation_path():
         id="s",
         entries={
             "a1": AssistantMessage(
-                id="a1", created_at=1, parts=[TextContent(text="hi")],
-                llm_config=MODEL, stop_reason="stop",
+                id="a1",
+                created_at=1,
+                parts=[TextContent(text="hi")],
+                llm_config=MODEL,
+                stop_reason="stop",
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=0, updated_at=0,
+            id="c1",
+            nodes=[],
+            created_at=0,
+            updated_at=0,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -686,7 +807,9 @@ def test_append_links_parent_extends_path_and_stamps_updated_at():
 
     entry = ledger.append(
         lambda entry_id, parent_id, ts: TurnStart(
-            id=entry_id, parent_id=parent_id, created_at=ts,
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
         )
     )
 
@@ -707,7 +830,9 @@ def test_append_tool_execution_indexes_by_tool_call_id():
 
     ledger.append(
         lambda entry_id, parent_id, ts: ToolExecution(
-            id=entry_id, parent_id=parent_id, created_at=ts,
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
             tool_spec=ToolSpec(name="add"),
@@ -722,7 +847,9 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         id="s",
         entries={
             "te1": ToolExecution(
-                id="te1", created_at=0, tool_call_id="tc1",
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.PENDING,
@@ -747,7 +874,9 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
 
     assert stored is replacement
     assert session.entries["te1"] == ToolExecution(
-        id="te1", created_at=0, tool_call_id="tc1",
+        id="te1",
+        created_at=0,
+        tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
         tool_spec=ToolSpec(name="add"),
         status=ExecutionStatus.REJECTED,
@@ -768,22 +897,32 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "te1": ToolExecution(
-                id="te1", parent_id="u1", created_at=1, tool_call_id="tc1",
+                id="te1",
+                parent_id="u1",
+                created_at=1,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=1, ended_at=1,
+                started_at=1,
+                ended_at=1,
             ),
             "a2": AssistantMessage(
-                id="a2", parent_id="te1", created_at=2,
+                id="a2",
+                parent_id="te1",
+                created_at=2,
                 parts=[TextContent(text="done")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
             ),
         },
         tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "te1", "a2"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "te1", "a2"],
+            created_at=0,
+            updated_at=2,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -792,7 +931,9 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
     pruned = ledger.prune(
         "te1",
         lambda entry_id, parent_id, ts: PrunedEntry(
-            id=entry_id, parent_id=parent_id, created_at=ts,
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
             pruned_entry_type="tool_execution",
             pruned_entry_id="te1",
             content=[TextContent(text="[pruned]")],
@@ -802,7 +943,9 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
 
     # the pruned entry took the original's position AND its parent link
     assert pruned == PrunedEntry(
-        id="p1", parent_id="u1", created_at=1000,
+        id="p1",
+        parent_id="u1",
+        created_at=1000,
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[TextContent(text="[pruned]")],
@@ -858,7 +1001,9 @@ def test_prune_rejects_a_replacement_referencing_a_different_entry():
         ledger.prune(
             "u1",
             lambda entry_id, parent_id, ts: PrunedEntry(
-                id=entry_id, parent_id=parent_id, created_at=ts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
                 pruned_entry_type="user",
                 pruned_entry_id="other",
                 content=[TextContent(text="[pruned]")],
@@ -881,7 +1026,9 @@ def test_prune_rejects_a_mismatched_pruned_entry_type():
         ledger.prune(
             "u1",
             lambda entry_id, parent_id, ts: PrunedEntry(
-                id=entry_id, parent_id=parent_id, created_at=ts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
                 pruned_entry_type="tool_execution",
                 pruned_entry_id="u1",
                 content=[TextContent(text="[pruned]")],
@@ -894,7 +1041,9 @@ def test_prune_rejects_a_nonterminal_execution():
         id="s",
         entries={
             "te1": ToolExecution(
-                id="te1", created_at=0, tool_call_id="tc1",
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=ToolSpec(name="add"),
                 status=ExecutionStatus.RUNNING,
@@ -911,7 +1060,9 @@ def test_prune_rejects_a_nonterminal_execution():
         ledger.prune(
             "te1",
             lambda entry_id, parent_id, ts: PrunedEntry(
-                id=entry_id, parent_id=parent_id, created_at=ts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
                 pruned_entry_type="tool_execution",
                 pruned_entry_id="te1",
                 content=[TextContent(text="[pruned]")],
@@ -926,7 +1077,8 @@ def test_prune_rejects_a_nonterminal_execution():
 
 _LLM = LLMConfig(model="test-model", provider="faux")
 _AM = AssistantMessage(
-    id="a1", created_at=1,
+    id="a1",
+    created_at=1,
     parts=[TextContent(text="ok")],
     llm_config=_LLM,
     stop_reason="stop",
@@ -939,8 +1091,9 @@ def test_runtime_status_empty_session():
         active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.IDLE, turn_count=0, step_count=0)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.IDLE, turn_count=0, step_count=0
+    )
 
 
 def test_runtime_status_open_turn_no_steps():
@@ -951,13 +1104,17 @@ def test_runtime_status_open_turn_no_steps():
             "ts": TurnStart(id="ts", created_at=1),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts"], created_at=0, updated_at=1,
+            id="c1",
+            nodes=["u1", "ts"],
+            created_at=0,
+            updated_at=1,
             status=ConversationStatus.RUNNING,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=1, step_count=0)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.RUNNING, turn_count=1, step_count=0
+    )
 
 
 def test_runtime_status_open_turn_one_step():
@@ -969,20 +1126,26 @@ def test_runtime_status_open_turn_one_step():
             "a1": _AM,
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1"], created_at=0, updated_at=1,
+            id="c1",
+            nodes=["u1", "ts", "a1"],
+            created_at=0,
+            updated_at=1,
             status=ConversationStatus.RUNNING,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=1, step_count=1)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.RUNNING, turn_count=1, step_count=1
+    )
 
 
 def test_runtime_status_open_turn_two_steps():
     a2 = AssistantMessage(
-        id="a2", created_at=2,
+        id="a2",
+        created_at=2,
         parts=[TextContent(text="also ok")],
-        llm_config=_LLM, stop_reason="stop",
+        llm_config=_LLM,
+        stop_reason="stop",
     )
     session = AgentSession(
         id="s",
@@ -993,13 +1156,17 @@ def test_runtime_status_open_turn_two_steps():
             "a2": a2,
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "a2"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "a1", "a2"],
+            created_at=0,
+            updated_at=2,
             status=ConversationStatus.RUNNING,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=1, step_count=2)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.RUNNING, turn_count=1, step_count=2
+    )
 
 
 def test_runtime_status_closed_turn_no_open_turn():
@@ -1012,14 +1179,18 @@ def test_runtime_status_closed_turn_no_open_turn():
             "tf": TurnFinish(id="tf", created_at=2, outcome=TurnOutcome.COMPLETED),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "tf"], created_at=0, updated_at=2,
+            id="c1",
+            nodes=["u1", "ts", "a1", "tf"],
+            created_at=0,
+            updated_at=2,
             status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
     # Closed turn: step_count=0 (no open turn), turn_count=1
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.IDLE, turn_count=1, step_count=0)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.IDLE, turn_count=1, step_count=0
+    )
 
 
 def test_runtime_status_second_open_turn():
@@ -1034,22 +1205,27 @@ def test_runtime_status_second_open_turn():
             "ts2": TurnStart(id="ts2", created_at=4),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2"],
-            created_at=0, updated_at=4,
+            id="c1",
+            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2"],
+            created_at=0,
+            updated_at=4,
             status=ConversationStatus.RUNNING,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
     # Second open turn with no steps yet; turn_count=2 (two TurnStarts)
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=2, step_count=0)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.RUNNING, turn_count=2, step_count=0
+    )
 
 
 def test_runtime_status_second_open_turn_with_steps():
     a2 = AssistantMessage(
-        id="a2", created_at=5,
+        id="a2",
+        created_at=5,
         parts=[TextContent(text="reply")],
-        llm_config=_LLM, stop_reason="stop",
+        llm_config=_LLM,
+        stop_reason="stop",
     )
     session = AgentSession(
         id="s",
@@ -1063,15 +1239,18 @@ def test_runtime_status_second_open_turn_with_steps():
             "a2": a2,
         },
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2"],
-            created_at=0, updated_at=5,
+            id="c1",
+            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2"],
+            created_at=0,
+            updated_at=5,
             status=ConversationStatus.RUNNING,
         ),
         session_config=SessionConfig(llm_config=_LLM),
     )
     # step_count counts only AssistantMessages in the CURRENT (second) open turn
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == \
-        SessionRuntimeStatus(status=ConversationStatus.RUNNING, turn_count=2, step_count=1)
+    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+        status=ConversationStatus.RUNNING, turn_count=2, step_count=1
+    )
 
 
 def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
@@ -1079,11 +1258,16 @@ def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
         id="s",
         entries={
             "cmp": CompactionEntry(
-                id="cmp", created_at=0, source=CompactionSource.USER,
+                id="cmp",
+                created_at=0,
+                source=CompactionSource.USER,
             ),
         },
         active_conversation=Conversation(
-            id="c1", nodes=["cmp"], created_at=0, updated_at=0,
+            id="c1",
+            nodes=["cmp"],
+            created_at=0,
+            updated_at=0,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1093,7 +1277,10 @@ def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
     ledger.put_entry(replacement)
 
     assert session.entries["cmp"] == CompactionEntry(
-        id="cmp", created_at=0, source=CompactionSource.USER, started_at=1000,
+        id="cmp",
+        created_at=0,
+        source=CompactionSource.USER,
+        started_at=1000,
     )
     assert session.active_conversation.nodes == ["cmp"]
     assert session.active_conversation.updated_at == 1000
@@ -1104,7 +1291,10 @@ def test_put_entry_refuses_an_uncommitted_entry():
         id="s",
         entries={},
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=0, updated_at=0,
+            id="c1",
+            nodes=[],
+            created_at=0,
+            updated_at=0,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1121,7 +1311,10 @@ def test_put_entry_refuses_to_create_an_unknown_entry():
         id="s",
         entries={},
         active_conversation=Conversation(
-            id="c1", nodes=[], created_at=0, updated_at=0,
+            id="c1",
+            nodes=[],
+            created_at=0,
+            updated_at=0,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1130,7 +1323,9 @@ def test_put_entry_refuses_to_create_an_unknown_entry():
     with pytest.raises(AgentError, match="Cannot update entry 'nope': no such entry"):
         ledger.put_entry(
             CompactionEntry(
-                id="nope", created_at=0, source=CompactionSource.USER,
+                id="nope",
+                created_at=0,
+                source=CompactionSource.USER,
             ),
         )
 
@@ -1148,33 +1343,49 @@ TRANSITION_SESSION = AgentSession(
         "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")]),
         "ts1": TurnStart(id="ts1", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts1", created_at=500,
-            parts=[TextContent(text="hello")], llm_config=MODEL, stop_reason="stop",
+            id="a1",
+            parent_id="ts1",
+            created_at=500,
+            parts=[TextContent(text="hello")],
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "tf1": TurnFinish(id="tf1", parent_id="a1", created_at=500),
         "u2": UserMessage(
-            id="u2", parent_id="tf1", created_at=500,
+            id="u2",
+            parent_id="tf1",
+            created_at=500,
             parts=[TextContent(text="and now?")],
         ),
         "ts_c": TurnStart(id="ts_c", parent_id="u2", created_at=600),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=600,
-            source=CompactionSource.POLICY, started_at=600,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=600,
+            source=CompactionSource.POLICY,
+            started_at=600,
         ),
     },
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
-        created_at=500, updated_at=600, status=ConversationStatus.RUNNING,
+        id="c1",
+        nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
+        created_at=500,
+        updated_at=600,
+        status=ConversationStatus.RUNNING,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
 
 SUMMARIZED = CompactionEntry(
-    id="cmp", parent_id="ts_c", created_at=600,
+    id="cmp",
+    parent_id="ts_c",
+    created_at=600,
     source=CompactionSource.POLICY,
     parts=[TextContent(text="the user said hi")],
     compacted_nodes=["u1", "ts1", "a1", "tf1"],
-    started_at=600, ended_at=1000, context_tokens=4,
+    started_at=600,
+    ended_at=1000,
+    context_tokens=4,
 )
 
 CLOSING = TurnFinish(id="tf_c", parent_id="cmp", created_at=1000)
@@ -1197,11 +1408,16 @@ def test_transition_archives_the_outgoing_path_and_installs_the_new_one():
         Conversation(
             id="c1",
             nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp", "tf_c"],
-            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
     ]
     assert session.active_conversation == Conversation(
-        id="c2", nodes=["cmp", "u2"], created_at=1000, updated_at=1000,
+        id="c2",
+        nodes=["cmp", "u2"],
+        created_at=1000,
+        updated_at=1000,
         status=ConversationStatus.PENDING,
     )
     assert session.entries["cmp"] == SUMMARIZED
@@ -1214,8 +1430,10 @@ def test_the_same_conversation_is_never_both_active_and_archived():
 
     ledger.transition_conversation(
         updates=[SUMMARIZED.model_copy(deep=True)],
-        created=[], closing=CLOSING.model_copy(deep=True),
-        nodes=["cmp"], ts=1000,
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp"],
+        ts=1000,
     )
 
     assert session.conversation_history[-1] is not session.active_conversation
@@ -1225,14 +1443,20 @@ def test_transition_stores_created_entries_and_indexes_a_created_execution():
     session = TRANSITION_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
     framing = UserMessage(
-        id="new1", created_at=1000, parts=[TextContent(text="framing")],
+        id="new1",
+        created_at=1000,
+        parts=[TextContent(text="framing")],
     )
     execution = ToolExecution(
-        id="new2", parent_id="new1", created_at=1000,
-        tool_call_id="tcX", raw_tool_call=ToolCall(id="tcX", name="add"),
+        id="new2",
+        parent_id="new1",
+        created_at=1000,
+        tool_call_id="tcX",
+        raw_tool_call=ToolCall(id="tcX", name="add"),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000, ended_at=1000,
+        started_at=1000,
+        ended_at=1000,
     )
 
     ledger.transition_conversation(
@@ -1253,11 +1477,21 @@ def test_transition_without_a_closing_marker_archives_the_path_as_it_stands():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     ledger.transition_conversation(
-        updates=[], created=[], closing=None, nodes=["u2"], ts=1000,
+        updates=[],
+        created=[],
+        closing=None,
+        nodes=["u2"],
+        ts=1000,
     )
 
     assert session.conversation_history[-1].nodes == [
-        "u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp",
+        "u1",
+        "ts1",
+        "a1",
+        "tf1",
+        "u2",
+        "ts_c",
+        "cmp",
     ]
 
 
@@ -1267,8 +1501,10 @@ def test_the_new_conversation_derives_idle_from_a_carried_completed_turn():
 
     installed = ledger.transition_conversation(
         updates=[SUMMARIZED.model_copy(deep=True)],
-        created=[], closing=CLOSING.model_copy(deep=True),
-        nodes=["cmp", "ts1", "a1", "tf1"], ts=1000,
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "ts1", "a1", "tf1"],
+        ts=1000,
     )
 
     assert installed.status == ConversationStatus.IDLE
@@ -1280,8 +1516,10 @@ def test_the_new_conversation_derives_pending_from_a_carried_user_message():
 
     installed = ledger.transition_conversation(
         updates=[SUMMARIZED.model_copy(deep=True)],
-        created=[], closing=CLOSING.model_copy(deep=True),
-        nodes=["cmp", "u2"], ts=1000,
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "u2"],
+        ts=1000,
     )
 
     assert installed.status == ConversationStatus.PENDING
@@ -1296,8 +1534,10 @@ def test_the_new_conversation_derives_pending_from_a_carried_failed_turn():
 
     installed = ledger.transition_conversation(
         updates=[SUMMARIZED.model_copy(deep=True)],
-        created=[], closing=CLOSING.model_copy(deep=True),
-        nodes=["cmp", "ts1", "a1", "tf1"], ts=1000,
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "ts1", "a1", "tf1"],
+        ts=1000,
     )
 
     assert installed.status == ConversationStatus.PENDING
@@ -1309,8 +1549,10 @@ def test_the_new_conversation_derives_idle_when_the_summary_is_the_leaf():
 
     installed = ledger.transition_conversation(
         updates=[SUMMARIZED.model_copy(deep=True)],
-        created=[], closing=CLOSING.model_copy(deep=True),
-        nodes=["cmp"], ts=1000,
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp"],
+        ts=1000,
     )
 
     assert installed.status == ConversationStatus.IDLE
@@ -1326,8 +1568,10 @@ def test_an_unknown_update_id_raises_before_anything_is_written():
             updates=[
                 SUMMARIZED.model_copy(deep=True, update={"id": "ghost"}),
             ],
-            created=[], closing=CLOSING.model_copy(deep=True),
-            nodes=["cmp"], ts=1000,
+            created=[],
+            closing=CLOSING.model_copy(deep=True),
+            nodes=["cmp"],
+            ts=1000,
         )
 
     assert session == before
@@ -1343,10 +1587,14 @@ def test_a_created_id_that_already_exists_raises_before_anything_is_written():
             updates=[],
             created=[
                 UserMessage(
-                    id="u1", created_at=1000, parts=[TextContent(text="clash")],
+                    id="u1",
+                    created_at=1000,
+                    parts=[TextContent(text="clash")],
                 ),
             ],
-            closing=None, nodes=["cmp"], ts=1000,
+            closing=None,
+            nodes=["cmp"],
+            ts=1000,
         )
 
     assert session == before
@@ -1361,7 +1609,9 @@ def test_a_created_entry_with_no_id_raises_before_anything_is_written():
         ledger.transition_conversation(
             updates=[],
             created=[UserMessage(parts=[TextContent(text="template")])],
-            closing=None, nodes=["cmp"], ts=1000,
+            closing=None,
+            nodes=["cmp"],
+            ts=1000,
         )
 
     assert session == before
@@ -1377,25 +1627,39 @@ RESUME_SESSION = AgentSession(
         "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")]),
         "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts", created_at=500,
-            parts=[TextContent(text="hello")], llm_config=MODEL, stop_reason="stop",
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[TextContent(text="hello")],
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "ts_c": TurnStart(id="ts_c", parent_id="u1", created_at=600),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=600,
-            source=CompactionSource.USER, started_at=600,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=600,
+            source=CompactionSource.USER,
+            started_at=600,
         ),
         "cmp_done": CompactionEntry(
-            id="cmp_done", parent_id="ts_c", created_at=600,
+            id="cmp_done",
+            parent_id="ts_c",
+            created_at=600,
             source=CompactionSource.USER,
             parts=[TextContent(text="the story so far")],
-            compacted_nodes=["u1"], started_at=600, ended_at=700,
+            compacted_nodes=["u1"],
+            started_at=600,
+            ended_at=700,
         ),
         "cr": CancelRequested(id="cr", parent_id="cmp", created_at=700),
         "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=700),
     },
     active_conversation=Conversation(
-        id="c1", nodes=[], created_at=500, updated_at=700,
+        id="c1",
+        nodes=[],
+        created_at=500,
+        updated_at=700,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -1467,49 +1731,74 @@ STATUS_MATRIX_SESSION = AgentSession(
     id="s_matrix",
     entries={
         "u3": UserMessage(
-            id="u3", created_at=500, parts=[TextContent(text="what is X?")],
+            id="u3",
+            created_at=500,
+            parts=[TextContent(text="what is X?")],
         ),
         "ts2": TurnStart(id="ts2", parent_id="u3", created_at=500),
         "tf2_ok": TurnFinish(id="tf2_ok", parent_id="ts2", created_at=500),
         "tf2_err": TurnFinish(
-            id="tf2_err", parent_id="ts2", created_at=500,
-            outcome=TurnOutcome.ERRORED, error="boom",
+            id="tf2_err",
+            parent_id="ts2",
+            created_at=500,
+            outcome=TurnOutcome.ERRORED,
+            error="boom",
         ),
         "ts_c": TurnStart(id="ts_c", created_at=600),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=600,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=600,
             source=CompactionSource.POLICY,
         ),
         "cmp_started": CompactionEntry(
-            id="cmp_started", parent_id="ts_c", created_at=600,
-            source=CompactionSource.POLICY, started_at=600,
+            id="cmp_started",
+            parent_id="ts_c",
+            created_at=600,
+            source=CompactionSource.POLICY,
+            started_at=600,
         ),
         "cr": CancelRequested(id="cr", parent_id="cmp", created_at=700),
         "tf_c_ok": TurnFinish(id="tf_c_ok", parent_id="cmp", created_at=700),
         "tf_c_cancelled": TurnFinish(
-            id="tf_c_cancelled", parent_id="cmp", created_at=700,
+            id="tf_c_cancelled",
+            parent_id="cmp",
+            created_at=700,
             outcome=TurnOutcome.CANCELLED,
         ),
         "tf_c_err": TurnFinish(
-            id="tf_c_err", parent_id="cmp", created_at=700,
-            outcome=TurnOutcome.ERRORED, error="the policy raised",
+            id="tf_c_err",
+            parent_id="cmp",
+            created_at=700,
+            outcome=TurnOutcome.ERRORED,
+            error="the policy raised",
         ),
         "tf_c_timeout": TurnFinish(
-            id="tf_c_timeout", parent_id="cmp", created_at=700,
-            outcome=TurnOutcome.TIMED_OUT, error="compaction exceeded 0.05s",
+            id="tf_c_timeout",
+            parent_id="cmp",
+            created_at=700,
+            outcome=TurnOutcome.TIMED_OUT,
+            error="compaction exceeded 0.05s",
         ),
         "ts_c2": TurnStart(id="ts_c2", created_at=800),
         "cmp2": CompactionEntry(
-            id="cmp2", parent_id="ts_c2", created_at=800,
+            id="cmp2",
+            parent_id="ts_c2",
+            created_at=800,
             source=CompactionSource.USER,
         ),
         "tf_c2": TurnFinish(id="tf_c2", parent_id="cmp2", created_at=800),
         "u5": UserMessage(
-            id="u5", created_at=900, parts=[TextContent(text="still there?")],
+            id="u5",
+            created_at=900,
+            parts=[TextContent(text="still there?")],
         ),
     },
     active_conversation=Conversation(
-        id="c1", nodes=[], created_at=500, updated_at=900,
+        id="c1",
+        nodes=[],
+        created_at=500,
+        updated_at=900,
     ),
     session_config=SessionConfig(llm_config=MODEL),
 )
@@ -1569,7 +1858,13 @@ def test_a_compaction_on_an_otherwise_empty_path_is_idle():
 def test_two_stacked_closed_compaction_brackets_are_both_skipped():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
     session.active_conversation.nodes = [
-        "u3", "ts_c", "cmp", "tf_c_ok", "ts_c2", "cmp2", "tf_c2",
+        "u3",
+        "ts_c",
+        "cmp",
+        "tf_c_ok",
+        "ts_c2",
+        "cmp2",
+        "tf_c2",
     ]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 

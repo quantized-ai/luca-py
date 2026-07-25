@@ -22,8 +22,8 @@ import asyncio
 
 from pydantic import BaseModel, ConfigDict
 
-from .models import LLMConfig
 from .exceptions import CancelledError
+from .models import LLMConfig
 
 
 class CancellationToken:

@@ -126,12 +126,10 @@ def _process_chunk(state: _OpenAIParserState, chunk: dict) -> Iterator[RawStream
     # --- finish: close blocks + raw finish ---
     if finish is not None and not state.finished:
         state.finished = True
-        unresolved = [k for k, p in state.tool_pending.items()
-                      if k not in state.tool_content_index]
+        unresolved = [k for k, p in state.tool_pending.items() if k not in state.tool_content_index]
         if unresolved:
             raise StreamError(
-                f"OpenAI stream finished with tool calls missing id or name "
-                f"(openai tool_indices: {unresolved})"
+                f"OpenAI stream finished with tool calls missing id or name (openai tool_indices: {unresolved})"
             )
         if state.reasoning_content_index is not None:
             yield RawBlockStop(index=state.reasoning_content_index)
@@ -144,12 +142,14 @@ def _process_chunk(state: _OpenAIParserState, chunk: dict) -> Iterator[RawStream
     # --- usage ---
     if usage is not None:
         details = usage.get("completion_tokens_details") or {}
-        yield RawUsage(usage=Usage(
-            input_tokens=usage.get("prompt_tokens", 0),
-            output_tokens=usage.get("completion_tokens", 0),
-            total_tokens=usage.get("total_tokens", 0),
-            reasoning_tokens=details.get("reasoning_tokens"),
-        ))
+        yield RawUsage(
+            usage=Usage(
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                reasoning_tokens=details.get("reasoning_tokens"),
+            )
+        )
 
 
 class OpenAIChatCompletionStream(ChatCompletionStream):

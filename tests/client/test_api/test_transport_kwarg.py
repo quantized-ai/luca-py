@@ -5,7 +5,6 @@ from luca.client.types import (
     TextBlock,
     UserMessage,
 )
-
 from tests.client._helpers.stub_transports import StubTransport
 
 
@@ -13,8 +12,10 @@ def test_helper_accepts_prebuilt_transport():
     resp = ChatCompletionResponse(
         message=AssistantMessage(
             content=[TextBlock(text="hello")],
-            finish_reason="stop", provider_finish_reason="stop",
-            provider="custom", model="m",
+            finish_reason="stop",
+            provider_finish_reason="stop",
+            provider="custom",
+            model="m",
         ),
     )
     stub = StubTransport(responses=[resp])

@@ -95,6 +95,7 @@ a provider instance), which is also how tests hand in a `FauxProvider`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import inspect
 import json
@@ -119,36 +120,6 @@ from .compaction import (
 )
 from .context import CancellationToken, ToolContext
 from .context_manager import ContextManager
-from .models import (
-    AgentSession,
-    AnyEntry,
-    ApprovalDecision,
-    ApprovalOption,
-    ApprovalStatus,
-    AssistantMessage,
-    CancelRequested,
-    CompactionEntry,
-    CompactionSource,
-    Conversation,
-    ConversationStatus,
-    ExecutionResult,
-    ExecutionStatus,
-    Inf,
-    LLMConfig,
-    RuntimeConfig,
-    SessionConfig,
-    SessionRuntimeStatus,
-    TextContent,
-    ThinkingContent,
-    ToolCall,
-    ToolExecution,
-    ToolExecutionError,
-    TurnFinish,
-    TurnOutcome,
-    TurnStart,
-    UserMessage,
-    ContentPart,
-)
 from .events import (
     AgentEvent,
     ApprovalRequired,
@@ -174,6 +145,35 @@ from .exceptions import (
     ToolNotFound,
 )
 from .ledger import SessionLedger
+from .models import (
+    AgentSession,
+    AnyEntry,
+    ApprovalDecision,
+    ApprovalOption,
+    ApprovalStatus,
+    AssistantMessage,
+    CancelRequested,
+    CompactionEntry,
+    CompactionSource,
+    ContentPart,
+    Conversation,
+    ConversationStatus,
+    ExecutionResult,
+    ExecutionStatus,
+    Inf,
+    LLMConfig,
+    RuntimeConfig,
+    SessionConfig,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolExecution,
+    ToolExecutionError,
+    TurnFinish,
+    TurnOutcome,
+    TurnStart,
+    UserMessage,
+)
 from .projection import ConversationProjector, tool_message_text
 from .system_prompt import (
     DefaultSystemPromptAssembler,
@@ -183,7 +183,7 @@ from .system_prompt import (
 )
 from .tool_registry import ToolRegistry
 
-EventCallback = Callable[[AgentEvent], "None | Awaitable[None]"]
+EventCallback = Callable[[AgentEvent], "Awaitable[None] | None"]
 
 
 class RunResult(BaseModel):
@@ -314,8 +314,7 @@ class AgentRun:
     def __aiter__(self) -> AgentRun:
         if not self._entered or self._exited:
             raise AgentError(
-                "iterate inside 'async with' (e.g. async with runner.run() as "
-                "run: async for event in run: ...)"
+                "iterate inside 'async with' (e.g. async with runner.run() as run: async for event in run: ...)"
             )
         return self
 
@@ -334,16 +333,14 @@ class AgentRun:
         if self._exited and self.result is None:
             # suspended (or never driven) and finalized — only a completed
             # run keeps answering through its cached result
-            raise AgentError(
-                "this run was suspended and finalized; resume with a fresh "
-                "runner.run()"
-            )
+            raise AgentError("this run was suspended and finalized; resume with a fresh runner.run()")
         if self._finished:
             raise StopAsyncIteration
         if self._engine is None:
             self._runner._begin_run(self)  # raises on IDLE / concurrent run
             self._engine = self._runner._drive(
-                streaming=self._streaming, context=self._context,
+                streaming=self._streaming,
+                context=self._context,
                 token=self._token,
             )
         try:
@@ -392,7 +389,8 @@ class AgentRun:
         observation; a slow iterator never stalls the agent (a slow *callback*
         does — it is the app's own hook, awaited inline)."""
         engine = self._runner._drive(
-            streaming=self._streaming, context=self._context,
+            streaming=self._streaming,
+            context=self._context,
             token=self._token,
         )
         try:
@@ -444,10 +442,8 @@ class AgentRun:
                 # The JOIN was cancelled (task-group teardown), not the run:
                 # hard-cancel the background task and await it — no orphan.
                 self._task.cancel()
-                try:
+                with contextlib.suppress(BaseException):
                     await self._task
-                except BaseException:
-                    pass
             raise
 
     async def _finalize_eager(self, swallow_failure: bool) -> None:
@@ -456,10 +452,8 @@ class AgentRun:
         except asyncio.CancelledError:
             if not self._task.done():
                 self._task.cancel()
-                try:
+                with contextlib.suppress(BaseException):
                     await self._task
-                except BaseException:
-                    pass
             raise
         except BaseException:
             # The block's own exception wins when both failed; the background
@@ -499,7 +493,9 @@ class AgentSessionRunner:
             id=session_id,
             active_conversation=Conversation(
                 id=conversation_id or uuid4().hex[:8],
-                nodes=[], created_at=ts, updated_at=ts,
+                nodes=[],
+                created_at=ts,
+                updated_at=ts,
                 status=ConversationStatus.IDLE,
             ),
             session_config=SessionConfig(
@@ -526,9 +522,7 @@ class AgentSessionRunner:
         # A single projector OBJECT (never a class to instantiate, never
         # stacked by plugins): lives on the runner, is never serialized, and
         # is invoked fresh whenever messages are prepared for an LLM call.
-        self.conversation_projector = (
-            conversation_projector or ConversationProjector()
-        )
+        self.conversation_projector = conversation_projector or ConversationProjector()
         # The context-accounting strategy (context_manager.py): calculates
         # every new entry's `context_tokens`, processes returned tool output,
         # and builds pruned replacements. Same collaborator pattern as the
@@ -544,12 +538,9 @@ class AgentSessionRunner:
         # Static parts (str / dict / SystemPromptPart) coerce eagerly — a bad
         # part fails at construction, not mid-turn. Callables resolve per call.
         self.system_prompt_parts = [
-            part if callable(part) else coerce_system_prompt_part(part)
-            for part in (system_prompt_parts or [])
+            part if callable(part) else coerce_system_prompt_part(part) for part in (system_prompt_parts or [])
         ]
-        self.system_prompt_assembler = (
-            system_prompt_assembler or DefaultSystemPromptAssembler()
-        )
+        self.system_prompt_assembler = system_prompt_assembler or DefaultSystemPromptAssembler()
         self.provider = provider
         self.middleware = list(middleware or [])
         self.ledger = SessionLedger(session, self.now_ms, self.generate_id)
@@ -595,10 +586,12 @@ class AgentSessionRunner:
             and _equivalent(self.tool_registry, other.tool_registry)
             and self.system_prompt_parts == other.system_prompt_parts
             and _equivalent(
-                self.system_prompt_assembler, other.system_prompt_assembler,
+                self.system_prompt_assembler,
+                other.system_prompt_assembler,
             )
             and _equivalent(
-                self.conversation_projector, other.conversation_projector,
+                self.conversation_projector,
+                other.conversation_projector,
             )
             and _equivalent(self.context_manager, other.context_manager)
             and _equivalent(self.compaction_policy, other.compaction_policy)
@@ -659,15 +652,18 @@ class AgentSessionRunner:
             or self.ledger.open_turn_index() is not None
         ):
             raise AgentError(
-                f"post_message requires a closed turn and IDLE/PENDING status "
-                f"(status={self.status.value})."
+                f"post_message requires a closed turn and IDLE/PENDING status (status={self.status.value})."
             )
         parts = self._run_middlewares(
-            "before_post_message", _normalize_post_parts(content),
+            "before_post_message",
+            _normalize_post_parts(content),
         )
         message = self._append(
             lambda entry_id, parent_id, ts: UserMessage(
-                id=entry_id, parent_id=parent_id, created_at=ts, parts=parts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
+                parts=parts,
             )
         )
         self._set_status(ConversationStatus.PENDING)
@@ -699,17 +695,13 @@ class AgentSessionRunner:
         nothing can close."""
         if self.compaction_policy is None:
             raise AgentError(
-                "schedule_compaction requires a compaction_policy; this "
-                "runner was constructed without one."
+                "schedule_compaction requires a compaction_policy; this runner was constructed without one."
             )
         existing = self.ledger.open_compaction_entry()
         if existing is not None:
             return existing.id  # idempotent — nothing is written
         if self.ledger.open_turn_index() is not None:
-            raise AgentError(
-                f"schedule_compaction requires a closed turn "
-                f"(status={self.status.value})."
-            )
+            raise AgentError(f"schedule_compaction requires a closed turn (status={self.status.value}).")
         entry = self._open_compaction_bracket(CompactionSource.USER)
         self._set_status(ConversationStatus.PENDING)
         return entry.id
@@ -752,13 +744,15 @@ class AgentSessionRunner:
             return
         if self.ledger.open_turn_cancel_requested() is not None:
             raise AlreadyCancellingError(
-                "a cancellation is already pending for the open turn; the "
-                "first request's outcome/error stand"
+                "a cancellation is already pending for the open turn; the first request's outcome/error stand"
             )
         self._append(
             lambda entry_id, parent_id, ts: CancelRequested(
-                id=entry_id, parent_id=parent_id, created_at=ts,
-                outcome=outcome, error=error,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
+                outcome=outcome,
+                error=error,
             )
         )
         run = self._active_run
@@ -808,10 +802,7 @@ class AgentSessionRunner:
         """First-drive gate: one engine at a time, runnable status, and the
         run's own CancellationToken + ToolContext."""
         if self._active_run is not None:
-            raise AgentError(
-                "another run is already active on this runner; finish or "
-                "finalize it first"
-            )
+            raise AgentError("another run is already active on this runner; finish or finalize it first")
         if self.idle():
             raise AgentError("Nothing to run; call post_message() first.")
         run._token = CancellationToken()
@@ -842,7 +833,9 @@ class AgentSessionRunner:
         if self.ledger.open_turn_index() is None:
             self._append(
                 lambda entry_id, parent_id, ts: TurnStart(
-                    id=entry_id, parent_id=parent_id, created_at=ts,
+                    id=entry_id,
+                    parent_id=parent_id,
+                    created_at=ts,
                 )
             )
 
@@ -931,7 +924,10 @@ class AgentSessionRunner:
         )
 
     def _prepare(
-        self, build_fn, parent_id: str | None, ts: int,
+        self,
+        build_fn,
+        parent_id: str | None,
+        ts: int,
     ) -> AnyEntry:
         """A complete, fully-middlewared entry that is NOT committed — the
         other half of `_append`, for entries that belong to a conversation
@@ -941,7 +937,11 @@ class AgentSessionRunner:
         return self._complete_entry(build_fn(self.generate_id(), parent_id, ts))
 
     def _persist_entry(
-        self, entry: AnyEntry, *, recalculate: bool = True, **changes,
+        self,
+        entry: AnyEntry,
+        *,
+        recalculate: bool = True,
+        **changes,
     ) -> AnyEntry:
         """The one in-place update path, for both mutable entry types: copy
         with `changes`, complete, store. `recalculate=False` runs middleware
@@ -950,20 +950,24 @@ class AgentSessionRunner:
         must keep the final say on it."""
         updated = entry.model_copy(update=changes)
         updated = (
-            self._complete_entry(updated)
-            if recalculate
-            else self._run_middlewares("before_entry_written", updated)
+            self._complete_entry(updated) if recalculate else self._run_middlewares("before_entry_written", updated)
         )
         return self.ledger.put_entry(updated)
 
     def _persist_execution(
-        self, execution: ToolExecution, *, recalculate: bool = True, **changes,
+        self,
+        execution: ToolExecution,
+        *,
+        recalculate: bool = True,
+        **changes,
     ) -> ToolExecution:
         """`_persist_entry` plus the `ToolExecution`-only `updated_at` stamp.
         Every execution persistence — approval updates, the RUNNING
         transition, cancellation stamps, terminal outcomes — lands here."""
         return self._persist_entry(
-            execution, recalculate=recalculate, **changes,
+            execution,
+            recalculate=recalculate,
+            **changes,
             updated_at=self.now_ms(),
         )
 
@@ -990,11 +994,7 @@ class AgentSessionRunner:
             details = {"errors": json.loads(exception.json(include_url=False))}
         else:
             details = {
-                "phase": (
-                    "execution"
-                    if execution.started_at is not None
-                    else "create_execution"
-                ),
+                "phase": ("execution" if execution.started_at is not None else "create_execution"),
             }
         return ToolExecutionError(
             error_type=type(exception).__name__,
@@ -1008,7 +1008,8 @@ class AgentSessionRunner:
         durable execution (projection is deterministic), so event and wire
         always agree."""
         message = self.conversation_projector.project_tool_execution(
-            execution, self.session.entries,
+            execution,
+            self.session.entries,
         )
         return ToolExecuted(
             tool_call_id=execution.tool_call_id,
@@ -1018,7 +1019,9 @@ class AgentSessionRunner:
         )
 
     def _finalize_outcome(
-        self, execution: ToolExecution, exception: Exception | None = None,
+        self,
+        execution: ToolExecution,
+        exception: Exception | None = None,
     ) -> tuple[ToolExecution, ToolExecuted]:
         """The shared tail of every execution outcome: recalculate
         `context_tokens` from the final model-facing result or error (the
@@ -1034,13 +1037,17 @@ class AgentSessionRunner:
             },
         )
         execution = self._run_middlewares(
-            "after_tool_execution", execution, exception,
+            "after_tool_execution",
+            execution,
+            exception,
         )
         execution = self._persist_execution(execution, recalculate=False)
         return execution, self._tool_executed_event(execution)
 
     def _finalize_undispatched(
-        self, execution: ToolExecution, exception: Exception | None = None,
+        self,
+        execution: ToolExecution,
+        exception: Exception | None = None,
     ) -> tuple[ToolExecution, ToolExecuted]:
         """Outcome pipeline for a call whose body will never run — terminal
         at birth, REJECTED, or CANCELLED before dispatch. These calls still
@@ -1082,11 +1089,7 @@ class AgentSessionRunner:
         state; a toolless runner contributes none), convert each tool via the
         adapter, and thread the list through any `build_tool_list`
         middleware. Called per LLM invocation."""
-        tools = (
-            self.tool_registry.get_tools(self.session)
-            if self.tool_registry is not None
-            else []
-        )
+        tools = self.tool_registry.get_tools(self.session) if self.tool_registry is not None else []
         tool_list = [adapter.tool_to_luca_tool(tool) for tool in tools]
         return self._run_middlewares("build_tool_list", tool_list)
 
@@ -1097,7 +1100,8 @@ class AgentSessionRunner:
         is no projection middleware); `before_llm_call` remains downstream for
         last-mile request changes."""
         return self.conversation_projector.project(
-            self.session.active_conversation, self.session.entries,
+            self.session.active_conversation,
+            self.session.entries,
         )
 
     def build_system_message(self) -> str | None:
@@ -1128,13 +1132,16 @@ class AgentSessionRunner:
         messages = self.build_messages()
         system_message = self.build_system_message()
         return self._run_middlewares(
-            "before_llm_call", (messages, system_message), unpack_values=True,
+            "before_llm_call",
+            (messages, system_message),
+            unpack_values=True,
         )
 
     # ── compaction ───────────────────────────────────────────────────────────
 
     def _open_compaction_bracket(
-        self, source: CompactionSource,
+        self,
+        source: CompactionSource,
     ) -> CompactionEntry:
         """`TurnStart` then `CompactionEntry` — two plain appends, exactly as
         safe as recording a user message, and adjacent by construction (which
@@ -1142,12 +1149,17 @@ class AgentSessionRunner:
         the drive emits `CompactionScheduled`."""
         self._append(
             lambda entry_id, parent_id, ts: TurnStart(
-                id=entry_id, parent_id=parent_id, created_at=ts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
             )
         )
         return self._append(
             lambda entry_id, parent_id, ts: CompactionEntry(
-                id=entry_id, parent_id=parent_id, created_at=ts, source=source,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
+                source=source,
             )
         )
 
@@ -1168,11 +1180,12 @@ class AgentSessionRunner:
         return ConversationSnapshot(
             id=conversation.id,
             nodes=nodes,
-            offered=nodes[:bracket] + nodes[bracket + 1:],
+            offered=nodes[:bracket] + nodes[bracket + 1 :],
         )
 
     async def _compaction_step(
-        self, token: CancellationToken,
+        self,
+        token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """The whole compaction operation, run once at the top of a drive,
         BEFORE the conversational bracket opens.
@@ -1319,18 +1332,26 @@ class AgentSessionRunner:
         deadline = _ms_to_seconds(config.client_completion_timeout_in_ms)
         task = asyncio.ensure_future(
             self.compaction_policy.compact(
-                self.session, offered, entry.model_copy(deep=True),
+                self.session,
+                offered,
+                entry.model_copy(deep=True),
             )
         )
         if deadline is None:
             completed, plan, _ = await _race_cancellation(
-                task, token, grace_ms, None,
+                task,
+                token,
+                grace_ms,
+                None,
             )
         else:
             try:
                 async with asyncio.timeout(deadline) as scope:
                     completed, plan, _ = await _race_cancellation(
-                        task, token, grace_ms, None,
+                        task,
+                        token,
+                        grace_ms,
+                        None,
                     )
             except TimeoutError:
                 if not scope.expired():
@@ -1383,7 +1404,10 @@ class AgentSessionRunner:
         bracket COMPLETED ahead of a transition that then failed, leaving a
         summary projecting onto an unchanged conversation."""
         validate_plan(
-            plan, entry_id=entry.id, session=self.session, snapshot=snapshot,
+            plan,
+            entry_id=entry.id,
+            session=self.session,
+            snapshot=snapshot,
         )
         ts = self.now_ms()  # ONE timestamp for the whole transition
         # The bracket is still open — the closing marker is only BUILT below —
@@ -1394,9 +1418,7 @@ class AgentSessionRunner:
         carried = {node for node in plan.nodes if isinstance(node, str)}
         # Over the path BEFORE the bracket, so the compaction's own `ts_c`
         # never lands in the list of ids this entry replaced.
-        compacted = [
-            node for node in snapshot.nodes[:bracket] if node not in carried
-        ]
+        compacted = [node for node in snapshot.nodes[:bracket] if node not in carried]
 
         final = self._complete_entry(
             entry.model_copy(
@@ -1417,14 +1439,12 @@ class AgentSessionRunner:
                 parent = node
             else:
                 built = self._prepare(
-                    lambda entry_id, parent_id, stamp, template=node: (
-                        template.model_copy(
-                            update={
-                                "id": entry_id,
-                                "parent_id": parent_id,
-                                "created_at": stamp,
-                            },
-                        )
+                    lambda entry_id, parent_id, stamp, template=node: template.model_copy(
+                        update={
+                            "id": entry_id,
+                            "parent_id": parent_id,
+                            "created_at": stamp,
+                        },
                     ),
                     parent,
                     ts,
@@ -1434,7 +1454,9 @@ class AgentSessionRunner:
             nodes.append(parent)
         closing = self._prepare(
             lambda entry_id, parent_id, stamp: TurnFinish(
-                id=entry_id, parent_id=parent_id, created_at=stamp,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=stamp,
                 outcome=TurnOutcome.COMPLETED,
             ),
             self.session.active_conversation.nodes[-1],
@@ -1442,15 +1464,21 @@ class AgentSessionRunner:
         )
         # ─────────────────────────── THE TRANSITION ──────────────────────────
         conversation = self.ledger.transition_conversation(
-            updates=[final], created=created, closing=closing,
-            nodes=nodes, ts=ts,
+            updates=[final],
+            created=created,
+            closing=closing,
+            nodes=nodes,
+            ts=ts,
         )
         return conversation, final, created
 
     # ── the engine ───────────────────────────────────────────────────────────
 
     async def _drive(
-        self, streaming: bool, context: ToolContext, token: CancellationToken,
+        self,
+        streaming: bool,
+        context: ToolContext,
+        token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """The single engine behind both methods; `AgentRun` is its only
         consumer (lazy pulls it directly, eager drains it from the background
@@ -1465,10 +1493,7 @@ class AgentSessionRunner:
             # The cancel was against the DRIVE. Consuming it and then going on
             # to answer the queued turn would defy the instruction.
             return
-        if (
-            self._compaction_ran
-            and self.ledger.derive_status() == ConversationStatus.IDLE
-        ):
+        if self._compaction_ran and self.ledger.derive_status() == ConversationStatus.IDLE:
             # A compaction-only drive: a user-scheduled compaction on an
             # otherwise-finished session was PENDING only because its bracket
             # was open. With it closed there is nothing to drive, and opening
@@ -1511,18 +1536,14 @@ class AgentSessionRunner:
             # land before any denial event is yielded.
             undecided = self.ledger.open_turn_undecided_executions()
             if undecided:
-                pairs = await asyncio.gather(
-                    *(
-                        self._decide_with_middleware(ex, context)
-                        for ex in undecided
-                    )
-                )
+                pairs = await asyncio.gather(*(self._decide_with_middleware(ex, context) for ex in undecided))
                 denial_events: list[AgentEvent] = []
                 for modified, decision in pairs:
                     denied = decision.decision == ApprovalOption.DENY
                     changes: dict = {
                         "approval_decisions": [
-                            *modified.approval_decisions, decision,
+                            *modified.approval_decisions,
+                            decision,
                         ],
                         "approval_status": _APPROVAL_STATUS[decision.decision],
                     }
@@ -1556,10 +1577,7 @@ class AgentSessionRunner:
                     return
                 self._set_status(ConversationStatus.AWAITING_APPROVAL)
                 yield ApprovalRequired(
-                    executions=[
-                        ex.model_copy(deep=True)
-                        for ex in self.pending_approvals()
-                    ],
+                    executions=[ex.model_copy(deep=True) for ex in self.pending_approvals()],
                 )
                 return
 
@@ -1589,10 +1607,7 @@ class AgentSessionRunner:
                 and config.limit_tool_choice_on_soft_max_steps_reached
             ):
                 tool_choice = "none"
-            if (
-                config.limit_tool_choice_on_doom_loop_flagged
-                and self.ledger.open_turn_has_doom_loop_flagged()
-            ):
+            if config.limit_tool_choice_on_doom_loop_flagged and self.ledger.open_turn_has_doom_loop_flagged():
                 tool_choice = "none"
 
             # Call the model, racing the run's token (§R4): on cancel the
@@ -1639,10 +1654,11 @@ class AgentSessionRunner:
                             while True:
                                 step = asyncio.ensure_future(iterator.__anext__())
                                 try:
-                                    completed, stream_event, grace_deadline = (
-                                        await _race_cancellation(
-                                            step, token, grace_ms, grace_deadline,
-                                        )
+                                    completed, stream_event, grace_deadline = await _race_cancellation(
+                                        step,
+                                        token,
+                                        grace_ms,
+                                        grace_deadline,
                                     )
                                 except StopAsyncIteration:
                                     break
@@ -1654,9 +1670,7 @@ class AgentSessionRunner:
                                     finish_reason = stream_event.finish_reason
                                 elif stream_event.type == "error":
                                     raise stream_event.error
-                                elif (
-                                    delta := _to_delta_event(stream_event)
-                                ) is not None:
+                                elif (delta := _to_delta_event(stream_event)) is not None:
                                     yield delta
                         finally:
                             await iterator.aclose()
@@ -1679,7 +1693,10 @@ class AgentSessionRunner:
                         )
                     )
                     completed, response, _ = await _race_cancellation(
-                        llm_task, token, grace_ms, None,
+                        llm_task,
+                        token,
+                        grace_ms,
+                        None,
                     )
                     if not completed:
                         continue  # nothing recorded; the loop top winds down
@@ -1696,11 +1713,7 @@ class AgentSessionRunner:
                     for event in self._wind_down(cancel_entry):
                         yield event
                     return
-                outcome = (
-                    TurnOutcome.TIMED_OUT
-                    if isinstance(exc, ClientTimeoutError)
-                    else TurnOutcome.ERRORED
-                )
+                outcome = TurnOutcome.TIMED_OUT if isinstance(exc, ClientTimeoutError) else TurnOutcome.ERRORED
                 self._close_turn(outcome, error=str(exc))
                 raise
 
@@ -1765,7 +1778,10 @@ class AgentSessionRunner:
         return events
 
     def _record_assistant(
-        self, message, finish_reason, llm_cfg: LLMConfig,
+        self,
+        message,
+        finish_reason,
+        llm_cfg: LLMConfig,
     ) -> list[AgentEvent]:
         """Append the assistant message and write its provider-usage record
         to `AgentSession.usages` (usage is accessory conversation-entry data,
@@ -1775,7 +1791,9 @@ class AgentSessionRunner:
         parts = adapter.message_to_parts(message)
         entry = self._append(
             lambda entry_id, parent_id, ts: AssistantMessage(
-                id=entry_id, parent_id=parent_id, created_at=ts,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
                 parts=parts,
                 llm_config=llm_cfg.model_copy(),
                 stop_reason=finish_reason or "stop",
@@ -1787,7 +1805,8 @@ class AgentSessionRunner:
             if isinstance(part, ThinkingContent):
                 events.append(
                     ReasoningBlock(
-                        text=part.thinking, redacted=part.redacted,
+                        text=part.thinking,
+                        redacted=part.redacted,
                     ),
                 )
             elif isinstance(part, TextContent):
@@ -1810,29 +1829,27 @@ class AgentSessionRunner:
         a raise and NOT_FOUND for the toolless case — preserving the
         invariant that every tool call produces exactly one tool output.
         Terminal births immediately run the outcome middleware pair."""
-        drafts = await asyncio.gather(
-            *(self._birth_draft(tc, ctx) for tc in message.tool_calls)
-        )
+        drafts = await asyncio.gather(*(self._birth_draft(tc, ctx) for tc in message.tool_calls))
         events: list[AgentEvent] = []
-        for tc, (draft, exception) in zip(message.tool_calls, drafts):
+        for tc, (draft, exception) in zip(message.tool_calls, drafts, strict=False):
             # Doom-loop check runs before the append so it only sees
             # previously-appended executions; parallel tool calls are
             # evaluated in append order.
             doom_flagged = self._is_doom_loop(tc)
 
             def build(
-                entry_id, parent_id, ts, _draft=draft, _d=doom_flagged,
+                entry_id,
+                parent_id,
+                ts,
+                _draft=draft,
+                _d=doom_flagged,
             ) -> ToolExecution:
                 return _draft.model_copy(
                     update={
                         "id": entry_id,
                         "parent_id": parent_id,
                         "created_at": ts,
-                        "ended_at": (
-                            ts
-                            if _draft.status != ExecutionStatus.PENDING
-                            else None
-                        ),
+                        "ended_at": (ts if _draft.status != ExecutionStatus.PENDING else None),
                         "is_doom_loop_flagged": _d,
                     },
                 )
@@ -1850,7 +1867,9 @@ class AgentSessionRunner:
         return events
 
     async def _birth_draft(
-        self, tc, ctx: ToolContext,
+        self,
+        tc,
+        ctx: ToolContext,
     ) -> tuple[ToolExecution, Exception | None]:
         """One call's guarded birth: delegate to
         `tool_registry.create_execution` with a deep-copied `ToolCall`. The
@@ -1859,12 +1878,15 @@ class AgentSessionRunner:
         runner-synthesized FAILED draft (the live exception is returned for
         the outcome middleware); a toolless runner synthesizes NOT_FOUND."""
         raw = ToolCall(
-            id=tc.id, name=tc.name, arguments=copy.deepcopy(tc.arguments),
+            id=tc.id,
+            name=tc.name,
+            arguments=copy.deepcopy(tc.arguments),
         )
         if self.tool_registry is None:
             exc: Exception = ToolNotFound(f"Unknown tool: {tc.name!r}.")
             draft = ToolExecution(
-                tool_call_id=raw.id, raw_tool_call=raw,
+                tool_call_id=raw.id,
+                raw_tool_call=raw,
                 status=ExecutionStatus.NOT_FOUND,
             )
             draft.error = self.to_tool_execution_error(draft, exc)
@@ -1873,14 +1895,17 @@ class AgentSessionRunner:
             return await self.tool_registry.create_execution(raw, ctx), None
         except Exception as exc:
             draft = ToolExecution(
-                tool_call_id=raw.id, raw_tool_call=raw,
+                tool_call_id=raw.id,
+                raw_tool_call=raw,
                 status=ExecutionStatus.FAILED,
             )
             draft.error = self.to_tool_execution_error(draft, exc)
             return draft, exc
 
     async def _decide_with_middleware(
-        self, execution: ToolExecution, ctx: ToolContext,
+        self,
+        execution: ToolExecution,
+        ctx: ToolContext,
     ) -> tuple[ToolExecution, ApprovalDecision]:
         """Apply `before_permission_check` middleware, call the registry's
         `decide()`, then apply `after_permission_decision` middleware.
@@ -1892,16 +1917,21 @@ class AgentSessionRunner:
         modified = self._run_middlewares("before_permission_check", execution)
         if self.tool_registry is None:
             decision = ApprovalDecision(
-                decision=ApprovalOption.ALLOW, created_at=self.now_ms(),
+                decision=ApprovalOption.ALLOW,
+                created_at=self.now_ms(),
             )
         else:
             decision = await self.tool_registry.decide(modified, ctx)
         return modified, self._run_middlewares(
-            "after_permission_decision", decision, modified,
+            "after_permission_decision",
+            decision,
+            modified,
         )
 
     async def _dispatch_batch(
-        self, ready: list[ToolExecution], ctx: ToolContext,
+        self,
+        ready: list[ToolExecution],
+        ctx: ToolContext,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """Dispatch every ready (PENDING + ALLOWED) execution with the
@@ -1918,7 +1948,9 @@ class AgentSessionRunner:
                 yield event
 
     async def _dispatch_one(
-        self, execution: ToolExecution, ctx: ToolContext,
+        self,
+        execution: ToolExecution,
+        ctx: ToolContext,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """Dispatch preparation + body invocation for one allowed execution:
@@ -1944,18 +1976,20 @@ class AgentSessionRunner:
         yield event
 
     async def _execute_body(
-        self, execution: ToolExecution, ctx: ToolContext,
+        self,
+        execution: ToolExecution,
+        ctx: ToolContext,
         token: CancellationToken,
     ) -> ExecutionResult:
         """The single `registry.execute` call site. A toolless runner raises
         `ToolNotFound` so a loaded ready execution still terminalizes
         honestly (NOT_FOUND) instead of crashing the run."""
         if self.tool_registry is None:
-            raise ToolNotFound(
-                f"Unknown tool: {execution.raw_tool_call.name!r}."
-            )
+            raise ToolNotFound(f"Unknown tool: {execution.raw_tool_call.name!r}.")
         return await self.tool_registry.execute(
-            execution, ctx, cancellation_token=token,
+            execution,
+            ctx,
+            cancellation_token=token,
         )
 
     async def _run_tool_body(
@@ -1983,38 +2017,36 @@ class AgentSessionRunner:
         not populate `cancel_signalled_at`."""
         config = self.session.session_config.runtime_config
         grace_ms = config.tool_cancellation_grace_period
-        spec_timeout = (
-            execution.tool_spec.timeout_in_ms
-            if execution.tool_spec is not None
-            else None
-        )
-        deadline_ms = (
-            spec_timeout
-            if spec_timeout is not None
-            else config.tool_execution_timeout_in_ms
-        )
+        spec_timeout = execution.tool_spec.timeout_in_ms if execution.tool_spec is not None else None
+        deadline_ms = spec_timeout if spec_timeout is not None else config.tool_execution_timeout_in_ms
         current = execution
 
         def note_cancel_signalled() -> None:
             nonlocal current
             current = self._persist_execution(
-                current, cancel_signalled_at=self.now_ms(),
+                current,
+                cancel_signalled_at=self.now_ms(),
             )
 
-        tool_task = asyncio.ensure_future(
-            self._execute_body(current, ctx, token)
-        )
+        tool_task = asyncio.ensure_future(self._execute_body(current, ctx, token))
         try:
             if deadline_ms == Inf:
                 completed, result, _ = await _race_cancellation(
-                    tool_task, token, grace_ms, None,
-                    detach=True, on_cancel_signalled=note_cancel_signalled,
+                    tool_task,
+                    token,
+                    grace_ms,
+                    None,
+                    detach=True,
+                    on_cancel_signalled=note_cancel_signalled,
                 )
             else:
                 try:
                     async with asyncio.timeout(deadline_ms / 1000.0) as scope:
                         completed, result, _ = await _race_cancellation(
-                            tool_task, token, grace_ms, None,
+                            tool_task,
+                            token,
+                            grace_ms,
+                            None,
                             detach=True,
                             on_cancel_signalled=note_cancel_signalled,
                         )
@@ -2076,11 +2108,7 @@ class AgentSessionRunner:
         subset = current_turn_executions[-lookback:]
         if len(subset) != lookback:
             return False
-        return all(
-            te.raw_tool_call.name == tc.name
-            and te.raw_tool_call.arguments == tc.arguments
-            for te in subset
-        )
+        return all(te.raw_tool_call.name == tc.name and te.raw_tool_call.arguments == tc.arguments for te in subset)
 
     def _close_turn(self, outcome: TurnOutcome, error: str | None = None) -> None:
         """The only TurnFinish writer that APPENDS — normal close, cancel
@@ -2095,8 +2123,11 @@ class AgentSessionRunner:
         inside the transition — see `_commit`.)"""
         self._append(
             lambda entry_id, parent_id, ts: TurnFinish(
-                id=entry_id, parent_id=parent_id, created_at=ts,
-                outcome=outcome, error=error,
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=ts,
+                outcome=outcome,
+                error=error,
             )
         )
         self._closed_outcome = outcome
@@ -2125,11 +2156,7 @@ class _CompactionEnded(Exception):
 def _outcome_for(exception: Exception) -> TurnOutcome:
     """How a compaction bracket closes for a live failure — the same
     TIMED_OUT / ERRORED split the conversational LLM call uses."""
-    return (
-        TurnOutcome.TIMED_OUT
-        if isinstance(exception, ClientTimeoutError)
-        else TurnOutcome.ERRORED
-    )
+    return TurnOutcome.TIMED_OUT if isinstance(exception, ClientTimeoutError) else TurnOutcome.ERRORED
 
 
 def _equivalent(a: object, b: object) -> bool:
@@ -2149,7 +2176,7 @@ def _equivalent(a: object, b: object) -> bool:
 
 
 def _all_equivalent(xs: list, ys: list) -> bool:
-    return len(xs) == len(ys) and all(_equivalent(x, y) for x, y in zip(xs, ys))
+    return len(xs) == len(ys) and all(_equivalent(x, y) for x, y in zip(xs, ys, strict=False))
 
 
 async def _race_cancellation(
@@ -2185,7 +2212,8 @@ async def _race_cancellation(
         waiter = asyncio.ensure_future(token.wait_cancelled())
         try:
             done, _ = await asyncio.wait(
-                {task, waiter}, return_when=asyncio.FIRST_COMPLETED,
+                {task, waiter},
+                return_when=asyncio.FIRST_COMPLETED,
             )
         except BaseException:
             await _kill(task, detach)
@@ -2206,18 +2234,15 @@ async def _race_cancellation(
         await _kill(task, detach)
         return False, None, grace_deadline
     if grace_deadline is None:
-        grace_deadline = (
-            float("inf")
-            if grace_ms == Inf
-            else asyncio.get_running_loop().time() + grace_ms / 1000.0
-        )
+        grace_deadline = float("inf") if grace_ms == Inf else asyncio.get_running_loop().time() + grace_ms / 1000.0
     remaining = grace_deadline - asyncio.get_running_loop().time()
     try:
         if remaining == float("inf"):
             value = await asyncio.shield(task)
         else:
             value = await asyncio.wait_for(
-                asyncio.shield(task), max(remaining, 0.0),
+                asyncio.shield(task),
+                max(remaining, 0.0),
             )
         return True, value, grace_deadline
     except TimeoutError:
@@ -2245,20 +2270,16 @@ async def _kill(task: asyncio.Task, detach: bool) -> None:
             break
         await asyncio.sleep(0)
     if task.done():
-        try:
+        with contextlib.suppress(BaseException):
             task.result()
-        except BaseException:
-            pass
     else:
         task.add_done_callback(_swallow_result)
 
 
 async def _cancel_quietly(task: asyncio.Task) -> None:
     task.cancel()
-    try:
+    with contextlib.suppress(BaseException):
         await task
-    except BaseException:
-        pass
 
 
 def _swallow_result(task: asyncio.Task) -> None:
@@ -2275,16 +2296,11 @@ def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]
     Shape is checked against `ContentPart` itself, so a new part type needs no
     change here; a part the union does not admit raises `ValidationError`."""
     if not content:
-        raise AgentError(
-            "post_message requires a non-empty string or list of content parts."
-        )
+        raise AgentError("post_message requires a non-empty string or list of content parts.")
     if isinstance(content, str):
         return [TextContent(text=content)]
     if isinstance(content, BaseModel):
-        raise AgentError(
-            f"post_message takes a list of content parts; wrap the "
-            f"{type(content).__name__} in a list."
-        )
+        raise AgentError(f"post_message takes a list of content parts; wrap the {type(content).__name__} in a list.")
     return _POST_PARTS.validate_python(content)
 
 

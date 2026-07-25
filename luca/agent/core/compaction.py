@@ -23,8 +23,6 @@ session's mutation, the ledger, asyncio, or events.
 
 from __future__ import annotations
 
-from typing import Union
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from .exceptions import CompactionPlanError
@@ -35,7 +33,6 @@ from .models import (
     ContentPart,
     TextContent,
 )
-
 
 # ── value objects ─────────────────────────────────────────────────────────────
 
@@ -80,7 +77,7 @@ class CompactionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     entry: CompactionEntry  # the copy you were handed, filled in
-    nodes: list[Union[AnyEntry, str]]  # the new path
+    nodes: list[AnyEntry | str]  # the new path
     usage: UsageCounters = Field(default_factory=UsageCounters)
 
 
@@ -160,10 +157,7 @@ def has_content(parts: list[ContentPart] | None) -> bool:
     is `None`, empty, or whitespace would replace the history with nothing."""
     if not parts:
         return False
-    return any(
-        part.text.strip() if isinstance(part, TextContent) else True
-        for part in parts
-    )
+    return any(part.text.strip() if isinstance(part, TextContent) else True for part in parts)
 
 
 def check_snapshot(
@@ -179,14 +173,9 @@ def check_snapshot(
     policy that replaced the active conversation."""
     active = session.active_conversation
     if snapshot.id != active.id:
-        raise CompactionPlanError(
-            f"the active conversation changed under the plan "
-            f"({snapshot.id!r} → {active.id!r})"
-        )
+        raise CompactionPlanError(f"the active conversation changed under the plan ({snapshot.id!r} → {active.id!r})")
     if snapshot.nodes != tuple(active.nodes):
-        raise CompactionPlanError(
-            "the active conversation's path changed under the plan"
-        )
+        raise CompactionPlanError("the active conversation's path changed under the plan")
 
 
 def validate_plan(
@@ -216,16 +205,11 @@ def validate_plan(
         if node not in session.entries:
             raise CompactionPlanError(f"plan references unknown entry {node!r}")
         if node not in snapshot.offered:
-            raise CompactionPlanError(
-                f"plan references entry {node!r}, which is not on "
-                f"conversation {snapshot.id!r}"
-            )
+            raise CompactionPlanError(f"plan references entry {node!r}, which is not on conversation {snapshot.id!r}")
         if node in carried:
             raise CompactionPlanError(f"plan references entry {node!r} twice")
         carried.append(node)
     if entry_id not in carried:
-        raise CompactionPlanError(
-            f"plan omits the compaction entry {entry_id!r}"
-        )
+        raise CompactionPlanError(f"plan omits the compaction entry {entry_id!r}")
     if not has_content(plan.entry.parts):
         raise CompactionPlanError("plan carries no content")

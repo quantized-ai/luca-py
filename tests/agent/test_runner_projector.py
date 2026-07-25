@@ -25,10 +25,7 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-from luca.client.types import TextBlock as LucaTextBlock
-from luca.client.types import ToolMessage
-from luca.client.types import UserMessage as LucaUserMessage
-
+from luca.client.types import TextBlock as LucaTextBlock, ToolMessage, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
     MODEL,
     AddTool,
@@ -72,9 +69,11 @@ def test_runner_defaults_to_a_fresh_conversation_projector():
 
 async def test_supplied_projector_owns_the_llm_message_history():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("ok")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("ok")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_projector_history",
         entries={
@@ -84,7 +83,10 @@ async def test_supplied_projector_owns_the_llm_message_history():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
         conversation_projector=PrefixingProjector(),
     )
 
@@ -99,13 +101,15 @@ async def test_supplied_projector_owns_the_llm_message_history():
 
 async def test_custom_tool_projection_reaches_event_and_wire_identically():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_projector_tool",
         entries={
@@ -115,8 +119,11 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
         conversation_projector=RedactingProjector(),
     )
 
@@ -148,7 +155,9 @@ def test_projector_participates_in_runner_equality():
     default_a = DeterministicRunner(session, now=1000)
     default_b = DeterministicRunner(session, now=1000)
     custom = DeterministicRunner(
-        session, now=1000, conversation_projector=RedactingProjector(),
+        session,
+        now=1000,
+        conversation_projector=RedactingProjector(),
     )
 
     assert default_a == default_b  # equivalent default projectors

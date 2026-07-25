@@ -77,10 +77,12 @@ def _strip_heredoc(lines: list[str]) -> list[str]:
 def parse_patch(patch_text: str) -> list[PatchOp]:
     lines = _strip_heredoc(patch_text.splitlines())
     begin = next(
-        (i for i, line in enumerate(lines) if line.strip() == BEGIN_MARKER), None,
+        (i for i, line in enumerate(lines) if line.strip() == BEGIN_MARKER),
+        None,
     )
     end = next(
-        (i for i, line in enumerate(lines) if line.strip() == END_MARKER), None,
+        (i for i, line in enumerate(lines) if line.strip() == END_MARKER),
+        None,
     )
     if begin is None or end is None or end < begin:
         raise PatchError(
@@ -95,7 +97,7 @@ def parse_patch(patch_text: str) -> list[PatchOp]:
             index, op = _parse_add(body, index)
             ops.append(op)
         elif line.startswith(DELETE_PREFIX):
-            ops.append(DeleteOp(path=line[len(DELETE_PREFIX):].strip()))
+            ops.append(DeleteOp(path=line[len(DELETE_PREFIX) :].strip()))
             index += 1
         elif line.startswith(UPDATE_PREFIX):
             index, op = _parse_update(body, index)
@@ -110,7 +112,7 @@ def parse_patch(patch_text: str) -> list[PatchOp]:
 
 
 def _parse_add(body: list[str], index: int) -> tuple[int, AddOp]:
-    path = body[index][len(ADD_PREFIX):].strip()
+    path = body[index][len(ADD_PREFIX) :].strip()
     index += 1
     added: list[str] = []
     while index < len(body) and not body[index].startswith("*** "):
@@ -124,11 +126,11 @@ def _parse_add(body: list[str], index: int) -> tuple[int, AddOp]:
 
 
 def _parse_update(body: list[str], index: int) -> tuple[int, UpdateOp]:
-    path = body[index][len(UPDATE_PREFIX):].strip()
+    path = body[index][len(UPDATE_PREFIX) :].strip()
     index += 1
     move_to: str | None = None
     if index < len(body) and body[index].startswith(MOVE_PREFIX):
-        move_to = body[index][len(MOVE_PREFIX):].strip()
+        move_to = body[index][len(MOVE_PREFIX) :].strip()
         index += 1
     hunks: list[Hunk] = []
     current: Hunk | None = None
@@ -165,12 +167,23 @@ def _parse_update(body: list[str], index: int) -> tuple[int, UpdateOp]:
 
 # ── hunk application ─────────────────────────────────────────────────────────
 
-_PUNCT_MAP = str.maketrans({
-    "‘": "'", "’": "'", "‛": "'",
-    "“": '"', "”": '"', "‟": '"',
-    "‐": "-", "‑": "-", "‒": "-",
-    "–": "-", "—": "-", "―": "-", "−": "-",
-})
+_PUNCT_MAP = str.maketrans(
+    {
+        "‘": "'",
+        "’": "'",
+        "‛": "'",
+        "“": '"',
+        "”": '"',
+        "‟": '"',
+        "‐": "-",
+        "‑": "-",
+        "‒": "-",
+        "–": "-",
+        "—": "-",
+        "―": "-",
+        "−": "-",
+    }
+)
 
 
 def _canonical(line: str) -> str:
@@ -195,18 +208,20 @@ def _find_line(haystack: list[str], needle: str, start: int) -> int | None:
 
 
 def _find_sequence(
-    haystack: list[str], needle: list[str], start: int, eof: bool,
+    haystack: list[str],
+    needle: list[str],
+    start: int,
+    eof: bool,
 ) -> int | None:
     if not needle:
         return start
     for normalize in _PASSES:
         wanted = [normalize(line) for line in needle]
 
-        def matches(position: int) -> bool:
-            return all(
-                normalize(haystack[position + j]) == wanted[j]
-                for j in range(len(needle))
-            )
+        # normalize/wanted bound as defaults: the closure is only called within
+        # this iteration, but late binding would silently break if that changed.
+        def matches(position: int, normalize=normalize, wanted=wanted) -> bool:
+            return all(normalize(haystack[position + j]) == wanted[j] for j in range(len(needle)))
 
         if eof:
             tail = len(haystack) - len(needle)

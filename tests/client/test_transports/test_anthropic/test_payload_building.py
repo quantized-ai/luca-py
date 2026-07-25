@@ -17,10 +17,13 @@ from luca.client.types import (
 
 def _ok_response():
     return {
-        "id": "x", "type": "message", "role": "assistant",
+        "id": "x",
+        "type": "message",
+        "role": "assistant",
         "model": "claude-test",
         "content": [{"type": "text", "text": ""}],
-        "stop_reason": "end_turn", "stop_sequence": None,
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
         "usage": {"input_tokens": 0, "output_tokens": 0},
     }
 
@@ -38,11 +41,14 @@ def test_system_message_projected_to_top_level_system(anthropic_transport_factor
     transport = anthropic_transport_factory(
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    transport.completion(ChatCompletionRequest(
-        model="claude-test", provider="anthropic",
-        messages=[UserMessage(content="Hi")],
-        system_message="Be brief.",
-    ))
+    transport.completion(
+        ChatCompletionRequest(
+            model="claude-test",
+            provider="anthropic",
+            messages=[UserMessage(content="Hi")],
+            system_message="Be brief.",
+        )
+    )
 
     assert captured["url"] == "https://api.anthropic.com/v1/messages"
     assert captured["body"]["system"] == "Be brief."
@@ -62,10 +68,13 @@ def test_max_tokens_required_default_used(anthropic_transport_factory):
     transport = anthropic_transport_factory(
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    transport.completion(ChatCompletionRequest(
-        model="claude-test", provider="anthropic",
-        messages=[UserMessage(content="Hi")],
-    ))
+    transport.completion(
+        ChatCompletionRequest(
+            model="claude-test",
+            provider="anthropic",
+            messages=[UserMessage(content="Hi")],
+        )
+    )
     # max_tokens must always be present on the Anthropic wire.
     assert "max_tokens" in captured["body"]
     assert captured["body"]["max_tokens"] > 0
@@ -79,7 +88,8 @@ def test_no_reasoning_leaves_thinking_off(anthropic_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
         ),
     )
 
@@ -92,7 +102,8 @@ def test_the_resolved_thinking_reaches_the_payload(anthropic_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
             reasoning="high",
         ),
     )
@@ -107,7 +118,8 @@ def test_max_tokens_comes_from_the_models_own_ceiling(anthropic_transport_factor
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-haiku-4-5-20251001", messages=[UserMessage(content="hi")],
+            model="claude-haiku-4-5-20251001",
+            messages=[UserMessage(content="hi")],
         ),
     )
 
@@ -121,7 +133,8 @@ def test_display_is_transport_policy_not_a_model_fact(anthropic_transport_factor
     transport = Quiet(provider="anthropic", base_url="https://x", api_key="k")
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
             reasoning="high",
         ),
     )
@@ -136,7 +149,8 @@ def test_sampling_is_refused_on_a_model_that_rejects_it(anthropic_transport_fact
     with pytest.raises(UnsupportedParameterError, match="does not accept"):
         transport._build_chat_completion_payload(
             ChatCompletionRequest(
-                model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+                model="claude-sonnet-5",
+                messages=[UserMessage(content="hi")],
                 temperature=0.2,
             ),
         )
@@ -147,7 +161,8 @@ def test_sampling_survives_where_the_model_allows_it(anthropic_transport_factory
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-haiku-4-5-20251001", messages=[UserMessage(content="hi")],
+            model="claude-haiku-4-5-20251001",
+            messages=[UserMessage(content="hi")],
             temperature=0.2,
         ),
     )
@@ -163,7 +178,8 @@ def test_only_this_providers_options_are_merged(anthropic_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
             provider_options={"anthropic": {"mine": 1}, "openai": {"theirs": 2}},
         ),
     )
@@ -181,7 +197,8 @@ def test_raw_thinking_options_replace_resolution_rather_than_merging(
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
             reasoning="high",
             provider_options={"anthropic": {"thinking": {"type": "disabled"}}},
         ),
@@ -200,10 +217,12 @@ def test_a_signed_thinking_block_is_replayed_with_its_signature(
     transport = anthropic_transport_factory()
 
     wire = transport._project_assistant_message(
-        AssistantMessage(content=[
-            ThinkingBlock(text="let me think", signature="sig-abc"),
-            TextBlock(text="the answer"),
-        ]),
+        AssistantMessage(
+            content=[
+                ThinkingBlock(text="let me think", signature="sig-abc"),
+                TextBlock(text="the answer"),
+            ]
+        ),
     )
 
     assert wire["content"] == [
@@ -220,10 +239,12 @@ def test_an_unsigned_thinking_block_is_dropped_not_sent(anthropic_transport_fact
     transport = anthropic_transport_factory()
 
     wire = transport._project_assistant_message(
-        AssistantMessage(content=[
-            ThinkingBlock(text="unsigned reasoning"),
-            TextBlock(text="the answer"),
-        ]),
+        AssistantMessage(
+            content=[
+                ThinkingBlock(text="unsigned reasoning"),
+                TextBlock(text="the answer"),
+            ]
+        ),
     )
 
     assert wire["content"] == [{"type": "text", "text": "the answer"}]
@@ -235,9 +256,11 @@ def test_a_redacted_block_is_replayed_in_its_own_wire_shape(
     transport = anthropic_transport_factory()
 
     wire = transport._project_assistant_message(
-        AssistantMessage(content=[
-            ThinkingBlock(text="", signature="encrypted-payload", redacted=True),
-        ]),
+        AssistantMessage(
+            content=[
+                ThinkingBlock(text="", signature="encrypted-payload", redacted=True),
+            ]
+        ),
     )
 
     assert wire["content"] == [
@@ -250,19 +273,26 @@ def test_a_redacted_block_survives_a_full_receive_then_send(
 ):
     transport = anthropic_transport_factory()
     request = ChatCompletionRequest(
-        model="claude-sonnet-5", messages=[UserMessage(content="hi")],
+        model="claude-sonnet-5",
+        messages=[UserMessage(content="hi")],
     )
     message = transport._parse_chat_completion_response(
-        httpx.Response(200, json={
-            "id": "x", "type": "message", "role": "assistant",
-            "model": "claude-test",
-            "content": [
-                {"type": "redacted_thinking", "data": "encrypted-payload"},
-                {"type": "text", "text": "done"},
-            ],
-            "stop_reason": "end_turn", "stop_sequence": None,
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        }),
+        httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "content": [
+                    {"type": "redacted_thinking", "data": "encrypted-payload"},
+                    {"type": "text", "text": "done"},
+                ],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ),
         request,
     ).message
 

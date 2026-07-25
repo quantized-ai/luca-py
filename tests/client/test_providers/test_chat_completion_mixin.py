@@ -1,7 +1,5 @@
 """ChatCompletionMixin forwards every method to the transport."""
 
-import pytest
-
 from luca.client.providers import OpenAIProvider
 from luca.client.types import (
     AssistantMessage,
@@ -12,16 +10,18 @@ from luca.client.types import (
 )
 from tests.client._helpers.stub_transports import StubTransport, TransportCall
 
-
 REQUEST = ChatCompletionRequest(
-    model="gpt-4o", provider="openai",
+    model="gpt-4o",
+    provider="openai",
     messages=[UserMessage(content="hi")],
 )
 RESPONSE = ChatCompletionResponse(
     message=AssistantMessage(
         content=[TextBlock(text="ok")],
-        finish_reason="stop", provider_finish_reason="stop",
-        provider="openai", model="gpt-4o",
+        finish_reason="stop",
+        provider_finish_reason="stop",
+        provider="openai",
+        model="gpt-4o",
     ),
 )
 

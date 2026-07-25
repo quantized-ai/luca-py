@@ -100,18 +100,13 @@ def pretty_print(session: AgentSession) -> str:
     """The session's active conversation as a readable text transcript."""
     conversation = session.active_conversation
     entries = [_resolve(node_id, session.entries) for node_id in conversation.nodes]
-    executions = {
-        entry.tool_call_id: entry
-        for entry in entries
-        if isinstance(entry, ToolExecution)
-    }
+    executions = {entry.tool_call_id: entry for entry in entries if isinstance(entry, ToolExecution)}
     usages = session.usages.get(conversation.id, {})
     blocks = _split_turns(entries)
 
     lines = [
         f"LUCA SESSION {session.id}",
-        f"Conversation {conversation.id} · {conversation.status.value} · "
-        f"{_plural(_count(entries, TurnStart), 'turn')}",
+        f"Conversation {conversation.id} · {conversation.status.value} · {_plural(_count(entries, TurnStart), 'turn')}",
         f"Default: {_model_label(session)}",
         RULE,
     ]
@@ -193,10 +188,7 @@ def _turn_lines(
     finish = next((e for e in block if isinstance(e, TurnFinish)), None)
     first = next((e for e in block if not isinstance(e, str)), None)
     stamp = _timestamp(start or first)
-    header = (
-        f"TURN {number} · {stamp}" if start is not None
-        else f"NEXT TURN · {stamp}"
-    )
+    header = f"TURN {number} · {stamp}" if start is not None else f"NEXT TURN · {stamp}"
 
     sections: list[list[str]] = []
     step = 0
@@ -220,13 +212,8 @@ def _turn_footer(
     finish: TurnFinish | None,
     usages: Mapping[str, Usage],
 ) -> str:
-    stop_reasons = [
-        entry.stop_reason for entry in block if isinstance(entry, AssistantMessage)
-    ]
-    if finish is None:
-        parts = ["⋯ open"]
-    else:
-        parts = [f"{OUTCOME_MARKS[finish.outcome]} {finish.outcome.value}"]
+    stop_reasons = [entry.stop_reason for entry in block if isinstance(entry, AssistantMessage)]
+    parts = ["⋯ open"] if finish is None else [f"{OUTCOME_MARKS[finish.outcome]} {finish.outcome.value}"]
     if stop_reasons:
         parts.append(stop_reasons[-1])
     parts.append(_plural(_tokens(block, usages), "token"))
@@ -273,17 +260,12 @@ def _assistant_lines(
     step: int,
     executions: Mapping[str, ToolExecution],
 ) -> list[str]:
-    header = (
-        f"Assistant · step {step} · "
-        f"{entry.llm_config.provider}/{entry.llm_config.model}"
-    )
+    header = f"Assistant · step {step} · {entry.llm_config.provider}/{entry.llm_config.model}"
     chunks: list[list[str]] = []
     calls = [part for part in entry.parts if isinstance(part, ToolCall)]
     for part in entry.parts:
         if isinstance(part, ThinkingContent):
-            marker = (
-                REDACTED_REASONING_MARKER if part.redacted else REASONING_MARKER
-            )
+            marker = REDACTED_REASONING_MARKER if part.redacted else REASONING_MARKER
             chunks.append([INDENT + marker])
         elif isinstance(part, TextContent):
             chunks.append(_wrap(part.text))
@@ -331,9 +313,7 @@ def _tools_lines(
 def _call_lines(call: ToolCall, branch: str, stem: str) -> list[str]:
     """The call signature on one line, or one argument per line when the
     signature outgrows the transcript width."""
-    arguments = [
-        f"{name}={_format_argument(value)}" for name, value in call.arguments.items()
-    ]
+    arguments = [f"{name}={_format_argument(value)}" for name, value in call.arguments.items()]
     signature = f"{call.name}({', '.join(arguments)})"
     if len(signature) <= WIDTH:
         return [branch + signature]
@@ -361,9 +341,7 @@ def _execution_lines(execution: ToolExecution | None, stem: str) -> list[str]:
         return [f"{stem}└─ NO EXECUTION RECORDED"]
     approval = _approval_line(execution)
     outcome = (
-        None
-        if execution.status == ExecutionStatus.REJECTED and approval is not None
-        else _outcome_line(execution)
+        None if execution.status == ExecutionStatus.REJECTED and approval is not None else _outcome_line(execution)
     )
     lines: list[str] = []
     if approval is not None:

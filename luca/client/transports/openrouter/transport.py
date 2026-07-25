@@ -9,7 +9,6 @@ class OpenRouterTransport(OpenAITransport):
     transport_id = "openrouter"
 
     def _headers(self) -> dict[str, str]:
-        h = super()._headers()
+        return super()._headers()
         # HTTP-Referer / X-Title can be added here if needed; OpenRouter accepts
         # but doesn't require them.
-        return h

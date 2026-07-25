@@ -4,7 +4,7 @@ import pytest
 
 from luca.client import catalog
 from luca.client.catalog import _store
-from luca.client.types import ModelCost, ModelInfo
+from luca.client.types import ModelInfo
 
 
 @pytest.fixture(autouse=True)

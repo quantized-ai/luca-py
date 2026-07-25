@@ -5,7 +5,7 @@ Discriminated union on `type`. Every block has `extra="forbid"`.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -80,7 +80,7 @@ class ToolCall(BaseModel):
             raise StructuredOutputError(
                 f"Tool call arguments failed validation: {e}",
                 original_exception=e,
-            )
+            ) from e
         raise StructuredOutputError(
             f"Cannot parse arguments against schema of type {type(schema).__name__}; "
             "pass a BaseModel subclass or a TypeAdapter."
@@ -95,7 +95,7 @@ class ToolResultBlock(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     tool_call_id: str
-    content: str | list[Union[TextBlock, ImageBlock]]
+    content: str | list[TextBlock | ImageBlock]
     is_error: bool = False
 
     model_config = ConfigDict(extra="forbid")
@@ -109,10 +109,6 @@ class RefusalBlock(BaseModel):
 
 
 ContentBlock = Annotated[
-    Union[
-        TextBlock, ThinkingBlock, RefusalBlock,
-        ImageBlock, AudioBlock, FileBlock,
-        ToolCall, ToolResultBlock,
-    ],
+    TextBlock | ThinkingBlock | RefusalBlock | ImageBlock | AudioBlock | FileBlock | ToolCall | ToolResultBlock,
     Field(discriminator="type"),
 ]

@@ -60,18 +60,18 @@ from collections.abc import Mapping
 from typing import ClassVar
 
 from luca.client.types import (
+    AssistantMessage as ClientAssistantMessage,
+    ImageBlock as ClientImageBlock,
     MediaBase64,
     MediaFileId,
     MediaURL,
     Message,
     TextBlock,
     ThinkingBlock,
+    ToolCall as ClientToolCall,
     ToolMessage,
+    UserMessage as ClientUserMessage,
 )
-from luca.client.types import AssistantMessage as ClientAssistantMessage
-from luca.client.types import ImageBlock as ClientImageBlock
-from luca.client.types import ToolCall as ClientToolCall
-from luca.client.types import UserMessage as ClientUserMessage
 
 from .exceptions import ProjectionError
 from .models import (
@@ -141,7 +141,9 @@ class ConversationProjector:
         while index < len(nodes):
             entry = self._node(nodes[index], entries)
             if isinstance(entry, TurnStart) and is_compaction_bracket(
-                nodes, entries, index,
+                nodes,
+                entries,
+                index,
             ):
                 index = self._skip_compaction_bracket(nodes, entries, index)
                 continue
@@ -180,13 +182,12 @@ class ConversationProjector:
         try:
             return entries[node_id]
         except KeyError:
-            raise ProjectionError(
-                f"Conversation node {node_id!r} is missing from the entry "
-                "store."
-            ) from None
+            raise ProjectionError(f"Conversation node {node_id!r} is missing from the entry store.") from None
 
     def project_entry(
-        self, entry: AnyEntry, entries: Mapping[str, AnyEntry],
+        self,
+        entry: AnyEntry,
+        entries: Mapping[str, AnyEntry],
     ) -> Message | None:
         """Dispatch one durable entry to its entry-specific projection. Every
         per-entry method receives the full read-only entry mapping so a
@@ -208,12 +209,12 @@ class ConversationProjector:
             return self.project_turn_start(entry, entries)
         if isinstance(entry, CancelRequested):
             return self.project_cancel_requested(entry, entries)
-        raise ProjectionError(
-            f"Cannot project entry of type {type(entry).__name__}."
-        )
+        raise ProjectionError(f"Cannot project entry of type {type(entry).__name__}.")
 
     def project_user_message(
-        self, entry: UserMessage, entries: Mapping[str, AnyEntry],
+        self,
+        entry: UserMessage,
+        entries: Mapping[str, AnyEntry],
     ) -> ClientUserMessage:
         """Content parts in order; no names, timestamps, or synthetic prefixes."""
         return ClientUserMessage(
@@ -221,7 +222,9 @@ class ConversationProjector:
         )
 
     def project_assistant_message(
-        self, entry: AssistantMessage, entries: Mapping[str, AnyEntry],
+        self,
+        entry: AssistantMessage,
+        entries: Mapping[str, AnyEntry],
     ) -> ClientAssistantMessage:
         """Content parts in order. Durable provenance (usage, stop reason, the
         producing LLMConfig) is not copied into the projected history —
@@ -239,7 +242,9 @@ class ConversationProjector:
             elif isinstance(part, ToolCall):
                 blocks.append(
                     ClientToolCall(
-                        id=part.id, name=part.name, arguments=part.arguments,
+                        id=part.id,
+                        name=part.name,
+                        arguments=part.arguments,
                     ),
                 )
             else:
@@ -247,7 +252,9 @@ class ConversationProjector:
         return ClientAssistantMessage(content=blocks)
 
     def project_tool_execution(
-        self, entry: ToolExecution, entries: Mapping[str, AnyEntry],
+        self,
+        entry: ToolExecution,
+        entries: Mapping[str, AnyEntry],
     ) -> ToolMessage:
         """The single customization point for ALL tool-execution statuses.
 
@@ -265,15 +272,10 @@ class ConversationProjector:
             )
         if status == ExecutionStatus.COMPLETED:
             if entry.result is None:
-                raise ProjectionError(
-                    f"ToolExecution {entry.id!r} is COMPLETED but carries no "
-                    "ExecutionResult."
-                )
+                raise ProjectionError(f"ToolExecution {entry.id!r} is COMPLETED but carries no ExecutionResult.")
             return ToolMessage(
                 tool_call_id=entry.tool_call_id,
-                content=[
-                    self._content_block(part) for part in entry.result.content
-                ],
+                content=[self._content_block(part) for part in entry.result.content],
                 is_error=entry.result.is_error,
             )
         # Every other terminal status: derived error content, never stored as
@@ -285,7 +287,9 @@ class ConversationProjector:
         )
 
     def project_compaction(
-        self, entry: CompactionEntry, entries: Mapping[str, AnyEntry],
+        self,
+        entry: CompactionEntry,
+        entries: Mapping[str, AnyEntry],
     ) -> ClientUserMessage | None:
         """The durable summary as a synthetic user message; `compacted_nodes`,
         `llm_config` and `metadata` are bookkeeping and are not included.
@@ -301,7 +305,9 @@ class ConversationProjector:
         )
 
     def project_pruned(
-        self, entry: PrunedEntry, entries: Mapping[str, AnyEntry],
+        self,
+        entry: PrunedEntry,
+        entries: Mapping[str, AnyEntry],
     ) -> Message | None:
         """Project the replacement content with the ORIGINAL entry's role and
         protocol correlation: the referenced entry is resolved from the store
@@ -337,12 +343,13 @@ class ConversationProjector:
         if isinstance(original, AssistantMessage):
             return ClientAssistantMessage(content=content)
         raise ProjectionError(
-            f"PrunedEntry {entry.id!r} references an entry of type "
-            f"{original.type!r}, which has no pruned projection."
+            f"PrunedEntry {entry.id!r} references an entry of type {original.type!r}, which has no pruned projection."
         )
 
     def project_turn_finish(
-        self, entry: TurnFinish, entries: Mapping[str, AnyEntry],
+        self,
+        entry: TurnFinish,
+        entries: Mapping[str, AnyEntry],
     ) -> Message | None:
         """Only a deliberate user cancel is the model's business; COMPLETED,
         TIMED_OUT, and ERRORED closes contribute nothing (work recorded inside
@@ -354,13 +361,17 @@ class ConversationProjector:
         return None
 
     def project_turn_start(
-        self, entry: TurnStart, entries: Mapping[str, AnyEntry],
+        self,
+        entry: TurnStart,
+        entries: Mapping[str, AnyEntry],
     ) -> Message | None:
         """Bookkeeping; no canonical LLM representation."""
         return None
 
     def project_cancel_requested(
-        self, entry: CancelRequested, entries: Mapping[str, AnyEntry],
+        self,
+        entry: CancelRequested,
+        entries: Mapping[str, AnyEntry],
     ) -> Message | None:
         """A durable runtime signal; the completed turn outcome represents the
         cancellation to the model."""
@@ -380,8 +391,7 @@ class ConversationProjector:
             message = (
                 error.error_message
                 if error is not None
-                else f"Arguments for tool {entry.raw_tool_call.name!r} are "
-                "invalid."
+                else f"Arguments for tool {entry.raw_tool_call.name!r} are invalid."
             )
             errors = error.details.get("errors") if error is not None else None
             if errors:
@@ -389,10 +399,7 @@ class ConversationProjector:
             return message
         if entry.status == ExecutionStatus.FAILED:
             if error is not None:
-                return (
-                    "Tool execution failed: "
-                    f"{error.error_type}: {error.error_message}"
-                )
+                return f"Tool execution failed: {error.error_type}: {error.error_message}"
             return "[tool execution failed]"
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
@@ -404,9 +411,7 @@ class ConversationProjector:
             return TextBlock(text=part.text)
         if isinstance(part, ImageContent):
             return self._image_block(part)
-        raise ProjectionError(
-            f"Cannot project content of type {type(part).__name__}."
-        )
+        raise ProjectionError(f"Cannot project content of type {type(part).__name__}.")
 
     def _image_block(self, part: ImageContent) -> ClientImageBlock:
         """Agent image part → client `ImageBlock`. Override to rewrite media
@@ -416,7 +421,8 @@ class ConversationProjector:
         if isinstance(source, ImageBase64):
             return ClientImageBlock(
                 source=MediaBase64(
-                    data=source.data, media_type=source.media_type,
+                    data=source.data,
+                    media_type=source.media_type,
                 ),
             )
         if isinstance(source, ImageURL):
@@ -426,12 +432,11 @@ class ConversationProjector:
         if isinstance(source, ImageFileId):
             return ClientImageBlock(
                 source=MediaFileId(
-                    file_id=source.file_id, media_type=source.media_type,
+                    file_id=source.file_id,
+                    media_type=source.media_type,
                 ),
             )
-        raise ProjectionError(
-            f"Cannot project image source of type {type(source).__name__}."
-        )
+        raise ProjectionError(f"Cannot project image source of type {type(source).__name__}.")
 
 
 # Presentation-only stand-in for an image when a tool message is flattened for

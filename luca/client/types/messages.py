@@ -10,9 +10,12 @@ timestamp) so a serialized conversation reloads with full context.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from .completion import Usage
 
 from .content import (
     AudioBlock,
@@ -33,7 +36,7 @@ class _UsageHolder:
 
 class UserMessage(BaseModel):
     role: Literal["user"] = "user"
-    content: str | list[Union[TextBlock, ImageBlock, AudioBlock, FileBlock]]
+    content: str | list[TextBlock | ImageBlock | AudioBlock | FileBlock]
     name: str | None = None
     timestamp: int | None = None
 
@@ -42,7 +45,7 @@ class UserMessage(BaseModel):
 
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
-    content: list[Union[TextBlock, ThinkingBlock, ToolCall, RefusalBlock]] = Field(
+    content: list[TextBlock | ThinkingBlock | ToolCall | RefusalBlock] = Field(
         default_factory=list,
     )
 
@@ -56,11 +59,11 @@ class AssistantMessage(BaseModel):
     response_model: str | None = None
     response_id: str | None = None
 
-    # Forward-declared as "Usage | None"; validated as Any here to avoid the
-    # circular import (completion.py imports messages.py for the discriminated
-    # union). The runtime type is the real Usage; pydantic handles it via the
-    # forward-ref resolution done in types/__init__.py.
-    usage: "Usage | None" = None
+    # Usage is imported only under TYPE_CHECKING to avoid the circular import
+    # (completion.py imports messages.py for the discriminated union). At runtime
+    # the annotation stays an unresolved forward ref until types/__init__.py --
+    # which has the real Usage in scope -- calls AssistantMessage.model_rebuild().
+    usage: Usage | None = None
     timestamp: int | None = None
 
     @property
@@ -75,7 +78,7 @@ class AssistantMessage(BaseModel):
 class ToolMessage(BaseModel):
     role: Literal["tool"] = "tool"
     tool_call_id: str
-    content: str | list[Union[TextBlock, ImageBlock]]
+    content: str | list[TextBlock | ImageBlock]
     name: str | None = None
     is_error: bool = False
     timestamp: int | None = None
@@ -84,6 +87,6 @@ class ToolMessage(BaseModel):
 
 
 Message = Annotated[
-    Union[UserMessage, AssistantMessage, ToolMessage],
+    UserMessage | AssistantMessage | ToolMessage,
     Field(discriminator="role"),
 ]

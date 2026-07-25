@@ -14,12 +14,13 @@ from luca.client.types import (
     UserMessage,
 )
 
-
 RESP = ChatCompletionResponse(
     message=AssistantMessage(
         content=[TextBlock(text="ok")],
-        finish_reason="stop", provider_finish_reason="stop",
-        provider="stub", model="m",
+        finish_reason="stop",
+        provider_finish_reason="stop",
+        provider="stub",
+        model="m",
     ),
 )
 
@@ -78,9 +79,13 @@ def test_tools_dict_coerce_to_typed(stub_provider):
     completion(
         model="stub:m",
         messages=[UserMessage(content="hi")],
-        tools=[{
-            "name": "t", "description": "...", "parameters": {"type": "object"},
-        }],
+        tools=[
+            {
+                "name": "t",
+                "description": "...",
+                "parameters": {"type": "object"},
+            }
+        ],
     )
     req = stub_provider.instances[0].calls[0].request
     assert isinstance(req.tools[0], Tool)

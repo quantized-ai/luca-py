@@ -37,12 +37,11 @@ completion signal (a cancel flush may emit zero events).
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import AnyEntry, CompactionEntry, ToolExecution, TurnOutcome
-
 
 # ── block events (fire in both modes) ──────────────────────────────────────────
 
@@ -225,22 +224,20 @@ class CompactionFinished(BaseModel):
 
 
 AgentEvent = Annotated[
-    Union[
-        ReasoningBlock,
-        TextBlock,
-        ToolCallReceived,
-        ToolExecutionStarted,
-        ToolExecuted,
-        FinishReason,
-        ReasoningStart,
-        ReasoningDelta,
-        TextStart,
-        TextDelta,
-        ToolCallStart,
-        ApprovalRequired,
-        CompactionScheduled,
-        CompactionStarted,
-        CompactionFinished,
-    ],
+    ReasoningBlock
+    | TextBlock
+    | ToolCallReceived
+    | ToolExecutionStarted
+    | ToolExecuted
+    | FinishReason
+    | ReasoningStart
+    | ReasoningDelta
+    | TextStart
+    | TextDelta
+    | ToolCallStart
+    | ApprovalRequired
+    | CompactionScheduled
+    | CompactionStarted
+    | CompactionFinished,
     Field(discriminator="type"),
 ]

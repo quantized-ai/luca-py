@@ -6,12 +6,13 @@ from luca.client.types import (
     UserMessage,
 )
 
-
 RESP = ChatCompletionResponse(
     message=AssistantMessage(
         content=[TextBlock(text="ok")],
-        finish_reason="stop", provider_finish_reason="stop",
-        provider="stub", model="m",
+        finish_reason="stop",
+        provider_finish_reason="stop",
+        provider="stub",
+        model="m",
     ),
 )
 

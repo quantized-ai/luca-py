@@ -43,7 +43,8 @@ class StreamCase:
 
 
 _REQ = ChatCompletionRequest(
-    model="gpt-4o", provider="openai",
+    model="gpt-4o",
+    provider="openai",
     messages=[UserMessage(content="hi")],
 )
 
@@ -60,33 +61,42 @@ CASES = [
         ],
         expected_events=[
             StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-            TextStartEvent(index=0, partial=AssistantMessage(
-                content=[TextBlock(text="")], provider="openai", model="gpt-4o")),
-            TextDeltaEvent(index=0, delta="Hi", partial=AssistantMessage(
-                content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o")),
-            TextEndEvent(index=0, content="Hi", partial=AssistantMessage(
-                content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o")),
+            TextStartEvent(
+                index=0, partial=AssistantMessage(content=[TextBlock(text="")], provider="openai", model="gpt-4o")
+            ),
+            TextDeltaEvent(
+                index=0,
+                delta="Hi",
+                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
+            ),
+            TextEndEvent(
+                index=0,
+                content="Hi",
+                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
+            ),
             UsageEvent(
                 usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-                partial=AssistantMessage(
-                    content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
+                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
             ),
             FinishEvent(
                 message=AssistantMessage(
                     content=[TextBlock(text="Hi")],
-                    finish_reason="stop", provider_finish_reason="stop",
-                    cancelled=False, error_message=None,
-                    provider="openai", model="gpt-4o",
+                    finish_reason="stop",
+                    provider_finish_reason="stop",
+                    cancelled=False,
+                    error_message=None,
+                    provider="openai",
+                    model="gpt-4o",
                     usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
                 ),
-                finish_reason="stop", provider_finish_reason="stop",
+                finish_reason="stop",
+                provider_finish_reason="stop",
                 cancelled=False,
                 usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
                 tool_calls=[],
             ),
         ],
     ),
-
     StreamCase(
         name="reasoning_then_text",
         request=_REQ,
@@ -94,49 +104,83 @@ CASES = [
             _data('{"choices":[{"index":0,"delta":{"reasoning":"Let me think."}}]}'),
             _data('{"choices":[{"index":0,"delta":{"content":"Hi"}}]}'),
             _data('{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'),
-            _data('{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":3,"total_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}}}'),
+            _data(
+                '{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":3,"total_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}}}'
+            ),
             _data("[DONE]"),
         ],
         expected_events=[
             StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-            ThinkingStartEvent(index=0, partial=AssistantMessage(
-                content=[ThinkingBlock(text="")], provider="openai", model="gpt-4o")),
-            ThinkingDeltaEvent(index=0, delta="Let me think.", partial=AssistantMessage(
-                content=[ThinkingBlock(text="Let me think.")], provider="openai", model="gpt-4o")),
-            TextStartEvent(index=1, partial=AssistantMessage(
-                content=[ThinkingBlock(text="Let me think."), TextBlock(text="")],
-                provider="openai", model="gpt-4o")),
-            TextDeltaEvent(index=1, delta="Hi", partial=AssistantMessage(
-                content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                provider="openai", model="gpt-4o")),
-            ThinkingEndEvent(index=0, content="Let me think.", partial=AssistantMessage(
-                content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                provider="openai", model="gpt-4o")),
-            TextEndEvent(index=1, content="Hi", partial=AssistantMessage(
-                content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                provider="openai", model="gpt-4o")),
+            ThinkingStartEvent(
+                index=0, partial=AssistantMessage(content=[ThinkingBlock(text="")], provider="openai", model="gpt-4o")
+            ),
+            ThinkingDeltaEvent(
+                index=0,
+                delta="Let me think.",
+                partial=AssistantMessage(
+                    content=[ThinkingBlock(text="Let me think.")], provider="openai", model="gpt-4o"
+                ),
+            ),
+            TextStartEvent(
+                index=1,
+                partial=AssistantMessage(
+                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="")], provider="openai", model="gpt-4o"
+                ),
+            ),
+            TextDeltaEvent(
+                index=1,
+                delta="Hi",
+                partial=AssistantMessage(
+                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
+                    provider="openai",
+                    model="gpt-4o",
+                ),
+            ),
+            ThinkingEndEvent(
+                index=0,
+                content="Let me think.",
+                partial=AssistantMessage(
+                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
+                    provider="openai",
+                    model="gpt-4o",
+                ),
+            ),
+            TextEndEvent(
+                index=1,
+                content="Hi",
+                partial=AssistantMessage(
+                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
+                    provider="openai",
+                    model="gpt-4o",
+                ),
+            ),
             UsageEvent(
                 usage=Usage(input_tokens=1, output_tokens=3, total_tokens=4, reasoning_tokens=2),
                 partial=AssistantMessage(
                     content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    provider="openai", model="gpt-4o"),
+                    provider="openai",
+                    model="gpt-4o",
+                ),
             ),
             FinishEvent(
                 message=AssistantMessage(
                     content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    finish_reason="stop", provider_finish_reason="stop",
-                    cancelled=False, error_message=None,
-                    provider="openai", model="gpt-4o",
+                    finish_reason="stop",
+                    provider_finish_reason="stop",
+                    cancelled=False,
+                    error_message=None,
+                    provider="openai",
+                    model="gpt-4o",
                     usage=Usage(input_tokens=1, output_tokens=3, total_tokens=4, reasoning_tokens=2),
                 ),
-                finish_reason="stop", provider_finish_reason="stop",
+                finish_reason="stop",
+                provider_finish_reason="stop",
                 cancelled=False,
                 usage=Usage(input_tokens=1, output_tokens=3, total_tokens=4, reasoning_tokens=2),
                 tool_calls=[],
             ),
         ],
     ),
-
     StreamCase(
         name="single_tool_call_id_and_name_in_first_chunk",
         request=_REQ,
@@ -145,9 +189,7 @@ CASES = [
                 '{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc",'
                 '"function":{"name":"get_weather","arguments":""}}]}}]}'
             ),
-            _data(
-                '{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"loca"}}]}}]}'
-            ),
+            _data('{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"loca"}}]}}]}'),
             _data(
                 '{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"tion\\":\\"NYC\\"}"}}]}}]}'
             ),
@@ -157,71 +199,112 @@ CASES = [
         expected_events=[
             StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
             ToolCallStartEvent(
-                index=0, id="call_abc", name="get_weather",
+                index=0,
+                id="call_abc",
+                name="get_weather",
                 partial=AssistantMessage(
-                    content=[ToolCall(
-                        id="call_abc", name="get_weather", arguments={},
-                        partial_arguments="", complete=False,
-                    )],
-                    provider="openai", model="gpt-4o",
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={},
+                            partial_arguments="",
+                            complete=False,
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-4o",
                 ),
             ),
             ToolCallDeltaEvent(
-                index=0, arguments_delta='{"loca',
+                index=0,
+                arguments_delta='{"loca',
                 partial=AssistantMessage(
-                    content=[ToolCall(
-                        id="call_abc", name="get_weather", arguments={},
-                        partial_arguments='{"loca', complete=False,
-                    )],
-                    provider="openai", model="gpt-4o",
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={},
+                            partial_arguments='{"loca',
+                            complete=False,
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-4o",
                 ),
             ),
             ToolCallDeltaEvent(
-                index=0, arguments_delta='tion":"NYC"}',
+                index=0,
+                arguments_delta='tion":"NYC"}',
                 partial=AssistantMessage(
-                    content=[ToolCall(
-                        id="call_abc", name="get_weather", arguments={},
-                        partial_arguments='{"location":"NYC"}', complete=False,
-                    )],
-                    provider="openai", model="gpt-4o",
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={},
+                            partial_arguments='{"location":"NYC"}',
+                            complete=False,
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-4o",
                 ),
             ),
             ToolCallEndEvent(
                 index=0,
                 tool_call=ToolCall(
-                    id="call_abc", name="get_weather",
+                    id="call_abc",
+                    name="get_weather",
                     arguments={"location": "NYC"},
-                    partial_arguments="", complete=True,
+                    partial_arguments="",
+                    complete=True,
                 ),
                 partial=AssistantMessage(
-                    content=[ToolCall(
-                        id="call_abc", name="get_weather",
-                        arguments={"location": "NYC"},
-                        partial_arguments="", complete=True,
-                    )],
-                    provider="openai", model="gpt-4o",
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={"location": "NYC"},
+                            partial_arguments="",
+                            complete=True,
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-4o",
                 ),
             ),
             FinishEvent(
                 message=AssistantMessage(
-                    content=[ToolCall(
-                        id="call_abc", name="get_weather",
-                        arguments={"location": "NYC"},
-                        partial_arguments="", complete=True,
-                    )],
-                    finish_reason="tool_use", provider_finish_reason="tool_calls",
-                    cancelled=False, error_message=None,
-                    provider="openai", model="gpt-4o",
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={"location": "NYC"},
+                            partial_arguments="",
+                            complete=True,
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    provider_finish_reason="tool_calls",
+                    cancelled=False,
+                    error_message=None,
+                    provider="openai",
+                    model="gpt-4o",
                     usage=Usage(),
                 ),
-                finish_reason="tool_use", provider_finish_reason="tool_calls",
+                finish_reason="tool_use",
+                provider_finish_reason="tool_calls",
                 cancelled=False,
                 usage=Usage(),
-                tool_calls=[ToolCall(
-                    id="call_abc", name="get_weather",
-                    arguments={"location": "NYC"},
-                    partial_arguments="", complete=True,
-                )],
+                tool_calls=[
+                    ToolCall(
+                        id="call_abc",
+                        name="get_weather",
+                        arguments={"location": "NYC"},
+                        partial_arguments="",
+                        complete=True,
+                    )
+                ],
             ),
         ],
     ),

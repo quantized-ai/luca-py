@@ -38,7 +38,8 @@ def execution_for(plugin, name, args, context) -> ToolExecution:
     the way `SimpleToolRegistry` stores it."""
     target = tool(plugin, name)
     requests = target.build_permission_requests(
-        target.Args.model_validate(args).model_dump(), context,
+        target.Args.model_validate(args).model_dump(),
+        context,
     )
     return ToolExecution(
         id="x_1",
@@ -69,7 +70,8 @@ def test_workspace_and_additional_directories_are_absolutized(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
 
     plugin = ShellAccessPlugin(
-        workspace=Path("."), additional_directories=[Path("../sibling")],
+        workspace=Path("."),
+        additional_directories=[Path("../sibling")],
     )
 
     assert plugin.workspace == tmp_path
@@ -101,14 +103,21 @@ def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path):
 
     assert isinstance(registry, SimpleToolRegistry)
     assert [t.name for t in registry.get_tools(SESSION)] == [
-        "read", "glob", "grep", "edit", "write", "apply_patch", "bash",
+        "read",
+        "glob",
+        "grep",
+        "edit",
+        "write",
+        "apply_patch",
+        "bash",
     ]
     assert registry.permission_policy is plugin.permission_strategy
 
 
 def test_system_prompt_part_names_the_permitted_directories(tmp_path):
     plugin = ShellAccessPlugin(
-        workspace=tmp_path, additional_directories=[tmp_path.parent / "sibling"],
+        workspace=tmp_path,
+        additional_directories=[tmp_path.parent / "sibling"],
     )
 
     [part] = plugin.get_system_prompt_parts(SESSION)
@@ -127,7 +136,8 @@ def test_ask_mode_seeds_read_tier_allow_rules_over_the_workspace(tmp_path):
     assert plugin.permission_strategy.rules == [
         ToolRule(
             resource_permission=ResourcePermission(
-                permission=permission, resource=resource,
+                permission=permission,
+                resource=resource,
             ),
             decision=ApprovalOption.ALLOW,
         )
@@ -141,9 +151,7 @@ def test_additional_directories_seed_the_same_rules(tmp_path):
 
     plugin = ShellAccessPlugin(workspace=tmp_path, additional_directories=[extra])
 
-    assert [
-        rule.resource_permission.resource for rule in plugin.permission_strategy.rules
-    ] == [
+    assert [rule.resource_permission.resource for rule in plugin.permission_strategy.rules] == [
         resource
         for directory in (tmp_path, extra)
         for _ in ("access_directory", "read", "glob", "grep")
@@ -167,7 +175,10 @@ async def test_read_inside_the_workspace_is_allowed_silently(tmp_path, context):
 async def test_read_in_a_workspace_subdirectory_is_allowed(tmp_path, context):
     plugin = make_plugin(tmp_path)
     execution = execution_for(
-        plugin, "read", {"file_path": "src/deep/notes.txt"}, context,
+        plugin,
+        "read",
+        {"file_path": "src/deep/notes.txt"},
+        context,
     )
 
     decision = await plugin.permission_strategy.decide(execution)
@@ -176,7 +187,8 @@ async def test_read_in_a_workspace_subdirectory_is_allowed(tmp_path, context):
 
 
 async def test_read_outside_the_workspace_is_pending_with_both_steps(
-    tmp_path, context,
+    tmp_path,
+    context,
 ):
     plugin = make_plugin(tmp_path / "workspace")
     outside = tmp_path / "elsewhere" / "secrets.txt"
@@ -188,7 +200,8 @@ async def test_read_outside_the_workspace_is_pending_with_both_steps(
     [access, verb] = plugin.permission_strategy.pending_requests(execution)
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(outside.parent),
+            permission="access_directory",
+            resource=str(outside.parent),
         ),
     ]
     assert verb.resources == [
@@ -199,10 +212,14 @@ async def test_read_outside_the_workspace_is_pending_with_both_steps(
 async def test_read_inside_an_additional_directory_is_allowed(tmp_path, context):
     extra = tmp_path / "elsewhere"
     plugin = ShellAccessPlugin(
-        workspace=tmp_path / "workspace", additional_directories=[extra],
+        workspace=tmp_path / "workspace",
+        additional_directories=[extra],
     )
     execution = execution_for(
-        plugin, "read", {"file_path": str(extra / "notes.txt")}, context,
+        plugin,
+        "read",
+        {"file_path": str(extra / "notes.txt")},
+        context,
     )
 
     decision = await plugin.permission_strategy.decide(execution)
@@ -211,11 +228,13 @@ async def test_read_inside_an_additional_directory_is_allowed(tmp_path, context)
 
 
 async def test_edit_inside_the_workspace_prompts_only_for_the_verb(
-    tmp_path, context,
+    tmp_path,
+    context,
 ):
     plugin = make_plugin(tmp_path)
     execution = execution_for(
-        plugin, "edit",
+        plugin,
+        "edit",
         {"file_path": "notes.txt", "old_string": "a", "new_string": "b"},
         context,
     )
@@ -230,7 +249,8 @@ async def test_edit_inside_the_workspace_prompts_only_for_the_verb(
 
 
 async def test_bash_inside_the_workspace_prompts_only_for_the_command(
-    tmp_path, context,
+    tmp_path,
+    context,
 ):
     plugin = make_plugin(tmp_path)
     execution = execution_for(plugin, "bash", {"command": "git status"}, context)
@@ -247,7 +267,8 @@ async def test_bash_inside_the_workspace_prompts_only_for_the_command(
 async def test_yolo_mode_allows_everything(tmp_path, context):
     plugin = make_plugin(tmp_path, mode=PermissionMode.YOLO)
     execution = execution_for(
-        plugin, "edit",
+        plugin,
+        "edit",
         {"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"},
         context,
     )

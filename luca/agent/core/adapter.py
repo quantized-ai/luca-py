@@ -14,8 +14,7 @@ and there is no general bidirectional adapter object.
 
 from __future__ import annotations
 
-from luca.client.types import AssistantMessage as LucaAssistantMessage
-from luca.client.types import Tool as LucaTool
+from luca.client.types import AssistantMessage as LucaAssistantMessage, Tool as LucaTool
 
 from .models import TextContent, ThinkingContent, ToolCall
 from .tools import Tool

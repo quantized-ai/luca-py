@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -100,7 +100,7 @@ class ImageFileId(BaseModel):
 
 
 ImageSource = Annotated[
-    Union[ImageURL, ImageBase64, ImageFileId],
+    ImageURL | ImageBase64 | ImageFileId,
     Field(discriminator="kind"),
 ]
 
@@ -122,13 +122,13 @@ class ImageContent(BaseModel):
 
 # what a user message, a tool result or a pruned replacement carries
 ContentPart = Annotated[
-    Union[TextContent, ImageContent],
+    TextContent | ImageContent,
     Field(discriminator="type"),
 ]
 
 # what an assistant message carries — a different set, so a separate union
 AssistantContentPart = Annotated[
-    Union[TextContent, ThinkingContent, ToolCall],
+    TextContent | ThinkingContent | ToolCall,
     Field(discriminator="type"),
 ]
 
@@ -539,16 +539,14 @@ class PrunedEntry(Entry):
 # The durable, uniformly-addressable node space. Discriminated on `type` so a
 # dict[str, AnyEntry] deserializes each value to its concrete subclass.
 AnyEntry = Annotated[
-    Union[
-        UserMessage,
-        AssistantMessage,
-        ToolExecution,
-        TurnStart,
-        TurnFinish,
-        CancelRequested,
-        CompactionEntry,
-        PrunedEntry,
-    ],
+    UserMessage
+    | AssistantMessage
+    | ToolExecution
+    | TurnStart
+    | TurnFinish
+    | CancelRequested
+    | CompactionEntry
+    | PrunedEntry,
     Field(discriminator="type"),
 ]
 
@@ -701,15 +699,15 @@ class SessionRuntimeStatus(BaseModel):
 
     @classmethod
     def get_runtime_status_from_agent_session(
-        cls, session: AgentSession,
+        cls,
+        session: AgentSession,
     ) -> SessionRuntimeStatus:
         nodes = session.active_conversation.nodes
         entries = session.entries
         turn_count = sum(
             1
             for index, node_id in enumerate(nodes)
-            if isinstance(entries[node_id], TurnStart)
-            and not is_compaction_bracket(nodes, entries, index)
+            if isinstance(entries[node_id], TurnStart) and not is_compaction_bracket(nodes, entries, index)
         )
         open_idx: int | None = None
         for i in range(len(nodes) - 1, -1, -1):
@@ -721,11 +719,7 @@ class SessionRuntimeStatus(BaseModel):
                 break
         step_count = 0
         if open_idx is not None:
-            step_count = sum(
-                1
-                for node_id in nodes[open_idx:]
-                if isinstance(entries[node_id], AssistantMessage)
-            )
+            step_count = sum(1 for node_id in nodes[open_idx:] if isinstance(entries[node_id], AssistantMessage))
         return cls(
             status=session.active_conversation.status,
             turn_count=turn_count,

@@ -9,22 +9,22 @@ described in api_prd.md §12.6.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from ..exceptions import ClientError, StreamError
-from ..exceptions import TimeoutError as SDKTimeoutError
+from ..exceptions import ClientError, StreamError, TimeoutError as SDKTimeoutError
 from .completion import Usage
 from .content import RefusalBlock, TextBlock, ThinkingBlock, ToolCall
 from .messages import AssistantMessage
 
 if TYPE_CHECKING:
-    from .completion import ChatCompletionRequest, ChatCompletionResponse
+    from .completion import ChatCompletionResponse
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +168,10 @@ class FinishEvent(BaseModel):
 
     def parse(self) -> Any:
         if self._response_format is None:
-            raise ValueError(
-                "No response_format was set on the originating request; cannot parse()."
-            )
+            raise ValueError("No response_format was set on the originating request; cannot parse().")
         from .structured import parse_structured_output
 
-        text = "".join(
-            block.text for block in self.message.content if isinstance(block, TextBlock)
-        )
+        text = "".join(block.text for block in self.message.content if isinstance(block, TextBlock))
         return parse_structured_output(text, self._response_format)
 
 
@@ -190,15 +186,22 @@ class ErrorEvent(BaseModel):
 
 
 StreamEvent = Annotated[
-    Union[
-        StartEvent,
-        TextStartEvent, TextDeltaEvent, TextEndEvent,
-        ThinkingStartEvent, ThinkingDeltaEvent, ThinkingEndEvent,
-        ToolCallStartEvent, ToolCallDeltaEvent, ToolCallEndEvent,
-        RefusalStartEvent, RefusalDeltaEvent, RefusalEndEvent,
-        UsageEvent,
-        FinishEvent, ErrorEvent,
-    ],
+    StartEvent
+    | TextStartEvent
+    | TextDeltaEvent
+    | TextEndEvent
+    | ThinkingStartEvent
+    | ThinkingDeltaEvent
+    | ThinkingEndEvent
+    | ToolCallStartEvent
+    | ToolCallDeltaEvent
+    | ToolCallEndEvent
+    | RefusalStartEvent
+    | RefusalDeltaEvent
+    | RefusalEndEvent
+    | UsageEvent
+    | FinishEvent
+    | ErrorEvent,
     Field(discriminator="type"),
 ]
 
@@ -260,10 +263,16 @@ class RawUsage:
     usage: Usage
 
 
-RawStreamEvent = Union[
-    RawBlockStart, RawTextDelta, RawThinkingDelta, RawToolArgumentsDelta,
-    RawRefusalDelta, RawBlockStop, RawFinish, RawUsage,
-]
+RawStreamEvent = (
+    RawBlockStart
+    | RawTextDelta
+    | RawThinkingDelta
+    | RawToolArgumentsDelta
+    | RawRefusalDelta
+    | RawBlockStop
+    | RawFinish
+    | RawUsage
+)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +326,7 @@ class BaseStream:
                 self._http_cm = None
                 self._http_response = None
 
-    def __enter__(self) -> "BaseStream":
+    def __enter__(self) -> BaseStream:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -359,12 +368,11 @@ class BaseStream:
                     "Stream was garbage-collected without being closed. "
                     "Use `with completion_stream(...) as s:` or call s.cancel() / s.collect().",
                     ResourceWarning,
+                    stacklevel=2,
                     source=self,
                 )
-                try:
+                with contextlib.suppress(Exception):
                     http_response.close()
-                except Exception:
-                    pass
 
 
 class AsyncBaseStream:
@@ -421,7 +429,7 @@ class AsyncBaseStream:
                 self._http_cm = None
                 self._http_response = None
 
-    async def __aenter__(self) -> "AsyncBaseStream":
+    async def __aenter__(self) -> AsyncBaseStream:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -464,6 +472,7 @@ class AsyncBaseStream:
                     "AsyncStream was garbage-collected without being closed. "
                     "Use `async with acompletion_stream(...) as s:` or call await s.cancel() / await s.collect().",
                     ResourceWarning,
+                    stacklevel=2,
                     source=self,
                 )
                 # Cannot await aclose() from __del__; rely on transport teardown.
@@ -537,15 +546,13 @@ class _ChatCompletionAccumulator:
         def _check_delta(i: int, expected_type: type) -> None:
             if i not in self._open_block_indices:
                 raise StreamError(
-                    f"Delta references index {i} which is not an open block "
-                    f"(open: {sorted(self._open_block_indices)})",
+                    f"Delta references index {i} which is not an open block (open: {sorted(self._open_block_indices)})",
                     partial_message=self._message,
                 )
             block = self._message.content[i]
             if not isinstance(block, expected_type):
                 raise StreamError(
-                    f"Delta type does not match block type "
-                    f"{type(block).__name__} at index {i}",
+                    f"Delta type does not match block type {type(block).__name__} at index {i}",
                     partial_message=self._message,
                 )
 
@@ -558,7 +565,9 @@ class _ChatCompletionAccumulator:
             elif raw.block_type == "thinking":
                 self._message.content.append(
                     ThinkingBlock(
-                        text="", signature=raw.signature, redacted=raw.redacted,
+                        text="",
+                        signature=raw.signature,
+                        redacted=raw.redacted,
                     ),
                 )
                 self._open_block_indices.add(raw.index)
@@ -575,13 +584,18 @@ class _ChatCompletionAccumulator:
                     )
                 self._message.content.append(
                     ToolCall(
-                        id=raw.tool_id, name=raw.tool_name,
-                        arguments={}, partial_arguments="", complete=False,
+                        id=raw.tool_id,
+                        name=raw.tool_name,
+                        arguments={},
+                        partial_arguments="",
+                        complete=False,
                     )
                 )
                 self._open_block_indices.add(raw.index)
                 yield ToolCallStartEvent(
-                    index=raw.index, id=raw.tool_id, name=raw.tool_name,
+                    index=raw.index,
+                    id=raw.tool_id,
+                    name=raw.tool_name,
                     partial=self._message.model_copy(deep=True),
                 )
             else:
@@ -612,7 +626,9 @@ class _ChatCompletionAccumulator:
             assert isinstance(block, ToolCall)
             block.partial_arguments += raw.arguments_delta
             yield ToolCallDeltaEvent(
-                index=raw.index, arguments_delta=raw.arguments_delta, partial=self._message,
+                index=raw.index,
+                arguments_delta=raw.arguments_delta,
+                partial=self._message,
             )
 
         elif isinstance(raw, RawRefusalDelta):
@@ -625,8 +641,7 @@ class _ChatCompletionAccumulator:
         elif isinstance(raw, RawBlockStop):
             if raw.index not in self._open_block_indices:
                 raise StreamError(
-                    f"RawBlockStop.index={raw.index} is not an open block "
-                    f"(open: {sorted(self._open_block_indices)})",
+                    f"RawBlockStop.index={raw.index} is not an open block (open: {sorted(self._open_block_indices)})",
                     partial_message=self._message,
                 )
             self._open_block_indices.remove(raw.index)
@@ -640,9 +655,7 @@ class _ChatCompletionAccumulator:
                 yield RefusalEndEvent(index=raw.index, content=block.text, partial=snapshot)
             elif isinstance(block, ToolCall):
                 try:
-                    block.arguments = (
-                        json.loads(block.partial_arguments) if block.partial_arguments else {}
-                    )
+                    block.arguments = json.loads(block.partial_arguments) if block.partial_arguments else {}
                 except json.JSONDecodeError as e:
                     raise StreamError(
                         f"Tool call {raw.index} ({block.name!r}) returned malformed JSON",
@@ -651,7 +664,8 @@ class _ChatCompletionAccumulator:
                 block.complete = True
                 block.partial_arguments = ""
                 yield ToolCallEndEvent(
-                    index=raw.index, tool_call=block,
+                    index=raw.index,
+                    tool_call=block,
                     partial=self._message.model_copy(deep=True),
                 )
 
@@ -702,7 +716,7 @@ class _ChatCompletionAccumulator:
         )
 
 
-def _to_response(finish: FinishEvent, request: Any, provider: str) -> "ChatCompletionResponse":
+def _to_response(finish: FinishEvent, request: Any, provider: str) -> ChatCompletionResponse:
     from .completion import ChatCompletionResponse
 
     response = ChatCompletionResponse(message=finish.message)
@@ -757,13 +771,11 @@ class ChatCompletionStream(BaseStream):
         try:
             yield self._acc.start_event()
             for raw in self.parse_chunks():
-                for ev in self._acc.handle_raw(raw):
-                    yield ev
+                yield from self._acc.handle_raw(raw)
 
             if self._acc._terminal is None:
                 raise StreamError(
-                    "Stream ended without RawFinish — provider closed the wire "
-                    "without sending a finish reason",
+                    "Stream ended without RawFinish — provider closed the wire without sending a finish reason",
                     partial_message=self._acc._message,
                 )
 
@@ -803,7 +815,7 @@ class ChatCompletionStream(BaseStream):
 
         raise exc
 
-    def collect(self) -> "ChatCompletionResponse":
+    def collect(self) -> ChatCompletionResponse:
         from .completion import ChatCompletionResponse
 
         with self:
@@ -863,9 +875,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
 
         await self._aopen()
         if self._total_timeout is not None and self._deadline is None:
-            self._deadline = (
-                asyncio.get_running_loop().time() + self._total_timeout
-            )
+            self._deadline = asyncio.get_running_loop().time() + self._total_timeout
         chunks = self.parse_chunks()
         try:
             yield self._acc.start_event()
@@ -879,8 +889,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
 
             if self._acc._terminal is None:
                 raise StreamError(
-                    "Stream ended without RawFinish — provider closed the wire "
-                    "without sending a finish reason",
+                    "Stream ended without RawFinish — provider closed the wire without sending a finish reason",
                     partial_message=self._acc._message,
                 )
 
@@ -945,7 +954,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
 
         raise exc
 
-    async def collect(self) -> "ChatCompletionResponse":
+    async def collect(self) -> ChatCompletionResponse:
         from .completion import ChatCompletionResponse
 
         async with self:

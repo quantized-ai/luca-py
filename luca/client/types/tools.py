@@ -8,12 +8,12 @@ the caller can validate inbound tool-call arguments against it later.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 # Accepted at the API boundary; not validated by pydantic (arbitrary types).
-ToolParameters = Union[dict, type, TypeAdapter]
+ToolParameters = dict | type | TypeAdapter
 
 
 class Tool(BaseModel):
@@ -24,7 +24,7 @@ class Tool(BaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
 
-ToolChoice = Union[Literal["auto", "required", "none"], dict]
+ToolChoice = Literal["auto", "required", "none"] | dict
 
 
 def tool_parameters_to_json_schema(parameters: Any) -> dict:
@@ -41,6 +41,5 @@ def tool_parameters_to_json_schema(parameters: Any) -> dict:
     if isinstance(parameters, TypeAdapter):
         return parameters.json_schema()
     raise TypeError(
-        f"Tool.parameters must be a dict, BaseModel subclass, or TypeAdapter; "
-        f"got {type(parameters).__name__}"
+        f"Tool.parameters must be a dict, BaseModel subclass, or TypeAdapter; got {type(parameters).__name__}"
     )

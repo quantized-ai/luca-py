@@ -9,10 +9,7 @@ import base64
 
 from textual.widgets import Input
 
-from luca.agent.contrib.tui import AgentApp
-from luca.agent.contrib.tui import app as app_module
-from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
-from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
+from luca.agent.contrib.tui import AgentApp, app as app_module
 from luca.agent.contrib.tui.cells import (
     AssistantCell,
     CompactionCell,
@@ -20,6 +17,8 @@ from luca.agent.contrib.tui.cells import (
     ReasoningCell,
     UserCell,
 )
+from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
+from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.core.models import ConversationStatus
 from luca.client.testing import (
@@ -29,7 +28,6 @@ from luca.client.testing import (
     faux_text,
     faux_thinking,
 )
-
 from tests.agent.scenarios import (
     COMPACTION_FAILED_SESSION,
     POST_COMPACTION_SESSION,
@@ -46,8 +44,7 @@ def scripted(*responses) -> FauxProvider:
 
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE"
-    "hQGAhKmMIQAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
 
@@ -56,7 +53,8 @@ async def test_text_turn_renders_user_and_assistant_cells(tmp_path):
     app = AgentApp(
         session,
         provider=scripted(faux_assistant_message([faux_text("Hello there!")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -72,10 +70,13 @@ async def test_text_turn_renders_user_and_assistant_cells(tmp_path):
 async def test_streaming_thinking_renders_once(tmp_path):
     app = AgentApp(
         fresh_session(),
-        provider=scripted(faux_assistant_message(
-            [faux_thinking("pondering the greeting"), faux_text("Hey!")],
-        )),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [faux_thinking("pondering the greeting"), faux_text("Hey!")],
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -91,10 +92,13 @@ async def test_streaming_thinking_renders_once(tmp_path):
 async def test_non_streaming_renders_the_same_transcript(tmp_path):
     app = AgentApp(
         fresh_session(),
-        provider=scripted(faux_assistant_message(
-            [faux_thinking("pondering the greeting"), faux_text("Hey!")],
-        )),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [faux_thinking("pondering the greeting"), faux_text("Hey!")],
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
         streaming=False,
     )
 
@@ -111,10 +115,13 @@ async def test_non_streaming_renders_the_same_transcript(tmp_path):
 async def test_blank_text_renders_no_assistant_cell(tmp_path):
     app = AgentApp(
         fresh_session(),
-        provider=scripted(faux_assistant_message(
-            [faux_thinking("deciding"), faux_text(" ")],
-        )),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [faux_thinking("deciding"), faux_text(" ")],
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -129,7 +136,8 @@ async def test_blank_text_renders_no_assistant_cell_non_streaming(tmp_path):
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("   ")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
         streaming=False,
     )
 
@@ -144,10 +152,13 @@ async def test_resume_skips_blank_assistant_text(tmp_path):
     session = fresh_session()
     app = AgentApp(
         session,
-        provider=scripted(faux_assistant_message(
-            [faux_thinking("deciding"), faux_text(" ")],
-        )),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [faux_thinking("deciding"), faux_text(" ")],
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "hi")
@@ -155,7 +166,10 @@ async def test_resume_skips_blank_assistant_text(tmp_path):
 
     reloaded = load_session(session.id, tmp_path)
     resumed = AgentApp(
-        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        reloaded,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with resumed.run_test() as pilot:
         await pilot.pause()
@@ -169,15 +183,15 @@ async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
     app = AgentApp(
         session,
         provider=scripted(faux_assistant_message([], error=faux_error("boom"))),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
         await submit(pilot, "hi")
         await wait_until(
             pilot,
-            lambda: bool(app.query(NoticeCell))
-            and not app.query_one("#prompt", Input).disabled,
+            lambda: bool(app.query(NoticeCell)) and not app.query_one("#prompt", Input).disabled,
         )
 
         [notice] = app.query(NoticeCell)
@@ -190,10 +204,13 @@ async def test_resume_replays_the_transcript(tmp_path):
     session = fresh_session()
     app = AgentApp(
         session,
-        provider=scripted(faux_assistant_message(
-            [faux_thinking("resumable pondering"), faux_text("First answer.")],
-        )),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [faux_thinking("resumable pondering"), faux_text("First answer.")],
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "first question")
@@ -201,7 +218,10 @@ async def test_resume_replays_the_transcript(tmp_path):
 
     reloaded = load_session(session.id, tmp_path)
     resumed = AgentApp(
-        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        reloaded,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with resumed.run_test() as pilot:
         await pilot.pause()
@@ -215,14 +235,16 @@ async def test_resume_replays_the_transcript(tmp_path):
 
 
 async def test_pasted_image_is_attached_and_sent_with_the_next_message(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
     session = fresh_session()
     app = AgentApp(
         session,
         provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -245,7 +267,8 @@ async def test_a_pasted_image_can_be_sent_without_any_text(tmp_path, monkeypatch
     app = AgentApp(
         session,
         provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -262,8 +285,10 @@ async def test_a_pasted_image_can_be_sent_without_any_text(tmp_path, monkeypatch
 async def test_pasting_without_an_image_attaches_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "read_clipboard_image", lambda: None)
     app = AgentApp(
-        fresh_session(), provider=scripted(),
-        workspace=tmp_path, session_dir=tmp_path,
+        fresh_session(),
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -279,8 +304,10 @@ async def test_an_unreadable_clipboard_attaches_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app_module, "read_clipboard_image", unavailable)
     app = AgentApp(
-        fresh_session(), provider=scripted(),
-        workspace=tmp_path, session_dir=tmp_path,
+        fresh_session(),
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -293,8 +320,10 @@ async def test_an_unreadable_clipboard_attaches_nothing(tmp_path, monkeypatch):
 async def test_escape_clears_a_pending_attachment(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
     app = AgentApp(
-        fresh_session(), provider=scripted(),
-        workspace=tmp_path, session_dir=tmp_path,
+        fresh_session(),
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -314,7 +343,8 @@ async def test_resume_replays_a_pasted_image_identically(tmp_path, monkeypatch):
     app = AgentApp(
         session,
         provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path, session_dir=tmp_path,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await pilot.press("ctrl+v")
@@ -325,7 +355,10 @@ async def test_resume_replays_a_pasted_image_identically(tmp_path, monkeypatch):
 
     reloaded = load_session(session.id, tmp_path)
     resumed = AgentApp(
-        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        reloaded,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with resumed.run_test() as pilot:
         await pilot.pause()
@@ -338,11 +371,16 @@ async def test_redacted_reasoning_shows_a_marker_instead_of_nothing(tmp_path):
     # an unexplained gap where the reasoning should be
     app = AgentApp(
         fresh_session(),
-        provider=scripted(faux_assistant_message([
-            faux_thinking("", signature="encrypted", redacted=True),
-            faux_text("Done."),
-        ])),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [
+                    faux_thinking("", signature="encrypted", redacted=True),
+                    faux_text("Done."),
+                ]
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -358,11 +396,16 @@ async def test_a_redacted_block_replays_the_same_as_it_rendered(tmp_path):
     session = fresh_session()
     app = AgentApp(
         session,
-        provider=scripted(faux_assistant_message([
-            faux_thinking("", signature="encrypted", redacted=True),
-            faux_text("Done."),
-        ])),
-        workspace=tmp_path, session_dir=tmp_path,
+        provider=scripted(
+            faux_assistant_message(
+                [
+                    faux_thinking("", signature="encrypted", redacted=True),
+                    faux_text("Done."),
+                ]
+            )
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with app.run_test() as pilot:
         await submit(pilot, "hi")
@@ -371,7 +414,10 @@ async def test_a_redacted_block_replays_the_same_as_it_rendered(tmp_path):
 
     reloaded = load_session(session.id, tmp_path)
     resumed = AgentApp(
-        reloaded, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        reloaded,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
     async with resumed.run_test() as pilot:
         await pilot.pause()
@@ -382,7 +428,10 @@ async def test_a_redacted_block_replays_the_same_as_it_rendered(tmp_path):
 async def test_ctrl_d_saves_and_quits(tmp_path):
     session = fresh_session()
     app = AgentApp(
-        session, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        session,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -400,7 +449,10 @@ async def test_a_resumed_compacted_session_replays_its_summary(tmp_path):
     session.active_conversation.status = ConversationStatus.IDLE
     session.active_conversation.nodes = ["cmp"]
     app = AgentApp(
-        session, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        session,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -416,7 +468,10 @@ async def test_a_compaction_that_produced_nothing_replays_no_cell(tmp_path):
     # only the one with content renders, exactly as the wire projection does
     session = COMPACTION_FAILED_SESSION.model_copy(deep=True)
     app = AgentApp(
-        session, provider=scripted(), workspace=tmp_path, session_dir=tmp_path,
+        session,
+        provider=scripted(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:

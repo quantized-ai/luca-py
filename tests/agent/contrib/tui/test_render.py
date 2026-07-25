@@ -65,16 +65,26 @@ def test_clip_text_bounds_chars():
 
 
 def test_user_transcript_text_renders_images_as_placeholders():
-    assert user_transcript_text([
-        ImageContent(
-            source=ImageBase64(data="aGk=", media_type="image/png"),
-            metadata={"name": "receipt.jpg"},
-        ),
-        TextContent(text="how much did I tip?"),
-    ]) == "[image: receipt.jpg]\nhow much did I tip?"
+    assert (
+        user_transcript_text(
+            [
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    metadata={"name": "receipt.jpg"},
+                ),
+                TextContent(text="how much did I tip?"),
+            ]
+        )
+        == "[image: receipt.jpg]\nhow much did I tip?"
+    )
 
 
 def test_user_transcript_text_falls_back_to_the_media_type():
-    assert user_transcript_text([
-        ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
-    ]) == "[image: image/png]"
+    assert (
+        user_transcript_text(
+            [
+                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ]
+        )
+        == "[image: image/png]"
+    )

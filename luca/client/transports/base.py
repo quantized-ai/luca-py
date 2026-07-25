@@ -7,6 +7,7 @@ hook methods that concrete subclasses override.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -66,25 +67,21 @@ class BaseTransport:
 
     def close(self) -> None:
         if self._owned_client:
-            try:
+            with contextlib.suppress(Exception):
                 self._client.close()
-            except Exception:
-                pass
 
     async def aclose(self) -> None:
         if self._aclient is not None and self._owned_aclient:
-            try:
+            with contextlib.suppress(Exception):
                 await self._aclient.aclose()
-            except Exception:
-                pass
 
-    def __enter__(self) -> "BaseTransport":
+    def __enter__(self) -> BaseTransport:
         return self
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    async def __aenter__(self) -> "BaseTransport":
+    async def __aenter__(self) -> BaseTransport:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -111,21 +108,24 @@ class ChatCompletionTransportMixin:
     # type-ignored: methods reference self._client etc., set by BaseTransport.
 
     def completion(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionResponse":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
         httpx_request = self._build_chat_completion_httpx_request(
-            request, self._client,  # type: ignore[attr-defined]
+            request,
+            self._client,  # type: ignore[attr-defined]
         )
         try:
             response = self._client.send(httpx_request)  # type: ignore[attr-defined]
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise self._map_chat_completion_http_error(e)
+            raise self._map_chat_completion_http_error(e) from e
         return self._parse_chat_completion_response(response, request)
 
     async def acompletion(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionResponse":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
         aclient = self._ensure_aclient()  # type: ignore[attr-defined]
         # Same builder as the sync path so transports that customise request
         # construction are not bypassed on async.
@@ -134,30 +134,37 @@ class ChatCompletionTransportMixin:
             response = await aclient.send(httpx_request)
             response.raise_for_status()
         except httpx.HTTPError as e:
-            raise self._map_chat_completion_http_error(e)
+            raise self._map_chat_completion_http_error(e) from e
         return self._parse_chat_completion_response(response, request)
 
     def completion_stream(
-        self, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionStream":
+        self,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionStream:
         cls = self._chat_completion_stream_class()
         return cls(transport=self, request=request)
 
     def acompletion_stream(
-        self, request: "ChatCompletionRequest",
-    ) -> "AsyncChatCompletionStream":
+        self,
+        request: ChatCompletionRequest,
+    ) -> AsyncChatCompletionStream:
         cls = self._async_chat_completion_stream_class()
         return cls(transport=self, request=request)
 
     # --- default hook implementations ---
 
     def _chat_completion_url(
-        self, request: "ChatCompletionRequest", *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> str:
         return f"{self._base_url}/chat/completions"  # type: ignore[attr-defined]
 
     def _build_chat_completion_httpx_request(
-        self, request: "ChatCompletionRequest", client: Any,
+        self,
+        request: ChatCompletionRequest,
+        client: Any,
     ) -> httpx.Request:
         return client.build_request(
             "POST",
@@ -169,37 +176,32 @@ class ChatCompletionTransportMixin:
     # --- abstract hooks ---
 
     def _build_chat_completion_payload(
-        self, request: "ChatCompletionRequest", *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> dict:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _build_chat_completion_payload"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _build_chat_completion_payload")
 
     def _parse_chat_completion_response(
-        self, response: httpx.Response, request: "ChatCompletionRequest",
-    ) -> "ChatCompletionResponse":
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _parse_chat_completion_response"
-        )
+        self,
+        response: httpx.Response,
+        request: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
+        raise NotImplementedError(f"{type(self).__name__} must implement _parse_chat_completion_response")
 
     def _classify_finish(
-        self, provider_value: str | None, message: Any,
+        self,
+        provider_value: str | None,
+        message: Any,
     ) -> tuple[str | None, str | None]:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _classify_finish"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _classify_finish")
 
     def _map_chat_completion_http_error(self, exc: httpx.HTTPError) -> ClientError:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _map_chat_completion_http_error"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _map_chat_completion_http_error")
 
     def _chat_completion_stream_class(self) -> type:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _chat_completion_stream_class"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _chat_completion_stream_class")
 
     def _async_chat_completion_stream_class(self) -> type:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _async_chat_completion_stream_class"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement _async_chat_completion_stream_class")

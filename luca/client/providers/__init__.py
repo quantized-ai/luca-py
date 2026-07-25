@@ -6,7 +6,7 @@ spawns a GenericProvider).
 
 from __future__ import annotations
 
-from typing import TypedDict, Union
+from typing import TypedDict
 
 from ..exceptions import ProviderNotFoundError
 from ..transports import OpenAITransport
@@ -25,7 +25,7 @@ class ProviderConfig(TypedDict, total=False):
     default_transport_class: type
 
 
-PROVIDERS: dict[str, Union[type, ProviderConfig]] = {
+PROVIDERS: dict[str, type | ProviderConfig] = {
     # First-class providers
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
@@ -70,11 +70,14 @@ def resolve_provider(
     """Build a Provider instance for `name`, applying any per-call overrides."""
     entry = PROVIDERS.get(name)
 
-    common: dict = dict(
-        api_key=api_key, base_url=base_url,
-        transport_class=transport_class, transport=transport,
-        http_client=http_client, async_http_client=async_http_client,
-    )
+    common: dict = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "transport_class": transport_class,
+        "transport": transport,
+        "http_client": http_client,
+        "async_http_client": async_http_client,
+    }
     if timeout is not None:
         common["timeout"] = timeout
     # Drop None entries — BaseProvider has its own defaults for them.
@@ -103,9 +106,16 @@ def resolve_provider(
 
 
 __all__ = [
-    "BaseProvider", "ChatCompletionMixin",
-    "OpenAIProvider", "AnthropicProvider", "OpenRouterProvider", "BedrockProvider",
-    "GenericProvider", "FauxProvider",
-    "PROVIDERS", "ProviderConfig",
-    "register_provider", "resolve_provider",
+    "BaseProvider",
+    "ChatCompletionMixin",
+    "OpenAIProvider",
+    "AnthropicProvider",
+    "OpenRouterProvider",
+    "BedrockProvider",
+    "GenericProvider",
+    "FauxProvider",
+    "PROVIDERS",
+    "ProviderConfig",
+    "register_provider",
+    "resolve_provider",
 ]

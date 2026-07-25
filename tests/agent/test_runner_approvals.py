@@ -27,6 +27,15 @@ is consumed in this order per turn:
 
 import pytest
 
+from luca.agent.core.context import ToolContext
+from luca.agent.core.events import (
+    ApprovalRequired,
+    FinishReason,
+    TextBlock,
+    ToolCallReceived,
+    ToolCallStart,
+    ToolExecuted,
+)
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
@@ -48,25 +57,13 @@ from luca.agent.core.models import (
     Usage,
     UserMessage,
 )
-from luca.agent.core.events import (
-    ApprovalRequired,
-    FinishReason,
-    TextBlock,
-    ToolCallReceived,
-    ToolCallStart,
-    ToolExecuted,
-    ToolExecutionStarted,
-)
-from luca.agent.core.context import ToolContext
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
     faux_text,
     faux_tool_call,
 )
-from luca.client.types import TextBlock as LucaTextBlock
-from luca.client.types import ToolMessage
-
+from luca.client.types import TextBlock as LucaTextBlock, ToolMessage
 from tests.agent.scenarios import (
     CLEARED_SESSION,
     GATED_SESSION,
@@ -92,7 +89,9 @@ class ExplodingRegistry(FakeToolRegistry):
     """decide() always raises — the decide-failure double."""
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         raise RuntimeError("strategy down")
 
@@ -102,17 +101,21 @@ class ExplodingRegistry(FakeToolRegistry):
 
 async def test_pending_decision_pauses_runner_and_records_it():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_ask",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
         },
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -120,25 +123,32 @@ async def test_pending_decision_pauses_runner_and_records_it():
     )
     registry = FakeToolRegistry([AddTool()], decisions=[PENDING_1000])
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    gated = birth.model_copy(update={
-        "approval_status": ApprovalStatus.PENDING,
-        "approval_decisions": [PENDING_1000],
-        "updated_at": 1000,
-    })
+    gated = birth.model_copy(
+        update={
+            "approval_status": ApprovalStatus.PENDING,
+            "approval_decisions": [PENDING_1000],
+            "updated_at": 1000,
+        }
+    )
     assert events == [
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=birth),
@@ -154,12 +164,14 @@ async def test_pending_decision_pauses_runner_and_records_it():
 
 async def test_streaming_pauses_at_approval_gate():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_ask_stream",
         entries={
@@ -169,15 +181,20 @@ async def test_streaming_pauses_at_approval_gate():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[PENDING_1000]),
-        provider=faux, ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[PENDING_1000]),
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
 
     async with runner.run(streaming=True) as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
@@ -187,26 +204,32 @@ async def test_streaming_pauses_at_approval_gate():
         ToolCallStart(tool_call_id="tc1", name="add"),
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=birth),
-        ApprovalRequired(executions=[
-            birth.model_copy(update={
-                "approval_status": ApprovalStatus.PENDING,
-                "approval_decisions": [PENDING_1000],
-                "updated_at": 1000,
-            }),
-        ]),
+        ApprovalRequired(
+            executions=[
+                birth.model_copy(
+                    update={
+                        "approval_status": ApprovalStatus.PENDING,
+                        "approval_decisions": [PENDING_1000],
+                        "updated_at": 1000,
+                    }
+                ),
+            ]
+        ),
     ]
     assert runner.awaiting_approval()
 
 
 async def test_denied_call_is_rejected_and_loop_continues():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Okay, I won't.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Okay, I won't.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_deny",
         entries={
@@ -218,32 +241,40 @@ async def test_denied_call_is_rejected_and_loop_continues():
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([AddTool()], decisions=[DENY_1000]),
-        provider=faux, ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     birth = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
         status=ExecutionStatus.PENDING,
     )
-    rejected = birth.model_copy(update={
-        "status": ExecutionStatus.REJECTED,
-        "approval_status": ApprovalStatus.REJECTED,
-        "approval_decisions": [DENY_1000],
-        "ended_at": 1000,
-        "updated_at": 1000,
-    })
+    rejected = birth.model_copy(
+        update={
+            "status": ExecutionStatus.REJECTED,
+            "approval_status": ApprovalStatus.REJECTED,
+            "approval_decisions": [DENY_1000],
+            "ended_at": 1000,
+            "updated_at": 1000,
+        }
+    )
     assert events == [
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(tool_call_id="tc1", execution=birth),
         ToolExecuted(
-            tool_call_id="tc1", execution=rejected,
-            result_text="[tool execution rejected]", is_error=True,
+            tool_call_id="tc1",
+            execution=rejected,
+            result_text="[tool execution rejected]",
+            is_error=True,
         ),
         TextBlock(text="Okay, I won't."),
         FinishReason(finish_reason="stop"),
@@ -254,14 +285,18 @@ async def test_denied_call_is_rejected_and_loop_continues():
 
 async def test_mixed_decisions_reject_and_execute_in_one_batch():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
-             faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("Only added.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Only added.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mixed",
         entries={
@@ -273,9 +308,12 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry(
-            [AddTool(), MultiplyTool()], decisions=[ALLOW_1000, DENY_1000],
+            [AddTool(), MultiplyTool()],
+            decisions=[ALLOW_1000, DENY_1000],
         ),
-        provider=faux, ids=["ts", "a1", "te1", "te2", "a2", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -308,12 +346,14 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
 
 async def test_approval_context_lands_on_execution_and_reaches_strategy():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("read_file", {"path": "/etc/passwd"}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("read_file", {"path": "/etc/passwd"}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_ctx",
         entries={
@@ -324,8 +364,11 @@ async def test_approval_context_lands_on_execution_and_reaches_strategy():
     )
     registry = FakeToolRegistry([ReadFileTool()], decisions=[PENDING_1000])
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -348,29 +391,37 @@ async def test_approval_context_lands_on_execution_and_reaches_strategy():
 
 async def test_rerun_reasks_strategy_and_accumulates_decisions():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_resume",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
         },
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
-        [AddTool()], decisions=[PENDING_1000, ALLOW_1000],
+        [AddTool()],
+        decisions=[PENDING_1000, ALLOW_1000],
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:  # pauses at the gate
@@ -380,16 +431,21 @@ async def test_rerun_reasks_strategy_and_accumulates_decisions():
         resume_events = [event async for event in run]
 
     assert [event.type for event in resume_events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert resume_events[1].result_text == "3"
     assert runner.session.entries["te1"].approval_status == ApprovalStatus.ALLOWED
     assert runner.session.entries["te1"].approval_decisions == [
-        PENDING_1000, ALLOW_1000,
+        PENDING_1000,
+        ALLOW_1000,
     ]
     # asked twice, each time with the then-current snapshot
     assert [list(ex.approval_decisions) for ex in registry.seen] == [
-        [], [PENDING_1000],
+        [],
+        [PENDING_1000],
     ]
     assert runner.idle()
 
@@ -399,14 +455,18 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
     # to completion first, ApprovalRequired is the FINAL event, and the model
     # is not called until every call has a terminal execution.
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
-             faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("done")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_partial",
         entries={
@@ -416,11 +476,15 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
-        [AddTool(), MultiplyTool()], decisions=[ALLOW_1000, PENDING_1000],
+        [AddTool(), MultiplyTool()],
+        decisions=[ALLOW_1000, PENDING_1000],
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry,
-        provider=faux, ids=["ts", "a1", "te1", "te2", "a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -436,18 +500,22 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
         ("approval_required", None),
     ]
     assert runner.awaiting_approval()
-    assert first_events[-1] == ApprovalRequired(executions=[
-        ToolExecution(
-            id="te2", parent_id="te1", created_at=1000,
-            tool_call_id="tc2",
-            raw_tool_call=ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
-            tool_spec=MULTIPLY_SPEC,
-            status=ExecutionStatus.PENDING,
-            approval_status=ApprovalStatus.PENDING,
-            approval_decisions=[PENDING_1000],
-            updated_at=1000,
-        ),
-    ])
+    assert first_events[-1] == ApprovalRequired(
+        executions=[
+            ToolExecution(
+                id="te2",
+                parent_id="te1",
+                created_at=1000,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
+                tool_spec=MULTIPLY_SPEC,
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+                updated_at=1000,
+            ),
+        ]
+    )
     assert runner.pending_approvals() == [runner.session.entries["te2"]]
     assert runner.session.entries["te1"].status == ExecutionStatus.COMPLETED
     assert len(faux.requests) == 1  # no second model call while te2 is open
@@ -457,7 +525,9 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_executed", "text_block", "finish_reason",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert events[0].tool_call_id == "tc2"
     assert events[0].result_text == "[tool execution rejected]"
@@ -465,7 +535,8 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
     assert [ex.id for ex in registry.seen] == ["te1", "te2", "te2"]
     assert runner.session.entries["te2"].approval_status == ApprovalStatus.REJECTED
     assert runner.session.entries["te2"].approval_decisions == [
-        PENDING_1000, DENY_1000,
+        PENDING_1000,
+        DENY_1000,
     ]
     assert runner.idle()
 
@@ -477,8 +548,10 @@ async def test_loaded_gated_session_exposes_pending_approvals():
     session = GATED_SESSION.model_copy(deep=True)
 
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        now=1000,
     )
 
     assert runner.awaiting_approval()
@@ -487,57 +560,78 @@ async def test_loaded_gated_session_exposes_pending_approvals():
 
 async def test_loaded_gated_session_run_reasks_strategy_and_completes():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = GATED_SESSION.model_copy(deep=True)
     registry = FakeToolRegistry([AddTool()], decisions=[ALLOW_1000])
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:  # NO exception: re-asks
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert runner.session == AgentSession(
         id="s_gated",
         entries={
             "u1": UserMessage(
-                id="u1", created_at=500, parts=[TextContent(text="Add 1 and 2")],
+                id="u1",
+                created_at=500,
+                parts=[TextContent(text="Add 1 and 2")],
             ),
             "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
             "a1": AssistantMessage(
-                id="a1", parent_id="ts", created_at=500,
+                id="a1",
+                parent_id="ts",
+                created_at=500,
                 parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
-                llm_config=MODEL, stop_reason="tool_use",
+                llm_config=MODEL,
+                stop_reason="tool_use",
             ),
             "te1": ToolExecution(
-                id="te1", parent_id="a1", created_at=500,
+                id="te1",
+                parent_id="a1",
+                created_at=500,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
                 tool_spec=ADD_SPEC,
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(
-                    content=[TextContent(text="3")], is_error=False,
+                    content=[TextContent(text="3")],
+                    is_error=False,
                 ),
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
                     ApprovalDecision(
-                        decision=ApprovalOption.PENDING, created_at=500,
+                        decision=ApprovalOption.PENDING,
+                        created_at=500,
                     ),
                     ALLOW_1000,
                 ],
-                started_at=1000, ended_at=1000,
+                started_at=1000,
+                ended_at=1000,
                 updated_at=1000,
             ),
             "a2": AssistantMessage(
-                id="a2", parent_id="te1", created_at=1000,
+                id="a2",
+                parent_id="te1",
+                created_at=1000,
                 parts=[TextContent(text="It's 3.")],
-                llm_config=MODEL, stop_reason="stop",
+                llm_config=MODEL,
+                stop_reason="stop",
                 context_tokens=1,  # len("It's 3.") // 4
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
@@ -545,8 +639,11 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
         tool_executions={"tc1": ["te1"]},
         usages={"c1": {"a2": Usage(conversation_id="c1", entry_id="a2")}},
         active_conversation=Conversation(
-            id="c1", nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500, updated_at=1000, status=ConversationStatus.IDLE,
+            id="c1",
+            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
         ),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -554,22 +651,30 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
 
 async def test_cleared_execution_dispatches_before_any_llm_call_without_redeciding():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = CLEARED_SESSION.model_copy(deep=True)
     # an empty decision script: any decide() would raise
     registry = FakeToolRegistry([AddTool()], decisions=[])
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     # a resolved call is NEVER re-decided
     assert registry.seen == []
@@ -577,7 +682,9 @@ async def test_cleared_execution_dispatches_before_any_llm_call_without_redecidi
     # request already carries its tool result
     assert len(faux.requests) == 1
     assert faux.requests[0].messages[-1] == ToolMessage(
-        tool_call_id="tc1", content=[LucaTextBlock(text="3")], is_error=False,
+        tool_call_id="tc1",
+        content=[LucaTextBlock(text="3")],
+        is_error=False,
     )
     assert runner.session.entries["te1"].status == ExecutionStatus.COMPLETED
     assert runner.idle()
@@ -587,14 +694,19 @@ async def test_undecided_session_self_heals_and_run_asks_strategy():
     # crash mid-decide: execution persisted, approval_status None — NOT
     # awaiting approval (the strategy was never asked); a plain run() asks it.
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = UNDECIDED_SESSION.model_copy(deep=True)
     registry = FakeToolRegistry([AddTool()], decisions=[ALLOW_1000])
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["a2", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["a2", "tf"],
+        now=1000,
     )
 
     assert runner.pending()  # stale RUNNING self-healed; not AWAITING_APPROVAL
@@ -602,7 +714,10 @@ async def test_undecided_session_self_heals_and_run_asks_strategy():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert runner.session.entries["te1"].approval_status == ApprovalStatus.ALLOWED
     assert runner.session.entries["te1"].approval_decisions == [ALLOW_1000]
@@ -614,8 +729,10 @@ async def test_stale_running_status_self_heals_on_construction():
     assert session.active_conversation.status == ConversationStatus.RUNNING
 
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        now=1000,
     )
 
     assert runner.pending()  # the open turn with a cleared call means: call run()
@@ -626,13 +743,15 @@ async def test_stale_running_status_self_heals_on_construction():
 
 async def test_strategy_exception_propagates_and_session_stays_resumable():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_boom_policy",
         entries={
@@ -642,8 +761,11 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=ExplodingRegistry([AddTool()]),
-        provider=faux, ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=ExplodingRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
 
     with pytest.raises(RuntimeError, match="strategy down"):
@@ -659,7 +781,9 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
     resumed = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([AddTool()], decisions=[ALLOW_1000]),
-        provider=faux, ids=["a2", "tf"], now=1000,
+        provider=faux,
+        ids=["a2", "tf"],
+        now=1000,
     )
     assert resumed.pending()
     async with resumed.run() as run:
@@ -669,19 +793,20 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
     assert resumed.idle()
 
 
-
 # ── durability: the gate survives a full serialize / reload cycle ───────────────
 
 
 async def test_gated_session_survives_restart_and_resumes():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_restart",
         entries={
@@ -691,8 +816,11 @@ async def test_gated_session_survives_restart_and_resumes():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[PENDING_1000]),
-        provider=faux, ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[PENDING_1000]),
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
     async with runner.run() as run:  # pauses at the gate
         _ = [event async for event in run]
@@ -702,10 +830,15 @@ async def test_gated_session_survives_restart_and_resumes():
     reloaded = AgentSession.model_validate_json(payload)
     resumed = DeterministicRunner(
         reloaded,
-        tool_registry=FakeToolRegistry([AddTool()], decisions=[
-            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=2000),
-        ]),
-        provider=faux, ids=["a2", "tf"], now=2000,
+        tool_registry=FakeToolRegistry(
+            [AddTool()],
+            decisions=[
+                ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=2000),
+            ],
+        ),
+        provider=faux,
+        ids=["a2", "tf"],
+        now=2000,
     )
 
     assert resumed.awaiting_approval()
@@ -714,7 +847,10 @@ async def test_gated_session_survives_restart_and_resumes():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert resumed.idle()
     assert resumed.session.entries["te1"].approval_status == ApprovalStatus.ALLOWED
@@ -723,5 +859,7 @@ async def test_gated_session_survives_restart_and_resumes():
         ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=2000),
     ]
     assert resumed.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="a2", created_at=2000,
+        id="tf",
+        parent_id="a2",
+        created_at=2000,
     )

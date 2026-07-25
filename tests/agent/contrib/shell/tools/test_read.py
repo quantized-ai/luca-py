@@ -38,9 +38,12 @@ async def test_small_text_file_returns_numbered_lines_and_total(tmp_path, run):
 async def test_absolute_file_path_is_used_directly(tmp_path, run):
     (tmp_path / "notes.txt").write_text("alpha\n")
 
-    result = await run(make_tool("/somewhere/else"), {
-        "file_path": str(tmp_path / "notes.txt"),
-    })
+    result = await run(
+        make_tool("/somewhere/else"),
+        {
+            "file_path": str(tmp_path / "notes.txt"),
+        },
+    )
 
     assert "1: alpha" in body(result)
 
@@ -62,9 +65,14 @@ async def test_offset_and_limit_return_only_the_requested_page(tmp_path, run):
         "".join(f"line{n}\n" for n in range(1, 21)),
     )
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": "lines.txt", "offset": 10, "limit": 5,
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "lines.txt",
+            "offset": 10,
+            "limit": 5,
+        },
+    )
 
     assert "10: line10" in body(result)
     assert "14: line14" in body(result)
@@ -281,17 +289,16 @@ def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
         ResourcePermission(permission="access_directory", resource=str(tmp_path)),
     ]
     assert access.metadata["preview"] == f"Access directory {tmp_path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(tmp_path),
+                    permission="access_directory",
+                    resource=str(tmp_path),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{tmp_path}/*",
+                    permission="access_directory",
+                    resource=f"{tmp_path}/*",
                 ),
             ],
             f"Always allow access to {tmp_path}",
@@ -301,10 +308,7 @@ def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
         ResourcePermission(permission="read", resource=str(path)),
     ]
     assert request.metadata["preview"] == f"Read {path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="read", resource=f"{tmp_path}/*")],
             f"Read files under {tmp_path}",
@@ -319,7 +323,8 @@ def test_permission_resource_for_a_directory_target(tmp_path, perm):
 
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(tmp_path / "src"),
+            permission="access_directory",
+            resource=str(tmp_path / "src"),
         ),
     ]
     assert request.resources == [

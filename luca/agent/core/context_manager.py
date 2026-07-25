@@ -83,10 +83,7 @@ class ContextManager:
         Non-text content is counted separately by `_media_tokens`, so
         `_estimate_tokens` and `_model_facing_text` stay text-shaped and
         independently overridable."""
-        return (
-            self._estimate_tokens(self._model_facing_text(entry))
-            + self._media_tokens(entry)
-        )
+        return self._estimate_tokens(self._model_facing_text(entry)) + self._media_tokens(entry)
 
     def prune_entry(self, entry: Entry) -> PrunedEntry:
         """Build the `PrunedEntry` template replacing `entry` in a path.
@@ -98,10 +95,7 @@ class ContextManager:
         `context_tokens` and runs entry middleware, exactly as for any other
         new entry."""
         if not isinstance(entry, ToolExecution):
-            raise AgentError(
-                f"Cannot prune entry of type {entry.type!r}: only tool "
-                "executions are prunable."
-            )
+            raise AgentError(f"Cannot prune entry of type {entry.type!r}: only tool executions are prunable.")
         if entry.status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
             raise AgentError(
                 f"Cannot prune ToolExecution {entry.id!r}: a nonterminal "
@@ -181,9 +175,7 @@ class ContextManager:
 def _text_of(parts) -> str:
     """The text a content-part list contributes. Non-text parts contribute no
     characters — they are counted by `_media_tokens` instead."""
-    return "".join(
-        part.text for part in parts if isinstance(part, TextContent)
-    )
+    return "".join(part.text for part in parts if isinstance(part, TextContent))
 
 
 def _image_count(parts) -> int:

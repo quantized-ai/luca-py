@@ -23,12 +23,19 @@ from ...types.reasoning import Reasoning
 
 # Fraction of a model's output budget spent on reasoning, per level.
 BUDGET_PERCENTAGES: dict[str, float] = {
-    "minimal": 0.02, "low": 0.1, "medium": 0.3, "high": 0.6, "xhigh": 0.9,
+    "minimal": 0.02,
+    "low": 0.1,
+    "medium": 0.3,
+    "high": 0.6,
+    "xhigh": 0.9,
 }
 # Adaptive models take a word. `xhigh` degrades to `max` where unsupported.
 ADAPTIVE_EFFORTS: dict[str, str] = {
-    "minimal": "low", "low": "low", "medium": "medium",
-    "high": "high", "xhigh": "xhigh",
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
 }
 MIN_THINKING_BUDGET = 1024
 MIN_COMPLETION_TOKENS = 1024
@@ -61,51 +68,62 @@ class ModelCapabilities(BaseModel):
 # Anthropic rows are unverified (see module docstring); Nova and Llama are live.
 _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
     (
-        ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7",
-         "anthropic.claude-sonnet-5"),
+        ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-sonnet-5"),
         ModelCapabilities(
-            max_output_tokens=128_000, supports_thinking=True,
-            supports_adaptive_thinking=True, supports_xhigh_effort=True,
-            rejects_sampling_parameters=True, is_known_model=True,
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            supports_xhigh_effort=True,
+            rejects_sampling_parameters=True,
+            is_known_model=True,
         ),
     ),
     (
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-opus-4-6"),
         ModelCapabilities(
-            max_output_tokens=128_000, supports_thinking=True,
-            supports_adaptive_thinking=True, is_known_model=True,
+            max_output_tokens=128_000,
+            supports_thinking=True,
+            supports_adaptive_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
-        ("anthropic.claude-sonnet-4-5", "anthropic.claude-opus-4-5",
-         "anthropic.claude-haiku-4-5"),
+        ("anthropic.claude-sonnet-4-5", "anthropic.claude-opus-4-5", "anthropic.claude-haiku-4-5"),
         ModelCapabilities(
-            max_output_tokens=64_000, supports_thinking=True, is_known_model=True,
+            max_output_tokens=64_000,
+            supports_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
-        ("anthropic.claude-opus-4-1", "anthropic.claude-opus-4-0",
-         "anthropic.claude-sonnet-4-0"),
+        ("anthropic.claude-opus-4-1", "anthropic.claude-opus-4-0", "anthropic.claude-sonnet-4-0"),
         ModelCapabilities(
-            max_output_tokens=32_000, supports_thinking=True, is_known_model=True,
+            max_output_tokens=32_000,
+            supports_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
         ("anthropic.claude-3-7-sonnet",),
         ModelCapabilities(
-            max_output_tokens=64_000, supports_thinking=True, is_known_model=True,
+            max_output_tokens=64_000,
+            supports_thinking=True,
+            is_known_model=True,
         ),
     ),
     (
-        ("anthropic.claude-3-5-sonnet", "anthropic.claude-3-5-haiku",
-         "anthropic.claude-3-opus", "anthropic.claude-3-sonnet",
-         "anthropic.claude-3-haiku"),
+        (
+            "anthropic.claude-3-5-sonnet",
+            "anthropic.claude-3-5-haiku",
+            "anthropic.claude-3-opus",
+            "anthropic.claude-3-sonnet",
+            "anthropic.claude-3-haiku",
+        ),
         ModelCapabilities(max_output_tokens=4_096, is_known_model=True),
     ),
     # Amazon Nova — verified live: 10000-token ceiling, no reasoning mode.
     (
-        ("amazon.nova-premier", "amazon.nova-pro", "amazon.nova-lite",
-         "amazon.nova-micro"),
+        ("amazon.nova-premier", "amazon.nova-pro", "amazon.nova-lite", "amazon.nova-micro"),
         ModelCapabilities(max_output_tokens=10_000, is_known_model=True),
     ),
     # Meta Llama — verified live: 8192-token ceiling, no reasoning mode.
@@ -126,7 +144,7 @@ def normalize_model_id(model: str) -> str:
     normalized = model.rsplit("/", 1)[-1]
     for prefix in _REGION_PREFIXES:
         if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):]
+            normalized = normalized[len(prefix) :]
             break
     return normalized
 
@@ -159,9 +177,7 @@ def resolve_reasoning(
     `additionalModelRequestFields`, not at the top level. Returns
     `({}, max_tokens)` when no thinking should be requested at all."""
     resolved_max = max_tokens or (
-        capabilities.max_output_tokens
-        if capabilities.is_known_model
-        else UNKNOWN_MAX_OUTPUT_TOKENS
+        capabilities.max_output_tokens if capabilities.is_known_model else UNKNOWN_MAX_OUTPUT_TOKENS
     )
 
     if reasoning is None or reasoning == "provider-default":
@@ -182,7 +198,8 @@ def resolve_reasoning(
     budget = min(max(budget, MIN_THINKING_BUDGET), capabilities.max_output_tokens)
     if max_tokens is None:
         resolved_max = min(
-            budget + MIN_COMPLETION_TOKENS, capabilities.max_output_tokens,
+            budget + MIN_COMPLETION_TOKENS,
+            capabilities.max_output_tokens,
         )
     else:
         # The caller's cap is a billing contract: shrink the budget to fit
@@ -213,8 +230,11 @@ def check_sampling(
     than stripped — a silently dropped temperature changes the output with
     nothing to notice."""
     conflicting = [
-        name for name, value in (
-            ("temperature", temperature), ("top_p", top_p), ("top_k", top_k),
+        name
+        for name, value in (
+            ("temperature", temperature),
+            ("top_p", top_p),
+            ("top_k", top_k),
         )
         if value is not None
     ]
@@ -223,11 +243,9 @@ def check_sampling(
     names = ", ".join(conflicting)
     if capabilities.rejects_sampling_parameters:
         raise UnsupportedParameterError(
-            f"{names} cannot be set on {model!r}; the model does not accept "
-            "sampling controls.",
+            f"{names} cannot be set on {model!r}; the model does not accept sampling controls.",
         )
     if thinking.get("thinking", {}).get("type") not in (None, "disabled"):
         raise UnsupportedParameterError(
-            f"{names} cannot be set while extended thinking is active on "
-            f"{model!r}.",
+            f"{names} cannot be set while extended thinking is active on {model!r}.",
         )

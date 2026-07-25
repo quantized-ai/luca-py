@@ -18,15 +18,15 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from luca.agent.contrib.simple_tool_registry import (
+    SimpleToolRegistry,
+    YoloPermissionPolicy,
+)
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
     Tool,
     ToolContext,
-)
-from luca.agent.contrib.simple_tool_registry import (
-    SimpleToolRegistry,
-    YoloPermissionPolicy,
 )
 
 SCRATCHPAD_SYSTEM_PROMPT = """
@@ -56,8 +56,11 @@ class ReadScratchPadTool(Tool):
         self.store = store
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return self.store.get("content", "")
 
@@ -75,8 +78,11 @@ class WriteScratchPadTool(Tool):
         self.store = store
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.store["content"] = args["content"]
         return "Scratchpad updated successfully"
@@ -107,8 +113,11 @@ class ReadTodoTool(Tool):
         self.store = store
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return repr(self.store.get("todos", []))
 
@@ -116,29 +125,28 @@ class ReadTodoTool(Tool):
 class UpdateTodosTool(Tool):
     name = "update_todos"
     description = (
-        "Replace the todo list in one operation — send the complete list, "
-        "including the items that did not change"
+        "Replace the todo list in one operation — send the complete list, including the items that did not change"
     )
 
     class Args(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        todos: list[TodoItem] = Field(
-            description="The complete todo list; replaces the current list entirely"
-        )
+        todos: list[TodoItem] = Field(description="The complete todo list; replaces the current list entirely")
 
     def __init__(self, store: dict) -> None:
         self.store = store
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         # Store JSON-clean dicts: the validated args carry TodoStatus members,
         # which would repr() as enums on the next read_todo.
         self.store["todos"] = [
-            {"content": item["content"], "status": TodoStatus(item["status"]).value}
-            for item in args["todos"]
+            {"content": item["content"], "status": TodoStatus(item["status"]).value} for item in args["todos"]
         ]
         return "Todo list updated successfully"
 
@@ -164,7 +172,8 @@ class MemoryPlugin:
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
         return SimpleToolRegistry(
-            tools=self.get_tools(), permission_policy=YoloPermissionPolicy(),
+            tools=self.get_tools(),
+            permission_policy=YoloPermissionPolicy(),
         )
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list[str]:

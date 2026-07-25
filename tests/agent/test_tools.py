@@ -61,8 +61,11 @@ class EchoTool(Tool):
     tool_kind = ToolKind.READ
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return f"echo {args['path']}"
 
@@ -82,8 +85,11 @@ class TokenCapturingTool(Tool):
         self.tokens: list[CancellationToken] = []
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.tokens.append(cancellation_token)
         return "captured"
@@ -113,7 +119,9 @@ def test_get_tool_spec_stamps_the_declared_timeout():
 
 async def test_execute_wraps_the_simple_text_path():
     result = await EchoTool().execute(
-        {"path": "src"}, CONTEXT, cancellation_token=CancellationToken(),
+        {"path": "src"},
+        CONTEXT,
+        cancellation_token=CancellationToken(),
     )
 
     assert result == ExecutionResult(content=[TextContent(text="echo src")])
@@ -330,7 +338,7 @@ def test_class_attrs_land_on_the_class():
 
 @factory_skip
 def test_class_attrs_collision_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="class_attrs collide with factory-managed attributes"):
         tool_class(
             name="list_files",
             description="List the files in a directory.",

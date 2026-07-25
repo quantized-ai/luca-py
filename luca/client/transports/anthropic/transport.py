@@ -10,7 +10,6 @@ Differences from OpenAI worth highlighting:
 
 from __future__ import annotations
 
-import json
 from typing import Any, ClassVar
 
 import httpx
@@ -19,15 +18,14 @@ from ...exceptions import (
     AuthenticationError,
     BadRequestError,
     ClientError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     InvalidModelError,
     ModelNotFoundError,
     ProviderAPIError,
     RateLimitError,
-    UnsupportedParameterError,
+    TimeoutError as ClientTimeoutError,
 )
-from ...exceptions import ConnectionError as ClientConnectionError
-from ...exceptions import TimeoutError as ClientTimeoutError
 from ...types.completion import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -40,7 +38,6 @@ from ...types.content import (
     TextBlock,
     ThinkingBlock,
     ToolCall,
-    ToolResultBlock,
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
@@ -72,14 +69,20 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return h
 
     def _chat_completion_url(
-        self, request: ChatCompletionRequest, *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> str:
         return f"{self._base_url}/v1/messages"
 
     # --- payload building ---
 
     def _build_chat_completion_payload(
-        self, request: ChatCompletionRequest, *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> dict:
         capabilities = get_model_capabilities(request.model)
         options = self._provider_options(request)
@@ -95,9 +98,12 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if stream:
             payload["stream"] = True
         check_sampling(
-            capabilities, thinking,
-            temperature=request.temperature, top_p=request.top_p,
-            top_k=request.top_k, model=request.model,
+            capabilities,
+            thinking,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            model=request.model,
         )
         if request.temperature is not None:
             payload["temperature"] = request.temperature
@@ -106,9 +112,7 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.top_k is not None:
             payload["top_k"] = request.top_k
         if request.stop is not None:
-            payload["stop_sequences"] = (
-                [request.stop] if isinstance(request.stop, str) else list(request.stop)
-            )
+            payload["stop_sequences"] = [request.stop] if isinstance(request.stop, str) else list(request.stop)
         if request.tools:
             payload["tools"] = self._project_tools(request.tools)
         if request.tool_choice is not None:
@@ -124,7 +128,10 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return (request.provider_options or {}).get(self._provider) or {}
 
     def _thinking_config(
-        self, request: ChatCompletionRequest, capabilities, options: dict,
+        self,
+        request: ChatCompletionRequest,
+        capabilities,
+        options: dict,
     ) -> tuple[dict, int]:
         """The thinking-related payload keys plus the `max_tokens` to send.
 
@@ -134,8 +141,11 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if "thinking" in options or "output_config" in options:
             return {}, request.max_tokens or capabilities.max_output_tokens
         return resolve_reasoning(
-            request.reasoning, capabilities, request.max_tokens,
-            display=self.THINKING_DISPLAY, model=request.model,
+            request.reasoning,
+            capabilities,
+            request.max_tokens,
+            display=self.THINKING_DISPLAY,
+            model=request.model,
         )
 
     def _project_system(self, system_message: Any) -> Any:
@@ -190,7 +200,7 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             }
         if isinstance(source, MediaFileId):
             return {"type": "image", "source": {"type": "file", "file_id": source.file_id}}
-        raise BadRequestError(f"Unknown image source type", provider=self._provider)
+        raise BadRequestError("Unknown image source type", provider=self._provider)
 
     def _project_assistant_message(self, msg: AssistantMessage) -> dict:
         wire_blocks: list[dict] = []
@@ -202,12 +212,14 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 if thinking is not None:
                     wire_blocks.append(thinking)
             elif isinstance(block, ToolCall):
-                wire_blocks.append({
-                    "type": "tool_use",
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.arguments,
-                })
+                wire_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.arguments,
+                    }
+                )
             elif isinstance(block, RefusalBlock):
                 # Anthropic doesn't take refusals on the way in; drop.
                 continue
@@ -247,23 +259,27 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                     content.append(self._project_image_block(b))
         return {
             "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": msg.tool_call_id,
-                "content": content,
-                "is_error": msg.is_error,
-            }],
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id,
+                    "content": content,
+                    "is_error": msg.is_error,
+                }
+            ],
         }
 
     def _project_tools(self, tools: list) -> list[dict]:
         out = []
         for t in tools:
             schema = tool_parameters_to_json_schema(t.parameters)
-            out.append({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": schema,
-            })
+            out.append(
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": schema,
+                }
+            )
         return out
 
     def _project_tool_choice(self, choice: Any) -> Any:
@@ -280,7 +296,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- response parsing ---
 
     def _parse_chat_completion_response(
-        self, response: httpx.Response, request: ChatCompletionRequest,
+        self,
+        response: httpx.Response,
+        request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         data = response.json()
         message = self._parse_assistant_message(data, request)
@@ -297,7 +315,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return resp
 
     def _parse_assistant_message(
-        self, data: dict, request: ChatCompletionRequest,
+        self,
+        data: dict,
+        request: ChatCompletionRequest,
     ) -> AssistantMessage:
         content: list = []
         for block in data.get("content") or []:
@@ -305,23 +325,29 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             if block_type == "text":
                 content.append(TextBlock(text=block.get("text", "")))
             elif block_type == "thinking":
-                content.append(ThinkingBlock(
-                    text=block.get("thinking", ""),
-                    signature=block.get("signature"),
-                ))
+                content.append(
+                    ThinkingBlock(
+                        text=block.get("thinking", ""),
+                        signature=block.get("signature"),
+                    )
+                )
             elif block_type == "tool_use":
-                content.append(ToolCall(
-                    id=block["id"],
-                    name=block["name"],
-                    arguments=block.get("input", {}) or {},
-                    complete=True,
-                ))
+                content.append(
+                    ToolCall(
+                        id=block["id"],
+                        name=block["name"],
+                        arguments=block.get("input", {}) or {},
+                        complete=True,
+                    )
+                )
             elif block_type == "redacted_thinking":
-                content.append(ThinkingBlock(
-                    text="",
-                    signature=block.get("data"),
-                    redacted=True,
-                ))
+                content.append(
+                    ThinkingBlock(
+                        text="",
+                        signature=block.get("data"),
+                        redacted=True,
+                    )
+                )
         return AssistantMessage(
             content=content,
             provider=self._provider,
@@ -346,7 +372,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- finish-reason classification ---
 
     def _classify_finish(
-        self, provider_value: str | None, message: AssistantMessage,
+        self,
+        provider_value: str | None,
+        message: AssistantMessage,
     ) -> tuple[str | None, str | None]:
         if provider_value == "end_turn":
             return ("stop", None)
@@ -376,47 +404,69 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
 
             if status == 401:
                 return AuthenticationError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if status == 429:
                 return RateLimitError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                     retry_after=self._retry_after(exc.response),
                 )
             if status == 400:
                 if "context_length" in msg.lower() or "too long" in msg.lower():
                     return ContextLengthExceededError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 if err_type == "invalid_request_error" and "model" in msg.lower():
                     return InvalidModelError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 return BadRequestError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if status == 404:
                 return ModelNotFoundError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if 500 <= status < 600:
                 return ProviderAPIError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             return ProviderAPIError(
-                msg, provider=self._provider, original_exception=exc,
+                msg,
+                provider=self._provider,
+                original_exception=exc,
             )
 
         if isinstance(exc, httpx.TimeoutException):
             return ClientTimeoutError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         if isinstance(exc, httpx.NetworkError):
             return ClientConnectionError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         return ProviderAPIError(
-            str(exc), provider=self._provider, original_exception=exc,
+            str(exc),
+            provider=self._provider,
+            original_exception=exc,
         )
 
     @staticmethod
@@ -440,8 +490,10 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
 
     def _chat_completion_stream_class(self) -> type:
         from .stream import AnthropicChatCompletionStream
+
         return AnthropicChatCompletionStream
 
     def _async_chat_completion_stream_class(self) -> type:
         from .stream import AnthropicAsyncChatCompletionStream
+
         return AnthropicAsyncChatCompletionStream

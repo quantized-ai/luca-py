@@ -52,7 +52,8 @@ MODEL = LLMConfig(model="m", provider="p")
 
 def test_user_message_counts_its_content():
     entry = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[TextContent(text="Add 1 and 2")],  # 11 chars
     )
 
@@ -61,14 +62,16 @@ def test_user_message_counts_its_content():
 
 def test_assistant_message_counts_text_thinking_and_tool_call_requests():
     entry = AssistantMessage(
-        id="a1", created_at=1000,
+        id="a1",
+        created_at=1000,
         parts=[
             ThinkingContent(thinking="Let me add."),  # 11 chars
             TextContent(text="Adding now."),  # 11 chars
             # "add" (3) + '{"a": 1, "b": 2}' (16) = 19 chars
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         ],
-        llm_config=MODEL, stop_reason="tool_use",
+        llm_config=MODEL,
+        stop_reason="tool_use",
     )
 
     assert CM.calculate_context(entry) == 10  # (11 + 11 + 19) // 4
@@ -78,14 +81,16 @@ def test_completed_execution_counts_only_its_result_content():
     # the tool-call REQUEST was counted on the assistant message; the
     # execution owns only the model-facing outcome
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(
             content=[TextContent(text="the answer is 3.")],  # 16 chars
         ),
-        started_at=1000, ended_at=1000,
+        started_at=1000,
+        ended_at=1000,
     )
 
     assert CM.calculate_context(entry) == 4
@@ -93,7 +98,8 @@ def test_completed_execution_counts_only_its_result_content():
 
 def test_failed_execution_counts_its_structured_error_message():
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.FAILED,
@@ -101,7 +107,8 @@ def test_failed_execution_counts_its_structured_error_message():
             error_type="ValueError",
             error_message="kaboom kaboom",  # 13 chars
         ),
-        started_at=1000, ended_at=1000,
+        started_at=1000,
+        ended_at=1000,
     )
 
     assert CM.calculate_context(entry) == 3
@@ -109,7 +116,8 @@ def test_failed_execution_counts_its_structured_error_message():
 
 def test_nonterminal_execution_counts_zero():
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.PENDING,
@@ -122,11 +130,13 @@ def test_resultless_errorless_terminal_execution_counts_zero():
     # CANCELLED / INTERRUPTED / TIMED_OUT are complete lifecycle facts with no
     # stored outcome content of their own
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.CANCELLED,
-        ended_at=1000, cancel_signalled_at=1000,
+        ended_at=1000,
+        cancel_signalled_at=1000,
     )
 
     assert CM.calculate_context(entry) == 0
@@ -134,7 +144,8 @@ def test_resultless_errorless_terminal_execution_counts_zero():
 
 def test_compaction_counts_its_summary_parts():
     entry = CompactionEntry(
-        id="c1", created_at=1000,
+        id="c1",
+        created_at=1000,
         source=CompactionSource.POLICY,
         # 35 chars
         parts=[TextContent(text="## Goal\nFix the failing test suite.")],
@@ -147,7 +158,9 @@ def test_compaction_counts_its_summary_parts():
 def test_a_compaction_with_no_parts_yet_counts_zero():
     # scheduled or running: the runner recalculates when `parts` land
     entry = CompactionEntry(
-        id="c1", created_at=1000, source=CompactionSource.USER,
+        id="c1",
+        created_at=1000,
+        source=CompactionSource.USER,
     )
 
     assert CM.calculate_context(entry) == 0
@@ -155,7 +168,10 @@ def test_a_compaction_with_no_parts_yet_counts_zero():
 
 def test_a_compaction_with_empty_parts_counts_zero():
     entry = CompactionEntry(
-        id="c1", created_at=1000, source=CompactionSource.USER, parts=[],
+        id="c1",
+        created_at=1000,
+        source=CompactionSource.USER,
+        parts=[],
     )
 
     assert CM.calculate_context(entry) == 0
@@ -163,7 +179,8 @@ def test_a_compaction_with_empty_parts_counts_zero():
 
 def test_an_image_carrying_summary_counts_text_plus_the_image_constant():
     entry = CompactionEntry(
-        id="c1", created_at=1000,
+        id="c1",
+        created_at=1000,
         source=CompactionSource.POLICY,
         parts=[
             TextContent(text="## Goal\nFix the failing test suite."),  # 35
@@ -177,7 +194,8 @@ def test_an_image_carrying_summary_counts_text_plus_the_image_constant():
 
 def test_pruned_entry_counts_its_replacement_content():
     entry = PrunedEntry(
-        id="p1", created_at=1000,
+        id="p1",
+        created_at=1000,
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[TextContent(text=PRUNED_TOOL_OUTPUT_MARKER)],  # 46 chars
@@ -197,12 +215,14 @@ def test_markers_count_zero():
 
 def test_prune_entry_builds_a_template_for_a_terminal_execution():
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000, ended_at=1000,
+        started_at=1000,
+        ended_at=1000,
     )
 
     assert CM.prune_entry(entry) == PrunedEntry(
@@ -217,7 +237,9 @@ def test_prune_entry_builds_a_template_for_a_terminal_execution():
 
 def test_prune_entry_rejects_a_non_execution_entry():
     entry = UserMessage(
-        id="u1", created_at=1000, parts=[TextContent(text="hi")],
+        id="u1",
+        created_at=1000,
+        parts=[TextContent(text="hi")],
     )
 
     with pytest.raises(AgentError, match="only tool executions"):
@@ -226,7 +248,8 @@ def test_prune_entry_rejects_a_non_execution_entry():
 
 def test_prune_entry_rejects_a_nonterminal_execution():
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.RUNNING,
@@ -258,7 +281,8 @@ def test_subclass_can_change_the_chars_per_token_ratio():
         CHARS_PER_TOKEN = 2
 
     entry = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[TextContent(text="Add 1 and 2")],  # 11 chars
     )
 
@@ -270,12 +294,14 @@ def test_subclass_can_change_the_pruned_output_marker():
         PRUNED_TOOL_OUTPUT_MARKER = "[gone]"
 
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000, ended_at=1000,
+        started_at=1000,
+        ended_at=1000,
     )
 
     assert Terse().prune_entry(entry).content == [TextContent(text="[gone]")]
@@ -286,7 +312,8 @@ def test_subclass_can_change_the_pruned_output_marker():
 
 def test_image_only_message_counts_the_flat_image_constant():
     entry = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[
             ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
         ],
@@ -297,7 +324,8 @@ def test_image_only_message_counts_the_flat_image_constant():
 
 def test_images_add_to_the_text_estimate():
     entry = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[
             ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
@@ -313,7 +341,8 @@ def test_subclass_can_change_the_per_image_cost():
         IMAGE_TOKENS = 0
 
     entry = UserMessage(
-        id="u1", created_at=1000,
+        id="u1",
+        created_at=1000,
         parts=[
             ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
@@ -325,7 +354,8 @@ def test_subclass_can_change_the_per_image_cost():
 
 def test_non_user_entries_have_no_media_contribution():
     entry = AssistantMessage(
-        id="a1", created_at=1000,
+        id="a1",
+        created_at=1000,
         parts=[TextContent(text="Add 1 and 2")],  # 11 chars
         llm_config=MODEL,
         stop_reason="stop",
@@ -337,15 +367,19 @@ def test_non_user_entries_have_no_media_contribution():
 
 def test_tool_result_images_are_counted():
     entry = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
         status=ExecutionStatus.COMPLETED,
-        result=ExecutionResult(content=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
-            TextContent(text="the answer is 3."),  # 16 chars
-        ]),
-        started_at=1000, ended_at=1000,
+        result=ExecutionResult(
+            content=[
+                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                TextContent(text="the answer is 3."),  # 16 chars
+            ]
+        ),
+        started_at=1000,
+        ended_at=1000,
     )
 
     assert CM.calculate_context(entry) == 1_004  # IMAGE_TOKENS + 16 // 4
@@ -353,7 +387,8 @@ def test_tool_result_images_are_counted():
 
 def test_pruned_entry_images_are_counted():
     entry = PrunedEntry(
-        id="p1", created_at=1000,
+        id="p1",
+        created_at=1000,
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[

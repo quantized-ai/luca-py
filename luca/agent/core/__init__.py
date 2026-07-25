@@ -26,6 +26,7 @@ from .exceptions import (
     ProjectionError,
     ToolNotFound,
 )
+from .middleware import AgentMiddlewareMixin
 from .models import (
     AgentSession,
     AnyEntry,
@@ -71,7 +72,6 @@ from .models import (
     Usage,
     UserMessage,
 )
-from .middleware import AgentMiddlewareMixin
 from .projection import (
     CANCELLED_TURN_MARKER,
     IMAGE_BLOCK_MARKER,

@@ -13,7 +13,10 @@ async def test_escape_cancels_a_hung_completion(tmp_path):
     provider.set_responses([faux_assistant_message([faux_hang()])])
     session = fresh_session()
     app = AgentApp(
-        session, provider=provider, workspace=tmp_path, session_dir=tmp_path,
+        session,
+        provider=provider,
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:
@@ -22,21 +25,18 @@ async def test_escape_cancels_a_hung_completion(tmp_path):
         await pilot.press("escape")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert "cancelling — winding down the turn" in [
-            cell.text for cell in app.query(NoticeCell)
-        ]
-        outcomes = [
-            entry.outcome for entry in app.runner.session.entries.values()
-            if isinstance(entry, TurnFinish)
-        ]
+        assert "cancelling — winding down the turn" in [cell.text for cell in app.query(NoticeCell)]
+        outcomes = [entry.outcome for entry in app.runner.session.entries.values() if isinstance(entry, TurnFinish)]
         assert outcomes == [TurnOutcome.CANCELLED]
         assert app.runner.status is ConversationStatus.IDLE
 
 
 async def test_escape_when_idle_is_a_no_op(tmp_path):
     app = AgentApp(
-        fresh_session(), provider=FauxProvider(),
-        workspace=tmp_path, session_dir=tmp_path,
+        fresh_session(),
+        provider=FauxProvider(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
     )
 
     async with app.run_test() as pilot:

@@ -78,7 +78,9 @@ class ResourcePermissionToolMixin:
     `get_approval_context` convention `SimpleToolRegistry` reads."""
 
     def build_permission_requests(
-        self, args: dict, context: ToolContext,
+        self,
+        args: dict,
+        context: ToolContext,
     ) -> list[PermissionRequest]:
         raise NotImplementedError
 

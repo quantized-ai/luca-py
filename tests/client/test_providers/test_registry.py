@@ -7,7 +7,6 @@ from luca.client.providers import (
     PROVIDERS,
     GenericProvider,
     OpenAIProvider,
-    register_provider,
     resolve_provider,
 )
 from luca.client.transports import OpenAITransport
@@ -29,11 +28,15 @@ def test_resolve_provider_unknown_raises():
 
 
 def test_register_provider_config_dict(monkeypatch):
-    monkeypatch.setitem(PROVIDERS, "my-host", {
-        "default_base_url": "https://my-host.test/v1",
-        "default_api_key_env_var": "MY_HOST_KEY",
-        "default_transport_class": OpenAITransport,
-    })
+    monkeypatch.setitem(
+        PROVIDERS,
+        "my-host",
+        {
+            "default_base_url": "https://my-host.test/v1",
+            "default_api_key_env_var": "MY_HOST_KEY",
+            "default_transport_class": OpenAITransport,
+        },
+    )
     p = resolve_provider("my-host", api_key="x")
     assert isinstance(p, GenericProvider)
     assert p.name == "my-host"

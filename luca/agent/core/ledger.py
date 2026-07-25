@@ -104,7 +104,8 @@ class SessionLedger:
         conversation.updated_at = ts
         if isinstance(entry, ToolExecution):
             self.session.tool_executions.setdefault(
-                entry.tool_call_id, [],
+                entry.tool_call_id,
+                [],
             ).append(entry_id)
         return entry
 
@@ -125,9 +126,7 @@ class SessionLedger:
                 "created through append()."
             )
         if entry.id not in self.session.entries:
-            raise AgentError(
-                f"Cannot update entry {entry.id!r}: no such entry."
-            )
+            raise AgentError(f"Cannot update entry {entry.id!r}: no such entry.")
         self.session.entries[entry.id] = entry
         self.session.active_conversation.updated_at = self.clock()
         return entry
@@ -165,10 +164,7 @@ class SessionLedger:
         # ── preconditions: fallible, nothing written ────────────────────────
         for entry in updates:
             if entry.id is None or entry.id not in entries:
-                raise AgentError(
-                    f"Cannot update entry {entry.id!r} in a transition: no "
-                    "such entry."
-                )
+                raise AgentError(f"Cannot update entry {entry.id!r} in a transition: no such entry.")
         minted: set[str] = set()
         for entry in [*created, *([closing] if closing is not None else [])]:
             if entry.id is None:
@@ -177,10 +173,7 @@ class SessionLedger:
                     "caller stamps identity before the commit point."
                 )
             if entry.id in entries or entry.id in minted:
-                raise AgentError(
-                    f"Cannot create entry {entry.id!r} in a transition: the "
-                    "id is already taken."
-                )
+                raise AgentError(f"Cannot create entry {entry.id!r} in a transition: the id is already taken.")
             minted.add(entry.id)
         conversation_id = self.gen_id()
 
@@ -191,7 +184,8 @@ class SessionLedger:
             entries[entry.id] = entry
             if isinstance(entry, ToolExecution):
                 self.session.tool_executions.setdefault(
-                    entry.tool_call_id, [],
+                    entry.tool_call_id,
+                    [],
                 ).append(entry.id)
         if closing is not None:
             entries[closing.id] = closing
@@ -224,16 +218,16 @@ class SessionLedger:
         re-record replaces."""
         conversation = self.session.active_conversation
         if entry_id not in self.session.entries:
-            raise AgentError(
-                f"Cannot record usage for entry {entry_id!r}: no such entry."
-            )
+            raise AgentError(f"Cannot record usage for entry {entry_id!r}: no such entry.")
         if entry_id not in conversation.nodes:
             raise AgentError(
                 f"Cannot record usage for entry {entry_id!r}: the entry is "
                 f"not on conversation {conversation.id!r}'s path."
             )
         usage = Usage(
-            conversation_id=conversation.id, entry_id=entry_id, **counters,
+            conversation_id=conversation.id,
+            entry_id=entry_id,
+            **counters,
         )
         self.session.usages.setdefault(conversation.id, {})[entry_id] = usage
         return usage
@@ -257,23 +251,17 @@ class SessionLedger:
         conversation = self.session.active_conversation
         original = self.session.entries.get(original_id)
         if original is None:
-            raise AgentError(
-                f"Cannot prune entry {original_id!r}: no such entry."
-            )
+            raise AgentError(f"Cannot prune entry {original_id!r}: no such entry.")
         try:
             node_index = conversation.nodes.index(original_id)
         except ValueError:
             raise AgentError(
-                f"Cannot prune entry {original_id!r}: the entry is not on "
-                f"conversation {conversation.id!r}'s path."
+                f"Cannot prune entry {original_id!r}: the entry is not on conversation {conversation.id!r}'s path."
             ) from None
         ts = self.clock()
         entry = build(self.gen_id(), original.parent_id, ts)
         if entry.pruned_entry_id != original_id:
-            raise AgentError(
-                f"PrunedEntry references {entry.pruned_entry_id!r} but is "
-                f"replacing {original_id!r}."
-            )
+            raise AgentError(f"PrunedEntry references {entry.pruned_entry_id!r} but is replacing {original_id!r}.")
         if entry.pruned_entry_type != original.type:
             raise AgentError(
                 f"PrunedEntry records pruned_entry_type="
@@ -316,29 +304,17 @@ class SessionLedger:
             return []
         nodes = self.session.active_conversation.nodes
         entries = self.session.entries
-        return [
-            entries[node_id]
-            for node_id in nodes[idx:]
-            if isinstance(entries[node_id], ToolExecution)
-        ]
+        return [entries[node_id] for node_id in nodes[idx:] if isinstance(entries[node_id], ToolExecution)]
 
     def open_turn_pending_executions(self) -> list[ToolExecution]:
         """Status PENDING — not dispatched, not terminal. The cancel
         wind-down's input."""
-        return [
-            execution
-            for execution in self.open_turn_executions()
-            if execution.status == ExecutionStatus.PENDING
-        ]
+        return [execution for execution in self.open_turn_executions() if execution.status == ExecutionStatus.PENDING]
 
     def open_turn_running_executions(self) -> list[ToolExecution]:
         """Status RUNNING. At the start of a drive these are orphans — the
         body's live task no longer exists — and are recovered to INTERRUPTED."""
-        return [
-            execution
-            for execution in self.open_turn_executions()
-            if execution.status == ExecutionStatus.RUNNING
-        ]
+        return [execution for execution in self.open_turn_executions() if execution.status == ExecutionStatus.RUNNING]
 
     def open_turn_undecided_executions(self) -> list[ToolExecution]:
         """PENDING executions the permission policy should be offered:
@@ -346,8 +322,7 @@ class SessionLedger:
         return [
             execution
             for execution in self.open_turn_pending_executions()
-            if execution.approval_status
-            in (None, ApprovalStatus.PENDING)
+            if execution.approval_status in (None, ApprovalStatus.PENDING)
         ]
 
     def open_turn_awaiting_executions(self) -> list[ToolExecution]:
@@ -373,10 +348,7 @@ class SessionLedger:
 
     def open_turn_has_doom_loop_flagged(self) -> bool:
         """True if any ToolExecution in the open turn is doom-loop-flagged."""
-        return any(
-            execution.is_doom_loop_flagged
-            for execution in self.open_turn_executions()
-        )
+        return any(execution.is_doom_loop_flagged for execution in self.open_turn_executions())
 
     def open_turn_cancel_requested(self) -> CancelRequested | None:
         """The unconsumed `CancelRequested` inside the open turn, or None

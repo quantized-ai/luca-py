@@ -51,31 +51,47 @@ SESSION = AgentSession(
     id="s",
     entries={
         "a0": AssistantMessage(
-            id="a0", created_at=400, parts=[TextContent(text="archived")],
-            llm_config=MODEL, stop_reason="stop",
+            id="a0",
+            created_at=400,
+            parts=[TextContent(text="archived")],
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "u1": UserMessage(
-            id="u1", created_at=500, parts=[TextContent(text="hello")],
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="hello")],
         ),
         "ts1": TurnStart(id="ts1", parent_id="u1", created_at=500),
         "a1": AssistantMessage(
-            id="a1", parent_id="ts1", created_at=500,
-            parts=[TextContent(text="hi")], llm_config=MODEL, stop_reason="stop",
+            id="a1",
+            parent_id="ts1",
+            created_at=500,
+            parts=[TextContent(text="hi")],
+            llm_config=MODEL,
+            stop_reason="stop",
         ),
         "tf1": TurnFinish(id="tf1", parent_id="a1", created_at=500),
         "u2": UserMessage(
-            id="u2", parent_id="tf1", created_at=500,
+            id="u2",
+            parent_id="tf1",
+            created_at=500,
             parts=[TextContent(text="and now?")],
         ),
         "ts_c": TurnStart(id="ts_c", parent_id="u2", created_at=600),
         "cmp": CompactionEntry(
-            id="cmp", parent_id="ts_c", created_at=600,
-            source=CompactionSource.POLICY, started_at=600,
+            id="cmp",
+            parent_id="ts_c",
+            created_at=600,
+            source=CompactionSource.POLICY,
+            started_at=600,
         ),
     },
     active_conversation=Conversation(
-        id="c1", nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
-        created_at=500, updated_at=600,
+        id="c1",
+        nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
+        created_at=500,
+        updated_at=600,
     ),
     conversation_history=[
         Conversation(id="c0", nodes=["a0"], created_at=400, updated_at=400),
@@ -131,7 +147,10 @@ def test_check_snapshot_passes_when_nothing_moved():
 def test_check_snapshot_rejects_a_replaced_active_conversation():
     session = SESSION.model_copy(deep=True)
     session.active_conversation = Conversation(
-        id="c9", nodes=list(SNAPSHOT.nodes), created_at=500, updated_at=600,
+        id="c9",
+        nodes=list(SNAPSHOT.nodes),
+        created_at=500,
+        updated_at=600,
     )
 
     with pytest.raises(
@@ -144,7 +163,9 @@ def test_check_snapshot_rejects_a_replaced_active_conversation():
 def test_check_snapshot_rejects_a_path_that_grew_under_the_plan():
     session = SESSION.model_copy(deep=True)
     session.entries["u3"] = UserMessage(
-        id="u3", created_at=700, parts=[TextContent(text="late")],
+        id="u3",
+        created_at=700,
+        parts=[TextContent(text="late")],
     )
     session.active_conversation.nodes.append("u3")
 
@@ -167,7 +188,8 @@ def test_a_plan_computed_against_another_conversation_is_rejected():
     )
 
     with pytest.raises(
-        CompactionPlanError, match=r"changed under the plan \('c1' → 'c9'\)",
+        CompactionPlanError,
+        match=r"changed under the plan \('c1' → 'c9'\)",
     ):
         validate_plan(plan, entry_id="cmp", session=session, snapshot=SNAPSHOT)
 
@@ -191,7 +213,8 @@ def test_an_empty_plan_is_rejected():
     )
 
     with pytest.raises(
-        CompactionPlanError, match="an empty plan is not a compaction",
+        CompactionPlanError,
+        match="an empty plan is not a compaction",
     ):
         validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
 
@@ -203,7 +226,8 @@ def test_a_plan_referencing_an_unknown_id_is_rejected():
     )
 
     with pytest.raises(
-        CompactionPlanError, match="plan references unknown entry 'nowhere'",
+        CompactionPlanError,
+        match="plan references unknown entry 'nowhere'",
     ):
         validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
 
@@ -244,7 +268,8 @@ def test_a_plan_referencing_the_same_id_twice_is_rejected():
     )
 
     with pytest.raises(
-        CompactionPlanError, match="plan references entry 'u2' twice",
+        CompactionPlanError,
+        match="plan references entry 'u2' twice",
     ):
         validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
 
@@ -256,7 +281,8 @@ def test_a_plan_omitting_the_compaction_entry_is_rejected():
     )
 
     with pytest.raises(
-        CompactionPlanError, match="plan omits the compaction entry 'cmp'",
+        CompactionPlanError,
+        match="plan omits the compaction entry 'cmp'",
     ):
         validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
 
@@ -299,9 +325,15 @@ def test_a_fold_everything_plan_is_accepted():
         nodes=["cmp"],
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_carrying_the_offered_nodes_verbatim_is_accepted():
@@ -310,9 +342,15 @@ def test_carrying_the_offered_nodes_verbatim_is_accepted():
         nodes=list(SNAPSHOT.offered),
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_a_plan_interleaving_created_entries_between_carried_ids_is_accepted():
@@ -326,9 +364,15 @@ def test_a_plan_interleaving_created_entries_between_carried_ids_is_accepted():
         ],
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_a_plan_reordering_carried_ids_is_accepted():
@@ -338,9 +382,15 @@ def test_a_plan_reordering_carried_ids_is_accepted():
         nodes=["u2", "a1", "cmp", "u1"],
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_an_image_only_summary_is_accepted():
@@ -349,9 +399,15 @@ def test_an_image_only_summary_is_accepted():
         nodes=["cmp"],
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_a_plan_with_every_usage_counter_set_is_accepted():
@@ -359,13 +415,23 @@ def test_a_plan_with_every_usage_counter_set_is_accepted():
         entry=SESSION.entries["cmp"].model_copy(update={"parts": SUMMARY}),
         nodes=["cmp"],
         usage=UsageCounters(
-            input=100, output=20, cache_read=5, cache_write=3, total_tokens=128,
+            input=100,
+            output=20,
+            cache_read=5,
+            cache_write=3,
+            total_tokens=128,
         ),
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 def test_every_non_content_field_of_the_returned_entry_is_ignored():
@@ -385,9 +451,15 @@ def test_every_non_content_field_of_the_returned_entry_is_ignored():
         nodes=["cmp"],
     )
 
-    assert validate_plan(
-        plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT,
-    ) is None
+    assert (
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            snapshot=SNAPSHOT,
+        )
+        is None
+    )
 
 
 # ── the plan value objects ────────────────────────────────────────────────────
@@ -407,13 +479,19 @@ def test_a_plan_keeps_the_created_entry_objects_it_was_given():
 def test_a_plan_rejects_an_unknown_field():
     with pytest.raises(ValidationError):
         CompactionPlan(
-            entry=SESSION.entries["cmp"], nodes=["cmp"], reason="because",
+            entry=SESSION.entries["cmp"],
+            nodes=["cmp"],
+            reason="because",
         )
 
 
 def test_usage_counters_default_every_counter_to_zero():
     assert UsageCounters() == UsageCounters(
-        input=0, output=0, cache_read=0, cache_write=0, total_tokens=0,
+        input=0,
+        output=0,
+        cache_read=0,
+        cache_write=0,
+        total_tokens=0,
     )
 
 
@@ -426,7 +504,11 @@ def test_usage_counters_reject_a_providers_own_counter_names():
 
 def test_usage_counters_dump_exactly_the_kwargs_record_usage_takes():
     counters = UsageCounters(
-        input=100, output=20, cache_read=5, cache_write=3, total_tokens=128,
+        input=100,
+        output=20,
+        cache_read=5,
+        cache_write=3,
+        total_tokens=128,
     )
 
     assert counters.model_dump() == {
@@ -453,7 +535,9 @@ def test_the_base_policy_never_compacts():
 async def test_the_base_policy_has_no_compact_implementation():
     with pytest.raises(NotImplementedError):
         await CompactionPolicy().compact(
-            SESSION, SNAPSHOT.offered, SESSION.entries["cmp"],
+            SESSION,
+            SNAPSHOT.offered,
+            SESSION.entries["cmp"],
         )
 
 
@@ -474,7 +558,9 @@ async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
     policy = Folding()
 
     plan = await policy.compact(
-        SESSION, SNAPSHOT.offered, SESSION.entries["cmp"].model_copy(deep=True),
+        SESSION,
+        SNAPSHOT.offered,
+        SESSION.entries["cmp"].model_copy(deep=True),
     )
 
     assert policy.should_compact(SESSION) is True

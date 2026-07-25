@@ -29,9 +29,13 @@ def body(result) -> str:
 async def test_creates_a_missing_file(tmp_path, run):
     target = tmp_path / "newfile.txt"
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": str(target), "content": "Hello, World!",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": str(target),
+            "content": "Hello, World!",
+        },
+    )
 
     assert result.is_error is False
     assert body(result) == f"File created successfully at: {target}"
@@ -43,9 +47,13 @@ async def test_creates_a_missing_file(tmp_path, run):
 
 
 async def test_creates_missing_parent_directories(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "file_path": "nested/deep/file.txt", "content": "data",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "nested/deep/file.txt",
+            "content": "data",
+        },
+    )
 
     assert result.is_error is False
     assert (tmp_path / "nested/deep/file.txt").read_text() == "data"
@@ -67,9 +75,13 @@ async def test_overwrites_an_existing_file_after_a_read(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_text("old content")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "content": "new content",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "content": "new content",
+        },
+    )
 
     assert body(result) == f"File updated successfully at: {target}"
     assert result.metadata == {"existed": True}
@@ -83,14 +95,16 @@ async def test_overwriting_an_unread_file_fails_and_leaves_it_unchanged(tmp_path
     target = tmp_path / "f.txt"
     target.write_text("old content")
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": "f.txt", "content": "new content",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "f.txt",
+            "content": "new content",
+        },
+    )
 
     assert result.is_error is True
-    assert body(result) == (
-        f"File has not been read yet: read {target} before overwriting it."
-    )
+    assert body(result) == (f"File has not been read yet: read {target} before overwriting it.")
     assert target.read_text() == "old content"
 
 
@@ -120,9 +134,13 @@ async def test_content_with_a_bom_does_not_duplicate_it(tmp_path, run):
     target = tmp_path / "f.txt"
     target.write_bytes(BOM + b"old")
 
-    await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "content": "﻿new",
-    })
+    await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "content": "﻿new",
+        },
+    )
 
     assert target.read_bytes() == BOM + b"new"
 
@@ -142,9 +160,13 @@ async def test_empty_content_creates_or_truncates_to_an_empty_file(tmp_path, run
     target = tmp_path / "f.txt"
     target.write_text("something")
 
-    result = await run(make_tool(tmp_path, target), {
-        "file_path": "f.txt", "content": "",
-    })
+    result = await run(
+        make_tool(tmp_path, target),
+        {
+            "file_path": "f.txt",
+            "content": "",
+        },
+    )
 
     assert result.is_error is False
     assert target.read_bytes() == b""
@@ -165,9 +187,13 @@ async def test_crlf_and_multiline_content_round_trips_exactly(tmp_path, run):
 
 
 async def test_nul_containing_content_is_not_truncated(tmp_path, run):
-    await run(make_tool(tmp_path), {
-        "file_path": "f.txt", "content": "Hello\x00World",
-    })
+    await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "f.txt",
+            "content": "Hello\x00World",
+        },
+    )
 
     assert (tmp_path / "f.txt").read_bytes() == b"Hello\x00World"
 
@@ -178,9 +204,13 @@ async def test_nul_containing_content_is_not_truncated(tmp_path, run):
 async def test_an_unwritable_parent_is_an_error_not_a_success(tmp_path, run):
     (tmp_path / "blocker").write_text("i am a file")
 
-    result = await run(make_tool(tmp_path), {
-        "file_path": "blocker/child.txt", "content": "x",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "file_path": "blocker/child.txt",
+            "content": "x",
+        },
+    )
 
     assert result.is_error is True
     assert body(result).startswith("Failed to write file: ")
@@ -196,37 +226,45 @@ def test_args_require_content_and_file_path_and_forbid_extras():
     with pytest.raises(ValidationError):
         WriteTool.Args.model_validate({"content": "x", "file_path": ""})
     with pytest.raises(ValidationError):
-        WriteTool.Args.model_validate({
-            "content": "x", "file_path": "f.txt", "surprise": 1,
-        })
+        WriteTool.Args.model_validate(
+            {
+                "content": "x",
+                "file_path": "f.txt",
+                "surprise": 1,
+            }
+        )
 
 
 # ── permission resource ───────────────────────────────────────────────────────
 
 
 def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
-    [access, request] = perm(make_tool(tmp_path), {
-        "file_path": "nested/deep/file.txt", "content": "data",
-    })
+    [access, request] = perm(
+        make_tool(tmp_path),
+        {
+            "file_path": "nested/deep/file.txt",
+            "content": "data",
+        },
+    )
 
     path = tmp_path / "nested/deep/file.txt"
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(path.parent),
+            permission="access_directory",
+            resource=str(path.parent),
         ),
     ]
     assert access.metadata["preview"] == f"Access directory {path.parent}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(path.parent),
+                    permission="access_directory",
+                    resource=str(path.parent),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{path.parent}/*",
+                    permission="access_directory",
+                    resource=f"{path.parent}/*",
                 ),
             ],
             f"Always allow access to {path.parent}",
@@ -236,10 +274,7 @@ def test_permission_resource_exposes_the_resolved_path(tmp_path, perm):
         ResourcePermission(permission="write", resource=str(path)),
     ]
     assert request.metadata["preview"] == f"Write {path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="write", resource=f"{path.parent}/*")],
             f"Write files under {path.parent}",

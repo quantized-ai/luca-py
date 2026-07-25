@@ -39,7 +39,8 @@ def test_base_and_user_cells_stay_plain():
 
 def test_compaction_cell_renders_the_summary_and_counts_what_it_replaced():
     entry = CompactionEntry(
-        id="cmp", created_at=1000,
+        id="cmp",
+        created_at=1000,
         source=CompactionSource.POLICY,
         parts=[TextContent(text="**the story so far**")],
         compacted_nodes=["u1", "a1", "tf1"],
@@ -54,7 +55,8 @@ def test_compaction_cell_renders_the_summary_and_counts_what_it_replaced():
 
 def test_a_compaction_cell_for_a_single_replaced_entry_is_singular():
     entry = CompactionEntry(
-        id="cmp", created_at=1000,
+        id="cmp",
+        created_at=1000,
         source=CompactionSource.USER,
         parts=[TextContent(text="brief")],
         compacted_nodes=["u1"],

@@ -10,9 +10,9 @@ premature termination, malformed JSON.
 from luca.client.types import ChatCompletionRequest, UserMessage
 from tests.client._helpers.httpx_mocks import make_sync_client, sse_response
 
-
 REQUEST = ChatCompletionRequest(
-    model="gpt-4o", provider="openai",
+    model="gpt-4o",
+    provider="openai",
     messages=[UserMessage(content="hi")],
 )
 
@@ -30,10 +30,8 @@ def test_premature_finish_emits_error_event(openai_transport_factory):
     client = make_sync_client(sse_response(chunks))
     transport = openai_transport_factory(http_client=client)
 
-    events = []
     with transport.completion_stream(REQUEST) as s:
-        for ev in s:
-            events.append(ev)
+        events = list(s)
 
     assert events[-1].type == "error"
     assert "RawFinish" in str(events[-1].error)

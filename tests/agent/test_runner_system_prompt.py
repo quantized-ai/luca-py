@@ -28,14 +28,12 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-
 from tests.agent.scenarios import (
     MODEL,
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
 )
-
 
 # ── test doubles ──────────────────────────────────────────────────────────────
 
@@ -75,9 +73,11 @@ class PartCallable:
 
 async def test_no_system_prompt_parts_sends_no_system_message():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s1",
         entries={
@@ -87,7 +87,10 @@ async def test_no_system_prompt_parts_sends_no_system_message():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -98,9 +101,11 @@ async def test_no_system_prompt_parts_sends_no_system_message():
 
 async def test_string_part_reaches_the_assembler_as_a_part():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     session = AgentSession(
         id="s2",
@@ -114,7 +119,9 @@ async def test_string_part_reaches_the_assembler_as_a_part():
         session,
         system_prompt_parts=["You are helpful."],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -126,9 +133,11 @@ async def test_string_part_reaches_the_assembler_as_a_part():
 
 async def test_dict_part_reaches_the_assembler_as_a_part():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     session = AgentSession(
         id="s3",
@@ -144,23 +153,29 @@ async def test_dict_part_reaches_the_assembler_as_a_part():
             {"text": "You are helpful.", "priority": 5, "source": "env"},
         ],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert assembler.calls == [[
-        SystemPromptPart(text="You are helpful.", source="env", priority=5),
-    ]]
+    assert assembler.calls == [
+        [
+            SystemPromptPart(text="You are helpful.", source="env", priority=5),
+        ]
+    ]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_system_prompt_part_reaches_the_assembler_unchanged():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     session = AgentSession(
         id="s4",
@@ -176,23 +191,29 @@ async def test_system_prompt_part_reaches_the_assembler_unchanged():
             SystemPromptPart(text="You are helpful.", source="model", priority=2),
         ],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert assembler.calls == [[
-        SystemPromptPart(text="You are helpful.", source="model", priority=2),
-    ]]
+    assert assembler.calls == [
+        [
+            SystemPromptPart(text="You are helpful.", source="model", priority=2),
+        ]
+    ]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_callable_part_returning_string_is_invoked_and_coerced():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable("You are helpful.")
     session = AgentSession(
@@ -207,27 +228,35 @@ async def test_callable_part_returning_string_is_invoked_and_coerced():
         session,
         system_prompt_parts=[part],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [(
-        runner.session.session_config,
-        SessionRuntimeStatus(
-            status=ConversationStatus.RUNNING, turn_count=1, step_count=0,
-        ),
-    )]
+    assert part.calls == [
+        (
+            runner.session.session_config,
+            SessionRuntimeStatus(
+                status=ConversationStatus.RUNNING,
+                turn_count=1,
+                step_count=0,
+            ),
+        )
+    ]
     assert assembler.calls == [[SystemPromptPart(text="You are helpful.")]]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_callable_part_returning_dict_is_invoked_and_coerced():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable({"text": "You are helpful.", "priority": 5, "source": "env"})
     session = AgentSession(
@@ -242,29 +271,39 @@ async def test_callable_part_returning_dict_is_invoked_and_coerced():
         session,
         system_prompt_parts=[part],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [(
-        runner.session.session_config,
-        SessionRuntimeStatus(
-            status=ConversationStatus.RUNNING, turn_count=1, step_count=0,
-        ),
-    )]
-    assert assembler.calls == [[
-        SystemPromptPart(text="You are helpful.", source="env", priority=5),
-    ]]
+    assert part.calls == [
+        (
+            runner.session.session_config,
+            SessionRuntimeStatus(
+                status=ConversationStatus.RUNNING,
+                turn_count=1,
+                step_count=0,
+            ),
+        )
+    ]
+    assert assembler.calls == [
+        [
+            SystemPromptPart(text="You are helpful.", source="env", priority=5),
+        ]
+    ]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_callable_part_returning_part_is_invoked_and_passed_through():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable(
         SystemPromptPart(text="You are helpful.", source="model", priority=2),
@@ -281,29 +320,39 @@ async def test_callable_part_returning_part_is_invoked_and_passed_through():
         session,
         system_prompt_parts=[part],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [(
-        runner.session.session_config,
-        SessionRuntimeStatus(
-            status=ConversationStatus.RUNNING, turn_count=1, step_count=0,
-        ),
-    )]
-    assert assembler.calls == [[
-        SystemPromptPart(text="You are helpful.", source="model", priority=2),
-    ]]
+    assert part.calls == [
+        (
+            runner.session.session_config,
+            SessionRuntimeStatus(
+                status=ConversationStatus.RUNNING,
+                turn_count=1,
+                step_count=0,
+            ),
+        )
+    ]
+    assert assembler.calls == [
+        [
+            SystemPromptPart(text="You are helpful.", source="model", priority=2),
+        ]
+    ]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_assembler_receives_priority_sorted_parts_across_all_forms():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     session = AgentSession(
         id="s8",
@@ -322,26 +371,32 @@ async def test_assembler_receives_priority_sorted_parts_across_all_forms():
             SystemPromptPart(text="first", source="model", priority=0),
         ],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert assembler.calls == [[
-        SystemPromptPart(text="unranked"),
-        SystemPromptPart(text="first", source="model", priority=0),
-        SystemPromptPart(text="middle", source="env", priority=5),
-        SystemPromptPart(text="last", priority=9),
-    ]]
+    assert assembler.calls == [
+        [
+            SystemPromptPart(text="unranked"),
+            SystemPromptPart(text="first", source="model", priority=0),
+            SystemPromptPart(text="middle", source="env", priority=5),
+            SystemPromptPart(text="last", priority=9),
+        ]
+    ]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
 
 async def test_blank_assembled_prompt_sends_no_system_message():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("   \n  ")
     session = AgentSession(
         id="s9",
@@ -355,7 +410,9 @@ async def test_blank_assembled_prompt_sends_no_system_message():
         session,
         system_prompt_parts=["x"],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -367,13 +424,15 @@ async def test_blank_assembled_prompt_sends_no_system_message():
 
 async def test_parts_resolved_and_assembled_before_every_llm_call():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable("Use the tools.")
     session = AgentSession(
@@ -385,10 +444,13 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]),
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
         system_prompt_parts=[part],
         system_prompt_assembler=assembler,
-        provider=faux, ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -398,13 +460,17 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
         (
             runner.session.session_config,
             SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING, turn_count=1, step_count=0,
+                status=ConversationStatus.RUNNING,
+                turn_count=1,
+                step_count=0,
             ),
         ),
         (
             runner.session.session_config,
             SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING, turn_count=1, step_count=1,
+                status=ConversationStatus.RUNNING,
+                turn_count=1,
+                step_count=1,
             ),
         ),
     ]

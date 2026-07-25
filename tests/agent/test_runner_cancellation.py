@@ -20,8 +20,15 @@ import asyncio
 import pytest
 
 from luca.agent.core.context import CancellationToken, ToolContext
+from luca.agent.core.events import (
+    FinishReason,
+    ReasoningDelta,
+    ReasoningStart,
+    TextBlock,
+    ToolExecuted,
+)
+from luca.agent.core.exceptions import AlreadyCancellingError
 from luca.agent.core.models import (
-    RuntimeConfig,
     AgentSession,
     ApprovalDecision,
     ApprovalOption,
@@ -32,6 +39,7 @@ from luca.agent.core.models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
+    RuntimeConfig,
     SessionConfig,
     TextContent,
     ToolCall,
@@ -40,19 +48,8 @@ from luca.agent.core.models import (
     ToolSpec,
     TurnFinish,
     TurnOutcome,
-    Usage,
     UserMessage,
 )
-from luca.agent.core.events import (
-    FinishReason,
-    ReasoningDelta,
-    ReasoningStart,
-    TextBlock,
-    ToolCallReceived,
-    ToolExecuted,
-    ToolExecutionStarted,
-)
-from luca.agent.core.exceptions import AlreadyCancellingError
 from luca.agent.core.runner import RunResult
 from luca.agent.core.tools import Tool
 from luca.client.exceptions import ProviderAPIError
@@ -65,7 +62,6 @@ from luca.client.testing import (
     faux_thinking,
     faux_tool_call,
 )
-
 from tests.agent.scenarios import (
     CANCEL_PARKED_SESSION,
     GATED_SESSION,
@@ -97,8 +93,11 @@ class HangingTool(Tool):
         self.hard_cancelled = False
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
         try:
@@ -120,8 +119,11 @@ class CooperativeTool(Tool):
         self.started = asyncio.Event()
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
         await cancellation_token.wait_cancelled()
@@ -140,8 +142,11 @@ class TimeoutRaisingTool(Tool):
         self.started = asyncio.Event()
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
         await cancellation_token.wait_cancelled()
@@ -171,7 +176,9 @@ class CancellingRegistry(FakeToolRegistry):
     runner = None
 
     async def decide(
-        self, tool_execution: ToolExecution, context: ToolContext,
+        self,
+        tool_execution: ToolExecution,
+        context: ToolContext,
     ) -> ApprovalDecision:
         self.runner.cancel()
         return ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
@@ -196,9 +203,11 @@ async def test_cancel_on_idle_session_is_a_noop():
 
 async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_fresh",
         entries={
@@ -208,7 +217,10 @@ async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     runner.cancel()  # no open turn yet — cancel targets the turn, not the handle
@@ -222,8 +234,11 @@ async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
 async def test_second_cancel_raises_and_the_first_call_wins():
     session = GATED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["cr"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["cr"],
+        now=1000,
     )
     runner.cancel(error="first")
 
@@ -232,8 +247,11 @@ async def test_second_cancel_raises_and_the_first_call_wins():
 
     assert runner.cancelling()
     assert runner.session.entries["cr"] == CancelRequested(
-        id="cr", parent_id="te1", created_at=1000,
-        outcome=TurnOutcome.CANCELLED, error="first",
+        id="cr",
+        parent_id="te1",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+        error="first",
     )
 
 
@@ -245,22 +263,31 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
     session = GATED_SESSION.model_copy(deep=True)
     fake = FakeToolRegistry([AddTool()], decisions=[])  # empty decide script
     runner = DeterministicRunner(
-        session, tool_registry=fake, provider=faux,
-        ids=["cr", "tf"], now=1000,
+        session,
+        tool_registry=fake,
+        provider=faux,
+        ids=["cr", "tf"],
+        now=1000,
     )
 
     runner.cancel()  # abandon the turn — not DENY: deny would feed the model
 
     assert runner.cancelling()
     assert runner.session.active_conversation.nodes == [
-        "u1", "ts", "a1", "te1", "cr",
+        "u1",
+        "ts",
+        "a1",
+        "te1",
+        "cr",
     ]
 
     async with runner.run() as run:  # the flush: no decide(), no LLM call
         events = [event async for event in run]
 
     cancelled = ToolExecution(
-        id="te1", parent_id="a1", created_at=500,
+        id="te1",
+        parent_id="a1",
+        created_at=500,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         tool_spec=ADD_SPEC,
@@ -276,15 +303,19 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
     )
     assert events == [
         ToolExecuted(
-            tool_call_id="tc1", execution=cancelled,
-            result_text="[tool execution cancelled]", is_error=True,
+            tool_call_id="tc1",
+            execution=cancelled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
         ),
     ]
     assert fake.seen == []
     assert faux.requests == []
     assert runner.session.entries["te1"] == cancelled
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=1000,
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
     assert runner.idle()
@@ -293,8 +324,11 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
 async def test_flush_via_await_returns_a_cancelled_result():
     session = CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["tf"],
+        now=1000,
     )
 
     assert runner.cancelling()
@@ -311,16 +345,22 @@ async def test_flush_via_await_returns_a_cancelled_result():
 async def test_parked_cancel_survives_save_and_cold_reload():
     session = GATED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["cr"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["cr"],
+        now=1000,
     )
     runner.cancel(error="user abandoned the turn")
     payload = runner.session.model_dump_json()  # "process exits" here
 
     reloaded = AgentSession.model_validate_json(payload)
     resumed = DeterministicRunner(
-        reloaded, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["tf"], now=2000,
+        reloaded,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["tf"],
+        now=2000,
     )
 
     assert resumed.cancelling()  # derive_status found the unconsumed entry
@@ -328,8 +368,11 @@ async def test_parked_cancel_survives_save_and_cold_reload():
 
     assert result.outcome == TurnOutcome.CANCELLED
     assert resumed.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=2000,
-        outcome=TurnOutcome.CANCELLED, error="user abandoned the turn",
+        id="tf",
+        parent_id="cr",
+        created_at=2000,
+        outcome=TurnOutcome.CANCELLED,
+        error="user abandoned the turn",
     )
     assert resumed.idle()
 
@@ -337,8 +380,11 @@ async def test_parked_cancel_survives_save_and_cold_reload():
 async def test_cancel_after_the_flush_completed_is_a_noop():
     session = CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["tf"],
+        now=1000,
     )
     await runner.run()  # the flush
     nodes_after_flush = list(runner.session.active_conversation.nodes)
@@ -354,23 +400,28 @@ async def test_flush_leaves_an_already_terminal_execution_untouched():
     # already denied (terminal REJECTED at decision time) is unaffected and
     # emits no second ToolExecuted.
     session = GATED_SESSION.model_copy(deep=True)
-    session.entries["te1"] = session.entries["te1"].model_copy(update={
-        "status": ExecutionStatus.REJECTED,
-        "approval_status": ApprovalStatus.REJECTED,
-        "approval_decisions": [
-            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
-            ApprovalDecision(decision=ApprovalOption.DENY, created_at=600),
-        ],
-        "ended_at": 600,
-        "updated_at": 600,
-    })
+    session.entries["te1"] = session.entries["te1"].model_copy(
+        update={
+            "status": ExecutionStatus.REJECTED,
+            "approval_status": ApprovalStatus.REJECTED,
+            "approval_decisions": [
+                ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+                ApprovalDecision(decision=ApprovalOption.DENY, created_at=600),
+            ],
+            "ended_at": 600,
+            "updated_at": 600,
+        }
+    )
     session.entries["cr"] = CancelRequested(id="cr", parent_id="te1", created_at=600)
     session.active_conversation.nodes.append("cr")
     session.active_conversation.status = ConversationStatus.CANCELLING
     rejected_before_flush = session.entries["te1"].model_copy(deep=True)
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(), ids=["tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
+        provider=FauxProvider(),
+        ids=["tf"],
+        now=1000,
     )
 
     async with runner.run() as run:  # the flush
@@ -387,12 +438,14 @@ async def test_flush_leaves_an_already_terminal_execution_untouched():
 
 async def test_live_cancel_hard_cancels_the_hanging_tool():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     tool = HangingTool()
     session = AgentSession(
         id="s_live",
@@ -403,8 +456,11 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([tool]), provider=faux,
-        ids=["ts", "a1", "te1", "cr", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([tool]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()
     await tool.started.wait()  # the tool is in-flight
@@ -419,7 +475,9 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
     )
     assert tool.hard_cancelled is True  # grace 0 → straight to hard cancel
     interrupted = ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="hang", arguments={"a": 1, "b": 2}),
         tool_spec=ToolSpec(name="hang", description="Hangs until hard-cancelled."),
@@ -434,29 +492,37 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
     )
     assert runner.session.entries["te1"] == interrupted
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=1000,
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
     async with run:
         events = [event async for event in run]
     assert [event.type for event in events] == [
-        "finish_reason", "tool_call_received", "tool_execution_started",
+        "finish_reason",
+        "tool_call_received",
+        "tool_execution_started",
         "tool_executed",
     ]
     assert events[3] == ToolExecuted(
-        tool_call_id="tc1", execution=interrupted,
-        result_text="[tool execution interrupted]", is_error=True,
+        tool_call_id="tc1",
+        execution=interrupted,
+        result_text="[tool execution interrupted]",
+        is_error=True,
     )
 
 
 async def test_cooperative_tool_finishing_within_grace_records_its_real_result():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("cooperative", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("cooperative", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     tool = CooperativeTool()
     session = AgentSession(
         id="s_grace",
@@ -472,8 +538,11 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
         ),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([tool]), provider=faux,
-        ids=["ts", "a1", "te1", "cr", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([tool]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()
     await tool.started.wait()
@@ -484,15 +553,19 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
     assert result.outcome == TurnOutcome.CANCELLED
     # it RETURNED — a real COMPLETED result, keeping cancel_signalled_at
     assert runner.session.entries["te1"] == ToolExecution(
-        id="te1", parent_id="a1", created_at=1000,
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="cooperative", arguments={"a": 1, "b": 2}),
         tool_spec=ToolSpec(
-            name="cooperative", description="Returns partial output on cancellation.",
+            name="cooperative",
+            description="Returns partial output on cancellation.",
         ),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(
-            content=[TextContent(text="partial sum")], is_error=False,
+            content=[TextContent(text="partial sum")],
+            is_error=False,
         ),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
@@ -512,13 +585,14 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
 
 async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1"),
-             faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1"), faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     tool = HangingTool()
     session = AgentSession(
         id="s_sibling",
@@ -529,8 +603,11 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([tool, AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "te2", "cr", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([tool, AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()
     await tool.started.wait()  # tc1 in-flight; tc2 not yet started
@@ -563,12 +640,14 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
 
 async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_lazy_cancel",
         entries={
@@ -578,8 +657,11 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "cr", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -590,7 +672,9 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
                 run.cancel()  # before the policy or the batch ever sees it
 
     assert [event.type for event in events] == [
-        "finish_reason", "tool_call_received", "tool_executed",
+        "finish_reason",
+        "tool_call_received",
+        "tool_executed",
     ]
     assert events[2].result_text == "[tool execution cancelled]"
     execution = runner.session.entries["te1"]
@@ -606,12 +690,14 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
     # decide() is never cancelled; the pre-park check winds down BEFORE the
     # approval pause — no ApprovalRequired, the gate never opens.
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     registry = CancellingRegistry([AddTool()])
     session = AgentSession(
         id="s_mid_decide",
@@ -622,8 +708,11 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=registry, provider=faux,
-        ids=["ts", "a1", "te1", "cr", "tf"], now=1000,
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
     )
     registry.runner = runner
 
@@ -631,7 +720,9 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "finish_reason", "tool_call_received", "tool_executed",
+        "finish_reason",
+        "tool_call_received",
+        "tool_executed",
     ]
     assert events[2].result_text == "[tool execution cancelled]"
     execution = runner.session.entries["te1"]
@@ -645,11 +736,14 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
 
 async def test_mid_stream_cancel_drops_the_partial_assistant_message():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_thinking("Thinking…"), faux_hang()], finish_reason="stop",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_thinking("Thinking…"), faux_hang()],
+                finish_reason="stop",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_stream_cancel",
         entries={
@@ -659,7 +753,10 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "cr", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "cr", "tf"],
+        now=1000,
     )
     run = runner.start(streaming=True)
 
@@ -679,7 +776,9 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
     # the partial assistant message was dropped — only bookkeeping landed
     assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=1000,
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
     assert runner.idle()
@@ -690,9 +789,11 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
 
 async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
     faux = ReleasableProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Here you go.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Here you go.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_llm_grace",
         entries={
@@ -707,7 +808,10 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
         ),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "cr", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "cr", "a1", "tf"],
+        now=1000,
     )
     run = runner.start()
     await faux.started.wait()  # the LLM call is in flight
@@ -723,34 +827,47 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
     )
     # the within-grace answer is recorded ...
     assert runner.session.entries["a1"] == AssistantMessage(
-        id="a1", parent_id="cr", created_at=1000,
+        id="a1",
+        parent_id="cr",
+        created_at=1000,
         parts=[TextContent(text="Here you go.")],
-        llm_config=MODEL, stop_reason="stop",
+        llm_config=MODEL,
+        stop_reason="stop",
         context_tokens=3,  # len("Here you go.") // 4
     )
     # ... but the requested outcome controls the close
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="a1", created_at=1000,
+        id="tf",
+        parent_id="a1",
+        created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
     assert runner.session.active_conversation.nodes == [
-        "u1", "ts", "cr", "a1", "tf",
+        "u1",
+        "ts",
+        "cr",
+        "a1",
+        "tf",
     ]
     assert runner.idle()
     async with run:
         events = [event async for event in run]
     assert events == [
-        TextBlock(text="Here you go."), FinishReason(finish_reason="stop"),
+        TextBlock(text="Here you go."),
+        FinishReason(finish_reason="stop"),
     ]
 
 
 async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
     faux = ReleasableProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [], error=faux_error("provider 500", error_class=ProviderAPIError),
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [],
+                error=faux_error("provider 500", error_class=ProviderAPIError),
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_llm_grace_fail",
         entries={
@@ -763,7 +880,10 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
         ),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "cr", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()
     await faux.started.wait()
@@ -779,8 +899,11 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
     )
     # the failure was discarded: no assistant message, no failed TurnFinish
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=1000,
-        outcome=TurnOutcome.CANCELLED, error="user abandoned the turn",
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+        error="user abandoned the turn",
     )
     assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
     assert runner.idle()
@@ -788,9 +911,11 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
 
 async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_instant_cancel",
         entries={
@@ -800,7 +925,10 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "cr", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()  # start() opened the bracket durably
 
@@ -814,7 +942,9 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
     )
     assert faux.requests == []  # the flush never reached the model
     assert runner.session.entries["tf"] == TurnFinish(
-        id="tf", parent_id="cr", created_at=1000,
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
     assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
@@ -823,12 +953,14 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
 
 async def test_tool_raising_timeout_error_within_grace_records_failed():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("deadline_confused", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("deadline_confused", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     tool = TimeoutRaisingTool()
     session = AgentSession(
         id="s_tool_timeout_grace",
@@ -842,8 +974,11 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
         ),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([tool]), provider=faux,
-        ids=["ts", "a1", "te1", "cr", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([tool]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
     )
     run = runner.start()
     await tool.started.wait()

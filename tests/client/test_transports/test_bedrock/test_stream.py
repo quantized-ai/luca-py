@@ -13,6 +13,7 @@ import zlib
 import pytest
 
 from luca.client.exceptions import StreamError
+from luca.client.transports.bedrock.stream import BedrockChatCompletionStream
 from luca.client.types.completion import Usage
 from luca.client.types.streaming import (
     RawBlockStart,
@@ -23,7 +24,6 @@ from luca.client.types.streaming import (
     RawToolArgumentsDelta,
     RawUsage,
 )
-from luca.client.transports.bedrock.stream import BedrockChatCompletionStream
 
 _HEADER_TYPE_STRING = 7
 
@@ -37,10 +37,7 @@ def _frame(event_type, payload, *, message_type="event"):
     header_bytes = b""
     for name, value in headers.items():
         nb, vb = name.encode(), value.encode()
-        header_bytes += (
-            bytes([len(nb)]) + nb + bytes([_HEADER_TYPE_STRING])
-            + struct.pack(">H", len(vb)) + vb
-        )
+        header_bytes += bytes([len(nb)]) + nb + bytes([_HEADER_TYPE_STRING]) + struct.pack(">H", len(vb)) + vb
     body = json.dumps(payload).encode()
     total = 12 + len(header_bytes) + len(body) + 4
     prelude = struct.pack(">II", total, len(header_bytes))
@@ -106,22 +103,33 @@ def test_two_frames_arriving_in_one_read_both_decode():
 
 def test_byte_at_a_time_delivery_still_decodes():
     joined = b"".join(_TEXT_FRAMES)
-    assert _events([joined[i:i + 1] for i in range(len(joined))]) == _TEXT_EVENTS
+    assert _events([joined[i : i + 1] for i in range(len(joined))]) == _TEXT_EVENTS
 
 
 def test_a_tool_use_block_carries_its_id_name_and_argument_deltas():
     frames = [
         _frame("messageStart", {"role": "assistant"}),
-        _frame("contentBlockStart", {
-            "contentBlockIndex": 0,
-            "start": {"toolUse": {"toolUseId": "t1", "name": "multiply"}},
-        }),
-        _frame("contentBlockDelta", {
-            "contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"a":8,'}},
-        }),
-        _frame("contentBlockDelta", {
-            "contentBlockIndex": 0, "delta": {"toolUse": {"input": '"b":9}'}},
-        }),
+        _frame(
+            "contentBlockStart",
+            {
+                "contentBlockIndex": 0,
+                "start": {"toolUse": {"toolUseId": "t1", "name": "multiply"}},
+            },
+        ),
+        _frame(
+            "contentBlockDelta",
+            {
+                "contentBlockIndex": 0,
+                "delta": {"toolUse": {"input": '{"a":8,'}},
+            },
+        ),
+        _frame(
+            "contentBlockDelta",
+            {
+                "contentBlockIndex": 0,
+                "delta": {"toolUse": {"input": '"b":9}'}},
+            },
+        ),
         _frame("contentBlockStop", {"contentBlockIndex": 0}),
         _frame("messageStop", {"stopReason": "tool_use"}),
     ]
@@ -136,12 +144,20 @@ def test_a_tool_use_block_carries_its_id_name_and_argument_deltas():
 
 def test_a_reasoning_block_maps_text_then_signature():
     frames = [
-        _frame("contentBlockDelta", {
-            "contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "hmm"}},
-        }),
-        _frame("contentBlockDelta", {
-            "contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig"}},
-        }),
+        _frame(
+            "contentBlockDelta",
+            {
+                "contentBlockIndex": 0,
+                "delta": {"reasoningContent": {"text": "hmm"}},
+            },
+        ),
+        _frame(
+            "contentBlockDelta",
+            {
+                "contentBlockIndex": 0,
+                "delta": {"reasoningContent": {"signature": "sig"}},
+            },
+        ),
         _frame("contentBlockStop", {"contentBlockIndex": 0}),
     ]
     assert _events([b"".join(frames)]) == [
@@ -171,7 +187,9 @@ def test_a_truncated_final_frame_yields_only_the_complete_frames():
 
 def test_an_exception_frame_raises_stream_error():
     frame = _frame(
-        "internalServerException", {"message": "kaboom"}, message_type="exception",
+        "internalServerException",
+        {"message": "kaboom"},
+        message_type="exception",
     )
     with pytest.raises(StreamError, match="kaboom"):
         _events([frame])
@@ -186,15 +204,28 @@ def test_a_protocol_error_frame_also_raises_stream_error():
 def test_streamed_usage_carries_cache_tokens():
     frames = [
         _frame("messageStop", {"stopReason": "end_turn"}),
-        _frame("metadata", {"usage": {
-            "inputTokens": 10, "outputTokens": 5, "totalTokens": 15,
-            "cacheReadInputTokens": 8, "cacheWriteInputTokens": 2,
-        }}),
+        _frame(
+            "metadata",
+            {
+                "usage": {
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "totalTokens": 15,
+                    "cacheReadInputTokens": 8,
+                    "cacheWriteInputTokens": 2,
+                }
+            },
+        ),
     ]
     assert _events([b"".join(frames)]) == [
         RawFinish(reason="end_turn"),
-        RawUsage(usage=Usage(
-            input_tokens=10, output_tokens=5, total_tokens=15,
-            cached_input_tokens=8, cache_write_tokens=2,
-        )),
+        RawUsage(
+            usage=Usage(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                cached_input_tokens=8,
+                cache_write_tokens=2,
+            )
+        ),
     ]

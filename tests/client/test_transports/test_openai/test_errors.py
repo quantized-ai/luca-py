@@ -8,19 +8,19 @@ import pytest
 from luca.client.exceptions import (
     AuthenticationError,
     BadRequestError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     ModelNotFoundError,
     ProviderAPIError,
     RateLimitError,
+    TimeoutError as ClientTimeoutError,
 )
-from luca.client.exceptions import ConnectionError as ClientConnectionError
-from luca.client.exceptions import TimeoutError as ClientTimeoutError
 from luca.client.types import ChatCompletionRequest, UserMessage
 from tests.client._helpers.httpx_mocks import error_response, make_sync_client
 
-
 REQUEST = ChatCompletionRequest(
-    model="gpt-4o", provider="openai",
+    model="gpt-4o",
+    provider="openai",
     messages=[UserMessage(content="hi")],
 )
 
@@ -36,25 +36,27 @@ class ErrorCase:
 
 
 CASES = [
-    ErrorCase("401_auth", 401,
-              {"error": {"type": "invalid_request_error", "message": "Invalid key"}},
-              {}, AuthenticationError),
-    ErrorCase("429_with_retry_after", 429,
-              {"error": {"type": "rate_limit_exceeded", "message": "Too many"}},
-              {"retry-after": "30"}, RateLimitError,
-              extra_assertion=lambda exc: exc.retry_after == 30.0),
-    ErrorCase("400_context_length", 400,
-              {"error": {"type": "context_length_exceeded", "message": "..."}},
-              {}, ContextLengthExceededError),
-    ErrorCase("400_generic", 400,
-              {"error": {"type": "invalid_request_error", "message": "..."}},
-              {}, BadRequestError),
-    ErrorCase("404_model_not_found", 404,
-              {"error": {"type": "not_found", "message": "..."}},
-              {}, ModelNotFoundError),
-    ErrorCase("500_server_error", 500,
-              {"error": {"type": "server_error", "message": "..."}},
-              {}, ProviderAPIError),
+    ErrorCase(
+        "401_auth", 401, {"error": {"type": "invalid_request_error", "message": "Invalid key"}}, {}, AuthenticationError
+    ),
+    ErrorCase(
+        "429_with_retry_after",
+        429,
+        {"error": {"type": "rate_limit_exceeded", "message": "Too many"}},
+        {"retry-after": "30"},
+        RateLimitError,
+        extra_assertion=lambda exc: exc.retry_after == 30.0,
+    ),
+    ErrorCase(
+        "400_context_length",
+        400,
+        {"error": {"type": "context_length_exceeded", "message": "..."}},
+        {},
+        ContextLengthExceededError,
+    ),
+    ErrorCase("400_generic", 400, {"error": {"type": "invalid_request_error", "message": "..."}}, {}, BadRequestError),
+    ErrorCase("404_model_not_found", 404, {"error": {"type": "not_found", "message": "..."}}, {}, ModelNotFoundError),
+    ErrorCase("500_server_error", 500, {"error": {"type": "server_error", "message": "..."}}, {}, ProviderAPIError),
 ]
 
 

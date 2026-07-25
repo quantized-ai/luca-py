@@ -49,7 +49,9 @@ def test_unknown_attribute_raises():
 
 def test_usage_forwarded():
     msg = AssistantMessage(
-        content=[], provider="x", model="y",
+        content=[],
+        provider="x",
+        model="y",
         usage=Usage(input_tokens=5, output_tokens=2, total_tokens=7),
     )
     response = ChatCompletionResponse(message=msg)

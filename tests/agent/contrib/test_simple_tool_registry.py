@@ -70,8 +70,11 @@ class AddTool(Tool):
     Args = BinaryArgs
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
 
@@ -83,8 +86,11 @@ class MultiplyTool(Tool):
     timeout_in_ms = 5000
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
 
@@ -100,8 +106,11 @@ class ReadFileTool(Tool):
         return {"resources": [args["path"]], "preview": f"Read {args['path']}"}
 
     async def _execute(
-        self, args: dict, context: ToolContext,
-        *, cancellation_token: CancellationToken,
+        self,
+        args: dict,
+        context: ToolContext,
+        *,
+        cancellation_token: CancellationToken,
     ) -> str:
         return f"contents of {args['path']}"
 
@@ -135,7 +144,8 @@ def stamped(draft: ToolExecution) -> ToolExecution:
 def test_get_tools_returns_the_static_list():
     add, multiply = AddTool(), MultiplyTool()
     registry = SimpleToolRegistry(
-        tools=[add, multiply], permission_policy=YoloPermissionPolicy(),
+        tools=[add, multiply],
+        permission_policy=YoloPermissionPolicy(),
     )
 
     assert registry.get_tools(SESSION) == [add, multiply]
@@ -146,14 +156,16 @@ def test_get_tools_returns_the_static_list():
 
 async def test_unknown_tool_births_a_not_found_draft():
     registry = SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[AddTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     call = ToolCall(id="tc1", name="nope", arguments={"x": 1})
 
     draft = await registry.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id=None, created_at=None,
+        id=None,
+        created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
@@ -168,7 +180,8 @@ async def test_unknown_tool_births_a_not_found_draft():
 
 async def test_invalid_arguments_birth_an_invalid_draft():
     registry = SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[AddTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     call = ToolCall(id="tc1", name="add", arguments={"a": 1})
 
@@ -186,7 +199,8 @@ async def test_invalid_arguments_birth_an_invalid_draft():
 
 async def test_raising_approval_context_births_a_failed_draft():
     registry = SimpleToolRegistry(
-        tools=[BrokenContextTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[BrokenContextTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     call = ToolCall(id="tc1", name="broken_context", arguments={"path": "/etc"})
 
@@ -203,14 +217,16 @@ async def test_raising_approval_context_births_a_failed_draft():
 
 async def test_healthy_call_births_a_pending_draft_with_approval_context():
     registry = SimpleToolRegistry(
-        tools=[ReadFileTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[ReadFileTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     call = ToolCall(id="tc1", name="read_file", arguments={"path": "/etc/hosts"})
 
     draft = await registry.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id=None, created_at=None,
+        id=None,
+        created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=ToolSpec(name="read_file", description="Read a file."),
@@ -226,7 +242,8 @@ async def test_healthy_call_births_a_pending_draft_with_approval_context():
 
 async def test_plain_tool_births_a_pending_draft_with_empty_extras():
     registry = SimpleToolRegistry(
-        tools=[MultiplyTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[MultiplyTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
     call = ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
 
@@ -236,7 +253,9 @@ async def test_plain_tool_births_a_pending_draft_with_empty_extras():
     assert draft.extras == {}
     # the declared deadline rides on the birth spec
     assert draft.tool_spec == ToolSpec(
-        name="multiply", description="Multiply two numbers.", timeout_in_ms=5000,
+        name="multiply",
+        description="Multiply two numbers.",
+        timeout_in_ms=5000,
     )
 
 
@@ -246,30 +265,39 @@ async def test_plain_tool_births_a_pending_draft_with_empty_extras():
 async def test_decide_delegates_to_the_permission_policy():
     policy = RecordingPolicy()
     registry = SimpleToolRegistry(tools=[AddTool()], permission_policy=policy)
-    execution = stamped(await registry.create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    ))
+    execution = stamped(
+        await registry.create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    )
 
     decision = await registry.decide(execution, CONTEXT)
 
     assert decision == ApprovalDecision(
-        decision=ApprovalOption.ALLOW, created_at=1000,
+        decision=ApprovalOption.ALLOW,
+        created_at=1000,
     )
     assert policy.seen == [execution]
 
 
 async def test_yolo_policy_allows_with_wall_clock_stamp():
-    execution = stamped(await SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
-    ).create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    ))
+    execution = stamped(
+        await SimpleToolRegistry(
+            tools=[AddTool()],
+            permission_policy=YoloPermissionPolicy(),
+        ).create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    )
 
     decision = await YoloPermissionPolicy().decide(execution)
 
     assert decision.decision == ApprovalOption.ALLOW
     assert decision.metadata is None
-    assert isinstance(decision.created_at, int) and decision.created_at > 0
+    assert isinstance(decision.created_at, int)
+    assert decision.created_at > 0
 
 
 # ── SimpleToolRegistry: execute ───────────────────────────────────────────────
@@ -277,14 +305,20 @@ async def test_yolo_policy_allows_with_wall_clock_stamp():
 
 async def test_execute_resolves_validates_and_invokes_the_tool():
     registry = SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[AddTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
-    execution = stamped(await registry.create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    ))
+    execution = stamped(
+        await registry.create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    )
 
     result = await registry.execute(
-        execution, CONTEXT, cancellation_token=CancellationToken(),
+        execution,
+        CONTEXT,
+        cancellation_token=CancellationToken(),
     )
 
     assert result == ExecutionResult(content=[TextContent(text="3")])
@@ -294,33 +328,49 @@ async def test_execute_resolves_by_the_effective_call_name():
     # the execution's raw_tool_call (possibly middleware-rewritten) is the
     # dispatch authority — an unknown effective name raises ToolNotFound
     registry = SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[AddTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
-    execution = stamped(await registry.create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    )).model_copy(update={
-        "raw_tool_call": ToolCall(id="tc1", name="renamed", arguments={}),
-    })
+    execution = stamped(
+        await registry.create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    ).model_copy(
+        update={
+            "raw_tool_call": ToolCall(id="tc1", name="renamed", arguments={}),
+        }
+    )
 
     with pytest.raises(ToolNotFound):
         await registry.execute(
-            execution, CONTEXT, cancellation_token=CancellationToken(),
+            execution,
+            CONTEXT,
+            cancellation_token=CancellationToken(),
         )
 
 
 async def test_execute_wraps_validation_failures_in_invalid_tool_arguments():
     registry = SimpleToolRegistry(
-        tools=[AddTool()], permission_policy=YoloPermissionPolicy(),
+        tools=[AddTool()],
+        permission_policy=YoloPermissionPolicy(),
     )
-    execution = stamped(await registry.create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    )).model_copy(update={
-        "raw_tool_call": ToolCall(id="tc1", name="add", arguments={"a": 1}),
-    })
+    execution = stamped(
+        await registry.create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    ).model_copy(
+        update={
+            "raw_tool_call": ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        }
+    )
 
     with pytest.raises(InvalidToolArguments) as excinfo:
         await registry.execute(
-            execution, CONTEXT, cancellation_token=CancellationToken(),
+            execution,
+            CONTEXT,
+            cancellation_token=CancellationToken(),
         )
     assert excinfo.value.errors[0]["loc"] == ["b"]
 
@@ -330,7 +380,8 @@ async def test_execute_wraps_validation_failures_in_invalid_tool_arguments():
 
 def child(*tools: Tool) -> SimpleToolRegistry:
     return SimpleToolRegistry(
-        tools=list(tools), permission_policy=YoloPermissionPolicy(),
+        tools=list(tools),
+        permission_policy=YoloPermissionPolicy(),
     )
 
 
@@ -344,7 +395,7 @@ def test_proxy_get_tools_concatenates_children_in_order():
 def test_proxy_get_tools_rejects_duplicate_names():
     proxy = ProxyToolRegistry(child(AddTool()), child(AddTool()))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Duplicate tool name across registries"):
         proxy.get_tools(SESSION)
 
 
@@ -369,12 +420,15 @@ async def test_proxy_routes_each_method_to_the_owning_child():
     proxy.get_tools(SESSION)  # warm the route
 
     draft = await proxy.create_execution(
-        ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}), CONTEXT,
+        ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
+        CONTEXT,
     )
     execution = stamped(draft)
     decision = await proxy.decide(execution, CONTEXT)
     result = await proxy.execute(
-        execution, CONTEXT, cancellation_token=CancellationToken(),
+        execution,
+        CONTEXT,
+        cancellation_token=CancellationToken(),
     )
 
     assert draft.tool_spec.name == "multiply"
@@ -391,7 +445,8 @@ async def test_proxy_create_execution_miss_births_a_not_found_draft():
     draft = await proxy.create_execution(call, CONTEXT)
 
     assert draft == ToolExecution(
-        id=None, created_at=None,
+        id=None,
+        created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
@@ -406,7 +461,8 @@ async def test_proxy_create_execution_miss_births_a_not_found_draft():
 async def test_proxy_decide_miss_allows_so_execute_terminalizes_honestly():
     proxy = ProxyToolRegistry(child(AddTool()))  # route never warmed
     execution = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.PENDING,
@@ -420,7 +476,8 @@ async def test_proxy_decide_miss_allows_so_execute_terminalizes_honestly():
 async def test_proxy_execute_miss_raises_tool_not_found():
     proxy = ProxyToolRegistry(child(AddTool()))  # route never warmed
     execution = ToolExecution(
-        id="te1", created_at=1000,
+        id="te1",
+        created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.PENDING,
@@ -428,7 +485,9 @@ async def test_proxy_execute_miss_raises_tool_not_found():
 
     with pytest.raises(ToolNotFound):
         await proxy.execute(
-            execution, CONTEXT, cancellation_token=CancellationToken(),
+            execution,
+            CONTEXT,
+            cancellation_token=CancellationToken(),
         )
 
 
@@ -437,11 +496,16 @@ async def test_nested_proxies_route_transparently():
     outer = ProxyToolRegistry(inner, child(MultiplyTool()))
 
     assert [tool.name for tool in outer.get_tools(SESSION)] == ["add", "multiply"]
-    execution = stamped(await outer.create_execution(
-        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}), CONTEXT,
-    ))
+    execution = stamped(
+        await outer.create_execution(
+            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            CONTEXT,
+        )
+    )
     result = await outer.execute(
-        execution, CONTEXT, cancellation_token=CancellationToken(),
+        execution,
+        CONTEXT,
+        cancellation_token=CancellationToken(),
     )
 
     assert result == ExecutionResult(content=[TextContent(text="3")])

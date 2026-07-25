@@ -17,15 +17,15 @@ from ...exceptions import (
     AuthenticationError,
     BadRequestError,
     ClientError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     InvalidModelError,
     ModelNotFoundError,
     ProviderAPIError,
     RateLimitError,
+    TimeoutError as ClientTimeoutError,
     UnsupportedParameterError,
 )
-from ...exceptions import ConnectionError as ClientConnectionError
-from ...exceptions import TimeoutError as ClientTimeoutError
 from ...types.completion import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -51,11 +51,14 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
     # --- payload building ---
 
     def _build_chat_completion_payload(
-        self, request: ChatCompletionRequest, *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> dict:
         wire_messages = self._project_messages(request.messages)
         if request.system_message is not None:
-            wire_messages = [self._project_system_message(request.system_message)] + wire_messages
+            wire_messages = [self._project_system_message(request.system_message), *wire_messages]
 
         payload: dict[str, Any] = {
             "model": request.model,
@@ -159,8 +162,7 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
 
     def _project_media_to_image_url(self, source: Any) -> dict:
         if isinstance(source, MediaURL):
-            entry = {"url": source.url}
-            return entry
+            return {"url": source.url}
         if isinstance(source, MediaBase64):
             return {"url": f"data:{source.media_type};base64,{source.data}"}
         if isinstance(source, MediaFileId):
@@ -190,14 +192,16 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
             elif isinstance(block, RefusalBlock):
                 wire["refusal"] = block.text
             elif isinstance(block, ToolCall):
-                tool_calls_wire.append({
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.arguments) if block.arguments else "{}",
-                    },
-                })
+                tool_calls_wire.append(
+                    {
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": json.dumps(block.arguments) if block.arguments else "{}",
+                        },
+                    }
+                )
         if text_parts:
             wire["content"] = "".join(text_parts)
         else:
@@ -212,10 +216,7 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         else:
             # Refusing beats dropping: the model would be told the tool call
             # succeeded and handed a result with the image missing.
-            unsupported = {
-                type(b).__name__ for b in msg.content
-                if not isinstance(b, TextBlock)
-            }
+            unsupported = {type(b).__name__ for b in msg.content if not isinstance(b, TextBlock)}
             if unsupported:
                 raise BadRequestError(
                     "The chat-completions API allows only text in a tool "
@@ -237,14 +238,16 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         out = []
         for t in tools:
             schema = tool_parameters_to_json_schema(t.parameters)
-            out.append({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": schema,
-                },
-            })
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": schema,
+                    },
+                }
+            )
         return out
 
     def _project_tool_choice(self, choice: Any) -> Any:
@@ -287,7 +290,9 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
     # --- response parsing ---
 
     def _parse_chat_completion_response(
-        self, response: httpx.Response, request: ChatCompletionRequest,
+        self,
+        response: httpx.Response,
+        request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         data = response.json()
         choices = data.get("choices") or []
@@ -307,7 +312,10 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         return resp
 
     def _parse_assistant_message(
-        self, msg_json: dict, request: ChatCompletionRequest, full_data: dict,
+        self,
+        msg_json: dict,
+        request: ChatCompletionRequest,
+        full_data: dict,
     ) -> AssistantMessage:
         content: list = []
         # Reasoning ("thinking") text — present only when the host carries it
@@ -361,7 +369,9 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
     # --- finish-reason classification ---
 
     def _classify_finish(
-        self, provider_value: str | None, message: AssistantMessage,
+        self,
+        provider_value: str | None,
+        message: AssistantMessage,
     ) -> tuple[str | None, str | None]:
         # Strict-mode refusal: upstream "stop" but a RefusalBlock was emitted.
         has_refusal = any(isinstance(b, RefusalBlock) for b in message.content)
@@ -395,51 +405,75 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
 
             if status == 401:
                 return AuthenticationError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if status == 429:
                 return RateLimitError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                     retry_after=self._retry_after(exc.response),
                 )
             if status == 400:
                 if "context_length" in err_type or "context_length" in msg.lower():
                     return ContextLengthExceededError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 if "model" in err_type.lower():
                     return InvalidModelError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 if "unsupported" in err_type.lower():
                     return UnsupportedParameterError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 return BadRequestError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if status == 404:
                 return ModelNotFoundError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if 500 <= status < 600:
                 return ProviderAPIError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             return ProviderAPIError(
-                msg, provider=self._provider, original_exception=exc,
+                msg,
+                provider=self._provider,
+                original_exception=exc,
             )
 
         if isinstance(exc, httpx.TimeoutException):
             return ClientTimeoutError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         if isinstance(exc, httpx.NetworkError):
             return ClientConnectionError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         return ProviderAPIError(
-            str(exc), provider=self._provider, original_exception=exc,
+            str(exc),
+            provider=self._provider,
+            original_exception=exc,
         )
 
     @staticmethod
@@ -463,8 +497,10 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
 
     def _chat_completion_stream_class(self) -> type:
         from .stream import OpenAIChatCompletionStream
+
         return OpenAIChatCompletionStream
 
     def _async_chat_completion_stream_class(self) -> type:
         from .stream import OpenAIAsyncChatCompletionStream
+
         return OpenAIAsyncChatCompletionStream

@@ -1,0 +1,44 @@
+include = ["luca/**/*.py", "luca/**/*.pyi", "tests/**/*.py", "main.py"]
+
+line-length = 120
+indent-width = 4
+target-version = "py311"
+
+[lint]
+select = [
+    "E4", "E7", "E9",
+    "F",
+    "B",
+    "I",
+    "UP",
+    "RET",
+    "PIE",
+    "SIM",
+    "RUF",
+    "ASYNC",
+    "PT",
+    "C4",
+    "PERF",
+    "A",
+]
+ignore = [
+    # Ambiguous-unicode: shell/patch.py normalizes these characters on purpose.
+    "RUF001", "RUF002", "RUF003",
+    # trio/anyio-specific advice; this is an asyncio codebase.
+    "ASYNC109", "ASYNC240",
+    # __all__ is grouped by concept, not alphabetized.
+    "RUF022",
+    # `str, Enum` is the project convention (see AGENTS.md); StrEnum changes str() output.
+    "UP042",
+]
+
+[lint.isort]
+combine-as-imports = true
+known-first-party = ["luca", "tests"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = false

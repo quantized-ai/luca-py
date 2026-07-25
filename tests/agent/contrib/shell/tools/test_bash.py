@@ -9,11 +9,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from luca.agent.core import CancellationToken
-
 from luca.agent.contrib.resource_permissions import ResourcePermission
 from luca.agent.contrib.shell import BashTool
 from luca.agent.contrib.shell.tools import BASH_DESCRIPTION_TEMPLATE
+from luca.agent.core import CancellationToken
 
 
 def make_tool(tmp_path, **kwargs) -> BashTool:
@@ -63,9 +62,13 @@ async def test_missing_workdir_fails_before_execution(tmp_path, run):
 async def test_a_regular_file_as_workdir_fails_before_execution(tmp_path, run):
     (tmp_path / "file.txt").write_text("")
 
-    result = await run(make_tool(tmp_path), {
-        "command": "echo hi", "workdir": "file.txt",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "command": "echo hi",
+            "workdir": "file.txt",
+        },
+    )
 
     assert result.is_error is True
     assert body(result) == f"workdir is not a directory: {tmp_path / 'file.txt'}"
@@ -75,9 +78,12 @@ async def test_a_regular_file_as_workdir_fails_before_execution(tmp_path, run):
 
 
 async def test_stdout_and_stderr_are_combined_in_observed_order(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "command": "echo stdout_msg; echo stderr_msg 1>&2; echo last",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "command": "echo stdout_msg; echo stderr_msg 1>&2; echo last",
+        },
+    )
 
     assert result.is_error is False
     assert result.metadata["exit"] == 0
@@ -98,16 +104,18 @@ async def test_non_zero_exit_is_a_result_not_an_exception(tmp_path, run):
 
 
 async def test_timeout_terminates_the_command_and_explains_itself(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "command": "echo before; sleep 5", "timeout": 500,
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "command": "echo before; sleep 5",
+            "timeout": 500,
+        },
+    )
 
     assert result.is_error is True
     assert "before" in body(result)
     assert "<shell_metadata>" in body(result)
-    assert (
-        "shell tool terminated command after exceeding timeout 500 ms"
-    ) in body(result)
+    assert ("shell tool terminated command after exceeding timeout 500 ms") in body(result)
     assert result.metadata["exit"] is None
 
 
@@ -116,11 +124,13 @@ async def test_timeout_terminates_the_command_and_explains_itself(tmp_path, run)
 
 async def test_cancellation_kills_the_process_and_keeps_partial_output(tmp_path, run):
     token = CancellationToken()
-    task = asyncio.create_task(run(
-        make_tool(tmp_path),
-        {"command": "echo before; sleep 5"},
-        cancellation_token=token,
-    ))
+    task = asyncio.create_task(
+        run(
+            make_tool(tmp_path),
+            {"command": "echo before; sleep 5"},
+            cancellation_token=token,
+        )
+    )
     await asyncio.sleep(0.3)
 
     token.cancel()
@@ -154,9 +164,12 @@ async def test_line_truncation_saves_the_complete_output(tmp_path, run):
 
 
 async def test_byte_truncation_saves_the_complete_output(tmp_path, run):
-    result = await run(make_tool(tmp_path), {
-        "command": "head -c 60000 /dev/zero | tr '\\0' a",
-    })
+    result = await run(
+        make_tool(tmp_path),
+        {
+            "command": "head -c 60000 /dev/zero | tr '\\0' a",
+        },
+    )
 
     assert result.metadata["truncated"] is True
     saved = result.metadata["output_path"]
@@ -237,17 +250,16 @@ def test_permission_resource_exposes_the_command(tmp_path, perm):
         ResourcePermission(permission="access_directory", resource=str(tmp_path)),
     ]
     assert access.metadata["preview"] == f"Access directory {tmp_path}"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in access.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in access.answer_options] == [
         (
             [
                 ResourcePermission(
-                    permission="access_directory", resource=str(tmp_path),
+                    permission="access_directory",
+                    resource=str(tmp_path),
                 ),
                 ResourcePermission(
-                    permission="access_directory", resource=f"{tmp_path}/*",
+                    permission="access_directory",
+                    resource=f"{tmp_path}/*",
                 ),
             ],
             f"Always allow access to {tmp_path}",
@@ -257,10 +269,7 @@ def test_permission_resource_exposes_the_command(tmp_path, perm):
         ResourcePermission(permission="bash", resource="echo test"),
     ]
     assert request.metadata["preview"] == "Run command: echo test"
-    assert [
-        (o.resource_permissions, o.metadata["preview"])
-        for o in request.answer_options
-    ] == [
+    assert [(o.resource_permissions, o.metadata["preview"]) for o in request.answer_options] == [
         (
             [ResourcePermission(permission="bash", resource="echo *")],
             "Run any 'echo' command",
@@ -283,13 +292,18 @@ def test_permission_resource_strips_surrounding_whitespace(tmp_path, perm):
 
 
 def test_permission_resource_uses_the_workdir_argument(tmp_path, perm):
-    [access, request] = perm(make_tool(tmp_path), {
-        "command": "ls", "workdir": "sub",
-    })
+    [access, request] = perm(
+        make_tool(tmp_path),
+        {
+            "command": "ls",
+            "workdir": "sub",
+        },
+    )
 
     assert access.resources == [
         ResourcePermission(
-            permission="access_directory", resource=str(tmp_path / "sub"),
+            permission="access_directory",
+            resource=str(tmp_path / "sub"),
         ),
     ]
     assert request.resources == [

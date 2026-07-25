@@ -12,6 +12,14 @@ points. What the engine writes into the session is covered by
 
 import pytest
 
+from luca.agent.core.events import (
+    FinishReason,
+    TextBlock,
+    ToolCallReceived,
+    ToolExecuted,
+    ToolExecutionStarted,
+)
+from luca.agent.core.exceptions import AgentError
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
@@ -27,17 +35,8 @@ from luca.agent.core.models import (
     ToolExecution,
     ToolSpec,
     TurnOutcome,
-    Usage,
     UserMessage,
 )
-from luca.agent.core.events import (
-    FinishReason,
-    TextBlock,
-    ToolCallReceived,
-    ToolExecuted,
-    ToolExecutionStarted,
-)
-from luca.agent.core.exceptions import AgentError
 from luca.agent.core.runner import RunResult
 from luca.client.exceptions import ProviderAPIError
 from luca.client.testing import (
@@ -47,7 +46,6 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-
 from tests.agent.scenarios import (
     MODEL,
     AddTool,
@@ -62,24 +60,30 @@ ADD_SPEC = ToolSpec(name="add", description="Add two numbers.")
 
 # the three lifecycle snapshots of the standard one-tool-round turn
 ADD_BIRTH = ToolExecution(
-    id="te1", parent_id="a1", created_at=1000,
+    id="te1",
+    parent_id="a1",
+    created_at=1000,
     tool_call_id="tc1",
     raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
     tool_spec=ADD_SPEC,
     status=ExecutionStatus.PENDING,
 )
-ADD_RUNNING = ADD_BIRTH.model_copy(update={
-    "status": ExecutionStatus.RUNNING,
-    "approval_status": ApprovalStatus.ALLOWED,
-    "approval_decisions": [ALLOW_1000],
-    "started_at": 1000,
-    "updated_at": 1000,
-})
-ADD_FINAL = ADD_RUNNING.model_copy(update={
-    "status": ExecutionStatus.COMPLETED,
-    "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-    "ended_at": 1000,
-})
+ADD_RUNNING = ADD_BIRTH.model_copy(
+    update={
+        "status": ExecutionStatus.RUNNING,
+        "approval_status": ApprovalStatus.ALLOWED,
+        "approval_decisions": [ALLOW_1000],
+        "started_at": 1000,
+        "updated_at": 1000,
+    }
+)
+ADD_FINAL = ADD_RUNNING.model_copy(
+    update={
+        "status": ExecutionStatus.COMPLETED,
+        "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
+        "ended_at": 1000,
+    }
+)
 
 # the event list of the standard one-tool-round turn used throughout
 TOOL_TURN_EVENTS = [
@@ -87,7 +91,10 @@ TOOL_TURN_EVENTS = [
     ToolCallReceived(tool_call_id="tc1", execution=ADD_BIRTH),
     ToolExecutionStarted(tool_call_id="tc1", execution=ADD_RUNNING),
     ToolExecuted(
-        tool_call_id="tc1", execution=ADD_FINAL, result_text="3", is_error=False,
+        tool_call_id="tc1",
+        execution=ADD_FINAL,
+        result_text="3",
+        is_error=False,
     ),
     TextBlock(text="It's 3."),
     FinishReason(finish_reason="stop"),
@@ -99,9 +106,11 @@ TOOL_TURN_EVENTS = [
 
 async def test_lazy_handle_creation_is_a_noop():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_inert",
         entries={
@@ -111,7 +120,10 @@ async def test_lazy_handle_creation_is_a_noop():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     discarded = runner.run()  # never driven: no work, no validation, no guard
@@ -153,9 +165,11 @@ async def test_start_on_idle_session_raises_at_call_time():
 
 def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_no_loop",
         entries={
@@ -165,7 +179,10 @@ def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     with pytest.raises(RuntimeError):
@@ -181,13 +198,15 @@ def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
 
 async def test_second_drive_while_a_run_is_live_raises():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_guard",
         entries={
@@ -197,8 +216,11 @@ async def test_second_drive_while_a_run_is_live_raises():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -234,9 +256,11 @@ async def test_iteration_outside_the_context_manager_raises():
 
 async def test_eager_iteration_outside_the_context_manager_raises():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_cm_eager",
         entries={
@@ -246,7 +270,10 @@ async def test_eager_iteration_outside_the_context_manager_raises():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
     run = runner.start()
 
@@ -259,9 +286,11 @@ async def test_eager_iteration_outside_the_context_manager_raises():
 
 async def test_await_twice_returns_the_cached_result():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_idem",
         entries={
@@ -271,7 +300,10 @@ async def test_await_twice_returns_the_cached_result():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
     run = runner.run()
 
@@ -285,13 +317,15 @@ async def test_await_twice_returns_the_cached_result():
 
 async def test_await_inside_the_block_after_partial_iteration_drives_to_the_stop():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_mix",
         entries={
@@ -301,8 +335,11 @@ async def test_await_inside_the_block_after_partial_iteration_drives_to_the_stop
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -319,9 +356,11 @@ async def test_await_inside_the_block_after_partial_iteration_drives_to_the_stop
 
 async def test_await_returns_completed_result_at_idle_stop():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_rr_idle",
         entries={
@@ -331,7 +370,10 @@ async def test_await_returns_completed_result_at_idle_stop():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -346,12 +388,14 @@ async def test_await_returns_completed_result_at_idle_stop():
 
 async def test_await_returns_pause_result_at_approval_stop():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_rr_gate",
         entries={
@@ -363,7 +407,9 @@ async def test_await_returns_pause_result_at_approval_stop():
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([AddTool()], decisions=[PENDING_1000]),
-        provider=faux, ids=["ts", "a1", "te1"], now=1000,
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
 
     result = await runner.run()
@@ -373,10 +419,14 @@ async def test_await_returns_pause_result_at_approval_stop():
         outcome=None,
         pending_approvals=[
             ToolExecution(
-                id="te1", parent_id="a1", created_at=1000,
+                id="te1",
+                parent_id="a1",
+                created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(
-                    id="tc1", name="add", arguments={"a": 1, "b": 2},
+                    id="tc1",
+                    name="add",
+                    arguments={"a": 1, "b": 2},
                 ),
                 tool_spec=ADD_SPEC,
                 status=ExecutionStatus.PENDING,
@@ -395,13 +445,15 @@ async def test_await_returns_pause_result_at_approval_stop():
 
 async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_suspend",
         entries={
@@ -411,8 +463,11 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -431,7 +486,10 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
         events = [event async for event in resumed]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert events[1].result_text == "3"
     assert runner.idle()
@@ -439,13 +497,15 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
 
 async def test_suspended_session_cold_resumes_after_reload():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_cold",
         entries={
@@ -455,8 +515,11 @@ async def test_suspended_session_cold_resumes_after_reload():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
     )
     async with runner.run() as run:
         async for _ in run:
@@ -465,8 +528,11 @@ async def test_suspended_session_cold_resumes_after_reload():
 
     reloaded = AgentSession.model_validate_json(payload)
     resumed = DeterministicRunner(
-        reloaded, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["a2", "tf"], now=1000,
+        reloaded,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["a2", "tf"],
+        now=1000,
     )
 
     assert resumed.pending()
@@ -474,7 +540,10 @@ async def test_suspended_session_cold_resumes_after_reload():
         events = [event async for event in run]
 
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert events[1].result_text == "3"
     assert resumed.idle()
@@ -482,13 +551,15 @@ async def test_suspended_session_cold_resumes_after_reload():
 
 async def test_finalized_suspended_handle_rejects_await_and_reentry():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_final",
         entries={
@@ -498,8 +569,11 @@ async def test_finalized_suspended_handle_rejects_await_and_reentry():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -515,9 +589,11 @@ async def test_finalized_suspended_handle_rejects_await_and_reentry():
 
 async def test_completed_lazy_run_still_answers_await_after_exit():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_done",
         entries={
@@ -527,7 +603,10 @@ async def test_completed_lazy_run_still_answers_await_after_exit():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.run() as run:
@@ -543,13 +622,15 @@ async def test_completed_lazy_run_still_answers_await_after_exit():
 
 async def test_eager_run_completes_without_observation():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_eager",
         entries={
@@ -559,8 +640,11 @@ async def test_eager_run_completes_without_observation():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     result = await runner.start()  # join only — no iteration anywhere
@@ -568,15 +652,22 @@ async def test_eager_run_completes_without_observation():
     assert result.outcome == TurnOutcome.COMPLETED
     assert runner.idle()
     assert runner.session.active_conversation.nodes == [
-        "u1", "ts", "a1", "te1", "a2", "tf",
+        "u1",
+        "ts",
+        "a1",
+        "te1",
+        "a2",
+        "tf",
     ]
 
 
 async def test_eager_empty_block_runs_to_completion_and_exit_joins():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_eager_cm",
         entries={
@@ -586,7 +677,10 @@ async def test_eager_empty_block_runs_to_completion_and_exit_joins():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     async with runner.start():
@@ -597,13 +691,15 @@ async def test_eager_empty_block_runs_to_completion_and_exit_joins():
 
 async def test_eager_late_consumer_sees_the_full_history_from_event_zero():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_late",
         entries={
@@ -613,8 +709,11 @@ async def test_eager_late_consumer_sees_the_full_history_from_event_zero():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
     run = runner.start()
     await run  # the run is long finished before anyone iterates
@@ -627,13 +726,15 @@ async def test_eager_late_consumer_sees_the_full_history_from_event_zero():
 
 async def test_eager_break_does_not_stop_the_agent_and_the_cursor_continues():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_break",
         entries={
@@ -643,8 +744,11 @@ async def test_eager_break_does_not_stop_the_agent_and_the_cursor_continues():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     async with runner.start() as run:
@@ -662,12 +766,15 @@ async def test_eager_break_does_not_stop_the_agent_and_the_cursor_continues():
 
 async def test_eager_background_exception_surfaces_on_join_and_iteration():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [], finish_reason="stop",
-            error=faux_error("provider down", error_class=ProviderAPIError),
-        ),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [],
+                finish_reason="stop",
+                error=faux_error("provider down", error_class=ProviderAPIError),
+            ),
+        ]
+    )
     session = AgentSession(
         id="s_bg_exc",
         entries={
@@ -677,7 +784,10 @@ async def test_eager_background_exception_surfaces_on_join_and_iteration():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "tf"],
+        now=1000,
     )
     run = runner.start()
 
@@ -695,13 +805,15 @@ async def test_eager_background_exception_surfaces_on_join_and_iteration():
 
 async def test_on_event_sync_callback_sees_every_event_of_an_awaited_run():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_hook",
         entries={
@@ -711,8 +823,11 @@ async def test_on_event_sync_callback_sees_every_event_of_an_awaited_run():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
     seen = []
 
@@ -723,9 +838,11 @@ async def test_on_event_sync_callback_sees_every_event_of_an_awaited_run():
 
 async def test_on_event_async_callback_is_awaited_inline():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_hook_async",
         entries={
@@ -735,7 +852,10 @@ async def test_on_event_async_callback_is_awaited_inline():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
     seen = []
 
@@ -750,9 +870,11 @@ async def test_on_event_async_callback_is_awaited_inline():
 
 async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complete():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_hook_boom",
         entries={
@@ -762,7 +884,10 @@ async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complet
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, provider=faux, ids=["ts", "a1", "tf"], now=1000,
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
     )
 
     def boom(event):
@@ -782,13 +907,15 @@ async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complet
 
 async def test_on_event_exception_mid_tool_round_crashes_resumably():
     faux = FauxProvider()
-    faux.set_responses([
-        faux_assistant_message(
-            [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
-            finish_reason="tool_use",
-        ),
-        faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
-    ])
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
     session = AgentSession(
         id="s_hook_boom_mid",
         entries={
@@ -798,8 +925,11 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
-        session, tool_registry=FakeToolRegistry([AddTool()]), provider=faux,
-        ids=["ts", "a1", "te1", "a2", "tf"], now=1000,
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
     )
 
     def boom(event):
@@ -816,7 +946,10 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
     async with runner.run() as resumed:
         events = [event async for event in resumed]
     assert [event.type for event in events] == [
-        "tool_execution_started", "tool_executed", "text_block", "finish_reason",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
     ]
     assert events[1].result_text == "3"
     assert runner.idle()

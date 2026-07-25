@@ -8,11 +8,10 @@ caching, and dispatch.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from . import catalog as _catalog_module
-from .exceptions import BadRequestError
-from .exceptions import TimeoutError as SDKTimeoutError
+from .exceptions import BadRequestError, TimeoutError as SDKTimeoutError
 from .providers import BaseProvider, resolve_provider
 from .types.completion import ChatCompletionRequest
 from .types.messages import AssistantMessage, ToolMessage, UserMessage
@@ -36,10 +35,7 @@ def _parse_model_string(model: str, provider: str | None) -> tuple[str, str]:
     if ":" in model:
         host, model_id = model.split(":", 1)
         return host, model_id
-    raise ValueError(
-        f"No provider specified. Use `provider=...` or prefixed model "
-        f"(e.g. 'openai:{model}')."
-    )
+    raise ValueError(f"No provider specified. Use `provider=...` or prefixed model (e.g. 'openai:{model}').")
 
 
 def _coerce_messages(messages: list) -> list:
@@ -54,9 +50,7 @@ def _coerce_messages(messages: list) -> list:
             out.append(m)
             continue
         if not isinstance(m, dict):
-            raise BadRequestError(
-                f"messages[{i}] is {type(m).__name__}; expected dict or typed Message."
-            )
+            raise BadRequestError(f"messages[{i}] is {type(m).__name__}; expected dict or typed Message.")
         role = m.get("role")
         if role == "system":
             raise BadRequestError(
@@ -70,9 +64,7 @@ def _coerce_messages(messages: list) -> list:
         elif role == "tool":
             out.append(ToolMessage.model_validate(m))
         else:
-            raise BadRequestError(
-                f"messages[{i}] has unknown role={role!r}; expected user / assistant / tool."
-            )
+            raise BadRequestError(f"messages[{i}] has unknown role={role!r}; expected user / assistant / tool.")
     return out
 
 
@@ -86,9 +78,7 @@ def _coerce_tools(tools: list | None) -> list[Tool] | None:
         elif isinstance(t, dict):
             out.append(Tool.model_validate(t))
         else:
-            raise BadRequestError(
-                f"tool entry is {type(t).__name__}; expected dict or Tool."
-            )
+            raise BadRequestError(f"tool entry is {type(t).__name__}; expected dict or Tool.")
     return out
 
 
@@ -171,8 +161,10 @@ def _get_cached_provider(
     if inst is None:
         inst = resolve_provider(
             name,
-            api_key=api_key, base_url=base_url,
-            transport_class=transport_class, timeout=timeout,
+            api_key=api_key,
+            base_url=base_url,
+            transport_class=transport_class,
+            timeout=timeout,
         )
         _provider_cache[key] = inst
     return inst
@@ -208,8 +200,10 @@ def _resolve_for_call(
 
     prov = _get_cached_provider(
         provider_name,
-        api_key=api_key, base_url=base_url,
-        transport_class=transport_class, timeout=timeout,
+        api_key=api_key,
+        base_url=base_url,
+        transport_class=transport_class,
+        timeout=timeout,
     )
     return prov, provider_name, model_id
 
@@ -251,23 +245,42 @@ def completion(
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
-) -> "ChatCompletionResponse":
+) -> ChatCompletionResponse:
     prov, provider_name, model_id = _resolve_for_call(
-        model=model, provider=provider, transport=transport,
-        transport_class=transport_class, api_key=api_key,
-        base_url=base_url, timeout=timeout,
+        model=model,
+        provider=provider,
+        transport=transport,
+        transport_class=transport_class,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
     )
     request = _build_request(
-        model=model_id, provider_name=provider_name,
-        messages=messages, system_message=system_message,
-        tools=tools, tool_choice=tool_choice, response_format=response_format,
-        temperature=temperature, top_p=top_p, top_k=top_k,
-        max_tokens=max_tokens, stop=stop, seed=seed,
-        presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
-        logprobs=logprobs, top_logprobs=top_logprobs,
-        reasoning=reasoning,        cache_retention=cache_retention, session_id=session_id,
-        parallel_tool_calls=parallel_tool_calls, user=user,
-        model_info=model_info, metadata=metadata, provider_options=provider_options,
+        model=model_id,
+        provider_name=provider_name,
+        messages=messages,
+        system_message=system_message,
+        tools=tools,
+        tool_choice=tool_choice,
+        response_format=response_format,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        stop=stop,
+        seed=seed,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        logprobs=logprobs,
+        top_logprobs=top_logprobs,
+        reasoning=reasoning,
+        cache_retention=cache_retention,
+        session_id=session_id,
+        parallel_tool_calls=parallel_tool_calls,
+        user=user,
+        model_info=model_info,
+        metadata=metadata,
+        provider_options=provider_options,
     )
     return prov.completion(request)
 
@@ -305,27 +318,46 @@ async def acompletion(
     base_url: str | None = None,
     timeout: float | None = None,
     total_timeout: float | None = None,
-) -> "ChatCompletionResponse":
+) -> ChatCompletionResponse:
     """Async completion. `timeout=` is the per-phase httpx timeout;
     `total_timeout=` is a wall-clock deadline over the whole call — expiry
     raises the SDK `TimeoutError`. Async-only: the sync `completion` has no
     loop to enforce a total deadline on."""
     prov, provider_name, model_id = _resolve_for_call(
-        model=model, provider=provider, transport=transport,
-        transport_class=transport_class, api_key=api_key,
-        base_url=base_url, timeout=timeout,
+        model=model,
+        provider=provider,
+        transport=transport,
+        transport_class=transport_class,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
     )
     request = _build_request(
-        model=model_id, provider_name=provider_name,
-        messages=messages, system_message=system_message,
-        tools=tools, tool_choice=tool_choice, response_format=response_format,
-        temperature=temperature, top_p=top_p, top_k=top_k,
-        max_tokens=max_tokens, stop=stop, seed=seed,
-        presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
-        logprobs=logprobs, top_logprobs=top_logprobs,
-        reasoning=reasoning,        cache_retention=cache_retention, session_id=session_id,
-        parallel_tool_calls=parallel_tool_calls, user=user,
-        model_info=model_info, metadata=metadata, provider_options=provider_options,
+        model=model_id,
+        provider_name=provider_name,
+        messages=messages,
+        system_message=system_message,
+        tools=tools,
+        tool_choice=tool_choice,
+        response_format=response_format,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        stop=stop,
+        seed=seed,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        logprobs=logprobs,
+        top_logprobs=top_logprobs,
+        reasoning=reasoning,
+        cache_retention=cache_retention,
+        session_id=session_id,
+        parallel_tool_calls=parallel_tool_calls,
+        user=user,
+        model_info=model_info,
+        metadata=metadata,
+        provider_options=provider_options,
     )
     if total_timeout is None:
         return await prov.acompletion(request)
@@ -372,23 +404,42 @@ def completion_stream(
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
-) -> "ChatCompletionStream":
+) -> ChatCompletionStream:
     prov, provider_name, model_id = _resolve_for_call(
-        model=model, provider=provider, transport=transport,
-        transport_class=transport_class, api_key=api_key,
-        base_url=base_url, timeout=timeout,
+        model=model,
+        provider=provider,
+        transport=transport,
+        transport_class=transport_class,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
     )
     request = _build_request(
-        model=model_id, provider_name=provider_name,
-        messages=messages, system_message=system_message,
-        tools=tools, tool_choice=tool_choice, response_format=response_format,
-        temperature=temperature, top_p=top_p, top_k=top_k,
-        max_tokens=max_tokens, stop=stop, seed=seed,
-        presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
-        logprobs=logprobs, top_logprobs=top_logprobs,
-        reasoning=reasoning,        cache_retention=cache_retention, session_id=session_id,
-        parallel_tool_calls=parallel_tool_calls, user=user,
-        model_info=model_info, metadata=metadata, provider_options=provider_options,
+        model=model_id,
+        provider_name=provider_name,
+        messages=messages,
+        system_message=system_message,
+        tools=tools,
+        tool_choice=tool_choice,
+        response_format=response_format,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        stop=stop,
+        seed=seed,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        logprobs=logprobs,
+        top_logprobs=top_logprobs,
+        reasoning=reasoning,
+        cache_retention=cache_retention,
+        session_id=session_id,
+        parallel_tool_calls=parallel_tool_calls,
+        user=user,
+        model_info=model_info,
+        metadata=metadata,
+        provider_options=provider_options,
     )
     return prov.completion_stream(request)
 
@@ -426,7 +477,7 @@ def acompletion_stream(
     base_url: str | None = None,
     timeout: float | None = None,
     total_timeout: float | None = None,
-) -> "AsyncChatCompletionStream":
+) -> AsyncChatCompletionStream:
     # NOTE: this is a regular `def`, not `async def`. The function returns
     # AsyncChatCompletionStream synchronously; HTTP fires on first iteration.
     # `total_timeout=` arms a wall-clock deadline on the stream object
@@ -435,21 +486,40 @@ def acompletion_stream(
     # TimeoutError, then close. Async-only; `completion_stream` has no loop
     # to enforce a total deadline on.
     prov, provider_name, model_id = _resolve_for_call(
-        model=model, provider=provider, transport=transport,
-        transport_class=transport_class, api_key=api_key,
-        base_url=base_url, timeout=timeout,
+        model=model,
+        provider=provider,
+        transport=transport,
+        transport_class=transport_class,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
     )
     request = _build_request(
-        model=model_id, provider_name=provider_name,
-        messages=messages, system_message=system_message,
-        tools=tools, tool_choice=tool_choice, response_format=response_format,
-        temperature=temperature, top_p=top_p, top_k=top_k,
-        max_tokens=max_tokens, stop=stop, seed=seed,
-        presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
-        logprobs=logprobs, top_logprobs=top_logprobs,
-        reasoning=reasoning,        cache_retention=cache_retention, session_id=session_id,
-        parallel_tool_calls=parallel_tool_calls, user=user,
-        model_info=model_info, metadata=metadata, provider_options=provider_options,
+        model=model_id,
+        provider_name=provider_name,
+        messages=messages,
+        system_message=system_message,
+        tools=tools,
+        tool_choice=tool_choice,
+        response_format=response_format,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        stop=stop,
+        seed=seed,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        logprobs=logprobs,
+        top_logprobs=top_logprobs,
+        reasoning=reasoning,
+        cache_retention=cache_retention,
+        session_id=session_id,
+        parallel_tool_calls=parallel_tool_calls,
+        user=user,
+        model_info=model_info,
+        metadata=metadata,
+        provider_options=provider_options,
     )
     stream = prov.acompletion_stream(request)
     if total_timeout is not None:
@@ -463,5 +533,8 @@ def get_provider(model_or_pair: str) -> BaseProvider:
     provider_name, _ = _parse_model_string(model_or_pair, None)
     return _get_cached_provider(
         provider_name,
-        api_key=None, base_url=None, transport_class=None, timeout=None,
+        api_key=None,
+        base_url=None,
+        transport_class=None,
+        timeout=None,
     )

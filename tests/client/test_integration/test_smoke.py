@@ -12,7 +12,7 @@ import pytest
 from luca.client import completion, completion_stream
 from luca.client.exceptions import RateLimitError
 from luca.client.providers import AnthropicProvider, OpenAIProvider
-from luca.client.types import TextBlock, Usage, UserMessage
+from luca.client.types import TextBlock, UserMessage
 
 
 def _smoke_provider(monkeypatch, real_provider):
@@ -29,15 +29,21 @@ def test_openai_completion_smoke(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={
-            "id": "chatcmpl-test", "model": "gpt-4o-2024-08-06",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": "Hello!"},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "model": "gpt-4o-2024-08-06",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Hello!"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            },
+        )
 
     real_provider = OpenAIProvider(
         api_key="sk-test",
@@ -57,7 +63,8 @@ def test_openai_completion_smoke(monkeypatch):
     assert response.message.content == [TextBlock(text="Hello!")]
     # Token counts must match exactly; `cost` is auto-populated from the catalog.
     assert (response.usage.input_tokens, response.usage.output_tokens, response.usage.total_tokens) == (5, 3, 8)
-    assert response.usage.cost is not None and response.usage.cost.total > 0
+    assert response.usage.cost is not None
+    assert response.usage.cost.total > 0
 
 
 def test_openai_streaming_smoke(monkeypatch):
@@ -70,7 +77,8 @@ def test_openai_streaming_smoke(monkeypatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, content=body,
+            200,
+            content=body,
             headers={"content-type": "text/event-stream"},
         )
 
@@ -97,13 +105,19 @@ def test_openai_streaming_smoke(monkeypatch):
 def test_anthropic_completion_smoke(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers.get("x-api-key") == "sk-ant-test"
-        return httpx.Response(200, json={
-            "id": "msg_01", "type": "message", "role": "assistant",
-            "model": "claude-3-5-sonnet-20241022",
-            "content": [{"type": "text", "text": "Hi!"}],
-            "stop_reason": "end_turn", "stop_sequence": None,
-            "usage": {"input_tokens": 5, "output_tokens": 2},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_01",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-3-5-sonnet-20241022",
+                "content": [{"type": "text", "text": "Hi!"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        )
 
     real_provider = AnthropicProvider(
         api_key="sk-ant-test",
@@ -150,15 +164,21 @@ def test_structured_output_parse_smoke(monkeypatch):
         year: int
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={
-            "id": "x", "model": "gpt-4o",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": '{"title":"Hi","year":2024}'},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": '{"title":"Hi","year":2024}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+            },
+        )
 
     real_provider = OpenAIProvider(
         api_key="sk-test",
@@ -179,24 +199,34 @@ def test_structured_output_parse_smoke(monkeypatch):
 
 def test_tool_call_round_trip_smoke(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={
-            "id": "x", "model": "gpt-4o",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant", "content": None,
-                    "tool_calls": [{
-                        "id": "call_1", "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": '{"city":"NYC"}',
+                                    },
+                                }
+                            ],
                         },
-                    }],
-                },
-                "finish_reason": "tool_calls",
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        })
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        )
 
     real_provider = OpenAIProvider(
         api_key="sk-test",
@@ -207,15 +237,17 @@ def test_tool_call_round_trip_smoke(monkeypatch):
     response = completion(
         model="openai:gpt-4o",
         messages=[UserMessage(content="Weather?")],
-        tools=[{
-            "name": "get_weather",
-            "description": "...",
-            "parameters": {
-                "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"],
-            },
-        }],
+        tools=[
+            {
+                "name": "get_weather",
+                "description": "...",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
     )
     assert response.finish_reason == "tool_use"
     assert response.provider_finish_reason == "tool_calls"

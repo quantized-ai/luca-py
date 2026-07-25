@@ -25,14 +25,14 @@ from ...exceptions import (
     AuthenticationError,
     BadRequestError,
     ClientError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     ModelNotFoundError,
     ProviderAPIError,
     RateLimitError,
+    TimeoutError as ClientTimeoutError,
     UnsupportedParameterError,
 )
-from ...exceptions import ConnectionError as ClientConnectionError
-from ...exceptions import TimeoutError as ClientTimeoutError
 from ...types.completion import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -63,7 +63,10 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- URL (auth is the base-class bearer header) ---
 
     def _chat_completion_url(
-        self, request: ChatCompletionRequest, *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> str:
         op = "converse-stream" if stream else "converse"
         return f"{self._base_url}/model/{request.model}/{op}"
@@ -71,7 +74,10 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- payload building ---
 
     def _build_chat_completion_payload(
-        self, request: ChatCompletionRequest, *, stream: bool = False,
+        self,
+        request: ChatCompletionRequest,
+        *,
+        stream: bool = False,
     ) -> dict:
         capabilities = get_model_capabilities(request.model)
         options = self._provider_options(request)
@@ -84,9 +90,12 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["system"] = self._project_system(request.system_message)
 
         check_sampling(
-            capabilities, extra_fields,
-            temperature=request.temperature, top_p=request.top_p,
-            top_k=request.top_k, model=request.model,
+            capabilities,
+            extra_fields,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            top_k=request.top_k,
+            model=request.model,
         )
         if request.top_k is not None:
             # Converse has no portable top_k slot; where it lives differs per
@@ -114,19 +123,28 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return (request.provider_options or {}).get(self._provider) or {}
 
     def _reasoning_config(
-        self, request: ChatCompletionRequest, capabilities, options: dict,
+        self,
+        request: ChatCompletionRequest,
+        capabilities,
+        options: dict,
     ) -> tuple[dict, int]:
         """The `additionalModelRequestFields` reasoning keys plus the max_tokens
         to send. Raw options carrying that field skip resolution entirely."""
         if "additionalModelRequestFields" in options:
             return {}, request.max_tokens or capabilities.max_output_tokens
         return resolve_reasoning(
-            request.reasoning, capabilities, request.max_tokens,
-            display=self.THINKING_DISPLAY, model=request.model,
+            request.reasoning,
+            capabilities,
+            request.max_tokens,
+            display=self.THINKING_DISPLAY,
+            model=request.model,
         )
 
     def _inference_config(
-        self, request: ChatCompletionRequest, extra_fields: dict, max_tokens: int,
+        self,
+        request: ChatCompletionRequest,
+        extra_fields: dict,
+        max_tokens: int,
     ) -> dict:
         inference: dict[str, Any] = {}
         # Converse defaults maxTokens per model, so only send one when the
@@ -140,9 +158,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.top_p is not None:
             inference["topP"] = request.top_p
         if request.stop is not None:
-            inference["stopSequences"] = (
-                [request.stop] if isinstance(request.stop, str) else list(request.stop)
-            )
+            inference["stopSequences"] = [request.stop] if isinstance(request.stop, str) else list(request.stop)
         return inference
 
     def _project_system(self, system_message: Any) -> list[dict]:
@@ -156,10 +172,12 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
             if isinstance(msg, UserMessage):
                 out.append({"role": "user", "content": self._project_user_content(msg)})
             elif isinstance(msg, AssistantMessage):
-                out.append({
-                    "role": "assistant",
-                    "content": self._project_assistant_content(msg),
-                })
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": self._project_assistant_content(msg),
+                    }
+                )
             elif isinstance(msg, ToolMessage):
                 # Converse has no tool role: a result is a user toolResult block.
                 out.append({"role": "user", "content": [self._project_tool_result(msg)]})
@@ -208,8 +226,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         # Converse takes image bytes or an s3Location, never a URL or file id.
         if isinstance(source, (MediaURL, MediaFileId)):
             raise BadRequestError(
-                "Bedrock Converse needs inline image bytes; a URL or file id "
-                "cannot be sent.",
+                "Bedrock Converse needs inline image bytes; a URL or file id cannot be sent.",
                 provider=self._provider,
             )
         raise BadRequestError("Unknown image source type", provider=self._provider)
@@ -231,13 +248,15 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 if reasoning is not None:
                     blocks.append(reasoning)
             elif isinstance(block, ToolCall):
-                blocks.append({
-                    "toolUse": {
-                        "toolUseId": block.id,
-                        "name": block.name,
-                        "input": block.arguments,
-                    },
-                })
+                blocks.append(
+                    {
+                        "toolUse": {
+                            "toolUseId": block.id,
+                            "name": block.name,
+                            "input": block.arguments,
+                        },
+                    }
+                )
             elif isinstance(block, RefusalBlock):
                 continue
         return blocks
@@ -278,15 +297,16 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return {"toolResult": result}
 
     def _project_tool_config(self, request: ChatCompletionRequest) -> dict:
-        tools = []
-        for t in request.tools:
-            tools.append({
+        tools = [
+            {
                 "toolSpec": {
                     "name": t.name,
                     "description": t.description,
                     "inputSchema": {"json": tool_parameters_to_json_schema(t.parameters)},
                 },
-            })
+            }
+            for t in request.tools
+        ]
         config: dict[str, Any] = {"tools": tools}
         choice = self._project_tool_choice(request.tool_choice)
         if choice is not None:
@@ -305,7 +325,9 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- response parsing ---
 
     def _parse_chat_completion_response(
-        self, response: httpx.Response, request: ChatCompletionRequest,
+        self,
+        response: httpx.Response,
+        request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         data = response.json()
         message = self._parse_assistant_message(data, request)
@@ -323,7 +345,9 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return resp
 
     def _parse_assistant_message(
-        self, data: dict, request: ChatCompletionRequest,
+        self,
+        data: dict,
+        request: ChatCompletionRequest,
     ) -> AssistantMessage:
         content: list = []
         message = (data.get("output") or {}).get("message") or {}
@@ -332,12 +356,14 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 content.append(TextBlock(text=block["text"]))
             elif "toolUse" in block:
                 tool = block["toolUse"]
-                content.append(ToolCall(
-                    id=tool["toolUseId"],
-                    name=tool["name"],
-                    arguments=tool.get("input", {}) or {},
-                    complete=True,
-                ))
+                content.append(
+                    ToolCall(
+                        id=tool["toolUseId"],
+                        name=tool["name"],
+                        arguments=tool.get("input", {}) or {},
+                        complete=True,
+                    )
+                )
             elif "reasoningContent" in block:
                 content.append(self._parse_reasoning_block(block["reasoningContent"]))
         return AssistantMessage(
@@ -351,11 +377,14 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         if "reasoningText" in reasoning:
             text = reasoning["reasoningText"]
             return ThinkingBlock(
-                text=text.get("text", ""), signature=text.get("signature"),
+                text=text.get("text", ""),
+                signature=text.get("signature"),
             )
         if "redactedContent" in reasoning:
             return ThinkingBlock(
-                text="", signature=reasoning["redactedContent"], redacted=True,
+                text="",
+                signature=reasoning["redactedContent"],
+                redacted=True,
             )
         return None
 
@@ -376,7 +405,9 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- finish-reason classification ---
 
     def _classify_finish(
-        self, provider_value: str | None, message: AssistantMessage,
+        self,
+        provider_value: str | None,
+        message: AssistantMessage,
     ) -> tuple[str | None, str | None]:
         if provider_value == "end_turn":
             return ("stop", None)
@@ -407,11 +438,15 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
 
             if err_type == "AccessDeniedException" or status == 403:
                 return AuthenticationError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if err_type == "ThrottlingException" or status == 429:
                 return RateLimitError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                     retry_after=self._retry_after(exc.response),
                 )
             if err_type in ("ResourceNotFoundException", "ModelNotReadyException") or status == 404:
@@ -419,30 +454,44 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 # submitted the Bedrock use-case form for it — an AWS console
                 # step, not a code fix.
                 return ModelNotFoundError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             if err_type == "ValidationException" or status == 400:
                 if "too long" in msg.lower() or "context" in msg.lower():
                     return ContextLengthExceededError(
-                        msg, provider=self._provider, original_exception=exc,
+                        msg,
+                        provider=self._provider,
+                        original_exception=exc,
                     )
                 return BadRequestError(
-                    msg, provider=self._provider, original_exception=exc,
+                    msg,
+                    provider=self._provider,
+                    original_exception=exc,
                 )
             return ProviderAPIError(
-                msg, provider=self._provider, original_exception=exc,
+                msg,
+                provider=self._provider,
+                original_exception=exc,
             )
 
         if isinstance(exc, httpx.TimeoutException):
             return ClientTimeoutError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         if isinstance(exc, httpx.NetworkError):
             return ClientConnectionError(
-                str(exc), provider=self._provider, original_exception=exc,
+                str(exc),
+                provider=self._provider,
+                original_exception=exc,
             )
         return ProviderAPIError(
-            str(exc), provider=self._provider, original_exception=exc,
+            str(exc),
+            provider=self._provider,
+            original_exception=exc,
         )
 
     @staticmethod
@@ -466,8 +515,10 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
 
     def _chat_completion_stream_class(self) -> type:
         from .stream import BedrockChatCompletionStream
+
         return BedrockChatCompletionStream
 
     def _async_chat_completion_stream_class(self) -> type:
         from .stream import BedrockAsyncChatCompletionStream
+
         return BedrockAsyncChatCompletionStream

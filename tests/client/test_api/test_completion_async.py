@@ -1,7 +1,5 @@
 """Async path forwarding."""
 
-import pytest
-
 from luca.client import acompletion
 from luca.client.types import (
     AssistantMessage,
@@ -10,12 +8,13 @@ from luca.client.types import (
     UserMessage,
 )
 
-
 RESP = ChatCompletionResponse(
     message=AssistantMessage(
         content=[TextBlock(text="ok")],
-        finish_reason="stop", provider_finish_reason="stop",
-        provider="stub", model="m",
+        finish_reason="stop",
+        provider_finish_reason="stop",
+        provider="stub",
+        model="m",
     ),
 )
 

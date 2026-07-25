@@ -12,7 +12,6 @@ from luca.client.types import (
     ToolCall,
 )
 
-
 block_adapter = TypeAdapter(ContentBlock)
 
 

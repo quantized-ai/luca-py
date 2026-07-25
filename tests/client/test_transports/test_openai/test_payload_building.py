@@ -1,10 +1,9 @@
 """What OpenAITransport sends on the wire."""
 
+import json as _json
 from dataclasses import dataclass
 
 import httpx
-import json as _json
-
 import pytest
 
 from luca.client.exceptions import BadRequestError
@@ -35,7 +34,8 @@ CASES = [
     PayloadCase(
         name="system_message_prepended_as_wire_system_message",
         request=ChatCompletionRequest(
-            model="gpt-4o", provider="openai",
+            model="gpt-4o",
+            provider="openai",
             messages=[UserMessage(content="Hello")],
             system_message="You are concise.",
         ),
@@ -49,29 +49,35 @@ CASES = [
         },
         expected_auth="Bearer sk-test",
     ),
-
     PayloadCase(
         name="sampling_kwargs_forwarded",
         request=ChatCompletionRequest(
-            model="gpt-4o", provider="openai",
+            model="gpt-4o",
+            provider="openai",
             messages=[UserMessage(content="Hi")],
-            temperature=0.5, top_p=0.9, max_tokens=100,
-            stop=["END"], seed=42,
+            temperature=0.5,
+            top_p=0.9,
+            max_tokens=100,
+            stop=["END"],
+            seed=42,
         ),
         expected_url="https://api.openai.com/v1/chat/completions",
         expected_body={
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Hi"}],
-            "temperature": 0.5, "top_p": 0.9,
-            "max_tokens": 100, "stop": ["END"], "seed": 42,
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "max_tokens": 100,
+            "stop": ["END"],
+            "seed": 42,
         },
         expected_auth="Bearer sk-test",
     ),
-
     PayloadCase(
         name="provider_options_merge_into_payload",
         request=ChatCompletionRequest(
-            model="gpt-4o", provider="openai",
+            model="gpt-4o",
+            provider="openai",
             messages=[UserMessage(content="Hi")],
             provider_options={"openai": {"custom_flag": True}},
         ),
@@ -83,17 +89,18 @@ CASES = [
         },
         expected_auth="Bearer sk-test",
     ),
-
     PayloadCase(
         name="tool_call_blocks_project_to_wire_tool_calls",
         request=ChatCompletionRequest(
-            model="gpt-4o", provider="openai",
+            model="gpt-4o",
+            provider="openai",
             messages=[
                 UserMessage(content="Weather?"),
-                AssistantMessage(content=[
-                    ToolCall(id="call_abc", name="get_weather",
-                             arguments={"city": "NYC"}, complete=True),
-                ]),
+                AssistantMessage(
+                    content=[
+                        ToolCall(id="call_abc", name="get_weather", arguments={"city": "NYC"}, complete=True),
+                    ]
+                ),
                 ToolMessage(tool_call_id="call_abc", content=[TextBlock(text="18C")]),
             ],
         ),
@@ -103,14 +110,18 @@ CASES = [
             "messages": [
                 {"role": "user", "content": "Weather?"},
                 {
-                    "role": "assistant", "content": None,
-                    "tool_calls": [{
-                        "id": "call_abc", "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "NYC"}',
-                        },
-                    }],
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "NYC"}',
+                            },
+                        }
+                    ],
                 },
                 {"role": "tool", "tool_call_id": "call_abc", "content": "18C"},
             ],
@@ -128,15 +139,21 @@ def test_openai_transport_outbound_payload(case, openai_transport_factory):
         captured["url"] = str(request.url)
         captured["body"] = _json.loads(request.content)
         captured["auth"] = request.headers.get("authorization")
-        return httpx.Response(200, json={
-            "id": "x", "model": "gpt-4o",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": ""},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "id": "x",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": ""},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            },
+        )
 
     transport = openai_transport_factory(
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
@@ -202,7 +219,8 @@ def test_the_openai_wire_key_stays_reasoning_effort(openai_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="gpt-4o", messages=[UserMessage(content="hi")],
+            model="gpt-4o",
+            messages=[UserMessage(content="hi")],
             reasoning="high",
         ),
     )
@@ -216,7 +234,8 @@ def test_provider_default_sends_no_reasoning_key(openai_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="gpt-4o", messages=[UserMessage(content="hi")],
+            model="gpt-4o",
+            messages=[UserMessage(content="hi")],
             reasoning="provider-default",
         ),
     )
@@ -229,7 +248,8 @@ def test_only_this_providers_options_are_merged(openai_transport_factory):
 
     payload = transport._build_chat_completion_payload(
         ChatCompletionRequest(
-            model="gpt-4o", messages=[UserMessage(content="hi")],
+            model="gpt-4o",
+            messages=[UserMessage(content="hi")],
             provider_options={"openai": {"mine": 1}, "anthropic": {"theirs": 2}},
         ),
     )

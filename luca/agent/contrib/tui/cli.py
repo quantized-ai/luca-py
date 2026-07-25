@@ -31,8 +31,8 @@ import argparse
 from typing import get_args
 
 from luca.agent.core import AgentSessionRunner, pretty_print
-from luca.client.types import Reasoning
 from luca.agent.core.models import AgentSession
+from luca.client.types import Reasoning
 
 from .app import AgentApp
 from .sessions import fork_session, load_session
@@ -43,32 +43,36 @@ def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
     parser.add_argument("--conversation", help="Session id to load (<id>.json).")
     parser.add_argument(
-        "--fork", action="store_true",
+        "--fork",
+        action="store_true",
         help="Fork the loaded session into a new id.",
     )
     parser.add_argument(
-        "--pretty-print", action="store_true",
+        "--pretty-print",
+        action="store_true",
         help="Print the loaded conversation as a text transcript and exit "
-             "instead of starting the TUI. Requires --conversation.",
+        "instead of starting the TUI. Requires --conversation.",
     )
     parser.add_argument(
-        "--no-streaming", action="store_true",
+        "--no-streaming",
+        action="store_true",
         help="Consume block-level events instead of live token deltas.",
     )
     parser.add_argument(
-        "--faux", action="store_true",
+        "--faux",
+        action="store_true",
         help="No network: drive the scripted offline demo conversation.",
     )
     parser.add_argument(
         "--model",
         help="Model id for the session (e.g. moonshotai/kimi-k2.7-code). "
-             "Persists with the session; on --conversation it overrides the "
-             "resumed session's model.",
+        "Persists with the session; on --conversation it overrides the "
+        "resumed session's model.",
     )
     parser.add_argument(
         "--provider",
         help="Provider name for the session (e.g. openrouter, anthropic). "
-             "Passed to the LLMConfig as-is. Persists like --model.",
+        "Passed to the LLMConfig as-is. Persists like --model.",
     )
     parser.add_argument(
         "--reasoning",
@@ -94,9 +98,7 @@ def build_session(args: argparse.Namespace) -> AgentSession:
     if args.reasoning:
         overrides["reasoning"] = args.reasoning
     if overrides:
-        session.session_config.llm_config = (
-            session.session_config.llm_config.model_copy(update=overrides)
-        )
+        session.session_config.llm_config = session.session_config.llm_config.model_copy(update=overrides)
     return session
 
 
@@ -116,10 +118,7 @@ def main(argv: list[str] | None = None) -> None:
         streaming=not args.no_streaming,
     )
     app.run()
-    print(
-        f"Goodbye! Resume session with "
-        f"`python main.py --conversation {app.runner.session.id}`"
-    )
+    print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")
 
 
 if __name__ == "__main__":

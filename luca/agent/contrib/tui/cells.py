@@ -165,7 +165,10 @@ class ToolCallCell(TranscriptCell):
         self._show_status()
 
     def finish(
-        self, execution: ToolExecution, result_text: str, is_error: bool,
+        self,
+        execution: ToolExecution,
+        result_text: str,
+        is_error: bool,
     ) -> None:
         self.status = execution.status
         self.result_text = result_text

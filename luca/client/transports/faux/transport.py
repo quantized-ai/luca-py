@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from ...exceptions import ClientError, StreamError
-from ...exceptions import TimeoutError as SDKTimeoutError
+from ...exceptions import ClientError, StreamError, TimeoutError as SDKTimeoutError
 from ...types.completion import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -25,7 +24,6 @@ from ...types.streaming import (
     AsyncChatCompletionStream,
     ChatCompletionStream,
     ErrorEvent,
-    FinishEvent,
     RawBlockStart,
     RawBlockStop,
     RawFinish,
@@ -35,10 +33,8 @@ from ...types.streaming import (
     RawThinkingDelta,
     RawToolArgumentsDelta,
     RawUsage,
-    StartEvent,
 )
 from ..base import BaseTransport, ChatCompletionTransportMixin
-
 
 # ---------------------------------------------------------------------------
 # Scripted-response builders
@@ -95,12 +91,15 @@ def faux_text(text: str) -> _FauxText:
 
 
 def faux_thinking(
-    text: str, signature: str | None = None, redacted: bool = False,
+    text: str,
+    signature: str | None = None,
+    redacted: bool = False,
 ) -> _FauxThinking:
     return _FauxThinking(text=text, signature=signature, redacted=redacted)
 
 
-def faux_tool_call(name: str, arguments: dict, id: str = "tool_call_faux") -> _FauxToolCall:
+# `id` mirrors ToolCall.id and is passed as id= at every call site.
+def faux_tool_call(name: str, arguments: dict, id: str = "tool_call_faux") -> _FauxToolCall:  # noqa: A002
     return _FauxToolCall(name=name, arguments=arguments, id=id)
 
 
@@ -123,7 +122,10 @@ def faux_assistant_message(
     usage: Usage | None = None,
 ) -> _FauxAssistantMessage:
     return _FauxAssistantMessage(
-        blocks=blocks, finish_reason=finish_reason, error=error, usage=usage,
+        blocks=blocks,
+        finish_reason=finish_reason,
+        error=error,
+        usage=usage,
     )
 
 
@@ -204,29 +206,37 @@ class FauxTransport(BaseTransport, ChatCompletionTransportMixin):
         return self._respond(scripted, request)
 
     def _respond(
-        self, scripted: _FauxAssistantMessage, request: ChatCompletionRequest,
+        self,
+        scripted: _FauxAssistantMessage,
+        request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         if scripted.error is not None:
             err_cls = scripted.error.error_class or ClientError
             raise err_cls(scripted.error.message, provider=self._provider)
         return self._build_response(scripted, request)
 
-    def completion_stream(self, request: ChatCompletionRequest) -> "FauxChatCompletionStream":
+    def completion_stream(self, request: ChatCompletionRequest) -> FauxChatCompletionStream:
         self._record_request(request)
         scripted = self._pop()
         return FauxChatCompletionStream(
-            transport=self, request=request, scripted=scripted,
+            transport=self,
+            request=request,
+            scripted=scripted,
         )
 
-    def acompletion_stream(self, request: ChatCompletionRequest) -> "FauxAsyncChatCompletionStream":
+    def acompletion_stream(self, request: ChatCompletionRequest) -> FauxAsyncChatCompletionStream:
         self._record_request(request)
         scripted = self._pop()
         return FauxAsyncChatCompletionStream(
-            transport=self, request=request, scripted=scripted,
+            transport=self,
+            request=request,
+            scripted=scripted,
         )
 
     def _build_response(
-        self, scripted: _FauxAssistantMessage, request: ChatCompletionRequest,
+        self,
+        scripted: _FauxAssistantMessage,
+        request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         content = self._materialize_blocks(scripted.blocks)
         message = AssistantMessage(
@@ -249,13 +259,20 @@ class FauxTransport(BaseTransport, ChatCompletionTransportMixin):
             if isinstance(b, _FauxText):
                 out.append(TextBlock(text=b.text))
             elif isinstance(b, _FauxThinking):
-                out.append(ThinkingBlock(
-                    text=b.text, signature=b.signature, redacted=b.redacted,
-                ))
+                out.append(
+                    ThinkingBlock(
+                        text=b.text,
+                        signature=b.signature,
+                        redacted=b.redacted,
+                    )
+                )
             elif isinstance(b, _FauxToolCall):
                 out.append(
                     ToolCall(
-                        id=b.id, name=b.name, arguments=b.arguments, complete=True,
+                        id=b.id,
+                        name=b.name,
+                        arguments=b.arguments,
+                        complete=True,
                     ),
                 )
             elif isinstance(b, _FauxRefusal):
@@ -267,7 +284,9 @@ class FauxTransport(BaseTransport, ChatCompletionTransportMixin):
     # --- finish-reason classification ---
 
     def _classify_finish(
-        self, provider_value: str | None, message: AssistantMessage,
+        self,
+        provider_value: str | None,
+        message: AssistantMessage,
     ) -> tuple[str | None, str | None]:
         # The faux speaks SDK-canonical values directly — callers pass
         # `finish_reason="stop"`, `"tool_use"`, `"error"`, `"length"` etc.
@@ -322,7 +341,8 @@ def _scripted_raw_events(
             # A redacted block carries its payload on the start event and
             # streams no deltas, mirroring how a provider sends one.
             yield RawBlockStart(
-                index=i, block_type="thinking",
+                index=i,
+                block_type="thinking",
                 signature=block.signature if block.redacted else None,
                 redacted=block.redacted,
             )
@@ -331,11 +351,14 @@ def _scripted_raw_events(
             yield RawBlockStop(index=i)
         elif isinstance(block, _FauxToolCall):
             import json as _json
+
             i = next_idx
             next_idx += 1
             yield RawBlockStart(
-                index=i, block_type="tool_call",
-                tool_id=block.id, tool_name=block.name,
+                index=i,
+                block_type="tool_call",
+                tool_id=block.id,
+                tool_name=block.name,
             )
             args_str = _json.dumps(block.arguments) if block.arguments else "{}"
             yield RawToolArgumentsDelta(index=i, arguments_delta=args_str)
@@ -364,7 +387,10 @@ class FauxChatCompletionStream(ChatCompletionStream):
     """Faux sync stream. No httpx — directly yields scripted raw events."""
 
     def __init__(
-        self, *, transport: FauxTransport, request: ChatCompletionRequest,
+        self,
+        *,
+        transport: FauxTransport,
+        request: ChatCompletionRequest,
         scripted: _FauxAssistantMessage,
     ) -> None:
         super().__init__(request=request, transport=transport)
@@ -391,8 +417,7 @@ class FauxChatCompletionStream(ChatCompletionStream):
             def close(_self):
                 pass
 
-        cm = _NoopCM()
-        return cm
+        return _NoopCM()
 
     def _open(self) -> None:
         if self._http_response is None:
@@ -425,7 +450,10 @@ class FauxChatCompletionStream(ChatCompletionStream):
 
 class FauxAsyncChatCompletionStream(AsyncChatCompletionStream):
     def __init__(
-        self, *, transport: FauxTransport, request: ChatCompletionRequest,
+        self,
+        *,
+        transport: FauxTransport,
+        request: ChatCompletionRequest,
         scripted: _FauxAssistantMessage,
     ) -> None:
         super().__init__(request=request, transport=transport)

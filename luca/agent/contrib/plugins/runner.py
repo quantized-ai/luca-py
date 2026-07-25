@@ -12,8 +12,8 @@ built with the same objects composed directly.
 
 from __future__ import annotations
 
-from luca.agent.core import AgentSession, AgentSessionRunner, ToolRegistry
 from luca.agent.contrib.simple_tool_registry import ProxyToolRegistry
+from luca.agent.core import AgentSession, AgentSessionRunner, ToolRegistry
 
 
 class PluginAgentSessionRunner(AgentSessionRunner):
@@ -46,9 +46,7 @@ class PluginAgentSessionRunner(AgentSessionRunner):
                 if registry is not None:
                     proxy.add_registry(registry)
             if hasattr(plugin, "get_system_prompt_parts"):
-                system_prompt_parts += (
-                    plugin.get_system_prompt_parts(session) or []
-                )
+                system_prompt_parts += plugin.get_system_prompt_parts(session) or []
             if hasattr(plugin, "get_middleware"):
                 middleware += plugin.get_middleware(session) or []
         super().__init__(

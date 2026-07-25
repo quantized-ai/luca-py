@@ -5,6 +5,7 @@ from luca.client.exceptions import (
     BadRequestError,
     ClientError,
     ConfigurationError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     InvalidModelError,
     ModelNotFoundError,
@@ -13,14 +14,13 @@ from luca.client.exceptions import (
     RateLimitError,
     StreamError,
     StructuredOutputError,
-    TimeoutError,
+    TimeoutError as ClientTimeoutError,
     UnsupportedParameterError,
 )
-from luca.client.exceptions import ConnectionError as ClientConnectionError
 
 
 @pytest.mark.parametrize(
-    "subclass,parent",
+    ("subclass", "parent"),
     [
         (AuthenticationError, ConfigurationError),
         (ConfigurationError, ClientError),
@@ -33,7 +33,7 @@ from luca.client.exceptions import ConnectionError as ClientConnectionError
         (RateLimitError, ClientError),
         (ProviderAPIError, ClientError),
         (ClientConnectionError, ClientError),
-        (TimeoutError, ClientError),
+        (ClientTimeoutError, ClientError),
         (StructuredOutputError, ClientError),
         (StreamError, ClientError),
     ],

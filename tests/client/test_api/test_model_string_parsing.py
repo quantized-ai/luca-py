@@ -8,12 +8,13 @@ from luca.client.types import (
     UserMessage,
 )
 
-
 RESP = ChatCompletionResponse(
     message=AssistantMessage(
         content=[TextBlock(text="ok")],
-        finish_reason="stop", provider_finish_reason="stop",
-        provider="stub", model="m",
+        finish_reason="stop",
+        provider_finish_reason="stop",
+        provider="stub",
+        model="m",
     ),
 )
 
@@ -28,7 +29,8 @@ def test_prefix_form(stub_provider):
 def test_provider_kwarg_overrides_prefix(stub_provider):
     stub_provider.configure(responses=[RESP])
     completion(
-        model="openai:gpt-4o", provider="stub",
+        model="openai:gpt-4o",
+        provider="stub",
         messages=[UserMessage(content="hi")],
     )
     req = stub_provider.instances[0].calls[0].request

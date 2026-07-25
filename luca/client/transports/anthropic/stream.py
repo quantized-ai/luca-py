@@ -48,7 +48,9 @@ def _parse_event_envelope(lines: list[str]) -> tuple[str | None, str | None]:
 
 
 def _process_event(
-    state: _AnthropicParserState, event_type: str, data: dict,
+    state: _AnthropicParserState,
+    event_type: str,
+    data: dict,
 ) -> Iterator[RawStreamEvent]:
     if event_type == "message_start":
         msg = data.get("message", {})
@@ -66,13 +68,17 @@ def _process_event(
             yield RawBlockStart(index=idx, block_type="thinking")
         elif block_type == "tool_use":
             yield RawBlockStart(
-                index=idx, block_type="tool_call",
-                tool_id=block.get("id"), tool_name=block.get("name"),
+                index=idx,
+                block_type="tool_call",
+                tool_id=block.get("id"),
+                tool_name=block.get("name"),
             )
         elif block_type == "redacted_thinking":
             yield RawBlockStart(
-                index=idx, block_type="thinking",
-                signature=block.get("data"), redacted=True,
+                index=idx,
+                block_type="thinking",
+                signature=block.get("data"),
+                redacted=True,
             )
 
     elif event_type == "content_block_delta":
@@ -85,11 +91,14 @@ def _process_event(
             yield RawThinkingDelta(index=idx, text=delta.get("thinking", ""))
         elif delta_type == "signature_delta":
             yield RawThinkingDelta(
-                index=idx, text="", signature=delta.get("signature"),
+                index=idx,
+                text="",
+                signature=delta.get("signature"),
             )
         elif delta_type == "input_json_delta":
             yield RawToolArgumentsDelta(
-                index=idx, arguments_delta=delta.get("partial_json", ""),
+                index=idx,
+                arguments_delta=delta.get("partial_json", ""),
             )
 
     elif event_type == "content_block_stop":
@@ -107,11 +116,13 @@ def _process_event(
     elif event_type == "message_stop":
         if state.stop_reason is not None:
             yield RawFinish(reason=state.stop_reason)
-        yield RawUsage(usage=Usage(
-            input_tokens=state.input_tokens,
-            output_tokens=state.output_tokens,
-            total_tokens=state.input_tokens + state.output_tokens,
-        ))
+        yield RawUsage(
+            usage=Usage(
+                input_tokens=state.input_tokens,
+                output_tokens=state.output_tokens,
+                total_tokens=state.input_tokens + state.output_tokens,
+            )
+        )
 
     elif event_type == "error":
         err = data.get("error") or {}

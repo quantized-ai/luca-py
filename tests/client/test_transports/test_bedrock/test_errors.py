@@ -12,16 +12,17 @@ import pytest
 from luca.client.exceptions import (
     AuthenticationError,
     BadRequestError,
+    ConnectionError as ClientConnectionError,
     ContextLengthExceededError,
     ModelNotFoundError,
     RateLimitError,
+    TimeoutError as ClientTimeoutError,
 )
-from luca.client.exceptions import ConnectionError as ClientConnectionError
-from luca.client.exceptions import TimeoutError as ClientTimeoutError
 from luca.client.types import ChatCompletionRequest, UserMessage
 
 REQUEST = ChatCompletionRequest(
-    provider="bedrock", model="us.amazon.nova-lite-v1:0",
+    provider="bedrock",
+    model="us.amazon.nova-lite-v1:0",
     messages=[UserMessage(content="Hi")],
 )
 # The header value Bedrock actually sends: exception class plus a coral URL.
@@ -40,20 +41,29 @@ class ErrorCase:
 
 
 CASES = [
-    ErrorCase("throttling", 429, "ThrottlingException", "Slow down",
-              RateLimitError, headers={"retry-after": "12"},
-              extra_assertion=lambda e: e.retry_after == 12.0),
-    ErrorCase("validation", 400, "ValidationException", "bad shape",
-              BadRequestError),
-    ErrorCase("context_length", 400, "ValidationException",
-              "Input is too long for the model", ContextLengthExceededError),
-    ErrorCase("access_denied", 403, "AccessDeniedException", "no access",
-              AuthenticationError),
+    ErrorCase(
+        "throttling",
+        429,
+        "ThrottlingException",
+        "Slow down",
+        RateLimitError,
+        headers={"retry-after": "12"},
+        extra_assertion=lambda e: e.retry_after == 12.0,
+    ),
+    ErrorCase("validation", 400, "ValidationException", "bad shape", BadRequestError),
+    ErrorCase(
+        "context_length", 400, "ValidationException", "Input is too long for the model", ContextLengthExceededError
+    ),
+    ErrorCase("access_denied", 403, "AccessDeniedException", "no access", AuthenticationError),
     # The exact response an ungated Anthropic model returns on this account.
-    ErrorCase("gated_model_404", 404, "ResourceNotFoundException",
-              "Model use case details have not been submitted for this account.",
-              ModelNotFoundError,
-              extra_assertion=lambda e: "use case" in str(e)),
+    ErrorCase(
+        "gated_model_404",
+        404,
+        "ResourceNotFoundException",
+        "Model use case details have not been submitted for this account.",
+        ModelNotFoundError,
+        extra_assertion=lambda e: "use case" in str(e),
+    ),
 ]
 
 

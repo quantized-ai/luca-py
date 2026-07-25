@@ -58,7 +58,10 @@ def test_get_tools_returns_the_memory_tools_sharing_the_plugin_stores():
     tools = plugin.get_tools()
 
     assert [type(tool) for tool in tools] == [
-        ReadScratchPadTool, WriteScratchPadTool, ReadTodoTool, UpdateTodosTool,
+        ReadScratchPadTool,
+        WriteScratchPadTool,
+        ReadTodoTool,
+        UpdateTodosTool,
     ]
     assert tools[0].store is plugin.scratchpad_store
     assert tools[1].store is plugin.scratchpad_store
@@ -74,7 +77,10 @@ def test_get_tool_registry_wraps_the_tools_in_an_auto_allowing_registry():
     assert type(registry) is SimpleToolRegistry
     assert type(registry.permission_policy) is YoloPermissionPolicy
     assert [type(tool) for tool in registry.get_tools(SESSION)] == [
-        ReadScratchPadTool, WriteScratchPadTool, ReadTodoTool, UpdateTodosTool,
+        ReadScratchPadTool,
+        WriteScratchPadTool,
+        ReadTodoTool,
+        UpdateTodosTool,
     ]
     assert registry.get_tools(SESSION)[0].store is plugin.scratchpad_store
 
@@ -100,7 +106,9 @@ async def test_write_then_read_round_trips():
     read, write, _, _ = MemoryPlugin().get_tools()
 
     output = await write._execute(
-        {"content": "plan: step 1"}, CONTEXT, **run_kwargs(),
+        {"content": "plan: step 1"},
+        CONTEXT,
+        **run_kwargs(),
     )
 
     assert output == "Scratchpad updated successfully"
@@ -140,45 +148,49 @@ async def test_update_todos_then_read_round_trips():
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
 
     output = await update_todos._execute(
-        {"todos": [
-            {"content": "T1", "status": "pending"},
-            {"content": "T2", "status": "in_progress"},
-        ]},
+        {
+            "todos": [
+                {"content": "T1", "status": "pending"},
+                {"content": "T2", "status": "in_progress"},
+            ]
+        },
         CONTEXT,
         **run_kwargs(),
     )
 
     assert output == "Todo list updated successfully"
     assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'pending'}, "
-        "{'content': 'T2', 'status': 'in_progress'}]"
+        "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'in_progress'}]"
     )
 
 
 async def test_update_todos_replaces_the_whole_list():
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
     await update_todos._execute(
-        {"todos": [
-            {"content": "T1", "status": "pending"},
-            {"content": "T2", "status": "pending"},
-            {"content": "T3", "status": "pending"},
-        ]},
+        {
+            "todos": [
+                {"content": "T1", "status": "pending"},
+                {"content": "T2", "status": "pending"},
+                {"content": "T3", "status": "pending"},
+            ]
+        },
         CONTEXT,
         **run_kwargs(),
     )
 
     await update_todos._execute(
-        {"todos": [
-            {"content": "T1", "status": "pending"},
-            {"content": "T2", "status": "completed"},
-        ]},
+        {
+            "todos": [
+                {"content": "T1", "status": "pending"},
+                {"content": "T2", "status": "completed"},
+            ]
+        },
         CONTEXT,
         **run_kwargs(),
     )
 
     assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'pending'}, "
-        "{'content': 'T2', 'status': 'completed'}]"
+        "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'completed'}]"
     )
 
 
@@ -187,19 +199,13 @@ async def test_update_todos_stores_registry_validated_args_as_plain_text():
     # dict, whose statuses are TodoStatus members — the store (and the next
     # read_todo) must still see plain strings.
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
-    args = UpdateTodosTool.Args.model_validate(
-        {"todos": [{"content": "T1", "status": "completed"}]}
-    ).model_dump()
+    args = UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "completed"}]}).model_dump()
 
     await update_todos._execute(args, CONTEXT, **run_kwargs())
 
-    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'completed'}]"
-    )
+    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == ("[{'content': 'T1', 'status': 'completed'}]")
 
 
 def test_update_todos_args_reject_an_unknown_status():
     with pytest.raises(ValidationError):
-        UpdateTodosTool.Args.model_validate(
-            {"todos": [{"content": "T1", "status": "done"}]}
-        )
+        UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "done"}]})
