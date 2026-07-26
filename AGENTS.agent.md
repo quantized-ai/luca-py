@@ -36,10 +36,9 @@ luca/agent/
 │   │   ├── __init__.py  # package surface: MemoryPlugin + the scratchpad / todo tools
 │   │   └── plugin.py    # scratchpad + todo-list tools, MemoryPlugin
 │   ├── compaction/     # a concrete CompactionPolicy (LLM summary + context gauge)
-│   │   ├── __init__.py  # package surface: SummarizingCompactionPolicy, strategies, gauge
-│   │   ├── strategy.py  # CompactionStrategy / RecentTurnsStrategy (what to keep)
+│   │   ├── __init__.py  # package surface: SummarizingCompactionPolicy, gauge
 │   │   ├── context.py   # the context gauge (used vs the model's window)
-│   │   └── policy.py    # SummarizingCompactionPolicy (should_compact + compact)
+│   │   └── policy.py    # SummarizingCompactionPolicy (should_compact + compact; keep_turns)
 │   ├── resource_permissions/
 │   │   ├── __init__.py  # package surface: PermissionStrategy, rules, answers, the mixin
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy

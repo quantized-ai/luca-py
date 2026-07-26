@@ -1,12 +1,8 @@
-"""SummarizingCompactionPolicy: the context gauge, the split strategies, and
+"""SummarizingCompactionPolicy: the context gauge, the keep_turns split, and
 the plan it hands the core transition. No TUI; the summary call uses a
 FauxProvider. Core owns archiving/swapping and is tested in tests/agent."""
 
-import pytest
-
 from luca.agent.contrib.compaction import (
-    CompactionStrategy,
-    RecentTurnsStrategy,
     SummarizingCompactionPolicy,
     context_used,
     context_window,
@@ -110,25 +106,20 @@ def test_should_compact_gates_on_threshold_and_enabled():
     assert SummarizingCompactionPolicy(default_window=8, threshold=0.4, enabled=False).should_compact(session) is False
 
 
-# ── strategies ───────────────────────────────────────────────────────────────
+# ── select_keep (the keep_turns split) ───────────────────────────────────────
 
 
-def test_the_base_strategy_keeps_nothing():
+def test_keep_turns_zero_keeps_nothing():
     session = two_turn_session()
-    assert CompactionStrategy().select_keep(list(session.active_conversation.nodes), session) == []
+    assert SummarizingCompactionPolicy(keep_turns=0).select_keep(list(session.active_conversation.nodes), session) == []
 
 
-def test_recent_turns_keeps_the_last_exchange_including_its_user_message():
+def test_keep_turns_one_keeps_the_last_exchange_including_its_user_message():
     session = two_turn_session()
-    assert RecentTurnsStrategy(keep_turns=1).select_keep(
+    assert SummarizingCompactionPolicy(keep_turns=1).select_keep(
         list(session.active_conversation.nodes),
         session,
     ) == ["u2", "ts2", "a2", "tf2"]
-
-
-def test_recent_turns_rejects_a_zero_keep():
-    with pytest.raises(ValueError, match="keep_turns"):
-        RecentTurnsStrategy(keep_turns=0)
 
 
 # ── compact() → the plan ─────────────────────────────────────────────────────
@@ -146,7 +137,7 @@ async def test_full_summary_folds_the_whole_span_into_one_node():
                 "parts": [TextContent(text="THE SUMMARY")],
                 "compacted_nodes": ["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2", "tf2"],
                 "llm_config": MODEL,
-                "metadata": {"strategy": "CompactionStrategy", "kept": 0},
+                "metadata": {"keep_turns": 0, "kept": 0},
             }
         ),
         nodes=["cmp"],
@@ -154,9 +145,9 @@ async def test_full_summary_folds_the_whole_span_into_one_node():
     )
 
 
-async def test_recent_turns_keeps_the_tail_and_folds_the_head():
+async def test_keep_turns_keeps_the_tail_and_folds_the_head():
     session = two_turn_session()
-    policy = SummarizingCompactionPolicy(RecentTurnsStrategy(keep_turns=1), provider=_faux("HEAD SUMMARY"))
+    policy = SummarizingCompactionPolicy(keep_turns=1, provider=_faux("HEAD SUMMARY"))
 
     plan = await policy.compact(session, _offered(session), _entry())
 
@@ -166,7 +157,7 @@ async def test_recent_turns_keeps_the_tail_and_folds_the_head():
                 "parts": [TextContent(text="HEAD SUMMARY")],
                 "compacted_nodes": ["u1", "ts1", "a1", "tf1"],
                 "llm_config": MODEL,
-                "metadata": {"strategy": "RecentTurnsStrategy", "kept": 4},
+                "metadata": {"keep_turns": 1, "kept": 4},
             }
         ),
         nodes=["cmp", "u2", "ts2", "a2", "tf2"],
@@ -197,6 +188,6 @@ async def test_a_trailing_unanswered_user_message_is_never_folded():
 
 async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     session = two_turn_session()
-    policy = SummarizingCompactionPolicy(RecentTurnsStrategy(keep_turns=5), provider=_faux("x"))
+    policy = SummarizingCompactionPolicy(keep_turns=5, provider=_faux("x"))
 
     assert await policy.compact(session, _offered(session), _entry()) is None

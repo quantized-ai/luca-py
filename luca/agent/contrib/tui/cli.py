@@ -30,11 +30,7 @@ from __future__ import annotations
 import argparse
 from typing import get_args
 
-from luca.agent.contrib.compaction import (
-    CompactionStrategy,
-    RecentTurnsStrategy,
-    SummarizingCompactionPolicy,
-)
+from luca.agent.contrib.compaction import SummarizingCompactionPolicy
 from luca.agent.core import AgentSessionRunner, pretty_print
 from luca.agent.core.models import AgentSession
 from luca.client.types import Reasoning
@@ -105,11 +101,8 @@ def arg_parser() -> argparse.ArgumentParser:
 
 
 def build_compaction_policy(args: argparse.Namespace, provider=None) -> SummarizingCompactionPolicy:
-    strategy = (
-        RecentTurnsStrategy(keep_turns=args.compact_keep_turns) if args.compact_keep_turns > 0 else CompactionStrategy()
-    )
     return SummarizingCompactionPolicy(
-        strategy,
+        keep_turns=args.compact_keep_turns,
         threshold=args.compact_threshold,
         enabled=not args.no_autocompact,
         provider=provider,

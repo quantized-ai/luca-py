@@ -7,12 +7,10 @@ package is one: `SummarizingCompactionPolicy`, which decides when to compact and
 produces the summary.
 
 ```python
-from luca.agent.contrib.compaction import (
-    SummarizingCompactionPolicy, RecentTurnsStrategy,
-)
+from luca.agent.contrib.compaction import SummarizingCompactionPolicy
 
 policy = SummarizingCompactionPolicy(
-    RecentTurnsStrategy(keep_turns=2),  # or omit for full summary
+    keep_turns=2,  # 0 = full summary
     threshold=0.8,
 )
 runner = AgentSessionRunner(session, compaction_policy=policy)
@@ -28,14 +26,17 @@ runner = AgentSessionRunner(session, compaction_policy=policy)
   projects the folded nodes, calls the session's own model for a summary, fills
   the entry's `parts`, and returns the new path `[entry.id, *kept]`.
 
-## Strategies — what survives verbatim
+## `keep_turns` — what survives verbatim
 
-The split is the pluggable part (concrete base, override `select_keep`):
+One knob decides the split:
 
-| Strategy | Keeps |
+| `keep_turns` | Keeps |
 |---|---|
-| `CompactionStrategy()` (base) | nothing — summarize everything |
-| `RecentTurnsStrategy(keep_turns=N)` | the last N exchanges (each user message plus its turn); the cut is always a turn boundary |
+| `0` (default) | nothing — summarize everything |
+| `N` | the last N exchanges (each user message plus its turn); the cut is always a turn boundary |
+
+For a different split (by tokens, say), subclass the policy and override
+`select_keep(candidates, session)`.
 
 ## In the TUI
 
