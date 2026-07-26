@@ -191,3 +191,16 @@ async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     policy = SummarizingCompactionPolicy(keep_turns=5, provider=_faux("x"))
 
     assert await policy.compact(session, _offered(session), _entry()) is None
+
+
+async def test_a_subclass_can_override_the_summarize_seam():
+    class FixedSummary(SummarizingCompactionPolicy):
+        async def summarize(self, session, folded):
+            return "OVERRIDDEN SUMMARY", UsageCounters(input=1, output=2, total_tokens=3)
+
+    session = two_turn_session()
+    # no provider needed — summarize is overridden, so no LLM call happens
+    plan = await FixedSummary().compact(session, _offered(session), _entry())
+
+    assert plan.entry.parts == [TextContent(text="OVERRIDDEN SUMMARY")]
+    assert plan.usage == UsageCounters(input=1, output=2, total_tokens=3)

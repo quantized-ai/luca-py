@@ -35,8 +35,17 @@ One knob decides the split:
 | `0` (default) | nothing — summarize everything |
 | `N` | the last N exchanges (each user message plus its turn); the cut is always a turn boundary |
 
-For a different split (by tokens, say), subclass the policy and override
-`select_keep(candidates, session)`.
+## Extending it
+
+Subclass `SummarizingCompactionPolicy` and override one of the public seams:
+
+| Override | Changes |
+|---|---|
+| `should_compact(session)` | when compaction fires |
+| `select_keep(candidates, session)` | what survives verbatim (e.g. by tokens instead of turns) |
+| `summarize(session, folded)` | how the summary is produced — the prompt, the model, the request. The `text_of` / `usage_of` static helpers are there for a custom implementation |
+
+`compact` just orchestrates the three, so it rarely needs overriding.
 
 ## In the TUI
 

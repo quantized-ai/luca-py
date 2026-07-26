@@ -5,7 +5,11 @@ Core owns the transition (archive the old conversation, swap in the new one);
 this owns the decision — when to compact (the context gauge) and what the new
 conversation looks like (the summary plus the kept nodes). `keep_turns` is the
 one knob: 0 folds everything into the summary, N keeps the last N exchanges
-verbatim. Override `select_keep` for a different split.
+verbatim.
+
+To extend it, subclass and override one of the public seams — `should_compact`
+(when), `select_keep` (what survives verbatim), or `summarize` (how the summary
+is produced). `compact` orchestrates the three and is rarely overridden.
 """
 
 from __future__ import annotations
@@ -41,17 +45,17 @@ DEFAULT_SUMMARY_PROMPT = (
     "the summary."
 )
 
-_SUMMARY_REQUEST = "Summarize the conversation above per your instructions."
-
-
-def _text_of(message) -> str:
-    return "".join(block.text for block in message.content if isinstance(block, TextBlock))
+DEFAULT_SUMMARY_REQUEST = "Summarize the conversation above per your instructions."
 
 
 class SummarizingCompactionPolicy(CompactionPolicy):
     """`should_compact` is the context gauge; `compact` summarizes the folded
     span and returns the new path. `keep_turns` sets how many recent exchanges
-    survive verbatim (0 = summarize everything)."""
+    survive verbatim (0 = summarize everything).
+
+    The public override seams are `should_compact`, `select_keep`, and
+    `summarize`; the `text_of` / `usage_of` static helpers are available for a
+    custom `summarize`."""
 
     def __init__(
         self,
@@ -96,6 +100,23 @@ class SummarizingCompactionPolicy(CompactionPolicy):
                     return list(candidates[start:])
         return list(candidates)
 
+    async def summarize(self, session: AgentSession, folded: list[str]) -> tuple[str, UsageCounters]:
+        """Produce the summary of the folded span: project those nodes, ask the
+        session's own model, and return `(text, usage)`. Override to change the
+        prompt, the model, or how the request is built."""
+        cfg = session.session_config.llm_config
+        head = Conversation(id="_compaction_head", nodes=list(folded), created_at=0, updated_at=0)
+        messages = ConversationProjector().project(head, session.entries)
+        messages = [*messages, ClientUserMessage(content=[TextBlock(text=DEFAULT_SUMMARY_REQUEST)])]
+        response = await acompletion(
+            model=f"{cfg.provider}:{cfg.model}",
+            messages=messages,
+            system_message=self.summary_prompt,
+            provider=self.provider,
+            reasoning=cfg.reasoning,
+        )
+        return self.text_of(response.message), self.usage_of(response.message)
+
     async def compact(
         self,
         session: AgentSession,
@@ -114,7 +135,7 @@ class SummarizingCompactionPolicy(CompactionPolicy):
         if not folded:
             return None  # nothing older than the kept tail — nothing to compact
 
-        summary, usage = await self._summarize(session, folded)
+        summary, usage = await self.summarize(session, folded)
         cfg = session.session_config.llm_config
         entry.parts = [TextContent(text=summary)]
         entry.compacted_nodes = folded
@@ -122,33 +143,19 @@ class SummarizingCompactionPolicy(CompactionPolicy):
         entry.metadata = {"keep_turns": self.keep_turns, "kept": len(kept)}
         return CompactionPlan(entry=entry, nodes=[entry.id, *kept], usage=usage)
 
-    async def _summarize(
-        self,
-        session: AgentSession,
-        folded: list[str],
-    ) -> tuple[str, UsageCounters]:
-        cfg = session.session_config.llm_config
-        head = Conversation(id="_compaction_head", nodes=list(folded), created_at=0, updated_at=0)
-        messages = ConversationProjector().project(head, session.entries)
-        messages = [*messages, ClientUserMessage(content=[TextBlock(text=_SUMMARY_REQUEST)])]
-        response = await acompletion(
-            model=f"{cfg.provider}:{cfg.model}",
-            messages=messages,
-            system_message=self.summary_prompt,
-            provider=self.provider,
-            reasoning=cfg.reasoning,
+    @staticmethod
+    def text_of(message) -> str:
+        return "".join(block.text for block in message.content if isinstance(block, TextBlock))
+
+    @staticmethod
+    def usage_of(message) -> UsageCounters:
+        usage = message.usage
+        if usage is None:
+            return UsageCounters()
+        return UsageCounters(
+            input=usage.input_tokens,
+            output=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cache_read=usage.cached_input_tokens or 0,
+            cache_write=usage.cache_write_tokens or 0,
         )
-        return _text_of(response.message), _usage_of(response.message)
-
-
-def _usage_of(message) -> UsageCounters:
-    usage = message.usage
-    if usage is None:
-        return UsageCounters()
-    return UsageCounters(
-        input=usage.input_tokens,
-        output=usage.output_tokens,
-        total_tokens=usage.total_tokens,
-        cache_read=usage.cached_input_tokens or 0,
-        cache_write=usage.cache_write_tokens or 0,
-    )
