@@ -33,6 +33,11 @@ values on a resume.
 stdout and exits, so it requires `--conversation` (a usage error without one)
 and ignores every other flag — nothing is started, nothing is saved.
 
+Defaults, custom providers, permission mode, runtime limits, compaction, and
+the workspace can all live in a `luca.json` file instead of flags. See
+[`config.md`](config.md). Precedence is CLI flag > `./luca.json` >
+`~/.config/luca/luca.json` > the persisted session > built-in default.
+
 `main.py` is a thin dotenv launcher over `python -m luca.agent.contrib.tui`
 (same flags).
 
@@ -94,7 +99,8 @@ thin:
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `context_bar.py` | The context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
-| `cli.py` | argparse entry point (also the `--pretty-print` transcript path, which never builds an app; builds the `SummarizingCompactionPolicy` from `--compact-threshold` / `--compact-keep-turns` / `--no-autocompact`) |
+| `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge) and the precedence resolvers, incl. `build_compaction_policy` — see [`config.md`](config.md) |
+| `cli.py` | argparse entry point; the `--pretty-print` transcript path (never builds an app), and loads `luca.json`, threading it (incl. the `SummarizingCompactionPolicy`) through the seams |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
 message. The status bar shows how many are attached, and `Esc` clears them
