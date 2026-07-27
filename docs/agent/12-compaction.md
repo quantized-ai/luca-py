@@ -32,6 +32,11 @@ from luca.agent.core import AgentSessionRunner, CompactionPolicy
 runner = AgentSessionRunner(session, compaction_policy=MyPolicy())
 ```
 
+A ready-made one ships in contrib: `SummarizingCompactionPolicy` (a context
+gauge plus an LLM summary, with a keep_turns knob) —
+[contrib/compaction/](contrib/compaction/README.md). Write your own by
+subclassing `CompactionPolicy` (section 4).
+
 Omit it and compaction never happens: `should_compact` is never consulted and
 `schedule_compaction()` raises.
 

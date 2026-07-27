@@ -35,6 +35,10 @@ luca/agent/
 │   ├── memory/
 │   │   ├── __init__.py  # package surface: MemoryPlugin + the scratchpad / todo tools
 │   │   └── plugin.py    # scratchpad + todo-list tools, MemoryPlugin
+│   ├── compaction/     # a concrete CompactionPolicy (LLM summary + context gauge)
+│   │   ├── __init__.py  # package surface: SummarizingCompactionPolicy, gauge
+│   │   ├── context.py   # the context gauge (used vs the model's window)
+│   │   └── policy.py    # SummarizingCompactionPolicy (should_compact + compact; keep_turns)
 │   ├── resource_permissions/
 │   │   ├── __init__.py  # package surface: PermissionStrategy, rules, answers, the mixin
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy
@@ -487,6 +491,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_resource_permissions.py` | Self-scoped contrib tests: `PermissionStrategy` decide / apply_answer / pending_requests / grant + the tool mixin — no runner, no session |
 | `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
+| `tests/agent/contrib/test_compaction_policy.py` | Self-scoped contrib tests: `SummarizingCompactionPolicy` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
 | `tests/agent/contrib/tui/` | Self-scoped contrib tests: pure modules (`test_approvals.py`, `test_render.py`, `test_sessions.py`, `test_wiring.py`, `test_cli.py`) + headless Pilot tests driving `AgentApp` with a scripted `FauxProvider` (`test_app*.py`); the directory skips itself when textual is missing |
 
 ## When in doubt

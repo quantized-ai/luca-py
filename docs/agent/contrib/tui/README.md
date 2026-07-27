@@ -43,6 +43,7 @@ and ignores every other flag — nothing is started, nothing is saved.
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
+| Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/compaction` |
 | `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
 | Approval modal | One screen per uncovered permission step: Approve once / tool-suggested ALWAYS grants / Deny / Abandon — pick by button or digit key |
 | `Esc` | Cancels the live run (`run.cancel()`); the wind-down renders live and the turn closes `CANCELLED` |
@@ -91,8 +92,9 @@ thin:
 | `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift) |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
+| `context_bar.py` | The context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
-| `cli.py` | argparse entry point (also the `--pretty-print` transcript path, which never builds an app) |
+| `cli.py` | argparse entry point (also the `--pretty-print` transcript path, which never builds an app; builds the `SummarizingCompactionPolicy` from `--compact-threshold` / `--compact-keep-turns` / `--no-autocompact`) |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
 message. The status bar shows how many are attached, and `Esc` clears them

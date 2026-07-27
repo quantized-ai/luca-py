@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
 from pathlib import Path
 from typing import ClassVar, TypeVar
@@ -32,6 +33,7 @@ from typing import ClassVar, TypeVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.suggester import SuggestFromList
 from textual.widgets import Footer, Header, Input
 
@@ -83,6 +85,7 @@ from .cells import (
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .commands import COMMANDS, dispatch
+from .context_bar import ContextBar
 from .render import (
     REDACTED_REASONING_MARKER,
     reasoning_transcript_text,
@@ -152,6 +155,7 @@ class AgentApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="transcript")
+        yield ContextBar(id="context-bar")
         yield Input(
             placeholder="Message the agent — Enter to send, /help for commands",
             id="prompt",
@@ -495,3 +499,7 @@ class AgentApp(App):
             count = len(self._pending_images)
             status += f" · {count} image{'s' if count > 1 else ''} attached"
         self.sub_title = status
+        threshold = getattr(self._compaction_policy, "threshold", 0.8)
+        # the bar is absent during the early __init__-time refresh, before compose()
+        with contextlib.suppress(NoMatches):
+            self.query_one("#context-bar", ContextBar).update_from(session, threshold=threshold)
