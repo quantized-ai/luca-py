@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from luca.agent.contrib.compaction import context_used, context_window
+from luca.agent.contrib.compaction import calculate_context_used, get_context_window_size
 from luca.agent.core.models import AgentSession
 
 _WIDTH = 20
@@ -43,8 +43,8 @@ class ContextBar(Static):
 
     def update_from(self, session: AgentSession, *, threshold: float = 0.8) -> None:
         self.text = render_context_bar(
-            context_used(session),
-            context_window(session),
+            calculate_context_used(session),
+            get_context_window_size(session),
             threshold,
         )
         self.update(self.text)

@@ -27,7 +27,7 @@ from luca.agent.core.projection import ConversationProjector
 from luca.client import acompletion
 from luca.client.types import TextBlock, UserMessage as ClientUserMessage
 
-from .context import DEFAULT_WINDOW, utilization
+from .context import DEFAULT_WINDOW, calculate_utilization_ratio
 
 DEFAULT_THRESHOLD = 0.8
 
@@ -75,7 +75,9 @@ class SummarizingCompactionPolicy(CompactionPolicy):
         self.provider = provider
 
     def should_compact(self, session: AgentSession) -> bool:
-        return self.enabled and (utilization(session, default_window=self.default_window) >= self.threshold)
+        return self.enabled and (
+            calculate_utilization_ratio(session, default_window=self.default_window) >= self.threshold
+        )
 
     def select_keep(self, candidates: list[str], session: AgentSession) -> list[str]:
         """Which trailing nodes survive verbatim; everything before is folded.

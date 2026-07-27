@@ -10,13 +10,13 @@ from luca.client import catalog
 DEFAULT_WINDOW = 200_000
 
 
-def context_used(session: AgentSession) -> int:
+def calculate_context_used(session: AgentSession) -> int:
     """Sum of intrinsic `context_tokens` over the active conversation path."""
     entries = session.entries
     return sum(entries[node_id].context_tokens for node_id in session.active_conversation.nodes)
 
 
-def context_window(session: AgentSession, default: int = DEFAULT_WINDOW) -> int:
+def get_context_window_size(session: AgentSession, default: int = DEFAULT_WINDOW) -> int:
     """The model's window from the client catalog, or `default` when the model
     (or the field) is missing."""
     cfg = session.session_config.llm_config
@@ -26,9 +26,9 @@ def context_window(session: AgentSession, default: int = DEFAULT_WINDOW) -> int:
     return default
 
 
-def utilization(session: AgentSession, *, default_window: int = DEFAULT_WINDOW) -> float:
+def calculate_utilization_ratio(session: AgentSession, *, default_window: int = DEFAULT_WINDOW) -> float:
     """`used / window`, clamped to `[0, 1]`."""
-    window = context_window(session, default_window)
+    window = get_context_window_size(session, default_window)
     if window <= 0:
         return 0.0
-    return min(1.0, context_used(session) / window)
+    return min(1.0, calculate_context_used(session) / window)

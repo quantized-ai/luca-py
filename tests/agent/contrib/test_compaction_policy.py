@@ -4,9 +4,9 @@ FauxProvider. Core owns archiving/swapping and is tested in tests/agent."""
 
 from luca.agent.contrib.compaction import (
     SummarizingCompactionPolicy,
-    context_used,
-    context_window,
-    utilization,
+    calculate_context_used,
+    calculate_utilization_ratio,
+    get_context_window_size,
 )
 from luca.agent.core.compaction import CompactionPlan, UsageCounters
 from luca.agent.core.models import (
@@ -87,16 +87,16 @@ def _faux(summary: str) -> FauxProvider:
 # ── the gauge ──────────────────────────────────────────────────────────────
 
 
-def test_context_used_sums_context_tokens_over_the_active_path():
-    assert context_used(two_turn_session()) == 4
+def test_calculate_context_used_sums_context_tokens_over_the_active_path():
+    assert calculate_context_used(two_turn_session()) == 4
 
 
-def test_context_window_falls_back_to_default_for_an_unknown_model():
-    assert context_window(two_turn_session(), default=50_000) == 50_000
+def test_get_context_window_size_falls_back_to_default_for_an_unknown_model():
+    assert get_context_window_size(two_turn_session(), default=50_000) == 50_000
 
 
-def test_utilization_is_the_ratio():
-    assert utilization(two_turn_session(), default_window=8) == 0.5
+def test_calculate_utilization_ratio_is_used_over_window():
+    assert calculate_utilization_ratio(two_turn_session(), default_window=8) == 0.5
 
 
 def test_should_compact_gates_on_threshold_and_enabled():
