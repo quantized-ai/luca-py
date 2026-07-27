@@ -145,6 +145,7 @@ def build_runner(
     compaction_policy=None,
     additional_directories: list | None = None,
     extra_rules: list | None = None,
+    mcp_manager=None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy. `provider=` is the zero-logic passthrough the tests use
@@ -162,10 +163,16 @@ def build_runner(
         tools=[AddTool(), SubtractTool(), MultiplyTool()],
         permission_policy=strategy,
     )
+    plugins: list = [MemoryPlugin(), shell]
+    if mcp_manager is not None:
+        # MCP tools share the one strategy, so they pass the same approval gate.
+        from luca.agent.contrib.mcp import McpPlugin
+
+        plugins.append(McpPlugin(mcp_manager, strategy))
     runner = PluginAgentSessionRunner(
         session,
         tool_registry=registry,
-        plugins=[MemoryPlugin(), shell],
+        plugins=plugins,
         system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
         compaction_policy=compaction_policy,

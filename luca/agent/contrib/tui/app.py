@@ -129,6 +129,7 @@ class AgentApp(App):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
+        mcp_manager=None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -140,6 +141,7 @@ class AgentApp(App):
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
+        self._mcp_manager = mcp_manager
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._live_reasoning: ReasoningCell | None = None
@@ -169,10 +171,37 @@ class AgentApp(App):
     async def on_mount(self) -> None:
         self._refresh_status()
         await self._replay_history()
+        if self._mcp_manager is not None:
+            self._mcp_worker = self.run_worker(self._connect_mcp(), group="mcp")
         if self.runner.idle():
             self.query_one("#prompt", Input).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
+
+    async def on_unmount(self) -> None:
+        """Close MCP connections while the app's loop is still live (the actor
+        tasks belong to it). Fires on every exit path."""
+        if self._mcp_manager is None:
+            return
+        # Stop the connect worker first so it cannot register a connection after
+        # aclose has run (which would leak that server's subprocess).
+        worker = getattr(self, "_mcp_worker", None)
+        if worker is not None:
+            worker.cancel()
+            with contextlib.suppress(Exception):
+                await worker.wait()
+        await self._mcp_manager.aclose()
+
+    async def _connect_mcp(self) -> None:
+        manager = self._mcp_manager
+        await manager.start_all()
+        if manager.connected_labels:
+            tools = len(manager.list_tools())
+            await self._notice(
+                f"MCP: connected {', '.join(manager.connected_labels)} ({tools} tool{'s' if tools != 1 else ''})",
+            )
+        for label, error in manager.failures.items():
+            await self._notice(f"MCP: {label} failed — {error}", error=True)
 
     # ── input ──────────────────────────────────────────────────────────────────
 
@@ -461,6 +490,7 @@ class AgentApp(App):
             compaction_policy=self._compaction_policy,
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
+            mcp_manager=self._mcp_manager,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:

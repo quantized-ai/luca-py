@@ -143,6 +143,22 @@ def build_session(args: argparse.Namespace, config: LucaConfig | None = None) ->
     return session
 
 
+def _build_mcp_manager(mcp_servers: dict):
+    """The MCP manager for the configured servers, or None. Imports the SDK
+    lazily, so an install without the `mcp` extra is fine until a server is
+    actually configured."""
+    if not mcp_servers:
+        return None
+    try:
+        from luca.agent.contrib.mcp import build_manager
+    except ImportError as exc:
+        raise LucaConfigError(
+            "luca.json configures MCP servers but the 'mcp' extra is not "
+            "installed. Install it with: uv sync --group mcp",
+        ) from exc
+    return build_manager(mcp_servers)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
@@ -155,6 +171,7 @@ def main(argv: list[str] | None = None) -> None:
         config = load_luca_config()
         register_config_providers(config)
         session = build_session(args, config)
+        mcp_manager = _build_mcp_manager(config.mcp)
     except LucaConfigError as exc:
         sys.stderr.write(f"luca: {exc}\n")
         raise SystemExit(1) from exc
@@ -177,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
         additional_directories=config.additional_directories or None,
         permission_rules=build_permission_rules(config) or None,
         recommended_models=config.models or None,
+        mcp_manager=mcp_manager,
     )
     app.run()
     print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")

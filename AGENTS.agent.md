@@ -39,6 +39,10 @@ luca/agent/
 │   │   ├── __init__.py  # package surface: SummarizingCompactionPolicy, gauge
 │   │   ├── context.py   # the context gauge (used vs the model's window)
 │   │   └── policy.py    # SummarizingCompactionPolicy (should_compact + compact; keep_turns)
+│   ├── mcp/             # external MCP servers → tools (optional `mcp` extra; SDK-free config/tool, lazy SDK)
+│   │   ├── config.py    # McpServerDef (stdio/http) — no SDK import, so LucaConfig stays SDK-free
+│   │   ├── connection.py/manager.py # actor-per-server lifecycle + routing
+│   │   └── registry.py/plugin.py/tool.py/oauth.py/factory.py # ToolRegistry, McpPlugin, McpTool, OAuth
 │   ├── resource_permissions/
 │   │   ├── __init__.py  # package surface: PermissionStrategy, rules, answers, the mixin
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy
@@ -493,6 +497,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
 | `tests/agent/contrib/test_compaction_policy.py` | Self-scoped contrib tests: `SummarizingCompactionPolicy` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
 | `tests/agent/contrib/tui/` | Self-scoped contrib tests: pure modules (`test_approvals.py`, `test_render.py`, `test_sessions.py`, `test_wiring.py`, `test_cli.py`, `test_config.py`, `test_context_bar.py`) + headless Pilot tests driving `AgentApp` with a scripted `FauxProvider` (`test_app*.py`); the directory skips itself when textual is missing |
+| `tests/agent/contrib/mcp/` | Self-scoped contrib tests: config validation, `McpTool`/result mapping (pure), the registry + manager + actor against a live stdio FastMCP fixture, permissions, and OAuth token-store/redirect units; skips when the `mcp` extra is absent |
 
 ## When in doubt
 

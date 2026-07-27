@@ -64,6 +64,12 @@ Point your editor at [`luca.schema.json`](../../../luca.schema.json) via the
     "anthropic": ["claude-sonnet-5", "claude-opus-4-8"]
   },
 
+  "mcp": {                       // external MCP servers — see contrib/mcp
+    "files": { "type": "stdio", "command": "npx",
+               "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "linear": { "type": "http", "url": "https://mcp.linear.app/mcp", "oauth": true }
+  },
+
   "workspace": ".",              // shell root
   "additional_directories": [],  // extra roots the shell tools may touch
   "streaming": true

@@ -47,11 +47,15 @@ def message_to_parts(
 def tool_to_luca_tool(tool: Tool) -> LucaTool:
     """Project an agent `Tool` onto the wire `luca.client.Tool` the model sees.
 
-    `Tool.Args` (a Pydantic model class) is passed straight through as
+    Usually `Tool.Args` (a Pydantic model class) is passed straight through as
     `parameters` — `luca.client.Tool` accepts a BaseModel and the transport
-    normalizes it to JSON schema at send time."""
+    normalizes it to JSON schema at send time. A tool whose schema is only
+    known at runtime (an MCP tool, whose server supplies a JSON-schema
+    `inputSchema`) sets `input_schema` instead; `luca.client.Tool` accepts a
+    raw dict too, so it flows through unchanged."""
+    input_schema = getattr(tool, "input_schema", None)
     return LucaTool(
         name=tool.name,
         description=tool.description,
-        parameters=tool.Args,
+        parameters=input_schema if input_schema is not None else tool.Args,
     )
