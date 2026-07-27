@@ -107,8 +107,9 @@ def default_model() -> LLMConfig:
 # The `/model` picker's models, grouped by provider so `/model` can drill down:
 # pick a provider, then pick one of its models. Only providers registered on
 # this branch with models verified live are listed (bedrock ships in a separate
-# PR; groq/deepseek/ollama need keys). `/model provider:model` still switches to
-# anything off this list, so an unlisted provider is still reachable by hand.
+# PR; groq/deepseek/ollama need keys). quantized is listed and needs
+# QUANTIZED_API_KEY. `/model provider:model` still switches to anything off this
+# list, so an unlisted provider is still reachable by hand.
 RECOMMENDED_MODELS: dict[str, tuple[str, ...]] = {
     "anthropic": (
         "claude-opus-4-8",
@@ -128,6 +129,17 @@ RECOMMENDED_MODELS: dict[str, tuple[str, ...]] = {
     "openai": (
         "gpt-5.4",
         "gpt-5.4-mini",
+    ),
+    "quantized": (
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5.1",
+        "openai/gpt-4o-mini",
+        "deepseek/deepseek-v3.2",
+        "deepseek/deepseek-r1-0528",
+        "qwen/qwen3-235b-a22b",
+        "meta-llama/llama-3.3-70b-instruct",
     ),
 }
 

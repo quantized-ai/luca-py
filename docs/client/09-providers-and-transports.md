@@ -16,6 +16,7 @@ of new hosts.
 | `groq` | `GenericProvider` (from dict) | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `OpenAITransport` |
 | `deepseek` | `GenericProvider` (from dict) | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `OpenAITransport` |
 | `ollama` | `GenericProvider` (from dict) | `http://localhost:11434/v1` | (none) | `OpenAITransport` |
+| `quantized` | `GenericProvider` (from dict) | `https://api.quantized.us/v1` | `QUANTIZED_API_KEY` | `OpenAITransport` |
 | `faux` | `FauxProvider` | — | (none) | `FauxTransport` |
 
 `PROVIDERS` lives in `luca/client/providers/__init__.py`.
