@@ -39,9 +39,12 @@ again is a no-op: identical content produces an identical id. The id is
 recomputed on every write and never short-circuited when one is already set —
 an execution's spec can be replaced between writes (middleware may rewrite
 it), and a skipped recompute would leave a stale id pointing at the previous
-version. `prune()` is not one of these doors: it only ever writes a
-`PrunedEntry`. Registries are on none of them — they return drafts with
-`tool_spec` populated and never compute an id or touch the store.
+version. Each door also points the execution's `tool_spec` at the STORED
+instance, so `session.tool_specs[e.tool_spec_id] is e.tool_spec` holds in
+memory exactly as it does after a reload. `prune()` is not one of these doors:
+it only ever writes a `PrunedEntry`. Registries are on none of them — they
+return drafts with `tool_spec` populated and never compute an id or touch the
+store.
 
 READS. The entry-derived queries — open turn, the execution-lifecycle and
 approval-state subsets, the resumable compaction, derived status. These are
@@ -110,19 +113,29 @@ class SessionLedger:
     # ── writes ───────────────────────────────────────────────────────────────
 
     def _store_tool_spec(self, entry: AnyEntry) -> None:
-        """File a `ToolExecution`'s spec in `session.tool_specs` and stamp the
-        matching `tool_spec_id` on it. A no-op for every other entry type.
+        """File a `ToolExecution`'s spec in `session.tool_specs`, point the
+        execution at the STORED instance, and stamp the matching
+        `tool_spec_id`. A no-op for every other entry type.
 
         Always recomputes: hashing a few KB costs on the order of ten
         microseconds, and a short-circuit on an already-set id would leave a
-        stale reference behind whenever the spec was replaced."""
+        stale reference behind whenever the spec was replaced.
+
+        Re-pointing `tool_spec` is what makes
+        `session.tool_specs[e.tool_spec_id] is e.tool_spec` hold IN MEMORY and
+        not only after a reload: a registry mints a fresh `ToolSpec` per call,
+        so without it the second execution of a repeated tool would keep its
+        own equal-but-distinct copy while the first holds the stored one — the
+        same session shaped two different ways depending on whether it had
+        been through a save. `AgentSession`'s load validator does exactly this
+        for a restored session."""
         if not isinstance(entry, ToolExecution):
             return
         if entry.tool_spec is None:
             entry.tool_spec_id = None
             return
         spec_id = entry.tool_spec.spec_id()
-        self.session.tool_specs.setdefault(spec_id, entry.tool_spec)
+        entry.tool_spec = self.session.tool_specs.setdefault(spec_id, entry.tool_spec)
         entry.tool_spec_id = spec_id
 
     def append(self, build: Callable[[str, str | None, int], AnyEntry]) -> AnyEntry:

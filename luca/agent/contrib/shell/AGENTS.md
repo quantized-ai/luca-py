@@ -49,6 +49,10 @@ tests/agent/contrib/shell/
     `ExecutionResult(is_error=True)`. Domain failures (missing file, ambiguous
     edit, bad regex, non-zero exit) are results, never raised to the runner.
   - implements `build_permission_requests()` (the mixin's override point).
+    Synchronous on purpose: the mixin runs it in `asyncio.to_thread`, so the
+    path stats it does (`_access_scope` calls `is_dir()` on every target) stay
+    off the event loop. It is awaited inside the registry's `create_execution`,
+    where a blocking syscall on a hung mount would otherwise stall the run.
 - **`FileReadTracker`** — a set of resolved paths behind the read-first
   contract: `read` records every text file it returns; `edit`/`write` refuse
   to mutate an existing file that was never recorded, and record their own

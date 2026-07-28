@@ -89,6 +89,14 @@ class ReadFileTool(Tool):
 > your tool defines it (a raise there makes the birth `FAILED`). A custom
 > registry may read, or ignore, anything else.
 
+> ⚠️ **Don't block here.** This is awaited on the event loop, inside the
+> registry's `create_execution`, under no deadline. Stat a path or read a file
+> through `asyncio.to_thread` — a blocking syscall can't be interrupted by
+> cancellation, so one hung network mount stalls the whole run.
+> `ResourcePermissionToolMixin`
+> ([`contrib/resource_permissions/`](../resource_permissions/README.md) §6)
+> does this for you: its override point is a plain `def` it runs in a thread.
+
 ## 4. Rich results
 
 `_execute → str` is the easy path. For a failure flag, metadata, or multi-block

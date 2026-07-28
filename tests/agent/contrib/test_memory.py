@@ -54,11 +54,13 @@ def run_kwargs() -> dict:
 # ── the specs the model is shown ──────────────────────────────────────────────
 # Written out whole rather than derived from `Args`: this is the package's
 # public product — the four advertisements a registry hands the provider — and
-# `input_schema` is now a required part of it.
+# `input_schema` is now a required part of it. All four declare the package's
+# `namespace`, which travels onto every execution's durable spec snapshot.
 
 READ_SCRATCHPAD_SPEC = ToolSpec(
     name="read_scratchpad",
     description="Read from a in-memory scratchpad",
+    namespace="contrib.memory",
     input_schema={
         "additionalProperties": False,
         "properties": {},
@@ -70,6 +72,7 @@ READ_SCRATCHPAD_SPEC = ToolSpec(
 WRITE_SCRATCHPAD_SPEC = ToolSpec(
     name="write_scratchpad",
     description="Write some content a in-memory scratchpad",
+    namespace="contrib.memory",
     input_schema={
         "additionalProperties": False,
         "properties": {
@@ -88,6 +91,7 @@ WRITE_SCRATCHPAD_SPEC = ToolSpec(
 READ_TODO_SPEC = ToolSpec(
     name="read_todo",
     description="Read the current todo list",
+    namespace="contrib.memory",
     input_schema={
         "additionalProperties": False,
         "properties": {},
@@ -98,6 +102,7 @@ READ_TODO_SPEC = ToolSpec(
 
 UPDATE_TODOS_SPEC = ToolSpec(
     name="update_todos",
+    namespace="contrib.memory",
     description=(
         "Replace the todo list in one operation — send the complete list, including the items that did not change"
     ),

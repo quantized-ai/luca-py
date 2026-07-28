@@ -16,6 +16,8 @@ wall-clock, so decide() asserts read `(decision, metadata)` instead of the
 full object.
 """
 
+import threading
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -1287,6 +1289,7 @@ class SessionCapturingTool(ResourcePermissionToolMixin, Tool):
 
     def __init__(self) -> None:
         self.seen: list[tuple[dict, AgentSession]] = []
+        self.threads: list[int] = []
 
     def build_permission_requests(
         self,
@@ -1294,6 +1297,7 @@ class SessionCapturingTool(ResourcePermissionToolMixin, Tool):
         session: AgentSession,
     ) -> list[PermissionRequest]:
         self.seen.append((args, session))
+        self.threads.append(threading.get_ident())
         return [
             PermissionRequest(
                 resources=[
@@ -1330,6 +1334,20 @@ async def test_mixin_hands_the_arguments_and_the_live_session_to_the_tool():
     tool = SessionCapturingTool()
     await tool.get_approval_context({"path": "/etc/hosts"}, SESSION)
     assert tool.seen == [({"path": "/etc/hosts"}, SESSION)]
+
+
+async def test_mixin_runs_the_override_point_off_the_event_loop_thread():
+    # `get_approval_context` is awaited inside the registry's
+    # `create_execution`, on the loop and under no deadline, and deciding what
+    # a call needs permission for is filesystem work (the shell tools stat
+    # every target path). A blocking syscall cannot be interrupted by
+    # cancellation, so the synchronous override point runs in a worker thread.
+    tool = SessionCapturingTool()
+
+    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION)
+
+    assert len(tool.threads) == 1
+    assert tool.threads[0] != threading.get_ident()
 
 
 async def test_mixin_preserves_the_request_order():

@@ -1058,7 +1058,9 @@ def test_append_leaves_an_unresolved_execution_with_no_spec_reference():
 
 def test_the_same_spec_written_twice_is_stored_once():
     # normalization: equal content hashes to the same id, so the second write
-    # finds the row already filed and adds nothing.
+    # finds the row already filed and adds nothing — and the execution is
+    # pointed at that stored instance, so `tool_specs[id] is entry.tool_spec`
+    # holds in memory exactly as it does after a reload.
     session = make_session(
         id="s",
         entries={
@@ -1097,6 +1099,8 @@ def test_the_same_spec_written_twice_is_stored_once():
         tool_spec_id=ADD_SPEC_ID,
     )
     assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+    assert appended.tool_spec is session.tool_specs[ADD_SPEC_ID]
+    assert session.entries["te1"].tool_spec is session.tool_specs[ADD_SPEC_ID]
 
 
 def test_put_entry_re_stamps_a_spec_replaced_between_writes():

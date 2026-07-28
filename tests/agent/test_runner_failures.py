@@ -1,9 +1,11 @@
 """Timeout & failure-outcome scenarios: the tool deadline (per-tool override
 vs RuntimeConfig), the whole failure surface of the prepare/execute split
 (resolution fails → the body was never dispatched; the body raises → FAILED,
-whatever the exception type), crash recovery of orphaned RUNNING executions,
-the LLM catch/close/re-raise site (TIMED_OUT / ERRORED → status PENDING,
-retry-ready), and the §5.5 post_message matrix.
+whatever the exception type), a raising `get_tools` (propagates, the turn
+stays open, the next run asks again), crash recovery — of orphaned RUNNING
+executions and of a `prepare()` that never got to write one — the LLM
+catch/close/re-raise site (TIMED_OUT / ERRORED → status PENDING, retry-ready),
+and the §5.5 post_message matrix.
 
 House style: precondition → one action → full-object postcondition; never
 race two timed things — every deadline test pairs a real (small) timer with
@@ -286,6 +288,36 @@ class HangingCallableRegistry(FakeToolRegistry):
             return ExecutionResult(content=[TextContent(text="unreachable")])
 
         return run
+
+
+class FlakyGetToolsRegistry(FakeToolRegistry):
+    """`get_tools` raises the first time it is asked and answers normally
+    afterwards — the registry whose catalog was briefly unreachable."""
+
+    def __init__(self, tools=(), *, raises: Exception) -> None:
+        super().__init__(tools)
+        self.raises = raises
+        self.list_calls = 0
+
+    async def get_tools(self, session: AgentSession):
+        self.list_calls += 1
+        if self.list_calls == 1:
+            raise self.raises
+        return await super().get_tools(session)
+
+
+class TornDownPrepareRegistry(FakeToolRegistry):
+    """The process dying inside `prepare()`: the pending task is torn down, so
+    `asyncio.CancelledError` comes out of the await. It is a `BaseException`,
+    so no `except Exception` in the runner converts it into a tool failure —
+    the drive unwinds having written nothing."""
+
+    async def prepare(
+        self,
+        session: AgentSession,
+        tool_execution: ToolExecution,
+    ) -> PreparedTool:
+        raise asyncio.CancelledError()
 
 
 class ProbeRegistry(FakeToolRegistry):
@@ -1304,7 +1336,50 @@ async def test_a_toolless_runner_terminalizes_a_loaded_ready_execution():
     assert runner.idle()
 
 
-# ── crash recovery: orphaned RUNNING executions ────────────────────────────────
+# ── get_tools failure: the run aborts, the turn stays open ────────────────────
+
+
+async def test_get_tools_raising_aborts_the_run_and_the_next_one_asks_again():
+    # `get_tools` is treated exactly like `decide`: the exception propagates
+    # and aborts the run with the turn left open and resumable. The runner
+    # never substitutes an empty tool list — calling the model with no tools
+    # when the registry meant to offer some would silently change the answer.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Ready.")], finish_reason="stop"),
+        ]
+    )
+    registry = FlakyGetToolsRegistry(
+        [AddTool()],
+        raises=RuntimeError("the tool catalog is offline"),
+    )
+    session = one_call_session("s_get_tools_raise")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
+    )
+
+    with pytest.raises(RuntimeError, match="the tool catalog is offline"):
+        await runner.run()
+
+    # the bracket opened and stayed open, and no LLM call was made at all
+    assert list(runner.session.entries) == ["u1", "ts"]
+    assert faux.requests == []
+    assert runner.pending()
+
+    await runner.run()  # the resume asks again
+
+    assert registry.list_calls == 2
+    assert list(runner.session.entries) == ["u1", "ts", "a1", "tf"]
+    assert runner.session.entries["tf"].outcome == TurnOutcome.COMPLETED
+    assert runner.idle()
+
+
+# ── crash recovery: orphaned RUNNING executions, and a lost prepare ───────────
 
 
 async def test_orphaned_running_execution_recovers_to_interrupted_without_redispatch():
@@ -1375,6 +1450,77 @@ async def test_orphan_recovery_precedes_a_parked_cancel_flush():
     assert result.outcome == TurnOutcome.CANCELLED
     assert runner.session.entries["te1"] == RECOVERED_ORPHAN
     assert runner.idle()
+
+
+async def test_a_crash_during_prepare_leaves_it_pending_and_the_next_drive_prepares_again():
+    # The mirror of the orphan case, and the reason the RUNNING row moved
+    # AFTER `prepare()`: preparation writes nothing, so a process that dies
+    # inside it leaves the execution exactly as it was — PENDING, ALLOWED,
+    # `started_at` unset — and the next drive prepares it again and completes.
+    # Nothing is INTERRUPTED, because no body ever started.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
+        ]
+    )
+    lost_attempt = ToolHookRecorder()
+    session = one_call_session("s_prepare_crash")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=TornDownPrepareRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1"],
+        now=1000,
+        middleware=[lost_attempt],
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run()
+
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)],
+        updated_at=1000,
+    )
+
+    # the process restarts: the durable session is reloaded into a fresh runner
+    resumed_attempt = ToolHookRecorder()
+    registry = FakeToolRegistry([AddTool()])
+    resumed = DeterministicRunner(
+        AgentSession.model_validate_json(runner.session.model_dump_json()),
+        tool_registry=registry,
+        provider=faux,
+        ids=["a2", "tf"],
+        now=2000,
+        middleware=[resumed_attempt],
+    )
+
+    await resumed.run()
+
+    assert registry.prepared == ["add"]  # prepared for the first time here
+    assert resumed.session.entries["te1"].status == ExecutionStatus.COMPLETED
+    assert resumed.session.entries["te1"].result == ExecutionResult(
+        content=[TextContent(text="3")],
+    )
+    # exactly once per dispatch ATTEMPT, not once per call for all time: the
+    # lost attempt fired it, and so does the one that finished
+    assert lost_attempt.before == [("tc1", ExecutionStatus.PENDING)]
+    assert resumed_attempt.before == [("tc1", ExecutionStatus.PENDING)]
+    assert resumed.session.entries["tf"].outcome == TurnOutcome.COMPLETED
+    assert resumed.idle()
 
 
 # ── LLM failure: record, close, re-raise (§5.4) ───────────────────────────────

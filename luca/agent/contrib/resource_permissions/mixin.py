@@ -30,9 +30,21 @@ The mixin defines the `get_approval_context` convention `SimpleToolRegistry`
 reads (there is no base-class method to override — `Tool` doesn't declare
 one). Like every other tool-side hook it receives the live `AgentSession`;
 treat it as read-only.
+
+`build_permission_requests` is SYNCHRONOUS and runs in a worker thread. It is
+awaited from inside the registry's `create_execution`, which runs on the event
+loop, and deciding what a call needs permission for is usually filesystem work
+— the shell tools stat every target path to tell a directory from a file. A
+cancellation cannot interrupt a blocking syscall, so on a hung network mount a
+synchronous stat would block the whole loop no matter how the run is
+cancelled. Implementations therefore stay plain `def`s and the mixin hands
+them to `asyncio.to_thread`; a tool needing genuinely async work should
+override `get_approval_context` directly.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -83,8 +95,18 @@ class ResourcePermissionToolMixin:
         args: dict,
         session: AgentSession,
     ) -> list[PermissionRequest]:
+        """Declare the approval steps this call needs. Synchronous and run in
+        a worker thread, so blocking filesystem work here is safe."""
         raise NotImplementedError
 
     async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
-        requests = self.build_permission_requests(args, session)
+        # Off the event loop: this is awaited inside the registry's
+        # `create_execution`, and building the requests stats the filesystem.
+        # A blocking syscall is not interruptible by cancellation, so keeping
+        # it on the loop would let one hung path stall the whole run.
+        requests = await asyncio.to_thread(
+            self.build_permission_requests,
+            args,
+            session,
+        )
         return {"requests": [request.model_dump() for request in requests]}

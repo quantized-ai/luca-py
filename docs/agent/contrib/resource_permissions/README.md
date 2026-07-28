@@ -222,6 +222,15 @@ author's responsibility to emit options that cover their own requirements.
 > the strategy, so a `KeyError` in `build_permission_requests` reads as a
 > tool failure, not a denial.
 
+> ⚠️ **Stay synchronous — it runs in a worker thread.**
+> `build_permission_requests` is a plain `def`, and the mixin hands it to
+> `asyncio.to_thread`. It is awaited from inside the registry's
+> `create_execution`, on the event loop, and deciding what a call needs
+> permission for is usually filesystem work (the shell tools stat every
+> target path). A blocking syscall is not interruptible by cancellation, so
+> running it on the loop would let one hung path stall the whole run. Need
+> genuinely async work? Override `get_approval_context` directly.
+
 ## 7. How `decide()` resolves a call
 
 `async decide(session, tool_execution)` is a pure query of the strategy's own

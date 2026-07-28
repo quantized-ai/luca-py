@@ -653,6 +653,54 @@ async def test_multi_turn_two_tool_rounds_then_text():
     )
 
 
+async def test_two_calls_to_one_tool_file_a_single_shared_spec_row():
+    # Normalization end to end: a `ToolSpec` is a pure function of the tool
+    # DEFINITION, so calling one tool twice writes ONE row in `tool_specs` and
+    # both executions reference — and hold — that single spec.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("add", {"a": 3, "b": 4}, id="tc2"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3 and 7.")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_normalized",
+        entries={
+            "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="Add twice")]),
+        },
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "a2", "tf"],
+        now=1000,
+    )
+
+    await runner.run()
+
+    first, second = runner.session.entries["te1"], runner.session.entries["te2"]
+    assert runner.session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+    assert (first.tool_spec_id, second.tool_spec_id) == (ADD_SPEC_ID, ADD_SPEC_ID)
+    # the stored spec is a value object held BY REFERENCE, not copied per call —
+    # true in memory exactly as it is after a reload
+    assert first.tool_spec is runner.session.tool_specs[ADD_SPEC_ID]
+    assert second.tool_spec is runner.session.tool_specs[ADD_SPEC_ID]
+    assert (first.status, second.status) == (
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.COMPLETED,
+    )
+
+
 async def test_provider_usage_is_recorded_per_assistant_entry():
     faux = FauxProvider()
     faux.set_responses(

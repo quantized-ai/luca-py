@@ -45,6 +45,7 @@ update_todos replaces the whole list at once: always send every item, not just t
 
 
 class ReadScratchPadTool(Tool):
+    namespace = "contrib.memory"
     name = "read_scratchpad"
     description = "Read from a in-memory scratchpad"
 
@@ -65,6 +66,7 @@ class ReadScratchPadTool(Tool):
 
 
 class WriteScratchPadTool(Tool):
+    namespace = "contrib.memory"
     name = "write_scratchpad"
     description = "Write some content a in-memory scratchpad"
 
@@ -102,6 +104,7 @@ class TodoItem(BaseModel):
 
 
 class ReadTodoTool(Tool):
+    namespace = "contrib.memory"
     name = "read_todo"
     description = "Read the current todo list"
 
@@ -122,6 +125,7 @@ class ReadTodoTool(Tool):
 
 
 class UpdateTodosTool(Tool):
+    namespace = "contrib.memory"
     name = "update_todos"
     description = (
         "Replace the todo list in one operation — send the complete list, including the items that did not change"

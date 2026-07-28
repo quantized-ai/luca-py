@@ -375,7 +375,7 @@ Nothing in a restored spec references a live class, an `Args` model, or anything
 
 `Tool` (in `luca/agent/contrib/tools.py`) is contrib: the ergonomic way to write a tool in Python, and the EXECUTION contract only. It declares `tool_kind`, `namespace`, `version` and `timeout_in_ms` as `ClassVar`s, and `get_tool_spec()` stamps them plus `input_schema=Args.model_json_schema()` into the snapshot. `execute` / `_execute` receive the live `AgentSession` (read-only) and the keyword-only `CancellationToken`.
 
-There is no `get_approval_context` on the base class — it is a duck-typed convention read by `SimpleToolRegistry` (`async get_approval_context(args, session) -> dict`, receiving the **validated** args; `resource_permissions.ResourcePermissionToolMixin` provides it). The core never mentions it.
+There is no `get_approval_context` on the base class — it is a duck-typed convention read by `SimpleToolRegistry` (`async get_approval_context(args, session) -> dict`, receiving the **validated** args; `resource_permissions.ResourcePermissionToolMixin` provides it). The core never mentions it. It is awaited inside `create_execution`, on the event loop and under no deadline, so blocking work belongs in `asyncio.to_thread` — which is exactly what the mixin does with its synchronous `build_permission_requests` override point, whose path stats would otherwise stall the run on a hung mount.
 
 ### Timeouts and step limits
 
