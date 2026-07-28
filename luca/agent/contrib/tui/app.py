@@ -37,6 +37,7 @@ from textual.css.query import NoMatches
 from textual.suggester import SuggestFromList
 from textual.widgets import Footer, Header, Input
 
+from luca.agent.contrib.subagents import SubAgentTask, TaskStatus
 from luca.agent.core import AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
     ApprovalRequired,
@@ -79,6 +80,7 @@ from .cells import (
     CompactionCell,
     NoticeCell,
     ReasoningCell,
+    SubAgentCell,
     ToolCallCell,
     TranscriptCell,
     UserCell,
@@ -96,6 +98,14 @@ from .sessions import save_session
 from .wiring import build_runner
 
 _CellT = TypeVar("_CellT", bound=TranscriptCell)
+
+
+def _subagent_injection_text(task: SubAgentTask) -> str:
+    """The user-message text a finished sub-agent's result is injected as."""
+    header = f"sub-agent task {task.id} · {task.agent_type} · {task.title}"
+    if task.status is TaskStatus.DONE:
+        return f"[{header}]\n{task.result or '(the sub-agent returned no text)'}"
+    return f"[{header} — failed]\n{task.error or 'failed'}"
 
 
 class AgentApp(App):
@@ -130,6 +140,7 @@ class AgentApp(App):
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
         mcp_servers: dict | None = None,
+        subagent_runner_factory=None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -142,12 +153,15 @@ class AgentApp(App):
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
         self._mcp_servers = mcp_servers
-        self.runner, self.strategy = self._build_runner(session)
+        self._subagent_runner_factory = subagent_runner_factory
+        self.runner, self.strategy, self.subagents = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._mcp_worker = None
         self._live_reasoning: ReasoningCell | None = None
         self._live_text: AssistantCell | None = None
         self._tool_cells: dict[str, ToolCallCell] = {}
+        self._subagent_cells: dict[str, SubAgentCell] = {}
+        self._pending_injections: list[SubAgentTask] = []
         self._pending_images: list[ImageContent] = []
 
     @property
@@ -173,6 +187,7 @@ class AgentApp(App):
         self._refresh_status()
         await self._replay_history()
         self._start_mcp_worker()
+        self._start_subagent_worker()
         if self.runner.idle():
             self.query_one("#prompt", Input).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
@@ -209,6 +224,12 @@ class AgentApp(App):
             )
         for label, error in registry.failures.items():
             await self._notice(f"MCP: {label} failed — {error}", error=True)
+
+    async def on_unmount(self) -> None:
+        """Close the sub-agent manager so no background child task outlives the
+        app (a leaked task fails the suite)."""
+        if self.subagents is not None:
+            await self.subagents.aclose()
 
     # ── input ──────────────────────────────────────────────────────────────────
 
@@ -262,6 +283,7 @@ class AgentApp(App):
             self._refresh_status()
         finally:
             self._set_busy(False)
+            self._schedule_subagent_flush()
 
     async def _resolve_approvals(self) -> None:
         """Collect verdicts for every pending execution through the modal,
@@ -283,6 +305,52 @@ class AgentApp(App):
             collected.append((execution, answers))
         for execution, answers in collected:
             self.strategy.apply_answer(execution, answers)
+
+    # ── sub-agents ───────────────────────────────────────────────────────────────
+
+    def _start_subagent_worker(self) -> None:
+        if self.subagents is not None:
+            self.run_worker(
+                self._consume_subagent_updates(),
+                group="subagents",
+                exclusive=True,
+            )
+
+    async def _consume_subagent_updates(self) -> None:
+        """Reflect each sub-agent transition into its cell; when one finishes,
+        queue its result and try to hand it back to the model."""
+        async for task in self.subagents.updates():
+            await self._render_subagent(task)
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+                self._pending_injections.append(task)
+                self._flush_subagent_results()
+
+    async def _render_subagent(self, task: SubAgentTask) -> None:
+        cell = self._subagent_cells.get(task.id)
+        if cell is None:
+            cell = SubAgentCell(task)
+            self._subagent_cells[task.id] = cell
+            await self._mount_cell(cell)
+        else:
+            cell.update_task(task)
+
+    def _schedule_subagent_flush(self) -> None:
+        """Flush from OUTSIDE the drive worker: starting a drive from within the
+        exclusive drive worker's own teardown would cancel that worker."""
+        if self.subagents is not None:
+            self.call_after_refresh(self._flush_subagent_results)
+
+    def _flush_subagent_results(self) -> None:
+        """Inject finished sub-agent results into the parent conversation and
+        re-drive — but only when the parent is idle, so a live turn is never
+        cancelled. `post_message` flips the status to PENDING synchronously, so
+        a second flush before the drive starts is a no-op."""
+        if not self._pending_injections or not self.runner.idle():
+            return
+        for task in self._pending_injections:
+            self.runner.post_message(_subagent_injection_text(task))
+        self._pending_injections.clear()
+        self._start_drive()
 
     # ── event rendering ────────────────────────────────────────────────────────
 
@@ -482,6 +550,8 @@ class AgentApp(App):
         await self._quit()
 
     async def _quit(self) -> None:
+        if self.subagents is not None:
+            await self.subagents.aclose()
         save_session(self.runner.session, self._session_dir)
         self.exit()
 
@@ -498,6 +568,7 @@ class AgentApp(App):
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
             mcp_servers=self._mcp_servers,
+            subagent_runner_factory=self._subagent_runner_factory,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:
@@ -505,13 +576,18 @@ class AgentApp(App):
         runner so the new conversation drives cleanly; under `--faux` the
         scripted provider is stateful and already spent, which is a demo-only
         edge (real runs pass provider=None and build fresh clients per turn)."""
-        self.runner, self.strategy = self._build_runner(session)
+        if self.subagents is not None:
+            await self.subagents.aclose()
+        self.runner, self.strategy, self.subagents = self._build_runner(session)
         await self.query_one("#transcript", VerticalScroll).remove_children()
         self._live_reasoning = None
         self._live_text = None
         self._tool_cells.clear()
+        self._subagent_cells.clear()
+        self._pending_injections.clear()
         self._pending_images.clear()
         self._start_mcp_worker()  # the fresh runner's registry lists + notices + OAuths up front
+        self._start_subagent_worker()
         self._refresh_status()
         self.query_one("#prompt", Input).focus()
 

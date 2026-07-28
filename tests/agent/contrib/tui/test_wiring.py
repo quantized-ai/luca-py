@@ -20,6 +20,7 @@ from .helpers import fresh_session
 MATH_TOOLS = {"add", "subtract", "multiply"}
 SHELL_TOOLS = {"read", "glob", "grep", "edit", "write", "apply_patch", "bash"}
 MEMORY_TOOLS = {"read_scratchpad", "write_scratchpad", "read_todo", "update_todos"}
+SUBAGENT_TOOLS = {"task"}
 
 # What one demo tool looks like on the wire: the `ToolSpec.input_schema`
 # snapshotted from `BinaryOp` at `get_tool_spec()` time, mapped straight onto
@@ -42,17 +43,18 @@ MULTIPLY_WIRE_TOOL = LucaTool(
 async def test_build_runner_composes_all_tool_families(tmp_path):
     session = fresh_session()
 
-    runner, strategy = build_runner(session, workspace=tmp_path)
+    runner, strategy, manager = build_runner(session, workspace=tmp_path)
 
     assert isinstance(runner, PluginAgentSessionRunner)
     assert runner.session is session
+    assert manager is not None
     names = {tool.name for tool in await runner.build_tool_list()}
-    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS
+    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS | SUBAGENT_TOOLS
     assert strategy.mode is PermissionMode.ASK
 
 
 async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):
-    runner, _ = build_runner(fresh_session(), workspace=tmp_path)
+    runner, _, _ = build_runner(fresh_session(), workspace=tmp_path)
 
     tools = await runner.build_tool_list()
 
@@ -64,7 +66,7 @@ async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):
 def test_build_runner_mode_passthrough(tmp_path):
     session = fresh_session()
 
-    _, strategy = build_runner(session, workspace=tmp_path, mode="yolo")
+    _, strategy, _ = build_runner(session, workspace=tmp_path, mode="yolo")
 
     assert strategy.mode is PermissionMode.YOLO
 

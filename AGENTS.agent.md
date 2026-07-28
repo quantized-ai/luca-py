@@ -55,9 +55,12 @@ luca/agent/
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy
 │   │   └── mixin.py     # ResourcePermission, AnswerOption, PermissionRequest, ResourcePermissionToolMixin
 │   ├── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
-│   └── tui/             # the Textual terminal UI (AgentApp + wiring + approval modal);
-│       │                #   Textual-free logic in approvals.py / render.py / sessions.py / wiring.py
-│       │                #   — needs the `tui` dependency group (a uv default group)
+│   ├── tui/             # the Textual terminal UI (AgentApp + wiring + approval modal);
+│   │   │                #   Textual-free logic in approvals.py / render.py / sessions.py / wiring.py
+│   │   │                #   — needs the `tui` dependency group (a uv default group)
+│   └── subagents/       # the `task` tool + SubAgentManager — read-only background
+│                        #   sub-agents, each its own runner + session; results
+│                        #   injected back into the parent on an idle turn
 └── core/
     ├── __init__.py      # external surface: AgentSessionRunner, ToolRegistry, PreparedTool,
     │                    #   SystemPromptAssembler, all entry types, exceptions.
@@ -110,6 +113,15 @@ first whether it belongs to the core (data model, runner, strategy contracts)
 or to a contrib package (everything else). Each contrib package gets its own
 docs folder under `docs/agent/contrib/<package>/` and self-scoped tests under
 `tests/agent/contrib/`.
+
+**Concurrent / nested runs are a contrib concern, built on one invariant the
+core enforces:** an `AgentSessionRunner` drives one run at a time (`_active_run`
+guards it) and mutates its `AgentSession` in place with no locks, so every
+concurrent run needs its OWN runner and its OWN session — never share either,
+and never write the parent session a tool was handed (it is read-only). There is
+no cancellation-token hierarchy; forward cancellation explicitly, and tear
+background `asyncio` tasks down on exit (a leaked task fails the suite). See
+`contrib/subagents` for the worked example.
 
 ## Design principles
 

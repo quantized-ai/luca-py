@@ -11,6 +11,7 @@ from __future__ import annotations
 from rich.markdown import Markdown
 from textual.widgets import Static
 
+from luca.agent.contrib.subagents import SubAgentTask, TaskStatus
 from luca.agent.core.models import CompactionEntry, ExecutionStatus, ToolExecution
 
 from .render import (
@@ -177,3 +178,45 @@ class ToolCallCell(TranscriptCell):
         self.add_class("-error" if is_error else "-ok")
         self._show_status()
         self.set_text(f"{self.call_text}\n→ {clip_text(result_text)}")
+
+
+class SubAgentCell(TranscriptCell):
+    """One background sub-agent's lifecycle in a single cell: the task line, a
+    status border subtitle with a running step count, and the final result (or
+    error) at the terminal outcome. Coarse status only — the child's own token
+    stream never reaches the transcript."""
+
+    role = "sub-agent"
+
+    DEFAULT_CSS = """
+    SubAgentCell { border: round $secondary; }
+    SubAgentCell.-running { border: round $warning; }
+    SubAgentCell.-ok { border: round $success; }
+    SubAgentCell.-error { border: round $error; }
+    """
+
+    def __init__(self, task: SubAgentTask) -> None:
+        self.task_line = f"{task.agent_type}: {task.title}"
+        super().__init__(self.task_line)
+        self.task_id = task.id
+        self.status: TaskStatus = task.status
+        self.border_title = f"sub-agent · {task.agent_type}"
+        self._apply(task)
+
+    def update_task(self, task: SubAgentTask) -> None:
+        self._apply(task)
+
+    def _apply(self, task: SubAgentTask) -> None:
+        self.status = task.status
+        self.border_subtitle = (
+            f"running · step {task.steps}" if task.status is TaskStatus.RUNNING else task.status.value
+        )
+        self.remove_class("-running", "-ok", "-error")
+        if task.status is TaskStatus.RUNNING:
+            self.add_class("-running")
+        elif task.status is TaskStatus.DONE:
+            self.add_class("-ok")
+            self.set_text(f"{self.task_line}\n→ {clip_text(task.result or '')}")
+        elif task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+            self.add_class("-error")
+            self.set_text(f"{self.task_line}\n→ {task.error or task.status.value}")

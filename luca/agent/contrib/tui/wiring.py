@@ -22,7 +22,15 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
+from luca.agent.contrib.subagents import (
+    BUILTIN_AGENT_TYPES,
+    RunnerFactory,
+    SubAgentManager,
+    SubAgentPlugin,
+    build_readonly_registry,
+)
 from luca.agent.contrib.tools import Tool
+from luca.agent.core import AgentSessionRunner
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import AgentSession, LLMConfig
 from luca.client.testing import (
@@ -136,6 +144,29 @@ def faux_model() -> LLMConfig:
     return LLMConfig(model="fake-model", provider="faux")
 
 
+def _default_subagent_runner_factory(
+    workspace: str | os.PathLike[str],
+    provider,
+) -> RunnerFactory:
+    """The production child-runner factory: each sub-agent gets the read-only
+    registry, its type's system prompt plus the workspace note, and the parent's
+    `provider` (None in real runs, so the client resolves from the cache)."""
+
+    def factory(agent_type: str, child_session: AgentSession) -> AgentSessionRunner:
+        profile = BUILTIN_AGENT_TYPES[agent_type]
+        return AgentSessionRunner(
+            child_session,
+            tool_registry=build_readonly_registry(workspace),
+            system_prompt_parts=[
+                profile.system_prompt,
+                f"Your workspace directory is {Path(workspace)}; relative paths resolve against it.",
+            ],
+            provider=provider,
+        )
+
+    return factory
+
+
 def build_runner(
     session: AgentSession,
     *,
@@ -146,13 +177,20 @@ def build_runner(
     additional_directories: list | None = None,
     extra_rules: list | None = None,
     mcp_servers: dict | None = None,
-) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
-    """The full demo composition: shell + memory plugins, the math tools, one
-    shared strategy. `provider=` is the zero-logic passthrough the tests use
-    to inject a `FauxProvider`; `compaction_policy=` is the same for
+    subagents: bool = True,
+    subagent_runner_factory: RunnerFactory | None = None,
+) -> tuple[PluginAgentSessionRunner, PermissionStrategy, SubAgentManager | None]:
+    """The full demo composition: shell + memory + sub-agent plugins, the math
+    tools, one shared strategy. `provider=` is the zero-logic passthrough the
+    tests use to inject a `FauxProvider`; `compaction_policy=` is the same for
     compaction — no policy ships with the demo yet, so `/compact` reports that
     none is configured until one is passed here. `mcp_servers=` (when set) adds
-    an `McpPlugin` sharing the one strategy, so MCP tools pass the same gate."""
+    an `McpPlugin` sharing the one strategy, so MCP tools pass the same gate.
+
+    Returns the `SubAgentManager` (or `None` when `subagents=False`) so the app
+    can drain its background tasks and close them on exit.
+    `subagent_runner_factory=` overrides the child-runner factory — the seam
+    tests use to give each concurrent sub-agent its own `FauxProvider`."""
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
@@ -171,6 +209,13 @@ def build_runner(
         mcp_plugin = build_mcp_plugin(mcp_servers, strategy)
         if mcp_plugin is not None:
             plugins.append(mcp_plugin)
+    manager: SubAgentManager | None = None
+    if subagents:
+        manager = SubAgentManager(
+            runner_factory=subagent_runner_factory or _default_subagent_runner_factory(workspace, provider),
+            child_model=session.session_config.llm_config,
+        )
+        plugins.append(SubAgentPlugin(manager, strategy))
     runner = PluginAgentSessionRunner(
         session,
         tool_registry=registry,
@@ -179,7 +224,7 @@ def build_runner(
         provider=provider,
         compaction_policy=compaction_policy,
     )
-    return runner, strategy
+    return runner, strategy, manager
 
 
 def build_faux_provider() -> FauxProvider:
