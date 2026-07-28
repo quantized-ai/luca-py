@@ -56,18 +56,18 @@ class FileTokenStorage(TokenStorage):
         self._path.write_text(json.dumps(whole, indent=2))
 
     async def get_tokens(self) -> OAuthToken | None:
-        raw = self._read().get("tokens")
+        raw = (await asyncio.to_thread(self._read)).get("tokens")
         return OAuthToken.model_validate(raw) if raw else None
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        self._write({"tokens": tokens.model_dump(mode="json")})
+        await asyncio.to_thread(self._write, {"tokens": tokens.model_dump(mode="json")})
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        raw = self._read().get("client_info")
+        raw = (await asyncio.to_thread(self._read)).get("client_info")
         return OAuthClientInformationFull.model_validate(raw) if raw else None
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        self._write({"client_info": client_info.model_dump(mode="json")})
+        await asyncio.to_thread(self._write, {"client_info": client_info.model_dump(mode="json")})
 
 
 async def capture_authorization_code(

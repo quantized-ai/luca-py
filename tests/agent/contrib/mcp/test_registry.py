@@ -49,7 +49,9 @@ def _execution(name: str, arguments: dict) -> ToolExecution:
 
 
 async def test_get_tools_lists_namespaced_specs_that_carry_the_server_schema():
-    specs = {spec.name: spec for spec in await _registry().get_tools(SESSION)}
+    registry = _registry()
+    await registry.wait_listed()  # get_tools is non-blocking; the listing is out of band
+    specs = {spec.name: spec for spec in await registry.get_tools(SESSION)}
     assert set(specs) == {"t__echo", "t__add", "t__slow"}
     echo = specs["t__echo"]
     assert echo.tool_kind is ToolKind.OTHER
@@ -59,7 +61,9 @@ async def test_get_tools_lists_namespaced_specs_that_carry_the_server_schema():
 
 
 async def test_a_known_tool_births_pending_with_the_server_schema():
-    draft = await _registry().create_execution(
+    registry = _registry()
+    await registry.wait_listed()
+    draft = await registry.create_execution(
         SESSION,
         ToolCall(id="c", name="t__add", arguments={"a": 1, "b": 2}),
     )
@@ -72,7 +76,9 @@ async def test_a_known_tool_births_pending_with_the_server_schema():
 
 
 async def test_an_unknown_tool_births_not_found():
-    draft = await _registry().create_execution(SESSION, ToolCall(id="c", name="t__missing", arguments={}))
+    registry = _registry()
+    await registry.wait_listed()
+    draft = await registry.create_execution(SESSION, ToolCall(id="c", name="t__missing", arguments={}))
     assert draft.status is ExecutionStatus.NOT_FOUND
     assert draft.tool_spec is None
 
@@ -102,6 +108,7 @@ async def test_yolo_allows_and_ask_defers_to_the_user():
 
 async def test_a_server_that_fails_to_list_is_skipped_and_recorded():
     registry = McpToolRegistry({"bad": StdioServer(command="luca-no-such-command-xyz")}, YoloPermissionPolicy())
+    await registry.wait_listed()
     assert await registry.get_tools(SESSION) == []
     assert registry.connected_labels == []
     assert "bad" in registry.failures

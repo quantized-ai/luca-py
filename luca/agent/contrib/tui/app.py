@@ -193,6 +193,7 @@ class AgentApp(App):
         registry = self._find_mcp_registry()
         if registry is None:
             return
+        await registry.wait_listed()  # do the out-of-band listing off the turn's critical path
         specs = await registry.get_tools(self.runner.session)
         if registry.connected_labels:
             tools = len(specs)

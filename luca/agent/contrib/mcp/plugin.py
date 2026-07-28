@@ -8,19 +8,30 @@ there is nothing to start or stop.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from luca.agent.core import AgentSession
 
 from .config import McpServerDef
 from .registry import McpToolRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import httpx
+
+    from luca.agent.contrib.simple_tool_registry.permissions import PermissionPolicy
+
+    from .config import HttpServer
 
 
 class McpPlugin:
     def __init__(
         self,
         servers: dict[str, McpServerDef],
-        permission_policy,
+        permission_policy: PermissionPolicy,
         *,
-        auth_factory=None,
+        auth_factory: Callable[[str, HttpServer], httpx.Auth | None] | None = None,
     ) -> None:
         self._servers = servers
         self._policy = permission_policy

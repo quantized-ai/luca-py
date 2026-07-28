@@ -51,8 +51,17 @@ async def open_session(server: McpServerDef, *, auth=None) -> AsyncIterator[Clie
 
 
 async def list_tools(server: McpServerDef, *, auth=None) -> list[types.Tool]:
+    """Every tool, following the server's pagination cursor to the end."""
+    tools: list[types.Tool] = []
     async with open_session(server, auth=auth) as session:
-        return (await session.list_tools()).tools
+        cursor: str | None = None
+        while True:
+            result = await session.list_tools(cursor=cursor)
+            tools.extend(result.tools)
+            cursor = result.nextCursor
+            if cursor is None:
+                break
+    return tools
 
 
 async def call_tool(

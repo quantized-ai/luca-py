@@ -1,9 +1,9 @@
 """McpToolRegistry — exposes external MCP tools, connecting per call.
 
-`get_tools` lists each configured server's tools once and caches the specs,
-namespaced `label__tool`. Execution opens a fresh session inside the prepared
-callable, calls the tool, and closes, so there is no long-lived connection and
-no lifecycle for anyone to own. Approval delegates to the shared permission
+`get_tools` returns a cached tool list and refreshes it out of band (a
+background listing pass), so the four registry methods stay local and
+non-blocking as the contract requires; the network work of a call happens inside
+the callable `prepare()` returns. Approval delegates to the shared permission
 policy, so MCP tools pass the same gate as every other tool; each is
 `ToolKind.OTHER` (the framework cannot know an external tool's behavior) and
 declares no resources.
@@ -12,6 +12,7 @@ declares no resources.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from mcp import types
 
@@ -36,6 +37,13 @@ from luca.agent.core import (
 
 from . import session as mcp_session
 from .config import HttpServer, McpServerDef
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import httpx
+
+    from luca.agent.contrib.simple_tool_registry.permissions import PermissionPolicy
 
 # Separator between a server label and a tool name on the wire.
 SEP = "__"
@@ -100,18 +108,18 @@ class McpToolRegistry(ToolRegistry):
     def __init__(
         self,
         servers: dict[str, McpServerDef],
-        permission_policy,
+        permission_policy: PermissionPolicy,
         *,
-        auth_factory=None,
+        auth_factory: Callable[[str, HttpServer], httpx.Auth | None] | None = None,
     ) -> None:
         for label in servers:
             if SEP in label:
                 raise ValueError(f"MCP server label {label!r} may not contain {SEP!r}")
         self._servers = servers
         self._policy = permission_policy
-        self._auth_factory = auth_factory  # (label, HttpServer) -> httpx.Auth | None
-        self._specs: dict[str, ToolSpec] | None = None  # cached once by _ensure_listed
-        self._lock = asyncio.Lock()  # serialize listing (a startup warm-up may race the first turn)
+        self._auth_factory = auth_factory
+        self._specs: dict[str, ToolSpec] | None = None  # cache; None until the first listing lands
+        self._listing: asyncio.Task | None = None  # the one out-of-band listing pass
         self._connected: set[str] = set()  # servers that listed successfully
         self.failures: dict[str, str] = {}  # label -> error, surfaced by the TUI notice
 
@@ -124,38 +132,54 @@ class McpToolRegistry(ToolRegistry):
             return self._auth_factory(label, server)
         return None
 
-    async def _ensure_listed(self) -> dict[str, ToolSpec]:
-        """List every server's tools once, concurrently, and cache the specs. A
+    def _start_listing(self) -> asyncio.Task | None:
+        """Kick the single out-of-band listing pass. Non-blocking and idempotent
+        (rule 1's "warming a catalog"): the network happens in the task, never in
+        the four contract methods."""
+        if self._specs is None and self._listing is None:
+            self._listing = asyncio.ensure_future(self._refresh())
+        return self._listing
+
+    async def _refresh(self) -> None:
+        """List every server concurrently and publish the cache in one swap. A
         server that fails to list contributes no tools and is recorded in
-        `failures` (the TUI surfaces it), never raising (a raise in `get_tools`
-        aborts the run). The lock keeps a startup warm-up from racing the first
-        turn into a double listing (and a double OAuth prompt)."""
-        async with self._lock:
-            if self._specs is None:
-                specs: dict[str, ToolSpec] = {}
+        `failures` (the TUI surfaces it)."""
+        specs: dict[str, ToolSpec] = {}
 
-                async def _list(label: str, server: McpServerDef) -> None:
-                    auth = self._auth_for(label, server)
-                    try:
-                        tools = await mcp_session.list_tools(server, auth=auth)
-                    except Exception as exc:  # any connect/list failure → skip, record
-                        self.failures[label] = str(exc)
-                        return
-                    self._connected.add(label)
-                    for tool in tools:
-                        namespaced = f"{label}{SEP}{tool.name}"
-                        specs[namespaced] = _to_tool_spec(namespaced, tool)
+        async def _list(label: str, server: McpServerDef) -> None:
+            auth = self._auth_for(label, server)
+            try:
+                tools = await mcp_session.list_tools(server, auth=auth)
+            except Exception as exc:  # any connect/list failure → skip, record
+                self.failures[label] = str(exc)
+                return
+            self._connected.add(label)
+            for tool in tools:
+                namespaced = f"{label}{SEP}{tool.name}"
+                specs[namespaced] = _to_tool_spec(namespaced, tool)
 
-                await asyncio.gather(*(_list(label, server) for label, server in self._servers.items()))
-                self._specs = specs
-        return self._specs
+        await asyncio.gather(*(_list(label, server) for label, server in self._servers.items()))
+        self._specs = specs
+
+    async def wait_listed(self) -> None:
+        """Await the out-of-band listing. The TUI calls this in its startup
+        worker (to post the notice off the turn's critical path); tests call it
+        to make the cache deterministic."""
+        task = self._start_listing()
+        if task is not None:
+            await task
 
     async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
-        return list((await self._ensure_listed()).values())
+        # local and non-blocking (contract): kick the out-of-band refresh and
+        # return the current cache. get_tools is dynamic, so the list grows once
+        # the refresh lands on a later call.
+        self._start_listing()
+        return list((self._specs or {}).values())
 
     async def create_execution(self, session: AgentSession, call: ToolCall) -> ToolExecution:
-        specs = await self._ensure_listed()
-        spec = specs.get(call.name)
+        # a pure cache read; the model only calls a tool `get_tools` already
+        # listed, so the spec is present by the time we resolve it
+        spec = (self._specs or {}).get(call.name)
         if spec is None:
             return _draft(
                 call,

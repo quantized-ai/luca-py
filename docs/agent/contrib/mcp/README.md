@@ -57,14 +57,16 @@ as written. Two consequences:
   `session.py` opens a short-lived `ClientSession`, uses it, and closes it, all inside one task. That
   satisfies the SDK's rule that a session be entered and exited in the same task, which is why the
   async `get_tools` plus the `prepare()` callable make the old manager unnecessary.
-- `McpToolRegistry` is a `ToolRegistry`. `get_tools` lists each server once and caches the specs
-  (namespaced `label__tool`), each carrying the server's `inputSchema` as the `ToolSpec.input_schema`.
+- `McpToolRegistry` is a `ToolRegistry`. `get_tools` is non-blocking, as the registry contract
+  requires: it returns a cached tool list (namespaced `label__tool`, each carrying the server's
+  `inputSchema` as `ToolSpec.input_schema`) and refreshes that list out of band in a background pass.
   Its `prepare()` returns a callable that opens a fresh session, calls the tool, and closes. The
   registry is one child of the TUI's `ProxyToolRegistry`, via `McpPlugin`, sharing the one
   `PermissionStrategy`.
-- The TUI lists the servers once at startup in a background worker (`AgentApp.on_mount`): it warms the
-  cache, runs any OAuth flow up front, and posts a notice of the connected servers and tool count.
-  There is still nothing to close on exit, because execution is per call.
+- The TUI kicks that out-of-band listing at startup in a worker (`AgentApp.on_mount`), off the turn's
+  critical path, so the tools, any OAuth flow, and the notice are ready before your first message. On
+  a cold start the tools appear a turn later than the very first (the list is dynamic). There is
+  nothing to close on exit, because execution is per call.
 - A server that fails to list contributes no tools and is recorded, and the startup notice flags it.
 - Results map to `ExecutionResult` content (text → `TextContent`, image → `ImageContent`).
 - The trade-off: each tool call re-spawns the stdio subprocess and re-runs `initialize`, and a server

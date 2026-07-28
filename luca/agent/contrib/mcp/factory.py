@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .config import HttpServer, McpServerDef
 from .plugin import McpPlugin
+
+if TYPE_CHECKING:
+    from luca.agent.contrib.simple_tool_registry.permissions import PermissionPolicy
 
 
 def _oauth_store_dir() -> Path:
@@ -20,7 +24,7 @@ def _oauth_store_dir() -> Path:
 
 def build_mcp_plugin(
     servers: dict[str, McpServerDef],
-    permission_policy,
+    permission_policy: PermissionPolicy,
     *,
     oauth_store_dir: Path | None = None,
 ) -> McpPlugin | None:
