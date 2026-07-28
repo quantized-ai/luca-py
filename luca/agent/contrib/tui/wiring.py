@@ -145,12 +145,14 @@ def build_runner(
     compaction_policy=None,
     additional_directories: list | None = None,
     extra_rules: list | None = None,
+    mcp_servers: dict | None = None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy. `provider=` is the zero-logic passthrough the tests use
     to inject a `FauxProvider`; `compaction_policy=` is the same for
     compaction — no policy ships with the demo yet, so `/compact` reports that
-    none is configured until one is passed here."""
+    none is configured until one is passed here. `mcp_servers=` (when set) adds
+    an `McpPlugin` sharing the one strategy, so MCP tools pass the same gate."""
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
@@ -162,10 +164,17 @@ def build_runner(
         tools=[AddTool(), SubtractTool(), MultiplyTool()],
         permission_policy=strategy,
     )
+    plugins: list = [MemoryPlugin(), shell]
+    if mcp_servers:
+        from luca.agent.contrib.mcp import build_mcp_plugin
+
+        mcp_plugin = build_mcp_plugin(mcp_servers, strategy)
+        if mcp_plugin is not None:
+            plugins.append(mcp_plugin)
     runner = PluginAgentSessionRunner(
         session,
         tool_registry=registry,
-        plugins=[MemoryPlugin(), shell],
+        plugins=plugins,
         system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
         compaction_policy=compaction_policy,

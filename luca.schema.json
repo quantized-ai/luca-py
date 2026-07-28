@@ -55,6 +55,44 @@
       "title": "CompactionSettings",
       "type": "object"
     },
+    "HttpServer": {
+      "additionalProperties": false,
+      "description": "A remote MCP server over Streamable HTTP. `oauth` turns on the browser\nOAuth flow; otherwise `headers` carries any static auth.",
+      "properties": {
+        "type": {
+          "const": "http",
+          "default": "http",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
+        "oauth": {
+          "default": false,
+          "title": "Oauth",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "HttpServer",
+      "type": "object"
+    },
     "ModelConfig": {
       "additionalProperties": false,
       "properties": {
@@ -385,6 +423,46 @@
       "title": "RuntimeSettings",
       "type": "object"
     },
+    "StdioServer": {
+      "additionalProperties": false,
+      "description": "A local MCP server run as a subprocess over stdio.",
+      "properties": {
+        "type": {
+          "const": "stdio",
+          "default": "stdio",
+          "title": "Type",
+          "type": "string"
+        },
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "StdioServer",
+      "type": "object"
+    },
     "ToolKind": {
       "enum": [
         "read",
@@ -444,6 +522,27 @@
       "title": "Models",
       "type": "object"
     },
+    "mcp": {
+      "additionalProperties": {
+        "discriminator": {
+          "mapping": {
+            "http": "#/$defs/HttpServer",
+            "stdio": "#/$defs/StdioServer"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/StdioServer"
+          },
+          {
+            "$ref": "#/$defs/HttpServer"
+          }
+        ]
+      },
+      "title": "Mcp",
+      "type": "object"
+    },
     "workspace": {
       "anyOf": [
         {
@@ -476,7 +575,7 @@
       "title": "Streaming"
     }
   },
-  "title": "luca.json",
+  "title": "LucaConfig",
   "type": "object",
   "$id": "https://github.com/quantized-ai/luca-py/luca.schema.json",
   "description": "Project + user configuration for the Luca TUI."

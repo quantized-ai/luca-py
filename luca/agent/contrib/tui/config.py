@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from luca.agent.contrib.compaction import SummarizingCompactionPolicy
 from luca.agent.contrib.compaction.context import DEFAULT_WINDOW
 from luca.agent.contrib.compaction.policy import DEFAULT_THRESHOLD
+from luca.agent.contrib.mcp.config import McpServerDef
 from luca.agent.contrib.resource_permissions import (
     PermissionMatchMode,
     PermissionMode,
@@ -127,6 +128,7 @@ class LucaConfig(BaseModel):
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
     providers: dict[str, ProviderDef] = Field(default_factory=dict)
     models: dict[str, list[str]] = Field(default_factory=dict)
+    mcp: dict[str, McpServerDef] = Field(default_factory=dict)
     workspace: str | None = None
     additional_directories: list[str] = Field(default_factory=list)
     streaming: bool | None = None

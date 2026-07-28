@@ -129,6 +129,7 @@ class AgentApp(App):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
+        mcp_servers: dict | None = None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -140,6 +141,7 @@ class AgentApp(App):
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
+        self._mcp_servers = mcp_servers
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._live_reasoning: ReasoningCell | None = None
@@ -169,10 +171,36 @@ class AgentApp(App):
     async def on_mount(self) -> None:
         self._refresh_status()
         await self._replay_history()
+        if self._mcp_servers:
+            # list the MCP servers once at startup (off the turn's critical
+            # path) so tools, any OAuth flow, and the notice happen up front;
+            # the listing is cached, so the first turn does not re-list
+            self._mcp_worker = self.run_worker(self._connect_mcp(), group="mcp")
         if self.runner.idle():
             self.query_one("#prompt", Input).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
+
+    def _find_mcp_registry(self):
+        """The per-call MCP registry among the runner's registries (the proxy's
+        children), so the connect worker can list once and report status."""
+        from luca.agent.contrib.mcp.registry import McpToolRegistry
+
+        registries = getattr(self.runner.tool_registry, "registries", ())
+        return next((r for r in registries if isinstance(r, McpToolRegistry)), None)
+
+    async def _connect_mcp(self) -> None:
+        registry = self._find_mcp_registry()
+        if registry is None:
+            return
+        specs = await registry.get_tools(self.runner.session)
+        if registry.connected_labels:
+            tools = len(specs)
+            await self._notice(
+                f"MCP: connected {', '.join(registry.connected_labels)} ({tools} tool{'s' if tools != 1 else ''})",
+            )
+        for label, error in registry.failures.items():
+            await self._notice(f"MCP: {label} failed — {error}", error=True)
 
     # ── input ──────────────────────────────────────────────────────────────────
 
@@ -461,6 +489,7 @@ class AgentApp(App):
             compaction_policy=self._compaction_policy,
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
+            mcp_servers=self._mcp_servers,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:

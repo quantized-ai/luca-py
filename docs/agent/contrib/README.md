@@ -24,6 +24,7 @@ from luca.agent.contrib.tools import Tool
 | [`shell/`](shell/README.md) | The seven shell tools (read/glob/grep/edit/write/apply_patch/bash) + `ShellAccessPlugin` — workspace-scoped, two-step directory permissions |
 | [`tui/`](tui/README.md) | The Textual terminal UI — transcript, streaming, modal approvals, cancellation; the runnable demo behind `main.py` |
 | [`compaction/`](compaction/README.md) | `SummarizingCompactionPolicy` — a ready-made `CompactionPolicy` (the context gauge + an LLM summary), with a `keep_turns` knob |
+| [`mcp/`](mcp/README.md) | Connect to external MCP servers (stdio / HTTP / OAuth) and expose their tools, namespaced and permission-gated — optional `mcp` extra |
 | `memory` | An in-memory scratchpad + todo list packaged as `MemoryPlugin` — documented in [`09-plugins.md`](../09-plugins.md) |
 
 Next: [`tools/README.md`](tools/README.md).
