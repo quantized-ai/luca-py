@@ -43,7 +43,7 @@ token counting happens by default — that's yours to add by overriding
 
 ## 2. Tool outcomes on the wire
 
-`project_tool_execution(execution, entries)` is the single customization point
+`project_tool_execution(entry, entries)` is the single customization point
 for every tool status. `COMPLETED` projects the tool's own `result.content` and preserves
 `result.is_error`. Every other terminal status derives error text (always
 `is_error=True`) from `status` + the structured `error`:
@@ -82,7 +82,10 @@ class Redacting(ConversationProjector):
 
 That is why the projector must be **deterministic** for the same durable
 execution: no wall clock, no live registry, no transient state. (The event may
-fire now and the request re-project after a reload — they must agree.)
+fire now and the request re-project after a reload — they must agree.) Read
+only the execution — `status`, `error`, `result`, `raw_tool_call`, and
+`tool_spec`, which a session restores from its `tool_specs` store on load
+([02](02-data-model.md)).
 
 ## 4. History policy — override `project`
 

@@ -42,8 +42,9 @@ tests/agent/contrib/shell/
 - **`ShellTool(ResourcePermissionToolMixin, Tool)`** — the base. Every tool:
   - takes `workdir` at construction (defaults to `Path.cwd()`); relative
     argument paths resolve against it via `_resolve()` (normpath, no symlink
-    resolution). `ToolContext` carries no cwd — the workdir is instance state.
-  - implements `_run(args, context, *, cancellation_token) -> ExecutionResult`;
+    resolution). The `AgentSession` carries no cwd — the workdir is instance
+    state.
+  - implements `_run(args, session, *, cancellation_token) -> ExecutionResult`;
     the base `execute` wrapper catches `ShellToolError` and returns it as an
     `ExecutionResult(is_error=True)`. Domain failures (missing file, ambiguous
     edit, bad regex, non-zero exit) are results, never raised to the runner.
@@ -57,8 +58,8 @@ tests/agent/contrib/shell/
   serializes concurrent edit/write to the same file.
 - **Blocking IO** runs in `asyncio.to_thread`; process-spawning tools use
   `start_new_session=True` and kill the process group on
-  `asyncio.CancelledError` (the core cancellation contract in
-  `luca/agent/core/tools.py`).
+  `asyncio.CancelledError` (the cancellation contract on `Tool`, in
+  `luca/agent/contrib/tools.py`).
 
 ## Per-tool summary
 

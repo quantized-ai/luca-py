@@ -22,8 +22,8 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
-from luca.agent.core import Tool
-from luca.agent.core.context import CancellationToken, ToolContext
+from luca.agent.contrib.tools import Tool
+from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import AgentSession, LLMConfig
 from luca.client.testing import (
     FauxProvider,
@@ -52,7 +52,7 @@ class AddTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -67,7 +67,7 @@ class SubtractTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -82,7 +82,7 @@ class MultiplyTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:

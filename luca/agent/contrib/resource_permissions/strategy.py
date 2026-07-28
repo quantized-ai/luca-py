@@ -47,6 +47,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from luca.agent.contrib.simple_tool_registry import PermissionPolicy
 from luca.agent.core.models import (
+    AgentSession,
     ApprovalDecision,
     ApprovalOption,
     ToolExecution,
@@ -185,7 +186,11 @@ class PermissionStrategy(PermissionPolicy):
                 pending.append(request)
         return pending
 
-    async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision:
+    async def decide(
+        self,
+        session: AgentSession,
+        tool_execution: ToolExecution,
+    ) -> ApprovalDecision:
         resolved = [self._resolve_pair(tool_execution, pair) for pair in self._required_pairs(tool_execution)]
         decision, via = _aggregate(resolved)
         return ApprovalDecision(decision=decision, metadata={"via": via})

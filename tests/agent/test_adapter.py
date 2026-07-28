@@ -1,15 +1,18 @@
 """Smoke tests for the adapter's two remaining translations: a KNOWN client
 assistant message renders into KNOWN agent message parts (the inbound
-direction), and a KNOWN agent Tool projects to a KNOWN client Tool definition.
+direction), and a KNOWN `ToolSpec` projects to a KNOWN client Tool definition.
 Declarative — hardcoded invariant in, full expected out. No logic, no helpers.
 (Conversation → LLM-message projection lives in `test_projection.py`.)
 """
 
-from pydantic import BaseModel, ConfigDict
-
-from luca.agent.core.adapter import message_to_parts, tool_to_luca_tool
-from luca.agent.core.models import TextContent, ThinkingContent, ToolCall
-from luca.agent.core.tools import Tool
+from luca.agent.core.adapter import message_to_parts, tool_spec_to_luca_tool
+from luca.agent.core.models import (
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolKind,
+    ToolSpec,
+)
 from luca.client.types import (
     AssistantMessage as LucaAssistantMessage,
     TextBlock,
@@ -18,17 +21,15 @@ from luca.client.types import (
     ToolCall as LucaToolCall,
 )
 
-
-class BinaryArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    a: int
-    b: int
-
-
-class AddTool(Tool):
-    name = "add"
-    description = "Add two numbers."
-    Args = BinaryArgs
+# A tool's arguments as the core carries them: a plain JSON Schema dict, never
+# a Pydantic class. Shared by the spec under test and the expected wire tool so
+# "straight through" is what the assertion reads as.
+ADD_SCHEMA = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+    "required": ["a", "b"],
+    "additionalProperties": False,
+}
 
 
 def test_message_to_parts_preserves_block_order():
@@ -47,11 +48,25 @@ def test_message_to_parts_preserves_block_order():
     ]
 
 
-def test_tool_projects_to_client_tool():
-    assert tool_to_luca_tool(AddTool()) == LucaTool(
+def test_tool_spec_projects_to_client_tool():
+    # `input_schema` goes to `parameters` verbatim, and the framework-only
+    # classification fields (kind, namespace, version, timeout, metadata) have
+    # no place on the wire.
+    spec = ToolSpec(
         name="add",
         description="Add two numbers.",
-        parameters=BinaryArgs,
+        input_schema=ADD_SCHEMA,
+        metadata={"owner": "builtin"},
+        tool_kind=ToolKind.OTHER,
+        namespace="builtin.math",
+        version="0.0.1",
+        timeout_in_ms=5_000,
+    )
+
+    assert tool_spec_to_luca_tool(spec) == LucaTool(
+        name="add",
+        description="Add two numbers.",
+        parameters=ADD_SCHEMA,
     )
 
 

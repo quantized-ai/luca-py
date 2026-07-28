@@ -151,7 +151,9 @@ markers, and `plan.nodes = list(nodes)` is always a legal full carry.
 
 The runner stamps `id`, `parent_id` and `created_at` on everything you create:
 one shared timestamp for the whole transition, parents threaded left to right,
-and `None` for a plan that opens with a created entry.
+and `None` for a plan that opens with a created entry. A created `ToolExecution`
+also has its `tool_spec` filed in `session.tool_specs` and its `tool_spec_id`
+stamped, exactly like one an ordinary turn wrote.
 
 ```python
 [entry.id]                                              # fold everything

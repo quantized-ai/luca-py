@@ -161,17 +161,20 @@ later switch to STRICT.
 
 Tools declare *what they need* and *what they suggest*: mix in the mixin and
 return an ordered list of `PermissionRequest`s from the one override point,
-`build_permission_requests(args, context)` (it receives the validated args).
-Most tools return one request:
+`build_permission_requests(args, session)` — it receives the validated args
+and the live session, read-only like every other tool-side hook. Most tools
+return one request:
 
 ```python
+from luca.agent.contrib.tools import Tool
+
 class ReadFileTool(ResourcePermissionToolMixin, Tool):
     name = "read_file"
     description = "Read a file from disk and return its contents."
     Args = ReadFileArgs
     tool_kind = ToolKind.READ
 
-    def build_permission_requests(self, args, context):
+    def build_permission_requests(self, args, session):
         return [PermissionRequest(
             resources=[ResourcePermission(permission="read", resource=args["path"])],
             answer_options=[
@@ -194,9 +197,9 @@ action, in presentation order — but requests are presentation grouping only:
 is never read by the strategy. `ResourcePermission` itself carries no
 metadata, so rules stay free of UX baggage and pair equality is pure.
 
-The mixin's `get_approval_context()` — the duck-typed convention
-`SimpleToolRegistry` reads (`Tool` itself declares no such method) —
-serializes the requests to the wire dict stored under
+The mixin's `async get_approval_context(args, session) -> dict` — the
+duck-typed convention `SimpleToolRegistry` awaits (`Tool` itself declares no
+such method) — serializes the requests to the wire dict stored under
 `extras["approval_context"]`:
 
 ```json
@@ -213,9 +216,16 @@ Applications never touch the raw dicts — `strategy.permission_requests()`
 hydrates them back into typed models for your approval UI. It is the tool
 author's responsibility to emit options that cover their own requirements.
 
+> ⚠️ **A raise here kills the call, not the run.** `SimpleToolRegistry`
+> catches anything `get_approval_context` throws and the call is born
+> `FAILED` with `details={"phase": "approval_context"}` — it never reaches
+> the strategy, so a `KeyError` in `build_permission_requests` reads as a
+> tool failure, not a denial.
+
 ## 7. How `decide()` resolves a call
 
-For each required pair (every request's pairs flattened; a request with
+`async decide(session, tool_execution)` is a pure query of the strategy's own
+state. For each required pair (every request's pairs flattened; a request with
 empty `resources` — or a call with no requests — contributes the implicit
 resource-less pair):
 

@@ -18,7 +18,7 @@ there) returns one request per action, in the order it wants them presented:
 
     class ReadFileTool(ResourcePermissionToolMixin, Tool):
         ...
-        def build_permission_requests(self, args, context):
+        def build_permission_requests(self, args, session):
             return [PermissionRequest(
                 resources=[
                     ResourcePermission(permission="read", resource=args["path"]),
@@ -28,14 +28,15 @@ there) returns one request per action, in the order it wants them presented:
 
 The mixin defines the `get_approval_context` convention `SimpleToolRegistry`
 reads (there is no base-class method to override — `Tool` doesn't declare
-one).
+one). Like every other tool-side hook it receives the live `AgentSession`;
+treat it as read-only.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from luca.agent.core import ToolContext
+from luca.agent.core import AgentSession
 
 
 class ResourcePermission(BaseModel):
@@ -80,10 +81,10 @@ class ResourcePermissionToolMixin:
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         raise NotImplementedError
 
-    async def get_approval_context(self, args: dict, context: ToolContext) -> dict:
-        requests = self.build_permission_requests(args, context)
+    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+        requests = self.build_permission_requests(args, session)
         return {"requests": [request.model_dump() for request in requests]}

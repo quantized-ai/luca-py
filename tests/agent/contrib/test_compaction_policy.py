@@ -1,6 +1,12 @@
 """SummarizingCompactionPolicy: the context gauge, the keep_turns split, and
 the plan it hands the core transition. No TUI; the summary call uses a
-FauxProvider. Core owns archiving/swapping and is tested in tests/agent."""
+FauxProvider. Core owns archiving/swapping and is tested in tests/agent.
+
+Two preconditions: a hand-written two-turn session for the plain cases, and
+`tests/agent/scenarios.py`'s `RICH_IDLE_SESSION` for the realistic one — a
+path carrying tool executions (whose specs are normalized into
+`session.tool_specs`), a pruned entry, a prior summary and cancel markers.
+"""
 
 from luca.agent.contrib.compaction import (
     SummarizingCompactionPolicy,
@@ -24,6 +30,7 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
+from tests.agent.scenarios import MODEL as RICH_MODEL, RICH_IDLE_SESSION
 
 MODEL = LLMConfig(model="fake-model", provider="faux")
 
@@ -69,6 +76,20 @@ def two_turn_session() -> AgentSession:
     )
 
 
+def pending_question_session() -> AgentSession:
+    """The same two exchanges plus a just-posted, unanswered `u3`."""
+    session = two_turn_session()
+    session.entries["u3"] = UserMessage(
+        id="u3",
+        parent_id="tf2",
+        created_at=5,
+        parts=[TextContent(text="Q3")],
+        context_tokens=1,
+    )
+    session.active_conversation.nodes.append("u3")
+    return session
+
+
 def _entry() -> CompactionEntry:
     return CompactionEntry(id="cmp", created_at=5, source=CompactionSource.USER)
 
@@ -82,6 +103,13 @@ def _faux(summary: str) -> FauxProvider:
     provider = FauxProvider()
     provider.set_responses([faux_assistant_message([faux_text(summary)], finish_reason="stop")])
     return provider
+
+
+class FixedSummary(SummarizingCompactionPolicy):
+    """Overrides the `summarize` seam: no provider, no LLM call."""
+
+    async def summarize(self, session, folded):
+        return "OVERRIDDEN SUMMARY", UsageCounters(input=1, output=2, total_tokens=3)
 
 
 # ── the gauge ──────────────────────────────────────────────────────────────
@@ -99,11 +127,18 @@ def test_calculate_utilization_ratio_is_used_over_window():
     assert calculate_utilization_ratio(two_turn_session(), default_window=8) == 0.5
 
 
-def test_should_compact_gates_on_threshold_and_enabled():
-    session = two_turn_session()
-    assert SummarizingCompactionPolicy(default_window=8, threshold=0.4).should_compact(session) is True
-    assert SummarizingCompactionPolicy(default_window=8, threshold=0.9).should_compact(session) is False
-    assert SummarizingCompactionPolicy(default_window=8, threshold=0.4, enabled=False).should_compact(session) is False
+def test_should_compact_is_true_once_utilization_reaches_the_threshold():
+    assert SummarizingCompactionPolicy(default_window=8, threshold=0.4).should_compact(two_turn_session()) is True
+
+
+def test_should_compact_is_false_below_the_threshold():
+    assert SummarizingCompactionPolicy(default_window=8, threshold=0.9).should_compact(two_turn_session()) is False
+
+
+def test_should_compact_is_false_when_disabled_however_full_the_window_is():
+    policy = SummarizingCompactionPolicy(default_window=8, threshold=0.4, enabled=False)
+
+    assert policy.should_compact(two_turn_session()) is False
 
 
 # ── select_keep (the keep_turns split) ───────────────────────────────────────
@@ -120,6 +155,18 @@ def test_keep_turns_one_keeps_the_last_exchange_including_its_user_message():
         list(session.active_conversation.nodes),
         session,
     ) == ["u2", "ts2", "a2", "tf2"]
+
+
+def test_the_cut_lands_on_an_exchange_boundary_and_never_strands_a_tool_call():
+    # a realistic path: the kept tail opens at the user message that prompted
+    # the last TurnStart, so `a3`'s tool call keeps `te3` and the earlier
+    # exchange keeps its own executions in the folded span
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+
+    assert SummarizingCompactionPolicy(keep_turns=1).select_keep(
+        list(session.active_conversation.nodes),
+        session,
+    ) == ["u3", "ts3", "a3", "te3", "cr1", "tf3"]
 
 
 # ── compact() → the plan ─────────────────────────────────────────────────────
@@ -168,22 +215,59 @@ async def test_keep_turns_keeps_the_tail_and_folds_the_head():
 async def test_a_trailing_unanswered_user_message_is_never_folded():
     # auto-compaction fires with a just-posted, unanswered question on the path;
     # folding it would drop the question. Full summary must still keep it.
-    session = two_turn_session()
-    session.entries["u3"] = UserMessage(
-        id="u3",
-        parent_id="tf2",
-        created_at=5,
-        parts=[TextContent(text="Q3")],
-        context_tokens=1,
-    )
-    session.active_conversation.nodes.append("u3")
-    offered = (*session.active_conversation.nodes, "cmp")
+    session = pending_question_session()
     policy = SummarizingCompactionPolicy(provider=_faux("SUMMARY"))  # full summary
 
-    plan = await policy.compact(session, offered, _entry())
+    plan = await policy.compact(session, _offered(session), _entry())
 
-    assert plan.nodes == ["cmp", "u3"]  # the pending question survives
-    assert "u3" not in plan.entry.compacted_nodes
+    assert plan == CompactionPlan(
+        entry=_entry().model_copy(
+            update={
+                "parts": [TextContent(text="SUMMARY")],
+                "compacted_nodes": ["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2", "tf2"],
+                "llm_config": MODEL,
+                "metadata": {"keep_turns": 0, "kept": 1},
+            }
+        ),
+        nodes=["cmp", "u3"],
+        usage=UsageCounters(),
+    )
+
+
+async def test_a_tool_bearing_span_folds_through_the_projected_summary_call():
+    # the folded head carries a completed and a failed tool execution, a pruned
+    # entry and an earlier summary — everything the projector emits for the
+    # summarization request
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    policy = SummarizingCompactionPolicy(keep_turns=1, provider=_faux("EARLIER WORK"))
+
+    plan = await policy.compact(session, _offered(session), _entry())
+
+    assert plan == CompactionPlan(
+        entry=_entry().model_copy(
+            update={
+                "parts": [TextContent(text="EARLIER WORK")],
+                "compacted_nodes": [
+                    "cmp0",
+                    "u1",
+                    "ts1",
+                    "a1",
+                    "te1",
+                    "te2",
+                    "pr1",
+                    "a2",
+                    "tf1",
+                    "u2",
+                    "ts2",
+                    "tf2",
+                ],
+                "llm_config": RICH_MODEL,
+                "metadata": {"keep_turns": 1, "kept": 6},
+            }
+        ),
+        nodes=["cmp", "u3", "ts3", "a3", "te3", "cr1", "tf3"],
+        usage=UsageCounters(),
+    )
 
 
 async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
@@ -194,13 +278,19 @@ async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
 
 
 async def test_a_subclass_can_override_the_summarize_seam():
-    class FixedSummary(SummarizingCompactionPolicy):
-        async def summarize(self, session, folded):
-            return "OVERRIDDEN SUMMARY", UsageCounters(input=1, output=2, total_tokens=3)
-
     session = two_turn_session()
-    # no provider needed — summarize is overridden, so no LLM call happens
+
     plan = await FixedSummary().compact(session, _offered(session), _entry())
 
-    assert plan.entry.parts == [TextContent(text="OVERRIDDEN SUMMARY")]
-    assert plan.usage == UsageCounters(input=1, output=2, total_tokens=3)
+    assert plan == CompactionPlan(
+        entry=_entry().model_copy(
+            update={
+                "parts": [TextContent(text="OVERRIDDEN SUMMARY")],
+                "compacted_nodes": ["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2", "tf2"],
+                "llm_config": MODEL,
+                "metadata": {"keep_turns": 0, "kept": 0},
+            }
+        ),
+        nodes=["cmp"],
+        usage=UsageCounters(input=1, output=2, total_tokens=3),
+    )

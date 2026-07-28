@@ -2,24 +2,46 @@
 
 One runtime collaborator (passed as `context_manager=`, never serialized —
 only its durable results persist) owning three policies over the shared
-`Entry` abstraction:
+`Entry` abstraction. All three take the live `AgentSession` first, so one
+argument order describes the whole contract and every policy can see the same
+state — the active model included, which is what makes a real tokenizer
+implementable:
 
-- `calculate_context(entry)` — the entry's intrinsic context-token count.
-  Receives the complete entry and nothing else: the calculation describes
-  content owned by the entry itself, so no conversation or session is passed.
-  Called by the runner on every new entry before `before_entry_written`
+- `calculate_context(session, entry)` — the entry's intrinsic context-token
+  count. Called by the runner on every new entry before `before_entry_written`
   middleware, and again on a `ToolExecution`'s terminal transition (before
   `after_tool_execution`), when its model-facing outcome is finally known.
   Provider usage is never an input — that is accounting, not content size.
-- `prune_entry(entry)` — a durable `PrunedEntry` replacing the entry's
-  contribution to a conversation path. Returns a TEMPLATE: identity fields
-  (`id`, `parent_id`, `created_at`) are placeholders for the persisting door
-  to stamp (ids and clocks are the runner/ledger's, never a strategy's).
-- `process_tool_output(execution_result)` — an optional transformation of a
-  tool's returned `ExecutionResult`, applied before the terminal
-  `ToolExecution` is constructed and before any middleware runs. May truncate
-  or replace model-facing content (preserving the original in `metadata` per
-  its own policy); the base behavior is an identity pass-through.
+  Because it runs on EVERY new entry, scanning `session.entries` here makes a
+  turn quadratic; cross-entry work belongs in `prune_entry` /
+  `process_tool_output`, which run rarely. On an append it also runs INSIDE
+  the ledger's build callback, so the entry already has its `id` but is not
+  yet a member of `session.entries` — an implementation that looks itself up
+  there raises `KeyError` on every append.
+- `prune_entry(session, entry)` — a durable `PrunedEntry` replacing the
+  entry's contribution to a conversation path. Returns a TEMPLATE: identity
+  fields (`id`, `parent_id`, `created_at`) are placeholders for the persisting
+  door to stamp (ids and clocks are the runner/ledger's, never a strategy's).
+  It has NO framework call site — an application calls it and hands the
+  template to `SessionLedger.prune()`, so the caller already holds the
+  session. Its session argument is uniformity, not need.
+- `process_tool_output(session, execution, result)` — an optional
+  transformation of a tool's returned `ExecutionResult`, applied before the
+  terminal `ToolExecution` is constructed and before any middleware runs. May
+  truncate or replace model-facing content (preserving the original in
+  `metadata` per its own policy); the base behavior is an identity
+  pass-through. `execution` is there to be READ FOR IDENTITY — `tool_spec`,
+  `raw_tool_call.name`, `raw_tool_call.arguments` — which is what makes
+  "truncate `bash` output but never `read`" expressible. It is IN TRANSITION:
+  `status` is still RUNNING and `result` is not yet attached, so it must not
+  be inspected for outcome.
+
+Stored counts and the active model. `Entry.context_tokens` is stored on the
+entry, so an implementation that counts against `session.session_config.
+llm_config` leaves every stored count stale the moment that model changes.
+`AgentSessionRunner.recalculate_context_tokens()` re-derives them all; nothing
+in the framework calls it, and the application that swaps in a real tokenizer
+is the one that should.
 
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
@@ -42,6 +64,7 @@ from typing import ClassVar
 
 from .exceptions import AgentError
 from .models import (
+    AgentSession,
     AssistantMessage,
     CompactionEntry,
     Entry,
@@ -68,7 +91,7 @@ class ContextManager:
     CHARS_PER_TOKEN: ClassVar[int] = 4
     IMAGE_TOKENS: ClassVar[int] = 1_000
 
-    def calculate_context(self, entry: Entry) -> int:
+    def calculate_context(self, session: AgentSession, entry: Entry) -> int:
         """Estimate the context tokens of `entry`'s model-facing content.
 
         Ownership per entry type: a user message owns its content; an
@@ -85,7 +108,7 @@ class ContextManager:
         independently overridable."""
         return self._estimate_tokens(self._model_facing_text(entry)) + self._media_tokens(entry)
 
-    def prune_entry(self, entry: Entry) -> PrunedEntry:
+    def prune_entry(self, session: AgentSession, entry: Entry) -> PrunedEntry:
         """Build the `PrunedEntry` template replacing `entry` in a path.
 
         Only terminal `ToolExecution`s are prunable by this default; anything
@@ -109,12 +132,21 @@ class ContextManager:
 
     def process_tool_output(
         self,
-        execution_result: ExecutionResult,
+        session: AgentSession,
+        execution: ToolExecution,
+        result: ExecutionResult,
     ) -> ExecutionResult:
         """Transform a tool's returned result before it becomes durable.
         Identity by default; override to truncate or replace model-facing
-        content (stash the original in `metadata` if your policy keeps it)."""
-        return execution_result
+        content (stash the original in `metadata` if your policy keeps it).
+
+        Select on `execution.tool_spec` / `execution.raw_tool_call` to vary the
+        policy by tool. `execution` is mid-transition — still RUNNING, no
+        result attached — so read it for identity, never for outcome.
+        `tool_spec` is `ToolSpec | None`: a registry may dispatch a call it
+        never snapshotted, so branch on `raw_tool_call.name` or guard the
+        `None` rather than chaining through it."""
+        return result
 
     # ── derivation helpers ───────────────────────────────────────────────────
 

@@ -14,9 +14,15 @@ runner = AgentSessionRunner(
     system_prompt_assembler=None,   # optional — see 06
     middleware=None,                # optional — see 07
     conversation_projector=None,    # optional — see 10
+    context_manager=None,           # optional — see 11
+    compaction_policy=None,         # optional — see 12
     provider=None,                  # optional — a prebuilt luca.client provider instance
 )
 ```
+
+`runner.recalculate_context_tokens()` re-derives every entry's
+`context_tokens` through that context manager; nothing in the framework calls
+it ([11](11-context-and-usage.md)).
 
 (Plugins install through `PluginAgentSessionRunner` in contrib — see
 [09-plugins.md](09-plugins.md).) Start a fresh session with the classmethod,
@@ -131,7 +137,7 @@ async with runner.run() as run:
 ```
 
 Per execution the order is strict: `ToolCallReceived` → (`ToolExecutionStarted`
-iff it dispatches) → `ToolExecuted`. There is no `TurnFinished` event —
+iff the body is dispatched, §8) → `ToolExecuted`. There is no `TurnFinished` event —
 `RunResult` is the completion signal (a cancel flush may emit zero events).
 
 ## 5. Streaming
@@ -182,7 +188,62 @@ import asyncio
 asyncio.run(drive(runner))            # one async fn that owns the run loop
 ```
 
-## 8. Cancellation
+## 8. Tool dispatch — prepare, then run
+
+The runner touches tools through exactly four `ToolRegistry` methods
+([05](05-permissions.md)): all async, all taking the live session, none
+receiving the cancellation token.
+
+| Call | When | What the runner does with it |
+|---|---|---|
+| `get_tools(session)` | per LLM call, through the runner's `async build_tool_list()` | converts each `ToolSpec` to the wire list, then runs the (still synchronous) `build_tool_list` middleware over that list ([07](07-middleware.md)) |
+| `create_execution(session, call)` | once per tool call in the assistant response | stamps identity, appends, emits `ToolCallReceived` |
+| `decide(session, execution)` | for every undecided execution | applies the decision; a `DENY` is `REJECTED` on the spot |
+| `prepare(session, execution)` | once per dispatch attempt of an ALLOWED call | invokes the callable it returns |
+
+Dispatch is split in two. `prepare()` resolves the tool and validates the
+arguments and hands back a callable; only once it has returned does the runner
+persist `RUNNING` + `started_at` and emit `ToolExecutionStarted`; then it
+invokes that callable. What that buys you:
+
+- `started_at` / `execution.dispatched` mean "the body was dispatched", for
+  every outcome — and `ToolExecutionStarted` fires iff it was.
+- `NOT_FOUND` / `INVALID` mean resolution and validation failed. A *body* that
+  raises `ToolNotFound` looking up a sub-resource is `FAILED`, like any other
+  raise after dispatch.
+- `error.details["phase"]` is a fact the runner knows, not an inference from
+  `started_at`.
+
+| What happened | status | `started_at` | `dispatched` | `details["phase"]` |
+|---|---|---|---|---|
+| `create_execution` raised | `FAILED` | `None` | `False` | `create_execution` |
+| toolless runner, at birth | `NOT_FOUND` | `None` | `False` | `create_execution` |
+| the registry authored a terminal draft | `NOT_FOUND`/`INVALID`/`FAILED` | `None` | `False` | the registry's own |
+| `decide` returned `DENY` | `REJECTED` | `None` | `False` | — |
+| `prepare` raised `ToolNotFound` | `NOT_FOUND` | `None` | `False` | `prepare` |
+| `prepare` raised `InvalidToolArguments` / `ValidationError` | `INVALID` | `None` | `False` | `prepare` |
+| `prepare` raised anything else | `FAILED` | `None` | `False` | `prepare` |
+| `prepare` returned a non-callable | `FAILED` | `None` | `False` | `prepare` |
+| the callable raised (any type) | `FAILED` | set | `True` | `execution` |
+| the callable returned a non-awaitable | `FAILED` | set | `True` | `execution` |
+| the callable returned | `COMPLETED` | set | `True` | — |
+| the deadline expired on the callable | `TIMED_OUT` | set | `True` | — |
+| the cancel grace expired on the callable | `INTERRUPTED` | set | `True` | — |
+| cancelled up to and including `prepare()` settling | `CANCELLED` | `None` | `False` | — |
+| crash after `RUNNING` was persisted | `INTERRUPTED` | set | `True` | — |
+
+`to_tool_execution_error(execution, exception, *, phase)` builds the durable
+`ToolExecutionError` from the live exception (which is never persisted).
+Override it to redact secrets, keep domain codes, or add a traceback — the
+`phase` is handed to you.
+
+> ⚠️ **The deadline bounds the body, not the call.** `ToolSpec.timeout_in_ms`
+> (beating `RuntimeConfig.tool_execution_timeout_in_ms`) applies to the prepared
+> callable only — the four registry calls have no deadline at all, so a tool
+> configured with `timeout_in_ms=5000` is not bounded end to end
+> ([08](08-runtime-config.md)).
+
+## 9. Cancellation
 
 `cancel()` is a pure, synchronous signal — callable in any state, from any handle
 (`runner.cancel()` and `run.cancel()` are equivalent; cancellation is
@@ -202,7 +263,28 @@ outcome. A parked cancel **survives save/reload** — the next `run()`/`start()`
 is the flush (instant, no model call). A second `cancel()` while one is pending
 raises `AlreadyCancellingError`.
 
-## 9. The status machine
+No tool-owned code can make `cancel()` a no-op: all four registry calls **and**
+the prepared callable are raced against the token. The four registry calls race
+with zero grace, and the runner waits for the killed task to unwind, so a
+`finally` / `async with` inside them still completes; only the body keeps a
+grace window (`tool_cancellation_grace_period`, [08](08-runtime-config.md)).
+The registry never learns a token exists — there is no partial answer worth
+having from listing tools, minting a record, deciding an approval, or preparing
+a dispatch.
+
+| Cancelled during | Durable outcome |
+|---|---|
+| `get_tools` | no LLM call, nothing recorded; the turn winds down |
+| `create_execution` | a PENDING draft is synthesized — the wind-down records `CANCELLED` |
+| `decide` | no decision recorded, approval state untouched — the wind-down records `CANCELLED` |
+| before a ready call's dispatch | left PENDING, no middleware fired — the wind-down records `CANCELLED` |
+| `prepare`, up to and including its return | no `RUNNING` row, no `ToolExecutionStarted`; the dispatch path records `CANCELLED` in place |
+| the prepared callable | the grace window decides: `COMPLETED` with its real result, or `INTERRUPTED` |
+
+> ⚠️ **A cancelled birth is `CANCELLED`, never `FAILED`.** N tool calls always
+> yield N tool executions — a cancellation landing mid-batch never drops one.
+
+## 10. The status machine
 
 Poll these predicates to decide what to do next:
 
@@ -228,10 +310,10 @@ closes the engine where it is, re-derives status, and finalizes that handle
 without writing anything. The open turn resumes on a later `run()`. A finalized
 handle is spent; create a fresh `runner.run()` to continue.
 
-## 10. Compaction
+## 11. Compaction
 
-The runner takes one more collaborator, and it runs as a step at the top of a
-drive — *before* the conversational bracket opens:
+The `compaction_policy` collaborator runs as a step at the top of a drive —
+*before* the conversational bracket opens:
 
 ```python
 runner = AgentSessionRunner(session, compaction_policy=MyPolicy())

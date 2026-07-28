@@ -1,6 +1,6 @@
 """Cancellation scenarios: the universal cancel() door, the durable
-CancelRequested entry, the step-boundary wind-down, token races with grace,
-and the parked-cancel flush.
+CancelRequested entry, the step-boundary wind-down, the four registry races,
+token races with grace, and the parked-cancel flush.
 
 Cancellation facts under test on the ToolExecution record: run cancellation
 stamps `cancel_signalled_at` on every affected nonterminal execution (and on
@@ -9,6 +9,15 @@ CANCELLED (resultless, errorless, approval state untouched); a RUNNING one
 settles by the grace machinery — COMPLETED with its real result if it returns
 in time (keeping `cancel_signalled_at`), FAILED if it raises, INTERRUPTED if
 grace expires; an already-terminal execution is unaffected.
+
+The four registry awaits (`get_tools`, `create_execution`, `decide`,
+`prepare`) are raced with ZERO grace and awaited unwinding, so no registry can
+make cancel() a no-op: each one, hung forever, is unblocked by cancel() and
+closes the turn with the requested outcome. A cancelled birth records
+CANCELLED (never FAILED — a cancellation is not a tool failure), and a
+cancellation up to AND INCLUDING `prepare()` settling means the body is never
+dispatched: `started_at` stays None, `dispatched` stays False, and no
+`ToolExecutionStarted` is emitted.
 
 House style throughout: precondition → one action → full-object
 postcondition, and NEVER race two timed things — one side of every race
@@ -19,12 +28,13 @@ import asyncio
 
 import pytest
 
-from luca.agent.core.context import CancellationToken, ToolContext
+from luca.agent.core.context import CancellationToken
 from luca.agent.core.events import (
     FinishReason,
     ReasoningDelta,
     ReasoningStart,
     TextBlock,
+    ToolCallReceived,
     ToolExecuted,
 )
 from luca.agent.core.exceptions import AlreadyCancellingError
@@ -45,13 +55,12 @@ from luca.agent.core.models import (
     ToolCall,
     ToolExecution,
     ToolExecutionError,
-    ToolSpec,
     TurnFinish,
     TurnOutcome,
+    TurnStart,
     UserMessage,
 )
 from luca.agent.core.runner import RunResult
-from luca.agent.core.tools import Tool
 from luca.client.exceptions import ProviderAPIError
 from luca.client.testing import (
     FauxProvider,
@@ -63,25 +72,34 @@ from luca.client.testing import (
     faux_tool_call,
 )
 from tests.agent.scenarios import (
+    ADD_SPEC,
     CANCEL_PARKED_SESSION,
+    CLEARED_SESSION,
     GATED_SESSION,
     MODEL,
+    MULTIPLY_SPEC,
+    UNDECIDED_SESSION,
     AddTool,
     BinaryArgs,
     DeterministicRunner,
+    FakeTool,
     FakeToolRegistry,
+    MultiplyTool,
+    make_session,
 )
 
+ALLOW_600 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=600)
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
+PENDING_500 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500)
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
 
-ADD_SPEC = ToolSpec(name="add", description="Add two numbers.")
+ADD_CALL = ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})
 
 
 # ── tool doubles ───────────────────────────────────────────────────────────────
 
 
-class HangingTool(Tool):
+class HangingTool(FakeTool):
     """Hangs forever on an event nobody sets; records the hard cancel."""
 
     name = "hang"
@@ -95,7 +113,7 @@ class HangingTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -108,7 +126,7 @@ class HangingTool(Tool):
         return "unreachable"
 
 
-class CooperativeTool(Tool):
+class CooperativeTool(FakeTool):
     """Returns a sentinel the instant the run's token trips."""
 
     name = "cooperative"
@@ -121,7 +139,7 @@ class CooperativeTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -130,7 +148,7 @@ class CooperativeTool(Tool):
         return "partial sum"
 
 
-class TimeoutRaisingTool(Tool):
+class TimeoutRaisingTool(FakeTool):
     """Raises builtin TimeoutError the instant the run's token trips — the
     tool's OWN failure must not be mistaken for the grace deadline."""
 
@@ -144,13 +162,40 @@ class TimeoutRaisingTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
         await cancellation_token.wait_cancelled()
         raise TimeoutError("tool's own deadline")
+
+
+class RecordingAddTool(AddTool):
+    """`add`, recording every invocation of its BODY — the witness for "the
+    tool never ran". Same spec as `AddTool` (name, description and `Args` are
+    inherited), so a precondition built on `ADD_SPEC` still matches."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        self.calls.append(args)
+        return str(args["a"] + args["b"])
+
+
+HANG_SPEC = HangingTool().get_tool_spec()
+COOPERATIVE_SPEC = CooperativeTool().get_tool_spec()
+DEADLINE_SPEC = TimeoutRaisingTool().get_tool_spec()
+
+
+# ── registry doubles ───────────────────────────────────────────────────────────
 
 
 class ReleasableProvider(FauxProvider):
@@ -168,7 +213,7 @@ class ReleasableProvider(FauxProvider):
         return await super().acompletion(request)
 
 
-class CancellingRegistry(FakeToolRegistry):
+class CancellingDecideRegistry(FakeToolRegistry):
     """Stands in for a cancel arriving while decide() deliberates: it
     requests the cancel itself, then punts. The test wires `runner` after
     construction."""
@@ -177,18 +222,259 @@ class CancellingRegistry(FakeToolRegistry):
 
     async def decide(
         self,
+        session: AgentSession,
         tool_execution: ToolExecution,
-        context: ToolContext,
     ) -> ApprovalDecision:
+        self.seen.append(tool_execution)
         self.runner.cancel()
         return ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
+
+
+class HangingGetToolsRegistry(FakeToolRegistry):
+    """`get_tools` parks forever on an event nobody sets."""
+
+    def __init__(self, tools=()) -> None:
+        super().__init__(tools)
+        self.started = asyncio.Event()
+
+    async def get_tools(self, session: AgentSession):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class HangingBirthRegistry(FakeToolRegistry):
+    """`create_execution` parks forever on an event nobody sets."""
+
+    def __init__(self, tools=()) -> None:
+        super().__init__(tools)
+        self.started = asyncio.Event()
+
+    async def create_execution(self, session: AgentSession, call: ToolCall):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class HangingDecideRegistry(FakeToolRegistry):
+    """`decide` parks forever on an event nobody sets."""
+
+    def __init__(self, tools=()) -> None:
+        super().__init__(tools)
+        self.started = asyncio.Event()
+
+    async def decide(self, session: AgentSession, tool_execution: ToolExecution):
+        self.seen.append(tool_execution)
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class HangingPrepareRegistry(FakeToolRegistry):
+    """`prepare` parks forever on an event nobody sets."""
+
+    def __init__(self, tools=()) -> None:
+        super().__init__(tools)
+        self.started = asyncio.Event()
+
+    async def prepare(self, session: AgentSession, tool_execution: ToolExecution):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+class CancellingPrepareRegistry(FakeToolRegistry):
+    """Stands in for a cancel landing in the window between `prepare()`
+    returning and the body being dispatched: it requests the cancel itself,
+    then hands back a perfectly good callable. The test wires `runner` after
+    construction."""
+
+    runner = None
+
+    async def prepare(self, session: AgentSession, tool_execution: ToolExecution):
+        self.runner.cancel()
+        return await super().prepare(session, tool_execution)
+
+
+class CancelOnFirstBirthRegistry(FakeToolRegistry):
+    """The `add` birth requests the cancel and still returns its draft; every
+    other birth parks forever, so the runner has to synthesize one for it.
+    The test wires `runner` after construction."""
+
+    runner = None
+
+    async def create_execution(self, session: AgentSession, call: ToolCall):
+        if call.name != "add":
+            await asyncio.Event().wait()  # parks forever — never returns
+        self.runner.cancel()
+        return await super().create_execution(session, call)
+
+
+class TracedResource:
+    """An async context manager writing its acquire/release into a shared
+    trace — the witness that a cancelled registry call unwinds completely."""
+
+    def __init__(self, trace: list) -> None:
+        self.trace = trace
+
+    async def __aenter__(self) -> "TracedResource":
+        self.trace.append(("acquired", None))
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self.trace.append(("released", None))
+        return False
+
+
+class ResourceHoldingRegistry(FakeToolRegistry):
+    """`create_execution` takes a resource in `async with`, then parks inside
+    the block — the shape rule 6 of the registry contract describes."""
+
+    def __init__(self, tools=(), trace: list | None = None) -> None:
+        super().__init__(tools)
+        self.trace = trace if trace is not None else []
+        self.started = asyncio.Event()
+
+    async def create_execution(self, session: AgentSession, call: ToolCall):
+        async with TracedResource(self.trace):
+            self.started.set()
+            await asyncio.Event().wait()
+
+
+class HookRecorder:
+    """Middleware recording which tool/permission lifecycle hooks fired, in
+    order, as `(hook, entry_id)` — the witness for "fired exactly once per
+    execution" and "never fired at all"."""
+
+    def __init__(self, trace: list | None = None) -> None:
+        self.trace = trace if trace is not None else []
+
+    def before_permission_check(self, execution: ToolExecution) -> ToolExecution:
+        self.trace.append(("before_permission_check", execution.id))
+        return execution
+
+    def after_permission_decision(
+        self,
+        decision: ApprovalDecision,
+        execution: ToolExecution,
+    ) -> ApprovalDecision:
+        self.trace.append(("after_permission_decision", execution.id))
+        return decision
+
+    def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+        self.trace.append(("before_tool_execution", execution.id))
+        return execution
+
+
+# ── local mid-state session literals ──────────────────────────────────────────
+
+# A crash mid-decide whose turn the user then abandoned: the execution was
+# never offered to the policy (approval_status None, empty audit log) and a
+# CancelRequested is already parked. The next drive is the FLUSH — the decide
+# step is never reached, so no permission hook may fire at all.
+UNDECIDED_PARKED_SESSION = UNDECIDED_SESSION.model_copy(
+    deep=True,
+    update={"id": "s_undecided_parked"},
+)
+UNDECIDED_PARKED_SESSION.entries["cr"] = CancelRequested(
+    id="cr",
+    parent_id="te1",
+    created_at=600,
+)
+UNDECIDED_PARKED_SESSION.active_conversation.nodes.append("cr")
+UNDECIDED_PARKED_SESSION.active_conversation.updated_at = 600
+UNDECIDED_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
+
+# Two approved-but-unrun calls from one assistant response: the batch
+# precondition. Neither has been dispatched, so a cancel landing during the
+# first one's dispatch has to terminalize both.
+TWO_CLEARED_SESSION = make_session(
+    id="s_two_cleared",
+    entries={
+        "u1": UserMessage(
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="Add 1 and 2, then multiply 3 by 4")],
+        ),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[
+                ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            parent_id="a1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=ADD_SPEC,
+            status=ExecutionStatus.PENDING,
+            approval_status=ApprovalStatus.ALLOWED,
+            approval_decisions=[ALLOW_600],
+            updated_at=600,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            parent_id="te1",
+            created_at=500,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(
+                id="tc2",
+                name="multiply",
+                arguments={"a": 3, "b": 4},
+            ),
+            tool_spec=MULTIPLY_SPEC,
+            status=ExecutionStatus.PENDING,
+            approval_status=ApprovalStatus.ALLOWED,
+            approval_decisions=[ALLOW_600],
+            updated_at=600,
+        ),
+    },
+    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "te2"],
+        created_at=500,
+        updated_at=600,
+        status=ConversationStatus.PENDING,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def one_user_message_session(
+    session_id: str,
+    runtime_config: RuntimeConfig | None = None,
+) -> AgentSession:
+    """A fresh session with one unanswered question — the plain live-run
+    precondition. A module-level factory, so the test body stays declarative
+    and no two tests share a mutable literal."""
+    return make_session(
+        id=session_id,
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
+        },
+        active_conversation=Conversation(
+            id="c1",
+            nodes=["u1"],
+            created_at=500,
+            updated_at=500,
+        ),
+        session_config=SessionConfig(
+            llm_config=MODEL,
+            runtime_config=runtime_config or RuntimeConfig(),
+        ),
+    )
 
 
 # ── cancel(): the no-op and diagnostic branches ───────────────────────────────
 
 
 async def test_cancel_on_idle_session_is_a_noop():
-    session = AgentSession(
+    session = make_session(
         id="s_idle",
         active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
         session_config=SessionConfig(llm_config=MODEL),
@@ -208,7 +494,7 @@ async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_fresh",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -289,14 +575,13 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
-        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        raw_tool_call=ADD_CALL,
         tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
         status=ExecutionStatus.CANCELLED,
         result=None,
         approval_status=ApprovalStatus.PENDING,  # untouched by the wind-down
-        approval_decisions=[
-            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
-        ],
+        approval_decisions=[PENDING_500],
         cancel_signalled_at=1000,
         ended_at=1000,
         updated_at=1000,
@@ -405,7 +690,7 @@ async def test_flush_leaves_an_already_terminal_execution_untouched():
             "status": ExecutionStatus.REJECTED,
             "approval_status": ApprovalStatus.REJECTED,
             "approval_decisions": [
-                ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+                PENDING_500,
                 ApprovalDecision(decision=ApprovalOption.DENY, created_at=600),
             ],
             "ended_at": 600,
@@ -447,14 +732,7 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
         ]
     )
     tool = HangingTool()
-    session = AgentSession(
-        id="s_live",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+    session = one_user_message_session("s_live")
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([tool]),
@@ -480,7 +758,8 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="hang", arguments={"a": 1, "b": 2}),
-        tool_spec=ToolSpec(name="hang", description="Hangs until hard-cancelled."),
+        tool_spec=HANG_SPEC,
+        tool_spec_id=HANG_SPEC.spec_id(),
         status=ExecutionStatus.INTERRUPTED,
         result=None,
         approval_status=ApprovalStatus.ALLOWED,
@@ -524,18 +803,11 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
         ]
     )
     tool = CooperativeTool()
-    session = AgentSession(
-        id="s_grace",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(
-            llm_config=MODEL,
-            # huge grace — never expires; the tool returns the instant the
-            # token trips, so nothing here depends on real time
-            runtime_config=RuntimeConfig(tool_cancellation_grace_period=30_000),
-        ),
+    session = one_user_message_session(
+        "s_grace",
+        # huge grace — never expires; the tool returns the instant the token
+        # trips, so nothing here depends on real time
+        RuntimeConfig(tool_cancellation_grace_period=30_000),
     )
     runner = DeterministicRunner(
         session,
@@ -557,11 +829,13 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
-        raw_tool_call=ToolCall(id="tc1", name="cooperative", arguments={"a": 1, "b": 2}),
-        tool_spec=ToolSpec(
+        raw_tool_call=ToolCall(
+            id="tc1",
             name="cooperative",
-            description="Returns partial output on cancellation.",
+            arguments={"a": 1, "b": 2},
         ),
+        tool_spec=COOPERATIVE_SPEC,
+        tool_spec_id=COOPERATIVE_SPEC.spec_id(),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(
             content=[TextContent(text="partial sum")],
@@ -588,20 +862,16 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
     faux.set_responses(
         [
             faux_assistant_message(
-                [faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1"), faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
+                [
+                    faux_tool_call("hang", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("add", {"a": 3, "b": 4}, id="tc2"),
+                ],
                 finish_reason="tool_use",
             ),
         ]
     )
     tool = HangingTool()
-    session = AgentSession(
-        id="s_sibling",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+    session = one_user_message_session("s_sibling")
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([tool, AddTool()]),
@@ -616,21 +886,49 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
     result = await run
 
     assert result.outcome == TurnOutcome.CANCELLED
-    assert runner.session.entries["te1"].status == ExecutionStatus.INTERRUPTED
-    assert runner.session.entries["te1"].started_at == 1000
-    assert runner.session.entries["te1"].cancel_signalled_at == 1000
-    assert runner.session.entries["te2"].status == ExecutionStatus.CANCELLED
-    assert runner.session.entries["te2"].started_at is None
-    assert runner.session.entries["te2"].cancel_signalled_at == 1000
-    assert runner.session.entries["te2"].result is None
-    assert runner.session.entries["te2"].error is None
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="hang", arguments={"a": 1, "b": 2}),
+        tool_spec=HANG_SPEC,
+        tool_spec_id=HANG_SPEC.spec_id(),
+        status=ExecutionStatus.INTERRUPTED,  # the body ran, grace expired
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["te2"] == ToolExecution(
+        id="te2",
+        parent_id="te1",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 3, "b": 4}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,  # never dispatched
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
     async with run:
         events = [event async for event in run]
     assert [(event.type, getattr(event, "tool_call_id", None)) for event in events] == [
         ("finish_reason", None),
         ("tool_call_received", "tc1"),
         ("tool_call_received", "tc2"),
-        ("tool_execution_started", "tc1"),
+        ("tool_execution_started", "tc1"),  # only the dispatched call
         ("tool_executed", "tc1"),
         ("tool_executed", "tc2"),
     ]
@@ -648,14 +946,7 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
             ),
         ]
     )
-    session = AgentSession(
-        id="s_lazy_cancel",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+    session = one_user_message_session("s_lazy_cancel")
     runner = DeterministicRunner(
         session,
         tool_registry=FakeToolRegistry([AddTool()]),
@@ -677,18 +968,32 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
         "tool_executed",
     ]
     assert events[2].result_text == "[tool execution cancelled]"
-    execution = runner.session.entries["te1"]
-    assert execution.status == ExecutionStatus.CANCELLED
-    assert execution.approval_status is None  # the policy never processed it
-    assert execution.approval_decisions == []
-    assert execution.cancel_signalled_at == 1000
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=None,  # the policy never processed it
+        approval_decisions=[],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
     assert runner.session.entries["tf"].outcome == TurnOutcome.CANCELLED
     assert runner.idle()
 
 
 async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
-    # decide() is never cancelled; the pre-park check winds down BEFORE the
-    # approval pause — no ApprovalRequired, the gate never opens.
+    # decide() returned before the token was checked, so the deferral IS
+    # recorded; the pre-park check then winds down BEFORE the approval pause —
+    # no ApprovalRequired, the gate never opens.
     faux = FauxProvider()
     faux.set_responses(
         [
@@ -698,15 +1003,8 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
             ),
         ]
     )
-    registry = CancellingRegistry([AddTool()])
-    session = AgentSession(
-        id="s_mid_decide",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+    registry = CancellingDecideRegistry([AddTool()])
+    session = one_user_message_session("s_mid_decide")
     runner = DeterministicRunner(
         session,
         tool_registry=registry,
@@ -725,11 +1023,25 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
         "tool_executed",
     ]
     assert events[2].result_text == "[tool execution cancelled]"
-    execution = runner.session.entries["te1"]
-    assert execution.status == ExecutionStatus.CANCELLED
-    # the deferral WAS processed before the cancel consumed the turn
-    assert execution.approval_status == ApprovalStatus.PENDING
-    assert execution.approval_decisions == [PENDING_1000]
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        # the deferral WAS processed before the cancel consumed the turn
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[PENDING_1000],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
     assert runner.session.entries["tf"].outcome == TurnOutcome.CANCELLED
     assert runner.idle()
 
@@ -744,7 +1056,7 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
             ),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_stream_cancel",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -784,6 +1096,534 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
     assert runner.idle()
 
 
+# ── the four registry awaits: a hung phase can never eat a cancel ─────────────
+
+
+async def test_cancel_during_get_tools_unblocks_the_run_and_closes_cancelled():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
+        ]
+    )
+    registry = HangingGetToolsRegistry([AddTool()])
+    session = one_user_message_session("s_hung_get_tools")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "cr", "tf"],
+        now=1000,
+    )
+    run = runner.start()
+    await registry.started.wait()  # the tool listing is parked
+
+    runner.cancel(error="user abandoned the turn")
+    result = await run
+
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    assert faux.requests == []  # no tool list → no LLM call
+    assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+        error="user abandoned the turn",
+    )
+    assert runner.idle()
+
+
+async def test_cancel_during_create_execution_records_cancelled_not_failed():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
+    registry = HangingBirthRegistry([AddTool()])
+    session = one_user_message_session("s_hung_birth")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "cr", "te1", "tf"],
+        now=1000,
+    )
+    run = runner.start()
+    await registry.started.wait()  # the birth is parked
+
+    runner.cancel()
+    result = await run
+
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    born = ToolExecution(
+        id="te1",
+        parent_id="cr",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=None,  # the registry never got to resolve it
+        status=ExecutionStatus.PENDING,  # a lost race is not a failure
+    )
+    cancelled = born.model_copy(
+        update={
+            "status": ExecutionStatus.CANCELLED,
+            "error": None,  # CANCELLED, never FAILED
+            "ended_at": 1000,
+            "cancel_signalled_at": 1000,
+            "updated_at": 1000,
+        },
+    )
+    async with run:
+        events = [event async for event in run]
+    assert events == [
+        FinishReason(finish_reason="tool_use"),
+        ToolCallReceived(tool_call_id="tc1", execution=born),
+        ToolExecuted(
+            tool_call_id="tc1",
+            execution=cancelled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.session.entries["te1"] == cancelled
+    assert runner.session.tool_specs == {}
+    assert runner.idle()
+
+
+async def test_cancel_during_decide_records_no_decision_and_closes_cancelled():
+    registry = HangingDecideRegistry([AddTool()])
+    recorder = HookRecorder()
+    session = UNDECIDED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=FauxProvider(),
+        ids=["cr", "tf"],
+        now=1000,
+        middleware=[recorder],
+    )
+    run = runner.start()
+    await registry.started.wait()  # the decision is parked
+
+    runner.cancel()
+    result = await run
+
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    # no decision was applied, and `after_permission_decision` never fired
+    assert recorder.trace == [
+        ("before_permission_check", "te1"),
+        ("before_tool_execution", "te1"),
+    ]
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=None,
+        approval_decisions=[],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+    )
+    assert runner.idle()
+
+
+async def test_cancel_during_prepare_records_cancelled_without_dispatching():
+    registry = HangingPrepareRegistry([AddTool()])
+    session = CLEARED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=FauxProvider(),
+        ids=["cr", "tf"],
+        now=1000,
+    )
+    run = runner.start()
+    await registry.started.wait()  # the preparation is parked
+
+    runner.cancel()
+    result = await run
+
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    cancelled = ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,  # untouched by the wind-down
+        approval_decisions=[PENDING_500, ALLOW_600],
+        started_at=None,  # the body was never dispatched
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    async with run:
+        events = [event async for event in run]
+    # no ToolExecutionStarted: it is emitted iff the body was dispatched
+    assert events == [
+        ToolExecuted(
+            tool_call_id="tc1",
+            execution=cancelled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.session.entries["te1"] == cancelled
+    assert runner.session.entries["te1"].dispatched is False
+    assert runner.idle()
+
+
+async def test_cancel_after_prepare_returned_records_cancelled_and_never_runs_the_body():
+    tool = RecordingAddTool()
+    registry = CancellingPrepareRegistry([tool])
+    session = CLEARED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=FauxProvider(),
+        ids=["cr", "tf"],
+        now=1000,
+    )
+    registry.runner = runner
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert registry.prepared == ["add"]  # preparation SUCCEEDED
+    assert tool.calls == []  # the grace window never starts new work
+    cancelled = ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[PENDING_500, ALLOW_600],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert events == [
+        ToolExecuted(
+            tool_call_id="tc1",
+            execution=cancelled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.session.entries["te1"] == cancelled
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+    )
+    assert runner.idle()
+
+
+async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batch():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("multiply", {"a": 3, "b": 4}, id="tc2"),
+                ],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
+    registry = CancelOnFirstBirthRegistry([AddTool(), MultiplyTool()])
+    session = one_user_message_session("s_mid_batch_birth")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "cr", "te1", "te2", "tf"],
+        now=1000,
+    )
+    registry.runner = runner
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    # two calls → two executions, whichever births the cancel reached
+    assert runner.session.tool_executions == {"tc1": ["te1"], "tc2": ["te2"]}
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="cr",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,  # this birth RETURNED before the race was lost
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=None,
+        approval_decisions=[],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["te2"] == ToolExecution(
+        id="te2",
+        parent_id="te1",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(
+            id="tc2",
+            name="multiply",
+            arguments={"a": 3, "b": 4},
+        ),
+        tool_spec=None,  # runner-synthesized: the birth never returned
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=None,
+        approval_decisions=[],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert [(event.type, getattr(event, "tool_call_id", None)) for event in events] == [
+        ("finish_reason", None),
+        ("tool_call_received", "tc1"),
+        ("tool_call_received", "tc2"),
+        ("tool_executed", "tc1"),
+        ("tool_executed", "tc2"),
+    ]
+    assert runner.idle()
+
+
+async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alike():
+    registry = HangingPrepareRegistry([AddTool(), MultiplyTool()])
+    recorder = HookRecorder()
+    session = TWO_CLEARED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=FauxProvider(),
+        ids=["cr", "tf"],
+        now=1000,
+        middleware=[recorder],
+    )
+    run = runner.start()
+    await registry.started.wait()  # tc1's preparation is parked; tc2 untouched
+
+    runner.cancel()
+    result = await run
+
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    assert registry.prepared == []  # neither call ever resolved
+    # exactly once per execution, whichever pipeline terminalized it
+    assert recorder.trace == [
+        ("before_tool_execution", "te1"),
+        ("before_tool_execution", "te2"),
+    ]
+    # identical durable shape — the in-place cancellation and the wind-down
+    # produce the same record
+    first = ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_600],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    second = ToolExecution(
+        id="te2",
+        parent_id="te1",
+        created_at=500,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(
+            id="tc2",
+            name="multiply",
+            arguments={"a": 3, "b": 4},
+        ),
+        tool_spec=MULTIPLY_SPEC,
+        tool_spec_id=MULTIPLY_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_600],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["te1"] == first
+    assert runner.session.entries["te2"] == second
+    async with run:
+        events = [event async for event in run]
+    assert events == [
+        ToolExecuted(
+            tool_call_id="tc1",
+            execution=first,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+        ToolExecuted(
+            tool_call_id="tc2",
+            execution=second,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.idle()
+
+
+async def test_a_resource_held_inside_create_execution_is_released_before_the_wind_down():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
+    trace: list = []
+    registry = ResourceHoldingRegistry([AddTool()], trace=trace)
+    session = one_user_message_session("s_held_resource")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "cr", "te1", "tf"],
+        now=1000,
+        middleware=[HookRecorder(trace)],
+    )
+    run = runner.start()
+    await registry.started.wait()  # the birth is parked inside `async with`
+
+    runner.cancel()
+    result = await run
+
+    assert result.outcome == TurnOutcome.CANCELLED
+    # the kill is awaited out: the `async with` unwound completely before the
+    # runner moved on to terminalize the call
+    assert trace == [
+        ("acquired", None),
+        ("released", None),
+        ("before_tool_execution", "te1"),
+    ]
+    assert runner.session.entries["te1"].status == ExecutionStatus.CANCELLED
+    assert runner.idle()
+
+
+async def test_a_pending_cancellation_fires_no_before_permission_check():
+    registry = FakeToolRegistry([AddTool()], decisions=[])  # empty decide script
+    recorder = HookRecorder()
+    session = UNDECIDED_PARKED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=FauxProvider(),
+        ids=["tf"],
+        now=1000,
+        middleware=[recorder],
+    )
+
+    async with runner.run() as run:  # the flush: the decide step is never reached
+        events = [event async for event in run]
+
+    assert registry.seen == []
+    assert recorder.trace == [("before_tool_execution", "te1")]
+    cancelled = ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,
+        approval_status=None,
+        approval_decisions=[],
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
+    assert events == [
+        ToolExecuted(
+            tool_call_id="tc1",
+            execution=cancelled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.session.entries["te1"] == cancelled
+    assert runner.idle()
+
+
 # ── cancel vs the grace window at the close sites ─────────────────────────────
 
 
@@ -794,7 +1634,7 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
             faux_assistant_message([faux_text("Here you go.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_llm_grace",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -868,7 +1708,7 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
             ),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_llm_grace_fail",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -916,7 +1756,7 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_instant_cancel",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -962,16 +1802,9 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
         ]
     )
     tool = TimeoutRaisingTool()
-    session = AgentSession(
-        id="s_tool_timeout_grace",
-        entries={
-            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
-        },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
-        session_config=SessionConfig(
-            llm_config=MODEL,
-            runtime_config=RuntimeConfig(tool_cancellation_grace_period=30_000),
-        ),
+    session = one_user_message_session(
+        "s_tool_timeout_grace",
+        RuntimeConfig(tool_cancellation_grace_period=30_000),
     )
     runner = DeterministicRunner(
         session,
@@ -988,13 +1821,32 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
 
     assert result.outcome == TurnOutcome.CANCELLED
     # the tool FAILED — it was not interrupted by the grace machinery
-    execution = runner.session.entries["te1"]
-    assert execution.status == ExecutionStatus.FAILED
-    assert execution.result is None
-    assert execution.error == ToolExecutionError(
-        error_type="TimeoutError",
-        error_message="tool's own deadline",
-        details={"phase": "execution"},
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(
+            id="tc1",
+            name="deadline_confused",
+            arguments={"a": 1, "b": 2},
+        ),
+        tool_spec=DEADLINE_SPEC,
+        tool_spec_id=DEADLINE_SPEC.spec_id(),
+        status=ExecutionStatus.FAILED,
+        result=None,
+        error=ToolExecutionError(
+            error_type="TimeoutError",
+            error_message="tool's own deadline",
+            details={"phase": "execution"},
+        ),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+        context_tokens=4,  # len("tool's own deadline") // 4
     )
-    assert execution.cancel_signalled_at == 1000
     assert runner.session.entries["tf"].outcome == TurnOutcome.CANCELLED
+    assert runner.idle()

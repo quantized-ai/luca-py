@@ -1,13 +1,17 @@
 """luca.agent.core — the agent framework core.
 
 The conversation data model (`models`) plus the runtime surface: the
-`AgentSessionRunner` loop, the `ToolRegistry` contract, the `Tool` base
-class and its `ToolContext`, the `ConversationProjector` LLM-projection
-strategy, the `CompactionPolicy` contract, the system-prompt strategy, and
-the agent exceptions. Event
-classes live in `luca.agent.core.events`; the inbound response /
-tool-definition translations in `luca.agent.core.adapter`; the read-only
-`pretty_print` session transcript in `luca.agent.core.utils`.
+`AgentSessionRunner` loop, the `ToolRegistry` contract, the
+`ConversationProjector` LLM-projection strategy, the `ContextManager`
+accounting strategy, the `CompactionPolicy` contract, the system-prompt
+strategy, and the agent exceptions. Event classes live in
+`luca.agent.core.events`; the inbound response / tool-definition translations
+in `luca.agent.core.adapter`; the read-only `pretty_print` session transcript
+in `luca.agent.core.utils`.
+
+The core's only tool type is `ToolSpec` — plain, language-neutral data. The
+ergonomic Python `Tool` base class lives in `luca.agent.contrib.tools`;
+nothing in the core depends on it.
 """
 
 from .compaction import (
@@ -15,7 +19,7 @@ from .compaction import (
     CompactionPolicy,
     UsageCounters,
 )
-from .context import CancellationToken, ToolContext
+from .context import CancellationToken
 from .context_manager import PRUNED_TOOL_OUTPUT_MARKER, ContextManager
 from .exceptions import (
     AgentError,
@@ -79,8 +83,7 @@ from .projection import (
 )
 from .runner import AgentRun, AgentSessionRunner, RunResult
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
-from .tool_registry import ToolRegistry
-from .tools import Tool, tool
+from .tool_registry import PreparedTool, ToolRegistry
 from .utils import pretty_print
 
 __all__ = [
@@ -127,6 +130,7 @@ __all__ = [
     "MilliSeconds",
     "PRUNED_TOOL_OUTPUT_MARKER",
     "ProjectionError",
+    "PreparedTool",
     "PrunedEntry",
     "RunResult",
     "RuntimeConfig",
@@ -137,9 +141,7 @@ __all__ = [
     "SystemPromptPart",
     "TextContent",
     "ThinkingContent",
-    "Tool",
     "ToolCall",
-    "ToolContext",
     "ToolExecution",
     "ToolExecutionError",
     "ToolKind",
@@ -153,5 +155,4 @@ __all__ = [
     "UsageCounters",
     "UserMessage",
     "pretty_print",
-    "tool",
 ]

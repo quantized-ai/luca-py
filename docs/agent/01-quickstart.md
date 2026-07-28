@@ -13,8 +13,9 @@ Needs a provider key in the environment (`OPENROUTER_API_KEY` by default) — se
 ```python
 import asyncio
 from pydantic import BaseModel, Field
-from luca.agent.core import AgentSessionRunner, CancellationToken, Tool, LLMConfig, ToolContext
+from luca.agent.core import AgentSession, AgentSessionRunner, CancellationToken, LLMConfig
 from luca.agent.core.events import TextBlock, ToolCallReceived, ToolExecuted
+from luca.agent.contrib.tools import Tool
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
 
 class WeatherArgs(BaseModel):
@@ -25,7 +26,7 @@ class WeatherTool(Tool):
     description = "Return the current weather for a city."
     Args = WeatherArgs
     async def _execute(
-        self, args: dict, context: ToolContext,
+        self, args: dict, session: AgentSession,
         *, cancellation_token: CancellationToken,
     ) -> str:
         return f"It's 22°C and sunny in {args['city']}."
@@ -56,10 +57,21 @@ asyncio.run(main())
 ```
 
 `SimpleToolRegistry` owns the whole tool lifecycle (resolution, validation,
-approval, execution) — the runner only talks to it. `YoloPermissionPolicy`
+approval, dispatch) — the runner only talks to it. `YoloPermissionPolicy`
 auto-approves, so a single `run()` drives the whole turn:
 model → `get_weather` call → tool result → model → final answer. The turn ends
 with status `IDLE`.
+
+`Tool` is a contrib convenience for Python tool authors: it turns `Args` into
+the JSON Schema the model is shown. The core's only tool type is the plain
+`ToolSpec`, so a registry fronting a remote tool server never imports `Tool`.
+Bodies receive the live session — read `session.id` and
+`session.session_config.llm_config`; see
+[`contrib/tools/`](contrib/tools/README.md) for rich results and cancellation.
+
+> ⚠️ **The session is read-only inside a tool.** The runner owns every write to
+> it. Per-run application state belongs on your own object or a
+> `contextvars.ContextVar`.
 
 ## 2. The drive loop
 
@@ -93,7 +105,6 @@ The session *is* the state — save it as JSON, reload it later, keep going:
 open(f"{session.id}.json", "w").write(session.model_dump_json(indent=2))
 
 # resume — reload into a fresh runner; it self-heals the status from the entries
-from luca.agent.core import AgentSession
 session = AgentSession.model_validate_json(open("abc123.json").read())
 runner = AgentSessionRunner(
     session,
@@ -104,5 +115,11 @@ runner = AgentSessionRunner(
 ```
 
 The tool registry is **not** saved (it's a runtime collaborator); you supply it
-again when you reconstruct the runner. Next:
-[`02-data-model.md`](02-data-model.md).
+again when you reconstruct the runner.
+
+> ⚠️ **Tool specs are stored once per session.** Each `ToolExecution` keeps a
+> `tool_spec_id` into `session.tool_specs`; loading restores `tool_spec` from it
+> and raises on a file whose executions carry no id. Session files written
+> before tool-spec normalization do not load — regenerate them.
+
+Next: [`02-data-model.md`](02-data-model.md).

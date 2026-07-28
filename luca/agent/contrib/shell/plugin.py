@@ -37,7 +37,8 @@ from luca.agent.contrib.resource_permissions import (
     ToolRule,
 )
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
-from luca.agent.core import AgentSession, ApprovalOption, Tool
+from luca.agent.contrib.tools import Tool
+from luca.agent.core import AgentSession, ApprovalOption
 
 from .tools import (
     ApplyPatchTool,

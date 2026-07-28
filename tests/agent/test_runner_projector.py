@@ -6,13 +6,16 @@ subject is the collaborator seam: a runner built without one gets a default
 `ConversationProjector`; a supplied projector's `project()` is what reaches
 the LLM request (there is no projection middleware); its
 `project_tool_execution()` output lands identically in the `ToolExecuted`
-event and in the next request's correlated `ToolMessage`; and the projector
-participates in runner configuration equality.
+event and in the next request's correlated `ToolMessage` — for a call that ran
+AND for one that never dispatched; and the projector participates in runner
+configuration equality.
 """
 
+from luca.agent.core.events import ToolExecuted
 from luca.agent.core.models import (
-    AgentSession,
     Conversation,
+    ExecutionResult,
+    ExecutionStatus,
     SessionConfig,
     TextContent,
     ToolExecution,
@@ -31,6 +34,7 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    make_session,
 )
 
 
@@ -45,6 +49,18 @@ class RedactingProjector(ConversationProjector):
         )
 
 
+class StatusWordingProjector(ConversationProjector):
+    """Words every tool outcome from its `ExecutionStatus` alone — including
+    the statuses a call reaches without a body ever being dispatched."""
+
+    def project_tool_execution(self, entry: ToolExecution, entries) -> ToolMessage:
+        return ToolMessage(
+            tool_call_id=entry.tool_call_id,
+            content=[LucaTextBlock(text=f"[{entry.status.value}]")],
+            is_error=entry.status is not ExecutionStatus.COMPLETED,
+        )
+
+
 class PrefixingProjector(ConversationProjector):
     """Injects synthetic history — full `project()` override policy."""
 
@@ -56,7 +72,7 @@ class PrefixingProjector(ConversationProjector):
 
 
 def test_runner_defaults_to_a_fresh_conversation_projector():
-    session = AgentSession(
+    session = make_session(
         id="s_default_projector",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -74,7 +90,7 @@ async def test_supplied_projector_owns_the_llm_message_history():
             faux_assistant_message([faux_text("ok")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_projector_history",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -110,7 +126,7 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_projector_tool",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -130,11 +146,22 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
     async with runner.run() as run:
         events = [event async for event in run]
 
-    # the event presents exactly what the model is told...
-    executed = events[3]
-    assert executed.type == "tool_executed"
-    assert executed.result_text == "[tool output redacted]"
-    assert executed.is_error is False
+    assert [event.type for event in events] == [
+        "finish_reason",
+        "tool_call_received",
+        "tool_execution_started",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
+    ]
+    # the event presents exactly what the model is told; the carried snapshot is
+    # the durable execution the runner settled, which this test only references
+    assert events[3] == ToolExecuted(
+        tool_call_id="tc1",
+        execution=runner.session.entries["te1"],
+        result_text="[tool output redacted]",
+        is_error=False,
+    )
     # ...and the next request carries the same projection
     assert faux.requests[1].messages[-1] == ToolMessage(
         tool_call_id="tc1",
@@ -142,11 +169,65 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
         is_error=False,
     )
     # the durable record keeps the real result — projection is derived state
-    assert runner.session.entries["te1"].result.content == [TextContent(text="3")]
+    assert runner.session.entries["te1"].result == ExecutionResult(content=[TextContent(text="3")])
+
+
+async def test_undispatched_call_is_presented_by_the_projector_too():
+    """A call that never reaches a body — here an unknown tool, terminal at
+    birth — emits no `ToolExecutionStarted`, yet its `ToolExecuted` and its
+    correlated `ToolMessage` still come from `project_tool_execution`."""
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("nope", {"a": 1}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_projector_undispatched",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
+        },
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        conversation_projector=StatusWordingProjector(),
+    )
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert [event.type for event in events] == [
+        "finish_reason",
+        "tool_call_received",
+        "tool_executed",
+        "text_block",
+        "finish_reason",
+    ]
+    assert events[2] == ToolExecuted(
+        tool_call_id="tc1",
+        execution=runner.session.entries["te1"],
+        result_text="[not_found]",
+        is_error=True,
+    )
+    assert faux.requests[1].messages[-1] == ToolMessage(
+        tool_call_id="tc1",
+        content=[LucaTextBlock(text="[not_found]")],
+        is_error=True,
+    )
 
 
 def test_projector_participates_in_runner_equality():
-    session = AgentSession(
+    session = make_session(
         id="s_projector_eq",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),

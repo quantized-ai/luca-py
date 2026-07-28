@@ -53,8 +53,8 @@ class AgentMiddlewareMixin:
     def before_post_message(self, parts: list[ContentPart]) -> list[ContentPart]:
         """Before a user message is appended to the session. Return the
         (possibly modified) content parts — sanitise, enrich, log. The whole
-        ordered list is visible, text and images alike, so a hook can
-        rewrite, drop, reorder or add parts."""
+        ordered list is visible, text and images alike, so a hook can rewrite,
+        drop, reorder or add parts."""
         return parts
 
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
@@ -81,7 +81,8 @@ class AgentMiddlewareMixin:
         return messages, system_message
 
     def after_llm_response(
-        self, message: ClientAssistantMessage,
+        self,
+        message: ClientAssistantMessage,
     ) -> ClientAssistantMessage:
         """After the LLM responds, before the AssistantMessage is recorded.
         Fires on every round — both tool-call rounds and final answers. Return
@@ -89,7 +90,8 @@ class AgentMiddlewareMixin:
         return message
 
     def before_permission_check(
-        self, execution: ToolExecution,
+        self,
+        execution: ToolExecution,
     ) -> ToolExecution:
         """Before the registry's decide() is asked about an execution.
         Return the (possibly modified) execution — it is what decide() sees
@@ -114,12 +116,20 @@ class AgentMiddlewareMixin:
     ) -> ToolExecution:
         """When the runtime is about to handle an execution's outcome. An
         allowed call receives it before dispatch, still PENDING — change
-        `raw_tool_call` here to alter the effective call (the registry
-        resolves and validates from it inside execute()). A terminal-at-birth
-        call arrives with NOT_FOUND / INVALID / FAILED already set, a denied
-        call with REJECTED, a call cancelled before dispatch with CANCELLED.
-        Not invoked again when a RUNNING call later reaches its terminal
-        status. Return the (possibly modified) execution."""
+        `raw_tool_call` here to alter the effective call, which is what the
+        registry's `prepare()` then resolves and validates from (the hook
+        deliberately runs AHEAD of it). A terminal-at-birth call arrives with
+        NOT_FOUND / INVALID / FAILED already set, a denied call with REJECTED,
+        a call cancelled before dispatch with CANCELLED. Not invoked again
+        when a RUNNING call later reaches its terminal status. Return the
+        (possibly modified) execution.
+
+        EXACTLY ONCE PER DISPATCH ATTEMPT — not once per call for all time. A
+        crash during `prepare()` writes nothing, so the execution is still
+        PENDING and the next drive fires this hook again for the same call,
+        over the ORIGINAL `raw_tool_call` (a rewrite from the lost attempt is
+        gone with it). Correct for an attempt that produced no outcome, but
+        worth knowing before writing a hook that assumes once-forever."""
         return execution
 
     def after_tool_execution(
@@ -149,18 +159,27 @@ class AgentMiddlewareMixin:
 | User posts | `before_post_message` | `(parts: list[ContentPart])` → `list[ContentPart]` |
 | **Any** entry persistence | `before_entry_written` | `(entry: AnyEntry)` → `AnyEntry` |
 | Per model call | `build_model_string` | `(model_string: str, llm_cfg: LLMConfig)` → `str` |
-| Per model call | `build_tool_list` | `(tools: list)` → `list` |
+| Per model call | `build_tool_list` | `(tools: list[client Tool])` → `list` |
 | Per model call | `before_llm_call` | `(messages, system_message)` → `(messages, system_message)` |
 | Model responded | `after_llm_response` | `(message)` → `message` |
 | Per undecided call | `before_permission_check` | `(execution: ToolExecution)` → `ToolExecution` |
 | Per decision | `after_permission_decision` | `(decision, execution)` → `decision` |
-| Per execution outcome (entry) | `before_tool_execution` | `(execution: ToolExecution)` → `ToolExecution` |
+| Per dispatch attempt / non-dispatch outcome | `before_tool_execution` | `(execution: ToolExecution)` → `ToolExecution` |
 | Per execution outcome (exit) | `after_tool_execution` | `(execution, exception=None)` → `ToolExecution` |
 
 > `message` in `before_llm_call` / `after_llm_response` is the **client**
 > `AssistantMessage` / `Message` (wire types from `luca.client`), not the agent
 > `AssistantMessage` *entry* — the entry is built afterward and passes through
-> `before_entry_written`.
+> `before_entry_written`. Likewise `tools` in `build_tool_list` is the
+> post-adapter **wire** list (`luca.client.types.Tool`), never the registry's
+> [`ToolSpec`](03-tools.md)s.
+
+> ⚠️ **Only `before_tool_execution` is exactly-once and paired.** It fires once
+> per dispatch attempt, and its returned execution is what the dispatch uses.
+> Every other hook may fire without its result being persisted — most visibly
+> `before_permission_check`, whose returned execution is discarded when a
+> cancellation lands mid-`decide()` (the call stays PENDING for the wind-down,
+> and `after_permission_decision` never fires).
 
 > ⚠️ **The four per-call hooks do NOT fire for a compaction's own LLM request.**
 > `build_model_string`, `build_tool_list`, `before_llm_call` and
@@ -194,7 +213,10 @@ class Reminder:
 ```
 
 **Filter tools per call** — `build_tool_list` runs per call, so tool exposure can
-vary by user or state:
+vary by user or state. The hook is synchronous and sees the converted wire
+objects (`luca.client.types.Tool`: `name`, `description`, `parameters`); the
+runner's own `build_tool_list()` is `async` because the registry's `get_tools`
+is, and the hook runs after that await:
 
 ```python
 class ScopeTools:
@@ -209,8 +231,9 @@ Both tool hooks work on the durable `ToolExecution` itself.
 
 `before_tool_execution(execution)` fires when the runtime is about to handle an
 execution's outcome: an **allowed** call arrives still `PENDING`, and the
-returned execution's `raw_tool_call` is the **effective call** — the runner
-re-resolves the tool and re-validates the arguments from it:
+returned execution's `raw_tool_call` is the **effective call** — the hook runs
+*ahead* of the registry's `prepare()`, which resolves the tool and validates the
+arguments from it:
 
 ```python
 class Args10x:
@@ -226,9 +249,14 @@ class Args10x:
 A call that never dispatches also passes through — with `NOT_FOUND` / `INVALID`
 / `FAILED` (terminal at birth), `REJECTED` (denied), or `CANCELLED` already set.
 
+> ⚠️ **Once per dispatch attempt, not once per call forever.** A crash during
+> `prepare()` persists nothing, so the call is still `PENDING` and the next
+> drive fires the hook again — over the *original* `raw_tool_call`, since the
+> lost attempt's rewrite went with it.
+
 `after_tool_execution(execution, exception=None)` observes **every** outcome —
-`COMPLETED`, `FAILED` (with the live exception on a dispatch failure;
-registry-authored terminal births carry none), `NOT_FOUND`, `INVALID`,
+`COMPLETED`, `FAILED` (with the live exception behind a `prepare()` or body
+raise; registry-authored terminal births carry none), `NOT_FOUND`, `INVALID`,
 `REJECTED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT` — and its return value is
 what gets persisted:
 
@@ -262,7 +290,7 @@ middleware=[AddSuffix("-preview"), AddSuffix("-2025")]
 ## Calling the build methods directly
 
 The per-call hooks are driven by public runner methods you can also call in tests
-or subclasses: `build_model_string(llm_cfg)`, `build_tool_list()`,
+or subclasses: `build_model_string(llm_cfg)`, `await build_tool_list()`,
 `build_messages()` *(no hook — delegates to the projector)*,
 `build_system_message()` *(no hook — assembler only)*, and `prepare_llm_call()`
 (runs `before_llm_call` after the builders). Next:

@@ -33,13 +33,13 @@ def tool(plugin: ShellAccessPlugin, name: str):
     return next(t for t in plugin.tools if t.name == name)
 
 
-def execution_for(plugin, name, args, context) -> ToolExecution:
+def execution_for(plugin, name, args, session) -> ToolExecution:
     """A PENDING execution carrying the tool's real approval context, stored
     the way `SimpleToolRegistry` stores it."""
     target = tool(plugin, name)
     requests = target.build_permission_requests(
         target.Args.model_validate(args).model_dump(),
-        context,
+        session,
     )
     return ToolExecution(
         id="x_1",
@@ -96,13 +96,13 @@ def test_every_tool_resolves_against_the_workspace(tmp_path):
     assert [t.workdir for t in plugin.tools] == [tmp_path] * 7
 
 
-def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path):
+async def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path):
     plugin = make_plugin(tmp_path)
 
     registry = plugin.get_tool_registry(SESSION)
 
     assert isinstance(registry, SimpleToolRegistry)
-    assert [t.name for t in registry.get_tools(SESSION)] == [
+    assert [spec.name for spec in await registry.get_tools(SESSION)] == [
         "read",
         "glob",
         "grep",
@@ -162,39 +162,39 @@ def test_additional_directories_seed_the_same_rules(tmp_path):
 # ── decide / pending flows ────────────────────────────────────────────────────
 
 
-async def test_read_inside_the_workspace_is_allowed_silently(tmp_path, context):
+async def test_read_inside_the_workspace_is_allowed_silently(tmp_path, session):
     plugin = make_plugin(tmp_path)
-    execution = execution_for(plugin, "read", {"file_path": "notes.txt"}, context)
+    execution = execution_for(plugin, "read", {"file_path": "notes.txt"}, session)
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.ALLOW
     assert plugin.permission_strategy.pending_requests(execution) == []
 
 
-async def test_read_in_a_workspace_subdirectory_is_allowed(tmp_path, context):
+async def test_read_in_a_workspace_subdirectory_is_allowed(tmp_path, session):
     plugin = make_plugin(tmp_path)
     execution = execution_for(
         plugin,
         "read",
         {"file_path": "src/deep/notes.txt"},
-        context,
+        session,
     )
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.ALLOW
 
 
 async def test_read_outside_the_workspace_is_pending_with_both_steps(
     tmp_path,
-    context,
+    session,
 ):
     plugin = make_plugin(tmp_path / "workspace")
     outside = tmp_path / "elsewhere" / "secrets.txt"
-    execution = execution_for(plugin, "read", {"file_path": str(outside)}, context)
+    execution = execution_for(plugin, "read", {"file_path": str(outside)}, session)
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.PENDING
     [access, verb] = plugin.permission_strategy.pending_requests(execution)
@@ -209,7 +209,7 @@ async def test_read_outside_the_workspace_is_pending_with_both_steps(
     ]
 
 
-async def test_read_inside_an_additional_directory_is_allowed(tmp_path, context):
+async def test_read_inside_an_additional_directory_is_allowed(tmp_path, session):
     extra = tmp_path / "elsewhere"
     plugin = ShellAccessPlugin(
         workspace=tmp_path / "workspace",
@@ -219,27 +219,27 @@ async def test_read_inside_an_additional_directory_is_allowed(tmp_path, context)
         plugin,
         "read",
         {"file_path": str(extra / "notes.txt")},
-        context,
+        session,
     )
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.ALLOW
 
 
 async def test_edit_inside_the_workspace_prompts_only_for_the_verb(
     tmp_path,
-    context,
+    session,
 ):
     plugin = make_plugin(tmp_path)
     execution = execution_for(
         plugin,
         "edit",
         {"file_path": "notes.txt", "old_string": "a", "new_string": "b"},
-        context,
+        session,
     )
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.PENDING
     [verb] = plugin.permission_strategy.pending_requests(execution)
@@ -250,12 +250,12 @@ async def test_edit_inside_the_workspace_prompts_only_for_the_verb(
 
 async def test_bash_inside_the_workspace_prompts_only_for_the_command(
     tmp_path,
-    context,
+    session,
 ):
     plugin = make_plugin(tmp_path)
-    execution = execution_for(plugin, "bash", {"command": "git status"}, context)
+    execution = execution_for(plugin, "bash", {"command": "git status"}, session)
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.PENDING
     [verb] = plugin.permission_strategy.pending_requests(execution)
@@ -264,15 +264,15 @@ async def test_bash_inside_the_workspace_prompts_only_for_the_command(
     ]
 
 
-async def test_yolo_mode_allows_everything(tmp_path, context):
+async def test_yolo_mode_allows_everything(tmp_path, session):
     plugin = make_plugin(tmp_path, mode=PermissionMode.YOLO)
     execution = execution_for(
         plugin,
         "edit",
         {"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"},
-        context,
+        session,
     )
 
-    decision = await plugin.permission_strategy.decide(execution)
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.ALLOW

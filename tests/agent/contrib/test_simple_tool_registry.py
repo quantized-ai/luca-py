@@ -1,12 +1,14 @@
-"""Self-scoped tests for `luca.agent.contrib.simple_tool_registry`: birth
-drafts per preflight outcome, decide delegation to the `PermissionPolicy`,
-execute resolution/validation/invocation, and `ProxyToolRegistry` routing
-(recompute+cache, duplicate-name rejection, the three miss degradations,
-nesting).
+"""Self-scoped tests for `luca.agent.contrib.simple_tool_registry`: the
+`ToolSpec` list `get_tools` advertises, the birth drafts `create_execution`
+authors per preflight outcome, `decide` delegation to the `PermissionPolicy`,
+`prepare`'s resolve/validate/bind (it returns a callable and never runs the
+body), and `ProxyToolRegistry` routing — recompute+cache, duplicate-name
+rejection, cache-independent `decide`/`prepare` resolution, ALLOW on a name no
+child owns, and nesting.
 
-No runner here — the registry contract is exercised directly, exactly as the
-runner would call it: `create_execution` with a `ToolCall` + `ToolContext`,
-`decide`/`execute` with the (stamped) `ToolExecution`.
+No runner here — the four-method registry contract is exercised directly,
+exactly as the runner would call it: every method is async and takes the live
+`AgentSession` first.
 """
 
 import pytest
@@ -18,6 +20,7 @@ from luca.agent.contrib.simple_tool_registry import (
     SimpleToolRegistry,
     YoloPermissionPolicy,
 )
+from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
     AgentSession,
     ApprovalDecision,
@@ -30,9 +33,7 @@ from luca.agent.core import (
     LLMConfig,
     SessionConfig,
     TextContent,
-    Tool,
     ToolCall,
-    ToolContext,
     ToolExecution,
     ToolExecutionError,
     ToolNotFound,
@@ -46,8 +47,6 @@ SESSION = AgentSession(
     active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
     session_config=SessionConfig(llm_config=MODEL),
 )
-
-CONTEXT = ToolContext(session_id="s_registry", model=MODEL)
 
 
 # ── tool doubles ──────────────────────────────────────────────────────────────
@@ -72,7 +71,7 @@ class AddTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -88,7 +87,7 @@ class MultiplyTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -96,19 +95,24 @@ class MultiplyTool(Tool):
 
 
 class ReadFileTool(Tool):
-    """Supplies the duck-typed `get_approval_context` convention."""
+    """Supplies the duck-typed `get_approval_context` convention. The echoed
+    `session_id` is what proves the live session reaches the hook."""
 
     name = "read_file"
     description = "Read a file."
     Args = PathArgs
 
-    async def get_approval_context(self, args: dict, context: ToolContext) -> dict:
-        return {"resources": [args["path"]], "preview": f"Read {args['path']}"}
+    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+        return {
+            "resources": [args["path"]],
+            "preview": f"Read {args['path']}",
+            "session_id": session.id,
+        }
 
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -118,37 +122,116 @@ class ReadFileTool(Tool):
 class BrokenContextTool(ReadFileTool):
     name = "broken_context"
 
-    async def get_approval_context(self, args: dict, context: ToolContext) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
         raise RuntimeError("context exploded")
 
 
-class RecordingPolicy(PermissionPolicy):
-    """Records every execution it decides; always ALLOW with a frozen stamp."""
+class CapturingTool(Tool):
+    """Records what the prepared callable handed the body."""
+
+    name = "capture"
+    description = "Records its arguments, session, and token."
+    Args = BinaryArgs
 
     def __init__(self) -> None:
-        self.seen: list[ToolExecution] = []
+        self.calls: list[tuple] = []
 
-    async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision:
-        self.seen.append(tool_execution)
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        self.calls.append((args, session, cancellation_token))
+        return "captured"
+
+
+# The specs the doubles above snapshot themselves into: `input_schema` is the
+# `Args` model's JSON Schema verbatim. Written out as literals rather than
+# taken from `get_tool_spec()` so the expectation is independent of the
+# method under test.
+ADD_SPEC = ToolSpec(
+    name="add",
+    description="Add two numbers.",
+    input_schema=BinaryArgs.model_json_schema(),
+)
+MULTIPLY_SPEC = ToolSpec(
+    name="multiply",
+    description="Multiply two numbers.",
+    input_schema=BinaryArgs.model_json_schema(),
+    timeout_in_ms=5000,
+)
+READ_FILE_SPEC = ToolSpec(
+    name="read_file",
+    description="Read a file.",
+    input_schema=PathArgs.model_json_schema(),
+)
+BROKEN_CONTEXT_SPEC = ToolSpec(
+    name="broken_context",
+    description="Read a file.",
+    input_schema=PathArgs.model_json_schema(),
+)
+CAPTURE_SPEC = ToolSpec(
+    name="capture",
+    description="Records its arguments, session, and token.",
+    input_schema=BinaryArgs.model_json_schema(),
+)
+
+
+class RecordingPolicy(PermissionPolicy):
+    """Records every `(session, execution)` pair it decides; always ALLOW with
+    a frozen stamp."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[AgentSession, ToolExecution]] = []
+
+    async def decide(
+        self,
+        session: AgentSession,
+        tool_execution: ToolExecution,
+    ) -> ApprovalDecision:
+        self.seen.append((session, tool_execution))
         return ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 
 
 def stamped(draft: ToolExecution) -> ToolExecution:
-    """What the runner does to a draft before decide/execute see it."""
+    """What the runner does to a draft before decide/prepare see it."""
     return draft.model_copy(update={"id": "te1", "created_at": 1000})
+
+
+def cold_execution(call: ToolCall) -> ToolExecution:
+    """An approved execution as a fresh process loads it: no `get_tools()` has
+    run, so nothing warmed a proxy's route. `raw_tool_call.name` is the only
+    thing `decide`/`prepare` resolve from."""
+    return ToolExecution(
+        id="te1",
+        created_at=1000,
+        tool_call_id=call.id,
+        raw_tool_call=call,
+        status=ExecutionStatus.PENDING,
+    )
+
+
+def child(*tools: Tool) -> SimpleToolRegistry:
+    return SimpleToolRegistry(
+        tools=list(tools),
+        permission_policy=YoloPermissionPolicy(),
+    )
 
 
 # ── SimpleToolRegistry: get_tools ─────────────────────────────────────────────
 
 
-def test_get_tools_returns_the_static_list():
-    add, multiply = AddTool(), MultiplyTool()
+async def test_get_tools_returns_a_spec_per_tool_in_order():
     registry = SimpleToolRegistry(
-        tools=[add, multiply],
+        tools=[AddTool(), MultiplyTool()],
         permission_policy=YoloPermissionPolicy(),
     )
 
-    assert registry.get_tools(SESSION) == [add, multiply]
+    specs = await registry.get_tools(SESSION)
+
+    assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
 
 # ── SimpleToolRegistry: create_execution (the birth drafts) ───────────────────
@@ -161,7 +244,7 @@ async def test_unknown_tool_births_a_not_found_draft():
     )
     call = ToolCall(id="tc1", name="nope", arguments={"x": 1})
 
-    draft = await registry.create_execution(call, CONTEXT)
+    draft = await registry.create_execution(SESSION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -169,6 +252,7 @@ async def test_unknown_tool_births_a_not_found_draft():
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
+        tool_spec_id=None,
         status=ExecutionStatus.NOT_FOUND,
         error=ToolExecutionError(
             error_type="ToolNotFound",
@@ -185,16 +269,32 @@ async def test_invalid_arguments_birth_an_invalid_draft():
     )
     call = ToolCall(id="tc1", name="add", arguments={"a": 1})
 
-    draft = await registry.create_execution(call, CONTEXT)
+    draft = await registry.create_execution(SESSION, call)
 
-    assert draft.status == ExecutionStatus.INVALID
-    assert draft.tool_spec == ToolSpec(name="add", description="Add two numbers.")
-    assert draft.error.error_type == "InvalidToolArguments"
-    assert draft.error.error_message == "Arguments for tool 'add' are invalid."
-    assert draft.error.details["errors"][0]["type"] == "missing"
-    assert draft.error.details["errors"][0]["loc"] == ["b"]
-    assert draft.extras == {}
-    assert (draft.id, draft.created_at, draft.ended_at) == (None, None, None)
+    assert draft == ToolExecution(
+        id=None,
+        created_at=None,
+        tool_call_id="tc1",
+        raw_tool_call=call,
+        tool_spec=ADD_SPEC,
+        tool_spec_id=None,
+        status=ExecutionStatus.INVALID,
+        error=ToolExecutionError(
+            error_type="InvalidToolArguments",
+            error_message="Arguments for tool 'add' are invalid.",
+            details={
+                "errors": [
+                    {
+                        "type": "missing",
+                        "loc": ["b"],
+                        "msg": "Field required",
+                        "input": {"a": 1},
+                    },
+                ],
+            },
+        ),
+        extras={},
+    )
 
 
 async def test_raising_approval_context_births_a_failed_draft():
@@ -204,15 +304,23 @@ async def test_raising_approval_context_births_a_failed_draft():
     )
     call = ToolCall(id="tc1", name="broken_context", arguments={"path": "/etc"})
 
-    draft = await registry.create_execution(call, CONTEXT)
+    draft = await registry.create_execution(SESSION, call)
 
-    assert draft.status == ExecutionStatus.FAILED
-    assert draft.error == ToolExecutionError(
-        error_type="RuntimeError",
-        error_message="context exploded",
-        details={"phase": "approval_context"},
+    assert draft == ToolExecution(
+        id=None,
+        created_at=None,
+        tool_call_id="tc1",
+        raw_tool_call=call,
+        tool_spec=BROKEN_CONTEXT_SPEC,
+        tool_spec_id=None,
+        status=ExecutionStatus.FAILED,
+        error=ToolExecutionError(
+            error_type="RuntimeError",
+            error_message="context exploded",
+            details={"phase": "approval_context"},
+        ),
+        extras={},
     )
-    assert draft.extras == {}
 
 
 async def test_healthy_call_births_a_pending_draft_with_approval_context():
@@ -222,19 +330,21 @@ async def test_healthy_call_births_a_pending_draft_with_approval_context():
     )
     call = ToolCall(id="tc1", name="read_file", arguments={"path": "/etc/hosts"})
 
-    draft = await registry.create_execution(call, CONTEXT)
+    draft = await registry.create_execution(SESSION, call)
 
     assert draft == ToolExecution(
         id=None,
         created_at=None,
         tool_call_id="tc1",
         raw_tool_call=call,
-        tool_spec=ToolSpec(name="read_file", description="Read a file."),
+        tool_spec=READ_FILE_SPEC,
+        tool_spec_id=None,
         status=ExecutionStatus.PENDING,
         extras={
             "approval_context": {
                 "resources": ["/etc/hosts"],
                 "preview": "Read /etc/hosts",
+                "session_id": "s_registry",
             },
         },
     )
@@ -247,84 +357,102 @@ async def test_plain_tool_births_a_pending_draft_with_empty_extras():
     )
     call = ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
 
-    draft = await registry.create_execution(call, CONTEXT)
+    draft = await registry.create_execution(SESSION, call)
 
-    assert draft.status == ExecutionStatus.PENDING
-    assert draft.extras == {}
     # the declared deadline rides on the birth spec
-    assert draft.tool_spec == ToolSpec(
-        name="multiply",
-        description="Multiply two numbers.",
-        timeout_in_ms=5000,
+    assert draft == ToolExecution(
+        id=None,
+        created_at=None,
+        tool_call_id="tc1",
+        raw_tool_call=call,
+        tool_spec=MULTIPLY_SPEC,
+        tool_spec_id=None,
+        status=ExecutionStatus.PENDING,
+        extras={},
     )
 
 
 # ── SimpleToolRegistry: decide delegation ─────────────────────────────────────
 
 
-async def test_decide_delegates_to_the_permission_policy():
+async def test_decide_delegates_the_session_and_execution_to_the_policy():
     policy = RecordingPolicy()
     registry = SimpleToolRegistry(tools=[AddTool()], permission_policy=policy)
     execution = stamped(
         await registry.create_execution(
+            SESSION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
         )
     )
 
-    decision = await registry.decide(execution, CONTEXT)
+    decision = await registry.decide(SESSION, execution)
 
     assert decision == ApprovalDecision(
         decision=ApprovalOption.ALLOW,
         created_at=1000,
     )
-    assert policy.seen == [execution]
+    assert policy.seen == [(SESSION, execution)]
 
 
-async def test_yolo_policy_allows_with_wall_clock_stamp():
-    execution = stamped(
-        await SimpleToolRegistry(
-            tools=[AddTool()],
-            permission_policy=YoloPermissionPolicy(),
-        ).create_execution(
-            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
-        )
+async def test_yolo_policy_allows_every_execution():
+    execution = cold_execution(
+        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
     )
 
-    decision = await YoloPermissionPolicy().decide(execution)
+    decision = await YoloPermissionPolicy().decide(SESSION, execution)
 
-    assert decision.decision == ApprovalOption.ALLOW
-    assert decision.metadata is None
-    assert isinstance(decision.created_at, int)
-    assert decision.created_at > 0
+    # `created_at` is `ApprovalDecision`'s wall-clock default — noise this
+    # test does not own.
+    assert decision == ApprovalDecision(
+        decision=ApprovalOption.ALLOW,
+        created_at=decision.created_at,
+    )
 
 
-# ── SimpleToolRegistry: execute ───────────────────────────────────────────────
+# ── SimpleToolRegistry: prepare ───────────────────────────────────────────────
 
 
-async def test_execute_resolves_validates_and_invokes_the_tool():
+async def test_prepare_returns_a_callable_without_running_the_body():
+    tool = CapturingTool()
     registry = SimpleToolRegistry(
-        tools=[AddTool()],
+        tools=[tool],
         permission_policy=YoloPermissionPolicy(),
     )
     execution = stamped(
         await registry.create_execution(
-            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
+            SESSION,
+            ToolCall(id="tc1", name="capture", arguments={"a": 1, "b": 2}),
         )
     )
 
-    result = await registry.execute(
-        execution,
-        CONTEXT,
-        cancellation_token=CancellationToken(),
+    prepared = await registry.prepare(SESSION, execution)
+
+    assert callable(prepared)
+    assert tool.calls == []
+
+
+async def test_the_prepared_callable_runs_the_body_with_the_bound_arguments():
+    tool = CapturingTool()
+    token = CancellationToken()
+    registry = SimpleToolRegistry(
+        tools=[tool],
+        permission_policy=YoloPermissionPolicy(),
     )
+    execution = stamped(
+        await registry.create_execution(
+            SESSION,
+            ToolCall(id="tc1", name="capture", arguments={"a": 1, "b": 2}),
+        )
+    )
+    prepared = await registry.prepare(SESSION, execution)
 
-    assert result == ExecutionResult(content=[TextContent(text="3")])
+    result = await prepared(cancellation_token=token)
+
+    assert result == ExecutionResult(content=[TextContent(text="captured")])
+    assert tool.calls == [({"a": 1, "b": 2}, SESSION, token)]
 
 
-async def test_execute_resolves_by_the_effective_call_name():
+async def test_prepare_resolves_by_the_effective_call_name():
     # the execution's raw_tool_call (possibly middleware-rewritten) is the
     # dispatch authority — an unknown effective name raises ToolNotFound
     registry = SimpleToolRegistry(
@@ -333,8 +461,8 @@ async def test_execute_resolves_by_the_effective_call_name():
     )
     execution = stamped(
         await registry.create_execution(
+            SESSION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
         )
     ).model_copy(
         update={
@@ -342,23 +470,19 @@ async def test_execute_resolves_by_the_effective_call_name():
         }
     )
 
-    with pytest.raises(ToolNotFound):
-        await registry.execute(
-            execution,
-            CONTEXT,
-            cancellation_token=CancellationToken(),
-        )
+    with pytest.raises(ToolNotFound, match="Unknown tool: 'renamed'"):
+        await registry.prepare(SESSION, execution)
 
 
-async def test_execute_wraps_validation_failures_in_invalid_tool_arguments():
+async def test_prepare_wraps_validation_failures_in_invalid_tool_arguments():
     registry = SimpleToolRegistry(
         tools=[AddTool()],
         permission_policy=YoloPermissionPolicy(),
     )
     execution = stamped(
         await registry.create_execution(
+            SESSION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
         )
     ).model_copy(
         update={
@@ -367,82 +491,77 @@ async def test_execute_wraps_validation_failures_in_invalid_tool_arguments():
     )
 
     with pytest.raises(InvalidToolArguments) as excinfo:
-        await registry.execute(
-            execution,
-            CONTEXT,
-            cancellation_token=CancellationToken(),
-        )
-    assert excinfo.value.errors[0]["loc"] == ["b"]
+        await registry.prepare(SESSION, execution)
+
+    assert excinfo.value.errors == [
+        {
+            "type": "missing",
+            "loc": ["b"],
+            "msg": "Field required",
+            "input": {"a": 1},
+        },
+    ]
 
 
-# ── ProxyToolRegistry ─────────────────────────────────────────────────────────
+# ── ProxyToolRegistry: get_tools ──────────────────────────────────────────────
 
 
-def child(*tools: Tool) -> SimpleToolRegistry:
-    return SimpleToolRegistry(
-        tools=list(tools),
-        permission_policy=YoloPermissionPolicy(),
-    )
+async def test_proxy_get_tools_concatenates_children_in_order():
+    proxy = ProxyToolRegistry(child(AddTool(), MultiplyTool()), child(ReadFileTool()))
+
+    specs = await proxy.get_tools(SESSION)
+
+    assert specs == [ADD_SPEC, MULTIPLY_SPEC, READ_FILE_SPEC]
 
 
-def test_proxy_get_tools_concatenates_children_in_order():
-    add, multiply, read = AddTool(), MultiplyTool(), ReadFileTool()
-    proxy = ProxyToolRegistry(child(add, multiply), child(read))
-
-    assert proxy.get_tools(SESSION) == [add, multiply, read]
-
-
-def test_proxy_get_tools_rejects_duplicate_names():
+async def test_proxy_get_tools_rejects_duplicate_names():
     proxy = ProxyToolRegistry(child(AddTool()), child(AddTool()))
 
     with pytest.raises(ValueError, match="Duplicate tool name across registries"):
-        proxy.get_tools(SESSION)
+        await proxy.get_tools(SESSION)
 
 
-def test_proxy_get_tools_recomputes_the_route():
+async def test_proxy_get_tools_recomputes_the_route():
     # a dynamic child may change its answer between calls; each get_tools
     # rebuilds the cache from scratch
-    first = child(AddTool())
-    proxy = ProxyToolRegistry(first)
-    proxy.get_tools(SESSION)
-
+    proxy = ProxyToolRegistry(child(AddTool()))
+    await proxy.get_tools(SESSION)
     proxy.add_registry(child(MultiplyTool()))
 
-    assert [tool.name for tool in proxy.get_tools(SESSION)] == ["add", "multiply"]
+    specs = await proxy.get_tools(SESSION)
+
+    assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
 
-async def test_proxy_routes_each_method_to_the_owning_child():
-    policy_a, policy_b = RecordingPolicy(), RecordingPolicy()
-    proxy = ProxyToolRegistry(
-        SimpleToolRegistry(tools=[AddTool()], permission_policy=policy_a),
-        SimpleToolRegistry(tools=[MultiplyTool()], permission_policy=policy_b),
+# ── ProxyToolRegistry: routing ────────────────────────────────────────────────
+
+
+async def test_proxy_create_execution_routes_to_the_owning_child():
+    proxy = ProxyToolRegistry(child(AddTool()), child(MultiplyTool()))
+    await proxy.get_tools(SESSION)  # warm the route
+    call = ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
+
+    draft = await proxy.create_execution(SESSION, call)
+
+    assert draft == ToolExecution(
+        id=None,
+        created_at=None,
+        tool_call_id="tc1",
+        raw_tool_call=call,
+        tool_spec=MULTIPLY_SPEC,
+        tool_spec_id=None,
+        status=ExecutionStatus.PENDING,
+        extras={},
     )
-    proxy.get_tools(SESSION)  # warm the route
-
-    draft = await proxy.create_execution(
-        ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
-        CONTEXT,
-    )
-    execution = stamped(draft)
-    decision = await proxy.decide(execution, CONTEXT)
-    result = await proxy.execute(
-        execution,
-        CONTEXT,
-        cancellation_token=CancellationToken(),
-    )
-
-    assert draft.tool_spec.name == "multiply"
-    assert decision.decision == ApprovalOption.ALLOW
-    assert policy_a.seen == []  # only the owning child decided
-    assert policy_b.seen == [execution]
-    assert result == ExecutionResult(content=[TextContent(text="12")])
 
 
-async def test_proxy_create_execution_miss_births_a_not_found_draft():
-    proxy = ProxyToolRegistry(child(AddTool()))  # route never warmed
+async def test_proxy_create_execution_births_not_found_on_a_cold_route():
+    # a tool call only ever arrives after an LLM call, which warmed the route
+    # on its way out — create_execution routes from the plain cache
+    proxy = ProxyToolRegistry(child(AddTool()))
     call = ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})
 
-    draft = await proxy.create_execution(call, CONTEXT)
+    draft = await proxy.create_execution(SESSION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -450,62 +569,99 @@ async def test_proxy_create_execution_miss_births_a_not_found_draft():
         tool_call_id="tc1",
         raw_tool_call=call,
         tool_spec=None,
+        tool_spec_id=None,
         status=ExecutionStatus.NOT_FOUND,
         error=ToolExecutionError(
             error_type="ToolNotFound",
             error_message="Unknown tool: 'add'.",
         ),
+        extras={},
     )
 
 
-async def test_proxy_decide_miss_allows_so_execute_terminalizes_honestly():
-    proxy = ProxyToolRegistry(child(AddTool()))  # route never warmed
-    execution = ToolExecution(
-        id="te1",
+async def test_proxy_decide_gates_a_cold_route_through_the_owning_childs_policy():
+    # no get_tools() has run: decide resolves independently of the cache, so a
+    # call resumed in a fresh process is still gated by its owner
+    policy_a, policy_b = RecordingPolicy(), RecordingPolicy()
+    proxy = ProxyToolRegistry(
+        SimpleToolRegistry(tools=[AddTool()], permission_policy=policy_a),
+        SimpleToolRegistry(tools=[MultiplyTool()], permission_policy=policy_b),
+    )
+    execution = cold_execution(
+        ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
+    )
+
+    decision = await proxy.decide(SESSION, execution)
+
+    assert decision == ApprovalDecision(
+        decision=ApprovalOption.ALLOW,
         created_at=1000,
-        tool_call_id="tc1",
-        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        status=ExecutionStatus.PENDING,
+    )
+    assert policy_a.seen == []
+    assert policy_b.seen == [(SESSION, execution)]
+
+
+async def test_proxy_prepare_binds_a_cold_route_to_the_owning_childs_tool():
+    proxy = ProxyToolRegistry(child(AddTool()), child(MultiplyTool()))
+    execution = cold_execution(
+        ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
+    )
+    prepared = await proxy.prepare(SESSION, execution)
+
+    result = await prepared(cancellation_token=CancellationToken())
+
+    assert result == ExecutionResult(content=[TextContent(text="12")])
+
+
+async def test_proxy_decide_allows_a_name_no_child_owns():
+    # ALLOW, not DENY: prepare() raises ToolNotFound for it and the call
+    # records the honest NOT_FOUND rather than a false REJECTED
+    policy = RecordingPolicy()
+    proxy = ProxyToolRegistry(
+        SimpleToolRegistry(tools=[AddTool()], permission_policy=policy),
+    )
+    execution = cold_execution(ToolCall(id="tc1", name="nope", arguments={}))
+
+    decision = await proxy.decide(SESSION, execution)
+
+    # `created_at` is `ApprovalDecision`'s wall-clock default — noise this
+    # test does not own.
+    assert decision == ApprovalDecision(
+        decision=ApprovalOption.ALLOW,
+        created_at=decision.created_at,
+    )
+    assert policy.seen == []
+
+
+async def test_proxy_prepare_raises_tool_not_found_for_a_name_no_child_owns():
+    proxy = ProxyToolRegistry(child(AddTool()))
+    execution = cold_execution(ToolCall(id="tc1", name="nope", arguments={}))
+
+    with pytest.raises(ToolNotFound, match="Unknown tool: 'nope'"):
+        await proxy.prepare(SESSION, execution)
+
+
+async def test_nested_proxies_list_transparently():
+    outer = ProxyToolRegistry(
+        ProxyToolRegistry(child(AddTool())),
+        child(MultiplyTool()),
     )
 
-    decision = await proxy.decide(execution, CONTEXT)
+    specs = await outer.get_tools(SESSION)
 
-    assert decision.decision == ApprovalOption.ALLOW
+    assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
 
-async def test_proxy_execute_miss_raises_tool_not_found():
-    proxy = ProxyToolRegistry(child(AddTool()))  # route never warmed
-    execution = ToolExecution(
-        id="te1",
-        created_at=1000,
-        tool_call_id="tc1",
-        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        status=ExecutionStatus.PENDING,
+async def test_nested_proxies_prepare_a_cold_route_through_the_inner_proxy():
+    outer = ProxyToolRegistry(
+        ProxyToolRegistry(child(AddTool())),
+        child(MultiplyTool()),
     )
-
-    with pytest.raises(ToolNotFound):
-        await proxy.execute(
-            execution,
-            CONTEXT,
-            cancellation_token=CancellationToken(),
-        )
-
-
-async def test_nested_proxies_route_transparently():
-    inner = ProxyToolRegistry(child(AddTool()))
-    outer = ProxyToolRegistry(inner, child(MultiplyTool()))
-
-    assert [tool.name for tool in outer.get_tools(SESSION)] == ["add", "multiply"]
-    execution = stamped(
-        await outer.create_execution(
-            ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            CONTEXT,
-        )
+    execution = cold_execution(
+        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
     )
-    result = await outer.execute(
-        execution,
-        CONTEXT,
-        cancellation_token=CancellationToken(),
-    )
+    prepared = await outer.prepare(SESSION, execution)
+
+    result = await prepared(cancellation_token=CancellationToken())
 
     assert result == ExecutionResult(content=[TextContent(text="3")])

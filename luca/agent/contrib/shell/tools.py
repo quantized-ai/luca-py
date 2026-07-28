@@ -46,14 +46,14 @@ from luca.agent.contrib.resource_permissions import (
     ResourcePermission,
     ResourcePermissionToolMixin,
 )
+from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
+    AgentSession,
     CancellationToken,
     ExecutionResult,
     ImageBase64,
     ImageContent,
     TextContent,
-    Tool,
-    ToolContext,
     ToolKind,
 )
 
@@ -221,7 +221,7 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -230,12 +230,12 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
     async def execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
-            return await self._run(args, context, cancellation_token=cancellation_token)
+            return await self._run(args, session, cancellation_token=cancellation_token)
         except ShellToolError as error:
             return ExecutionResult(
                 content=[TextContent(text=str(error))],
@@ -341,7 +341,7 @@ class ReadTool(ShellTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -366,7 +366,7 @@ class ReadTool(ShellTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -567,7 +567,7 @@ class GlobTool(RipgrepTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         root = self._resolve(args["path"]) if args.get("path") else self.workdir
         return [
@@ -592,7 +592,7 @@ class GlobTool(RipgrepTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -671,7 +671,7 @@ class GrepTool(RipgrepTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         target = self._resolve(args["path"]) if args.get("path") else self.workdir
         scope = self._access_scope(target)
@@ -697,7 +697,7 @@ class GrepTool(RipgrepTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -807,7 +807,7 @@ class EditTool(ShellTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -832,7 +832,7 @@ class EditTool(ShellTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -967,7 +967,7 @@ class WriteTool(ShellTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -992,7 +992,7 @@ class WriteTool(ShellTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -1081,7 +1081,7 @@ class ApplyPatchTool(ShellTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         try:
             ops = parse_patch(args["patch_text"])
@@ -1126,7 +1126,7 @@ class ApplyPatchTool(ShellTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -1358,7 +1358,7 @@ class BashTool(ShellTool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         command = args["command"].strip()
         head = command.split()[0]
@@ -1385,7 +1385,7 @@ class BashTool(ShellTool):
     async def _run(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:

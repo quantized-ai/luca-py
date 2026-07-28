@@ -20,6 +20,14 @@ middleware may replace statuses, results, errors, ids, call data, approval
 data, or timestamps on a `ToolExecution` — the framework persists and
 proceeds from the returned value, and the application owns the consequences.
 
+Durability of a hook's RESULT. `before_tool_execution` is the only hook with
+an exactly-once, paired guarantee: it fires exactly once per dispatch attempt
+and never twice for one outcome. Every other hook may fire without its result
+being persisted — most visibly `before_permission_check`, whose returned
+execution is discarded when a cancellation lands while `decide()` is in
+flight (the execution has to stay PENDING for the wind-down, so there is
+nowhere to put it, and a decision that never happened has nothing to apply).
+
 Conversation projection is NOT middleware: history shaping, redaction, and
 tool-output wording belong on the `ConversationProjector` collaborator
 (`projection.py`). `before_llm_call` remains as the last-mile, downstream
@@ -123,12 +131,20 @@ class AgentMiddlewareMixin:
     ) -> ToolExecution:
         """When the runtime is about to handle an execution's outcome. An
         allowed call receives it before dispatch, still PENDING — change
-        `raw_tool_call` here to alter the effective call (the registry
-        resolves and validates from it inside execute()). A terminal-at-birth
-        call arrives with NOT_FOUND / INVALID / FAILED already set, a denied
-        call with REJECTED, a call cancelled before dispatch with CANCELLED.
-        Not invoked again when a RUNNING call later reaches its terminal
-        status. Return the (possibly modified) execution."""
+        `raw_tool_call` here to alter the effective call, which is what the
+        registry's `prepare()` then resolves and validates from (the hook
+        deliberately runs AHEAD of it). A terminal-at-birth call arrives with
+        NOT_FOUND / INVALID / FAILED already set, a denied call with REJECTED,
+        a call cancelled before dispatch with CANCELLED. Not invoked again
+        when a RUNNING call later reaches its terminal status. Return the
+        (possibly modified) execution.
+
+        EXACTLY ONCE PER DISPATCH ATTEMPT — not once per call for all time. A
+        crash during `prepare()` writes nothing, so the execution is still
+        PENDING and the next drive fires this hook again for the same call,
+        over the ORIGINAL `raw_tool_call` (a rewrite from the lost attempt is
+        gone with it). Correct for an attempt that produced no outcome, but
+        worth knowing before writing a hook that assumes once-forever."""
         return execution
 
     def after_tool_execution(

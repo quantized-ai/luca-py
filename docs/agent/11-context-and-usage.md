@@ -51,9 +51,19 @@ Three hooks; the runner calls them at fixed points:
 
 | Hook | Called | Default behavior |
 |---|---|---|
-| `calculate_context(entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
-| `process_tool_output(result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
-| `prune_entry(entry) -> PrunedEntry` | never by the runner itself — you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
+| `calculate_context(session, entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
+| `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
+| `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
+
+The live `AgentSession` comes first on all three, so every policy sees the same
+state — the active model included. It is **read-only** to the manager: the
+runner owns every write.
+
+> ⚠️ **`calculate_context` runs on every new entry.** Scanning
+> `session.entries` inside it makes a turn quadratic — cross-entry work belongs
+> in `process_tool_output` / `prune_entry`, which run rarely. On an append it
+> also runs *before* the entry joins the session: the entry has its `id`, but
+> `session.entries[entry.id]` raises `KeyError`.
 
 > ⚠️ **The default is a placeholder, not a policy.** Four-characters-per-token
 > estimation, a flat 1000 tokens per image, no truncation, marker-only
@@ -81,18 +91,37 @@ replacement content; markers own nothing.
 ## 3. Improving it: estimation and truncation
 
 Swap the estimate without touching ownership — the ratio is a class var, the
-text→count step one method:
+text→count step one method, and the session carries the model to count against:
 
 ```python
 import tiktoken   # your dependency, not luca's
 
+from luca.agent.core import AgentSession, ContextManager, Entry
+
 class TiktokenContext(ContextManager):
-    def __init__(self) -> None:
-        self._encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+    def calculate_context(self, session: AgentSession, entry: Entry) -> int:
+        model = session.session_config.llm_config.model   # "openai/gpt-4o-mini"
+        self._encoding = tiktoken.encoding_for_model(model.split("/")[-1])
+        return super().calculate_context(session, entry)
 
     def _estimate_tokens(self, text: str) -> int:
         return len(self._encoding.encode(text))
 ```
+
+`context_tokens` is *stored* on the entry, so a model-sensitive count goes
+stale the moment the session switches models.
+`AgentSessionRunner.recalculate_context_tokens()` re-derives every entry in
+`session.entries` — not just the active path, since the count is intrinsic and
+shared by every conversation — each one through `before_entry_written`:
+
+```python
+session.session_config.llm_config = LLMConfig(model="openai/gpt-4o-mini", provider="openrouter")
+runner.recalculate_context_tokens()
+```
+
+> ⚠️ **Nothing in the framework calls it.** No constructor keyword, no CLI
+> flag, no automatic invocation on a model switch. It exists for the
+> application that swapped in a real tokenizer, and that application calls it.
 
 Images are counted by a separate method, so a text tokenizer and an image
 formula are independent overrides:
@@ -104,24 +133,41 @@ class AnthropicImages(ContextManager):
 ```
 
 Truncate tool outputs before they become durable — preserve the original
-under your own policy (`metadata` is yours):
+under your own policy (`metadata` is yours). The execution is handed in too,
+so the policy can vary per tool — truncate `bash`, never `read`:
 
 ```python
-from luca.agent.core import ContextManager, ExecutionResult, TextContent
+from luca.agent.core import (
+    AgentSession, ContextManager, ExecutionResult, TextContent, ToolExecution,
+)
 
 class TruncatingContext(ContextManager):
-    MAX_CHARS = 4_000
+    LIMITS = {"bash": 4_000, "grep": 2_000}   # `read` is absent → never truncated
 
-    def process_tool_output(self, execution_result: ExecutionResult) -> ExecutionResult:
-        text = "".join(p.text for p in execution_result.content)
-        if len(text) <= self.MAX_CHARS:
-            return execution_result
+    def process_tool_output(
+        self,
+        session: AgentSession,
+        execution: ToolExecution,
+        result: ExecutionResult,
+    ) -> ExecutionResult:
+        limit = self.LIMITS.get(execution.raw_tool_call.name)
+        if limit is None:
+            return result
+        text = "".join(p.text for p in result.content if isinstance(p, TextContent))
+        if len(text) <= limit:
+            return result
         return ExecutionResult(
-            content=[TextContent(text=text[: self.MAX_CHARS] + " …[truncated]")],
-            metadata={**execution_result.metadata, "original_chars": len(text)},
-            is_error=execution_result.is_error,
+            content=[TextContent(text=text[:limit] + " …[truncated]")],
+            metadata={**result.metadata, "original_chars": len(text)},
+            is_error=result.is_error,
         )
 ```
+
+> ⚠️ **The execution is mid-transition.** `status` is still `RUNNING` and
+> `result` is not attached yet — read it for *identity* (`raw_tool_call.name`,
+> `tool_spec`), never for outcome. `tool_spec` is `ToolSpec | None` (a registry
+> may dispatch a call it never snapshotted), so branch on `raw_tool_call.name`
+> or guard the `None`.
 
 The processed result is what persists, what the `ToolExecuted` event renders,
 and what every future LLM request projects — the three can never disagree.
@@ -182,14 +228,14 @@ Only the machinery ships for now — the runner exposes **no** `prune()` method
 and nothing triggers pruning automatically. You compose the pieces yourself:
 
 ```python
-manager = runner.context_manager
-template = manager.prune_entry(runner.session.entries["te1"])  # terminal executions only
+manager, session = runner.context_manager, runner.session
+template = manager.prune_entry(session, session.entries["te1"])  # terminal executions only
 
 def build(entry_id, parent_id, ts):
     pruned = template.model_copy(
         update={"id": entry_id, "parent_id": parent_id, "created_at": ts},
     )
-    pruned.context_tokens = manager.calculate_context(pruned)
+    pruned.context_tokens = manager.calculate_context(session, pruned)
     return pruned
 
 runner.ledger.prune("te1", build)   # verifies referent/type/terminality, swaps in place

@@ -4,7 +4,7 @@ strategy):
 
 - `message_to_parts()` — a client `AssistantMessage`'s blocks rendered into
   the agent message parts the runner persists (the inbound direction).
-- `tool_to_luca_tool()` — an agent `Tool` projected onto the wire
+- `tool_spec_to_luca_tool()` — a `ToolSpec` projected onto the wire
   `luca.client.Tool` definition (registry/request preparation).
 
 Both are deliberately separate from `ConversationProjector`: response
@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from luca.client.types import AssistantMessage as LucaAssistantMessage, Tool as LucaTool
 
-from .models import TextContent, ThinkingContent, ToolCall
-from .tools import Tool
+from .models import TextContent, ThinkingContent, ToolCall, ToolSpec
 
 
 def message_to_parts(
@@ -44,14 +43,16 @@ def message_to_parts(
     return parts
 
 
-def tool_to_luca_tool(tool: Tool) -> LucaTool:
-    """Project an agent `Tool` onto the wire `luca.client.Tool` the model sees.
+def tool_spec_to_luca_tool(spec: ToolSpec) -> LucaTool:
+    """Project a `ToolSpec` onto the wire `luca.client.Tool` the model sees.
 
-    `Tool.Args` (a Pydantic model class) is passed straight through as
-    `parameters` — `luca.client.Tool` accepts a BaseModel and the transport
-    normalizes it to JSON schema at send time."""
+    `input_schema` is already a JSON Schema dict, which `luca.client.Tool`
+    accepts verbatim as `parameters` — so the core hands the transport plain
+    data and never touches a Python class. The remaining spec fields
+    (`tool_kind`, `namespace`, `version`, `timeout_in_ms`, `metadata`) are
+    framework/app-space classification the wire has no place for."""
     return LucaTool(
-        name=tool.name,
-        description=tool.description,
-        parameters=tool.Args,
+        name=spec.name,
+        description=spec.description,
+        parameters=spec.input_schema,
     )

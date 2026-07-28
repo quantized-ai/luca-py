@@ -1,29 +1,36 @@
-"""Runtime tool context — generated on the fly, never persisted.
+"""`CancellationToken` — the run's cooperative cancellation signal.
 
-`ToolContext` is the ambient, information-only state a registry or tool
-receives per run: the session id and the active `LLMConfig`. The runner
-builds one per `AgentRun` and hands the same instance to every registry call
-in that run.
+The token actually trips: `runner.cancel()` / `run.cancel()` sets it after
+appending the durable `CancelRequested` entry — it is the runtime wake-up
+only; the entry is the truth.
 
-`CancellationToken` lives here too but is no longer carried by the context:
-the runner passes it explicitly as the keyword-only `cancellation_token` to
-`registry.execute(...)` / `tool.execute(...)`. The token actually trips:
-`runner.cancel()` / `run.cancel()` sets it after appending the durable
-`CancelRequested` entry — it is the runtime wake-up only; the entry is the
-truth. The runner races every tool execution and LLM call against it;
-cooperative tools may also watch it themselves (`cancelled` /
-`wait_cancelled()`) to return partial output within the cancellation grace
-window.
+The runner races EVERY collaborator await against it: all four `ToolRegistry`
+calls (`get_tools`, `create_execution`, `decide`, `prepare`), the prepared
+tool callable, the LLM call and its streaming steps, and compaction. When the
+token wins, the runner kills the await and continues; the callee never learns
+that a token exists.
+
+Only the prepared tool callable is HANDED the token (as the keyword-only
+`cancellation_token`), and only because a cooperative body can return partial
+output within the cancellation grace window (`cancelled` /
+`wait_cancelled()`). There is no partial answer worth having from listing
+tools, minting an execution record, deciding an approval or preparing a
+dispatch, so those four are raced at the runner level instead — with no grace
+window, and awaiting the killed task's unwinding so a registry's `finally`
+completes before the run moves on.
+
+There is no `ToolContext`: registries, tools and context managers receive the
+live `AgentSession`, which already carries everything the old context copied
+(`session.id`, `session.session_config.llm_config`). Per-run application state
+is not the framework's concern — registries and tools are application code and
+can hold their own references or read a `contextvars.ContextVar`.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from pydantic import BaseModel, ConfigDict
-
 from .exceptions import CancelledError
-from .models import LLMConfig
 
 
 class CancellationToken:
@@ -49,13 +56,3 @@ class CancellationToken:
     def raise_if_cancelled(self) -> None:
         if self.cancelled:
             raise CancelledError()
-
-
-class ToolContext(BaseModel):
-    """Ambient, information-only context passed to registry and tool calls.
-    Transient — built per `run()`, never stored on the session."""
-
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
-    session_id: str
-    model: LLMConfig

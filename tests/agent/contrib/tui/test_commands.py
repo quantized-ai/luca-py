@@ -14,7 +14,6 @@ from luca.agent.contrib.tui.cells import (
     NoticeCell,
     UserCell,
 )
-from luca.agent.contrib.tui.commands import COMMANDS
 from luca.agent.contrib.tui.screens import PickerScreen
 from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
 from luca.agent.core.compaction import CompactionPlan
@@ -23,6 +22,19 @@ from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from tests.agent.scenarios import FakeCompactionPolicy
 
 from .helpers import fresh_session, idle_again, submit, wait_until
+
+# The block `/help` renders, spelled out rather than re-derived from COMMANDS:
+# a command added, renamed, or re-summarized shows up here as a diff.
+HELP_TEXT = "\n".join(
+    (
+        "/help                    show this help",
+        "/model [provider:model]  pick a provider then a model",
+        "/reasoning [level]       pick or set the reasoning level",
+        "/compact                 summarize the history and continue",
+        "/new                     save and start a fresh conversation",
+        "/quit                    save and exit",
+    ),
+)
 
 
 def scripted(*responses) -> FauxProvider:
@@ -63,9 +75,7 @@ async def test_help_lists_every_command(tmp_path):
         await submit(pilot, "/help")
         await pilot.pause()
 
-        text = _notices(app)[-1]
-        for command in COMMANDS:
-            assert f"/{command.name}" in text
+        assert _notices(app) == [HELP_TEXT]
 
 
 # ── /model ───────────────────────────────────────────────────────────────────
@@ -186,7 +196,7 @@ async def test_model_arg_rejects_an_empty_half(tmp_path):
         await pilot.pause()
 
         assert _config(app) == before
-        assert "invalid model spec" in _notices(app)[-1]
+        assert _notices(app) == ["invalid model spec 'openai:'; use provider:model"]
 
 
 # ── /reasoning ───────────────────────────────────────────────────────────────
@@ -218,7 +228,9 @@ async def test_reasoning_arg_rejects_an_unknown_level_and_leaves_config_untouche
         await pilot.pause()
 
         assert _config(app) == before
-        assert "unknown reasoning level" in _notices(app)[-1]
+        assert _notices(app) == [
+            "unknown reasoning level 'bogus'. Valid: provider-default, none, minimal, low, medium, high, xhigh",
+        ]
 
 
 # ── /new, /quit, dispatch ────────────────────────────────────────────────────

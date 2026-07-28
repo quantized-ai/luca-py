@@ -12,7 +12,6 @@ actually carried.
 import pytest
 
 from luca.agent.core.models import (
-    AgentSession,
     Conversation,
     ConversationStatus,
     SessionConfig,
@@ -33,6 +32,7 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    make_session,
 )
 
 # ── test doubles ──────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ async def test_no_system_prompt_parts_sends_no_system_message():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s1",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -107,7 +107,7 @@ async def test_string_part_reaches_the_assembler_as_a_part():
         ]
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
-    session = AgentSession(
+    session = make_session(
         id="s2",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -139,7 +139,7 @@ async def test_dict_part_reaches_the_assembler_as_a_part():
         ]
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
-    session = AgentSession(
+    session = make_session(
         id="s3",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -177,7 +177,7 @@ async def test_system_prompt_part_reaches_the_assembler_unchanged():
         ]
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
-    session = AgentSession(
+    session = make_session(
         id="s4",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -216,7 +216,7 @@ async def test_callable_part_returning_string_is_invoked_and_coerced():
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable("You are helpful.")
-    session = AgentSession(
+    session = make_session(
         id="s5",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -259,7 +259,7 @@ async def test_callable_part_returning_dict_is_invoked_and_coerced():
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable({"text": "You are helpful.", "priority": 5, "source": "env"})
-    session = AgentSession(
+    session = make_session(
         id="s6",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -308,7 +308,7 @@ async def test_callable_part_returning_part_is_invoked_and_passed_through():
     part = PartCallable(
         SystemPromptPart(text="You are helpful.", source="model", priority=2),
     )
-    session = AgentSession(
+    session = make_session(
         id="s7",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -354,7 +354,7 @@ async def test_assembler_receives_priority_sorted_parts_across_all_forms():
         ]
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
-    session = AgentSession(
+    session = make_session(
         id="s8",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -398,7 +398,7 @@ async def test_blank_assembled_prompt_sends_no_system_message():
         ]
     )
     assembler = ScriptedAssembler("   \n  ")
-    session = AgentSession(
+    session = make_session(
         id="s9",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -435,7 +435,7 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
     )
     assembler = ScriptedAssembler("ASSEMBLED PROMPT")
     part = PartCallable("Use the tools.")
-    session = AgentSession(
+    session = make_session(
         id="s10",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -485,7 +485,7 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
 
 
 def test_invalid_static_part_raises_type_error_at_construction():
-    session = AgentSession(
+    session = make_session(
         id="s11",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),

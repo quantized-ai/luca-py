@@ -15,18 +15,20 @@ from luca.agent.contrib.tui.cells import (
     CompactionCell,
     NoticeCell,
     ReasoningCell,
+    ToolCallCell,
     UserCell,
 )
 from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
 from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.sessions import load_session
-from luca.agent.core.models import ConversationStatus
+from luca.agent.core.models import ConversationStatus, ExecutionStatus
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
     faux_error,
     faux_text,
     faux_thinking,
+    faux_tool_call,
 )
 from tests.agent.scenarios import (
     COMPACTION_FAILED_SESSION,
@@ -198,6 +200,35 @@ async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
         assert "turn failed" in notice.text
         assert app.runner.status is ConversationStatus.PENDING  # retry-ready
         assert (tmp_path / f"{session.id}.json").exists()
+
+
+async def test_an_unresolvable_tool_call_renders_as_a_failed_cell(tmp_path):
+    # no registry owns `divide`, so the call is terminal at birth: no approval
+    # modal, no dispatch, and no ToolExecutionStarted — the cell is mounted by
+    # ToolCallReceived and finished by ToolExecuted without ever going running
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(
+            faux_assistant_message(
+                [faux_tool_call("divide", {"a": 6, "b": 7}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("I have no divide tool.")]),
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "what is 6 divided by 7?")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        [cell] = app.query(ToolCallCell)
+        assert cell.status is ExecutionStatus.NOT_FOUND
+        assert cell.result_text == "Unknown tool: 'divide'."
+        assert cell.is_error is True
+        assert cell.text == "divide(a=6, b=7)\n→ Unknown tool: 'divide'."
+        assert [c.text for c in app.query(AssistantCell)] == ["I have no divide tool."]
 
 
 async def test_resume_replays_the_transcript(tmp_path):

@@ -10,15 +10,26 @@ snapshots (`ToolCallReceived` at birth, `ToolExecutionStarted` at dispatch,
 `ToolExecuted` at the terminal outcome) is visible on the page while the
 tool-output design is being reviewed.
 
+The last test is the other half of the story: what the `ContextManager` may do
+to a tool's output on its way to becoming durable, and how it tells one tool
+from another while doing it.
+
 Everything is deliberately inlined and repeated. Do not factor helpers out of
-this file; the duplication IS the point.
+this file; the duplication IS the point. The one concession is the six
+module-level `*_SPEC` / `*_SPEC_ID` constants: a `ToolSpec` now carries the
+`input_schema` derived from a Pydantic model and is stored under a 64-char
+content hash, neither of which is hand-writable, and both have to appear in
+the literals below — on every `ToolExecution` (as `tool_spec` +
+`tool_spec_id`) and once per distinct spec in `AgentSession.tool_specs`.
 """
 
 import asyncio
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from luca.agent.core.context import CancellationToken, ToolContext
+from luca.agent.core.context import CancellationToken
+from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.events import (
     FinishReason,
     TextBlock,
@@ -51,9 +62,52 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.runner import AgentSessionRunner
-from luca.agent.core.tool_registry import ToolRegistry
-from luca.agent.core.tools import Tool
+from luca.agent.core.tool_registry import PreparedTool, ToolRegistry
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text, faux_tool_call
+
+
+class InlineTool:
+    """Core-only tool double. The core's only tool type is `ToolSpec`, so the
+    doubles carry their own `get_tool_spec()` (schema from `Args`, exactly as
+    `luca.agent.contrib.tools.Tool` does) and their own body — nothing here
+    imports contrib, and nothing the runner touches knows this class exists:
+    `InlineToolRegistry` is what turns one into specs and prepared closures."""
+
+    name: ClassVar[str]
+    description: ClassVar[str]
+    Args: ClassVar[type[BaseModel]]
+    timeout_in_ms: ClassVar[int | None] = None
+
+    def get_tool_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=self.name,
+            description=self.description,
+            input_schema=self.Args.model_json_schema(),
+            timeout_in_ms=self.timeout_in_ms,
+        )
+
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        raise NotImplementedError
+
+    async def execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        output = await self._execute(
+            args,
+            session,
+            cancellation_token=cancellation_token,
+        )
+        return ExecutionResult(content=[TextContent(text=output)])
 
 
 class AddArgs(BaseModel):
@@ -62,7 +116,7 @@ class AddArgs(BaseModel):
     b: int
 
 
-class AddTool(Tool):
+class AddTool(InlineTool):
     name = "add"
     description = "Add two numbers."
     Args = AddArgs
@@ -70,7 +124,7 @@ class AddTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -81,7 +135,7 @@ class SleepArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SleepForeverTool(Tool):
+class SleepForeverTool(InlineTool):
     """Never returns on its own: whatever ends it (a cancel's hard cancel, a
     deadline) is what the recorded status reports."""
 
@@ -92,7 +146,7 @@ class SleepForeverTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -100,7 +154,7 @@ class SleepForeverTool(Tool):
         return "never happens"
 
 
-class SlowTool(Tool):
+class SlowTool(InlineTool):
     """Same, but with its own 50 ms deadline — it can only ever TIME OUT."""
 
     name = "slow"
@@ -111,7 +165,7 @@ class SlowTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -119,7 +173,7 @@ class SlowTool(Tool):
         return "never happens"
 
 
-class CooperativeSleepTool(Tool):
+class CooperativeSleepTool(InlineTool):
     """Watches the `cancellation_token`, then spends 50 ms winding down
     before returning partial output. A real tool would poll `.cancelled`
     between units of work and flush what it has; the sleep IS the flush, and it
@@ -133,7 +187,7 @@ class CooperativeSleepTool(Tool):
     async def execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -146,24 +200,64 @@ class CooperativeSleepTool(Tool):
         )
 
 
-class InlineToolRegistry(ToolRegistry):
-    """Minimal inline registry over known-good calls: PENDING births carrying
-    the tool's spec, ALLOW every decision (`created_at` frozen to 1000 — the
-    production ApprovalDecision default stamps the wall clock, which would
-    break the literal session asserts below), resolve-validate-invoke
-    execute. The error-path registries live in `scenarios.FakeToolRegistry`;
-    this file only ever calls tools that resolve and validate."""
+class LoudArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(self, tools: list[Tool]) -> None:
+
+class LoudTool(InlineTool):
+    """Returns more output than the context policy below wants to keep."""
+
+    name = "loud"
+    description = "Return more text than anyone wants."
+    Args = LoudArgs
+
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        return "line 1\nline 2\nline 3"
+
+
+# The specs `InlineToolRegistry` produces for the doubles above, plus the
+# content hash each is filed under in `AgentSession.tool_specs`. Derived
+# rather than hand-written so a literal below and a freshly-created execution
+# are byte-identical, `input_schema` included.
+ADD_SPEC = AddTool().get_tool_spec()
+ADD_SPEC_ID = ADD_SPEC.spec_id()
+SLEEP_FOREVER_SPEC = SleepForeverTool().get_tool_spec()
+SLEEP_FOREVER_SPEC_ID = SLEEP_FOREVER_SPEC.spec_id()
+SLOW_SPEC = SlowTool().get_tool_spec()
+SLOW_SPEC_ID = SLOW_SPEC.spec_id()
+COOPERATIVE_SLEEP_SPEC = CooperativeSleepTool().get_tool_spec()
+COOPERATIVE_SLEEP_SPEC_ID = COOPERATIVE_SLEEP_SPEC.spec_id()
+LOUD_SPEC = LoudTool().get_tool_spec()
+LOUD_SPEC_ID = LOUD_SPEC.spec_id()
+
+
+class InlineToolRegistry(ToolRegistry):
+    """Minimal inline registry over known-good calls: `get_tools` answers
+    `ToolSpec`s (the core's only tool type), `create_execution` births PENDING
+    drafts carrying the tool's spec, `decide` ALLOWs everything (`created_at`
+    frozen to 1000 — the production `ApprovalDecision` default stamps the wall
+    clock, which would break the literal session asserts below), and `prepare`
+    resolves, validates, and returns a CLOSURE over the tool body without ever
+    invoking it. The error-path registries live in
+    `scenarios.FakeToolRegistry`; this file only ever calls tools that resolve
+    and validate."""
+
+    def __init__(self, tools: list[InlineTool]) -> None:
         self.tools_by_name = {tool.name: tool for tool in tools}
 
-    def get_tools(self, agent_session: AgentSession) -> list[Tool]:
-        return list(self.tools_by_name.values())
+    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+        return [tool.get_tool_spec() for tool in self.tools_by_name.values()]
 
     async def create_execution(
         self,
+        session: AgentSession,
         call: ToolCall,
-        context: ToolContext,
     ) -> ToolExecution:
         return ToolExecution(
             tool_call_id=call.id,
@@ -173,24 +267,47 @@ class InlineToolRegistry(ToolRegistry):
 
     async def decide(
         self,
+        session: AgentSession,
         tool_execution: ToolExecution,
-        context: ToolContext,
     ) -> ApprovalDecision:
         return ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 
-    async def execute(
+    async def prepare(
         self,
+        session: AgentSession,
         tool_execution: ToolExecution,
-        context: ToolContext,
-        *,
-        cancellation_token: CancellationToken,
-    ) -> ExecutionResult:
+    ) -> PreparedTool:
         tool = self.tools_by_name[tool_execution.raw_tool_call.name]
         args = tool.Args.model_validate(tool_execution.raw_tool_call.arguments)
-        return await tool.execute(
-            args.model_dump(),
-            context,
-            cancellation_token=cancellation_token,
+        payload = args.model_dump()
+
+        async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
+            return await tool.execute(
+                payload,
+                session,
+                cancellation_token=cancellation_token,
+            )
+
+        return run
+
+
+class FirstLineContextManager(ContextManager):
+    """Keeps only the first line of `loud`'s output and passes every other
+    tool's through untouched — the per-tool selection the in-transition
+    `execution` argument exists to make possible (`process_tool_output` reads
+    it for identity: here `tool_spec.name`)."""
+
+    def process_tool_output(
+        self,
+        session: AgentSession,
+        execution: ToolExecution,
+        result: ExecutionResult,
+    ) -> ExecutionResult:
+        if execution.tool_spec.name != "loud":
+            return result
+        return ExecutionResult(
+            content=[TextContent(text=result.content[0].text.split("\n")[0])],
+            metadata={"truncated": True},
         )
 
 
@@ -251,8 +368,11 @@ async def test_successful_tool_call_full_session_shape():
     # Three snapshots of the SAME durable execution: born PENDING and never
     # yet seen by the policy; persisted RUNNING (approval ALLOWED,
     # `started_at` stamped) immediately before the body ran; COMPLETED with
-    # the tool's own result. `ToolExecuted.result_text` / `is_error` are the
-    # projection the model sees.
+    # the tool's own result. Every snapshot already carries `tool_spec_id` —
+    # the ledger files the spec and stamps the reference on the way in, so
+    # even the birth event is self-describing AND normalized.
+    # `ToolExecuted.result_text` / `is_error` are the projection the model
+    # sees.
     assert events == [
         FinishReason(finish_reason="tool_use"),
         ToolCallReceived(
@@ -263,7 +383,8 @@ async def test_successful_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-                tool_spec=ToolSpec(name="add", description="Add two numbers."),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
                 extras={},
                 approval_status=None,
                 approval_decisions=[],
@@ -286,7 +407,8 @@ async def test_successful_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-                tool_spec=ToolSpec(name="add", description="Add two numbers."),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -311,7 +433,8 @@ async def test_successful_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-                tool_spec=ToolSpec(name="add", description="Add two numbers."),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -363,7 +486,8 @@ async def test_successful_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-                tool_spec=ToolSpec(name="add", description="Add two numbers."),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -395,6 +519,7 @@ async def test_successful_tool_call_full_session_shape():
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
         tool_executions={"tc1": ["te1"]},
+        tool_specs={ADD_SPEC_ID: ADD_SPEC},
         usages={
             "c1": {
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
@@ -471,10 +596,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="sleep_forever", arguments={}),
-                tool_spec=ToolSpec(
-                    name="sleep_forever",
-                    description="Sleep until something kills it.",
-                ),
+                tool_spec=SLEEP_FOREVER_SPEC,
+                tool_spec_id=SLEEP_FOREVER_SPEC_ID,
                 extras={},
                 approval_status=None,
                 approval_decisions=[],
@@ -497,10 +620,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="sleep_forever", arguments={}),
-                tool_spec=ToolSpec(
-                    name="sleep_forever",
-                    description="Sleep until something kills it.",
-                ),
+                tool_spec=SLEEP_FOREVER_SPEC,
+                tool_spec_id=SLEEP_FOREVER_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -525,10 +646,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="sleep_forever", arguments={}),
-                tool_spec=ToolSpec(
-                    name="sleep_forever",
-                    description="Sleep until something kills it.",
-                ),
+                tool_spec=SLEEP_FOREVER_SPEC,
+                tool_spec_id=SLEEP_FOREVER_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -574,10 +693,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="sleep_forever", arguments={}),
-                tool_spec=ToolSpec(
-                    name="sleep_forever",
-                    description="Sleep until something kills it.",
-                ),
+                tool_spec=SLEEP_FOREVER_SPEC,
+                tool_spec_id=SLEEP_FOREVER_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -609,6 +726,7 @@ async def test_interrupted_tool_call_full_session_shape():
             ),
         },
         tool_executions={"tc1": ["te1"]},
+        tool_specs={SLEEP_FOREVER_SPEC_ID: SLEEP_FOREVER_SPEC},
         usages={
             "c1": {
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
@@ -683,10 +801,8 @@ async def test_cooperative_cancellation_returns_a_real_result():
             created_at=1000,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="cooperative_sleep", arguments={}),
-            tool_spec=ToolSpec(
-                name="cooperative_sleep",
-                description="Sleep, but wind down and return early when cancelled.",
-            ),
+            tool_spec=COOPERATIVE_SLEEP_SPEC,
+            tool_spec_id=COOPERATIVE_SLEEP_SPEC_ID,
             extras={},
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[
@@ -735,10 +851,8 @@ async def test_cooperative_cancellation_returns_a_real_result():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="cooperative_sleep", arguments={}),
-                tool_spec=ToolSpec(
-                    name="cooperative_sleep",
-                    description="Sleep, but wind down and return early when cancelled.",
-                ),
+                tool_spec=COOPERATIVE_SLEEP_SPEC,
+                tool_spec_id=COOPERATIVE_SLEEP_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -774,6 +888,7 @@ async def test_cooperative_cancellation_returns_a_real_result():
             ),
         },
         tool_executions={"tc1": ["te1"]},
+        tool_specs={COOPERATIVE_SLEEP_SPEC_ID: COOPERATIVE_SLEEP_SPEC},
         usages={
             "c1": {
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
@@ -844,11 +959,8 @@ async def test_timed_out_tool_call_full_session_shape():
             created_at=1000,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="slow", arguments={}),
-            tool_spec=ToolSpec(
-                name="slow",
-                description="Sleep past its own deadline.",
-                timeout_in_ms=50,
-            ),
+            tool_spec=SLOW_SPEC,
+            tool_spec_id=SLOW_SPEC_ID,
             extras={},
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[
@@ -862,6 +974,7 @@ async def test_timed_out_tool_call_full_session_shape():
             cancel_signalled_at=None,
             updated_at=1000,
             is_doom_loop_flagged=False,
+            context_tokens=0,
         ),
         result_text="[tool execution timed_out]",
         is_error=True,
@@ -894,11 +1007,8 @@ async def test_timed_out_tool_call_full_session_shape():
                 created_at=1000,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="slow", arguments={}),
-                tool_spec=ToolSpec(
-                    name="slow",
-                    description="Sleep past its own deadline.",
-                    timeout_in_ms=50,
-                ),
+                tool_spec=SLOW_SPEC,
+                tool_spec_id=SLOW_SPEC_ID,
                 extras={},
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[
@@ -926,6 +1036,7 @@ async def test_timed_out_tool_call_full_session_shape():
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
         tool_executions={"tc1": ["te1"]},
+        tool_specs={SLOW_SPEC_ID: SLOW_SPEC},
         usages={
             "c1": {
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
@@ -935,6 +1046,165 @@ async def test_timed_out_tool_call_full_session_shape():
         active_conversation=Conversation(
             id="c1",
             nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
+            created_at=500,
+            updated_at=1000,
+            status=ConversationStatus.IDLE,
+        ),
+        session_config=SessionConfig(
+            llm_config=LLMConfig(model="test-model", provider="faux"),
+        ),
+    )
+
+
+async def test_context_manager_processes_one_tools_output_and_not_the_other():
+    # ── precondition ─────────────────────────────────────────────────────────
+    # One assistant response asking for BOTH tools, so the two calls differ in
+    # nothing but which tool they name — and a `FirstLineContextManager` that
+    # truncates `loud` and passes `add` through, selecting on
+    # `execution.tool_spec.name`. Entry ids in creation order:
+    #   u1 (post_message), ts (TurnStart), a1 (tool-call AssistantMessage),
+    #   te1 + te2 (the ToolExecutions, in model-request order),
+    #   a2 (final AssistantMessage), tf (TurnFinish).
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("loud", {}, id="tc2"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = AgentSession(
+        id="s1",
+        entries={},
+        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        session_config=SessionConfig(
+            llm_config=LLMConfig(model="test-model", provider="faux"),
+        ),
+    )
+    runner = ScriptedRunner(
+        session,
+        tool_registry=InlineToolRegistry([AddTool(), LoudTool()]),
+        provider=faux,
+        context_manager=FirstLineContextManager(),
+        ids=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+    )
+
+    # ── action ───────────────────────────────────────────────────────────────
+    runner.post_message("Add and be loud")
+    await runner.run()
+
+    # ── postcondition ────────────────────────────────────────────────────────
+    # What persists is the PROCESSED output, per tool: `te1` carries AddTool's
+    # own result untouched, `te2` carries the first line the context manager
+    # kept plus the metadata it authored — the tool's three-line text is gone
+    # from the durable record. `context_tokens` on both settles from the
+    # processed result, not the returned one (te2: len("line 1") // 4).
+    # (The event list is the previous tests' subject; this one is about what
+    # the session ends up holding.)
+    assert runner.session == AgentSession(
+        id="s1",
+        entries={
+            "u1": UserMessage(
+                id="u1",
+                parent_id=None,
+                created_at=1000,
+                parts=[TextContent(text="Add and be loud")],
+                context_tokens=3,  # len("Add and be loud") // 4
+            ),
+            "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
+                parts=[
+                    ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                    ToolCall(id="tc2", name="loud", arguments={}),
+                ],
+                llm_config=LLMConfig(model="test-model", provider="faux"),
+                stop_reason="tool_use",
+                context_tokens=6,  # (both names + both JSON args) // 4
+            ),
+            "te1": ToolExecution(
+                id="te1",
+                parent_id="a1",
+                created_at=1000,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
+                extras={},
+                approval_status=ApprovalStatus.ALLOWED,
+                approval_decisions=[
+                    ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
+                ],
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(
+                    content=[TextContent(text="3")],
+                    metadata={},
+                    is_error=False,
+                ),
+                error=None,
+                started_at=1000,
+                ended_at=1000,
+                cancel_signalled_at=None,
+                updated_at=1000,
+                is_doom_loop_flagged=False,
+                context_tokens=0,
+            ),
+            "te2": ToolExecution(
+                id="te2",
+                parent_id="te1",
+                created_at=1000,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="loud", arguments={}),
+                tool_spec=LOUD_SPEC,
+                tool_spec_id=LOUD_SPEC_ID,
+                extras={},
+                approval_status=ApprovalStatus.ALLOWED,
+                approval_decisions=[
+                    ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
+                ],
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(
+                    content=[TextContent(text="line 1")],
+                    metadata={"truncated": True},
+                    is_error=False,
+                ),
+                error=None,
+                started_at=1000,
+                ended_at=1000,
+                cancel_signalled_at=None,
+                updated_at=1000,
+                is_doom_loop_flagged=False,
+                context_tokens=1,  # len("line 1") // 4
+            ),
+            "a2": AssistantMessage(
+                id="a2",
+                parent_id="te2",
+                created_at=1000,
+                parts=[TextContent(text="Done.")],
+                llm_config=LLMConfig(model="test-model", provider="faux"),
+                stop_reason="stop",
+                context_tokens=1,  # len("Done.") // 4
+            ),
+            "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
+        },
+        tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+        tool_specs={ADD_SPEC_ID: ADD_SPEC, LOUD_SPEC_ID: LOUD_SPEC},
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+            }
+        },
+        active_conversation=Conversation(
+            id="c1",
+            nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
             created_at=500,
             updated_at=1000,
             status=ConversationStatus.IDLE,

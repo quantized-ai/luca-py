@@ -10,10 +10,21 @@ Two kinds of tests:
 
 The tool-execution pair is exercised across outcomes: `before_tool_execution`
 sees an allowed call pre-dispatch (and its returned `raw_tool_call` is the
-effective call) AND terminal-at-birth / rejected calls with their status
-already set; `after_tool_execution` observes EVERY outcome — with the live
-exception on a dispatch failure (registry-authored terminal births carry no
-live exception) — and its return value is what gets persisted.
+effective call the registry's `prepare()` then resolves from — rewrite it to
+an unknown name and the call records NOT_FOUND, undispatched) AND
+terminal-at-birth / rejected calls with their status already set;
+`after_tool_execution` observes EVERY outcome — with the live exception on a
+dispatch failure (registry-authored terminal births carry no live exception) —
+and its return value is what gets persisted.
+
+Two hooks are pinned to the shape of the value they receive, because in both
+cases a plausible-looking alternative exists one layer away:
+`build_tool_list` runs on the converted WIRE list (`luca.client.types.Tool`),
+never on the registry's `ToolSpec`s; `before_entry_written` may replace a
+`ToolExecution`'s `tool_spec`, and the id stamped on the way to the store is
+re-derived from what the hook returned. `before_entry_written` also covers
+every entry `recalculate_context_tokens()` refreshes — the one door an
+application drives itself.
 
 Each test follows the declarative shape: known session + scripted faux
 responses + middleware doubles → one action → assert the downstream effect.
@@ -21,20 +32,26 @@ responses + middleware doubles → one action → assert the downstream effect.
 
 from luca.agent.core import AgentMiddlewareMixin
 from luca.agent.core.compaction import CompactionPlan
+from luca.agent.core.events import ToolExecuted
 from luca.agent.core.models import (
-    AgentSession,
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
+    AssistantMessage,
     CompactionEntry,
     Conversation,
+    ExecutionResult,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
     SessionConfig,
     TextContent,
+    ToolCall,
     ToolExecution,
+    ToolExecutionError,
     TurnFinish,
+    TurnOutcome,
+    TurnStart,
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
@@ -44,9 +61,11 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-from luca.client.types import TextBlock, UserMessage as LucaUserMessage
+from luca.client.types import TextBlock, Tool as LucaTool, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
+    ADD_SPEC,
     MODEL,
+    MULTIPLY_SPEC,
     RICH_IDLE_SESSION,
     AddTool,
     DeterministicRunner,
@@ -54,9 +73,14 @@ from tests.agent.scenarios import (
     FakeToolRegistry,
     MultiplyTool,
     RaisingTool,
+    make_session,
 )
 
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
+DENY_1000 = ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000)
+# The same tool, re-specced by a middleware on its way to the store: a new
+# `spec_id()`, and therefore a new `tool_spec_id` on the execution.
+NAMESPACED_ADD_SPEC = ADD_SPEC.model_copy(update={"namespace": "billing"})
 
 
 # ── build_model_string ─────────────────────────────────────────────────────────
@@ -73,7 +97,7 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
             faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_ms",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -97,18 +121,27 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
 # ── build_tool_list ────────────────────────────────────────────────────────────
 
 
-async def test_middleware_build_tool_list_return_used_for_llm_call():
-    class FilterToolsMiddleware:
-        def build_tool_list(self, tools: list) -> list:
-            return tools[:1]  # keep only the first tool
+async def test_middleware_build_tool_list_sees_wire_tools_and_its_return_is_sent():
+    # The hook runs AFTER the adapter, on the converted WIRE list — a
+    # `luca.client.types.Tool` per registry `ToolSpec`, with `input_schema`
+    # mapped straight onto `parameters` — and the list it returns is exactly
+    # what the request carries.
+    class FirstToolOnlyMiddleware:
+        def __init__(self) -> None:
+            self.seen: list = []
 
+        def build_tool_list(self, tools: list) -> list:
+            self.seen = tools
+            return tools[:1]
+
+    middleware = FirstToolOnlyMiddleware()
     faux = FauxProvider()
     faux.set_responses(
         [
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_tl",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Go")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -120,15 +153,31 @@ async def test_middleware_build_tool_list_return_used_for_llm_call():
         provider=faux,
         ids=["ts", "a1", "tf"],
         now=1000,
-        middleware=[FilterToolsMiddleware()],
+        middleware=[middleware],
     )
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert faux.requests[0].tools is not None
-    assert len(faux.requests[0].tools) == 1
-    assert faux.requests[0].tools[0].name == "add"
+    assert middleware.seen == [
+        LucaTool(
+            name="add",
+            description="Add two numbers.",
+            parameters=ADD_SPEC.input_schema,
+        ),
+        LucaTool(
+            name="multiply",
+            description="Multiply two numbers.",
+            parameters=MULTIPLY_SPEC.input_schema,
+        ),
+    ]
+    assert faux.requests[0].tools == [
+        LucaTool(
+            name="add",
+            description="Add two numbers.",
+            parameters=ADD_SPEC.input_schema,
+        ),
+    ]
 
 
 # ── before_llm_call ────────────────────────────────────────────────────────────
@@ -149,7 +198,7 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
             faux_assistant_message([faux_text("ok")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_llm",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -173,12 +222,9 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
 
 
 async def test_middleware_after_llm_response_return_stored_in_session():
-    from luca.client.types.content import TextBlock
-
     class ResponseMiddleware:
         def after_llm_response(self, message):
-            new_content = [TextBlock(text="MODIFIED")]
-            return message.model_copy(update={"content": new_content})
+            return message.model_copy(update={"content": [TextBlock(text="MODIFIED")]})
 
     faux = FauxProvider()
     faux.set_responses(
@@ -186,7 +232,7 @@ async def test_middleware_after_llm_response_return_stored_in_session():
             faux_assistant_message([faux_text("original text")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_llm_resp",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -203,8 +249,17 @@ async def test_middleware_after_llm_response_return_stored_in_session():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    stored = runner.session.entries["a1"]
-    assert stored.parts == [TextContent(text="MODIFIED")]
+    # The recorded entry is built from the RETURNED message, so its parts —
+    # and the context estimate derived from them — are the middleware's.
+    assert runner.session.entries["a1"] == AssistantMessage(
+        id="a1",
+        parent_id="ts",
+        created_at=1000,
+        context_tokens=2,
+        parts=[TextContent(text="MODIFIED")],
+        llm_config=MODEL,
+        stop_reason="stop",
+    )
 
 
 # ── before_post_message ───────────────────────────────────────────────────────
@@ -215,7 +270,7 @@ async def test_middleware_before_post_message_return_stored_in_entry():
         def before_post_message(self, parts: list) -> list:
             return [TextContent(text=p.text.upper()) for p in parts]
 
-    session = AgentSession(
+    session = make_session(
         id="s_mw_pm",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -242,7 +297,7 @@ async def test_before_post_message_sees_every_part_including_images():
             return parts
 
     middleware = RecordingMiddleware()
-    session = AgentSession(
+    session = make_session(
         id="s_mw_pm_seen",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -265,7 +320,7 @@ async def test_before_post_message_can_drop_a_part():
         def before_post_message(self, parts: list) -> list:
             return [p for p in parts if isinstance(p, TextContent)]
 
-    session = AgentSession(
+    session = make_session(
         id="s_mw_pm_drop",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -288,7 +343,7 @@ async def test_before_post_message_can_add_a_part():
         def before_post_message(self, parts: list) -> list:
             return [*parts, TextContent(text="be concise")]
 
-    session = AgentSession(
+    session = make_session(
         id="s_mw_pm_add",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -325,7 +380,7 @@ async def test_middleware_before_entry_written_return_stored_in_session():
             faux_assistant_message([faux_text("Hi!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_bew",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -342,10 +397,20 @@ async def test_middleware_before_entry_written_return_stored_in_session():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    # The TurnFinish entry was modified by the middleware before storage
-    assert runner.session.entries["tf"].error == "mw_mark"
-    # Other entries pass through unchanged (TurnStart has no error field)
-    assert runner.session.entries["ts"].type == "turn_start"
+    # The TurnFinish was modified by the middleware before storage…
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="a1",
+        created_at=1000,
+        outcome=TurnOutcome.COMPLETED,
+        error="mw_mark",
+    )
+    # …and the entries the hook returned untouched are stored untouched.
+    assert runner.session.entries["ts"] == TurnStart(
+        id="ts",
+        parent_id="u1",
+        created_at=1000,
+    )
 
 
 async def test_middleware_before_entry_written_sees_every_execution_persistence():
@@ -371,7 +436,7 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
             faux_assistant_message([faux_text("3")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_bew_exec",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -397,6 +462,106 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
     ]
 
 
+async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_spec_id():
+    # `tool_spec_id` is the durable reference and `tool_spec` only a cache, so
+    # a hook that replaces the spec on one write has the id re-derived from
+    # what it returned — and the version filed at birth stays in the store,
+    # still resolvable by anything that points at it.
+    class NamespaceStamper:
+        def before_entry_written(self, entry):
+            if isinstance(entry, ToolExecution) and entry.status == ExecutionStatus.COMPLETED:
+                return entry.model_copy(update={"tool_spec": NAMESPACED_ADD_SPEC})
+            return entry
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_bew_spec",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[NamespaceStamper()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=NAMESPACED_ADD_SPEC,
+        tool_spec_id=NAMESPACED_ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.tool_specs == {
+        ADD_SPEC.spec_id(): ADD_SPEC,
+        NAMESPACED_ADD_SPEC.spec_id(): NAMESPACED_ADD_SPEC,
+    }
+
+
+async def test_recalculate_context_tokens_re_derives_every_entry_through_the_hook():
+    # The application-called refresh goes through the middleware door too, so
+    # a hook that owns context keeps the final say over every stored count —
+    # including the archived conversation's entries and the pruned referent
+    # that sits on no path at all.
+    class ContextOwner:
+        def before_entry_written(self, entry):
+            return entry.model_copy(update={"context_tokens": 7})
+
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(session, middleware=[ContextOwner()], now=1000)
+
+    runner.recalculate_context_tokens()
+
+    assert {entry_id: entry.context_tokens for entry_id, entry in runner.session.entries.items()} == {
+        "u0": 7,  # archived conversation c0
+        "a0": 7,  # archived conversation c0
+        "te0": 7,  # in the store, on no path
+        "cmp0": 7,
+        "u1": 7,
+        "ts1": 7,
+        "a1": 7,
+        "te1": 7,
+        "te2": 7,
+        "pr1": 7,
+        "a2": 7,
+        "tf1": 7,
+        "u2": 7,
+        "ts2": 7,
+        "tf2": 7,
+        "u3": 7,
+        "ts3": 7,
+        "a3": 7,
+        "te3": 7,
+        "cr1": 7,
+        "tf3": 7,
+    }
+
+
 # ── before_permission_check ───────────────────────────────────────────────────
 
 
@@ -419,16 +584,13 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
             faux_assistant_message([faux_text("3")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_bpc",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
-    registry = FakeToolRegistry(
-        [AddTool()],
-        decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)],
-    )
+    registry = FakeToolRegistry([AddTool()], decisions=[ALLOW_1000])
     runner = DeterministicRunner(
         session,
         tool_registry=registry,
@@ -441,11 +603,39 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    # The registry received the middleware-modified execution...
-    assert registry.seen[0].extras.get("mw_enriched") is True
+    # The registry was asked about the middleware-modified execution...
+    assert registry.seen == [
+        ToolExecution(
+            id="te1",
+            parent_id="a1",
+            created_at=1000,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=ADD_SPEC,
+            tool_spec_id=ADD_SPEC.spec_id(),
+            extras={"mw_enriched": True},
+            status=ExecutionStatus.PENDING,
+        ),
+    ]
     # ...and the decision was applied to (and persisted from) that SAME
     # modified execution, not the original — its changes stick.
-    assert runner.session.entries["te1"].extras.get("mw_enriched") is True
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        extras={"mw_enriched": True},
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
 
 
 # ── after_permission_decision ─────────────────────────────────────────────────
@@ -471,16 +661,13 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
             faux_assistant_message([faux_text("5")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_apd",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
-    registry = FakeToolRegistry(
-        [AddTool()],
-        decisions=[ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000)],
-    )
+    registry = FakeToolRegistry([AddTool()], decisions=[DENY_1000])
     runner = DeterministicRunner(
         session,
         tool_registry=registry,
@@ -493,11 +680,24 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    # The middleware overrode DENY → ALLOW, so the tool ran (not REJECTED)
-    execution = runner.session.entries["te1"]
-    assert execution.status == ExecutionStatus.COMPLETED
-    assert execution.approval_status == ApprovalStatus.ALLOWED
-    assert execution.approval_decisions[-1].decision == ApprovalOption.ALLOW
+    # The middleware's decision is the one recorded in the audit log and the
+    # one the runner acted on: ALLOWED and dispatched, never REJECTED.
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 2, "b": 3}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="5")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
 
 
 # ── before_tool_execution ─────────────────────────────────────────────────────
@@ -529,7 +729,7 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
             faux_assistant_message([faux_text("30")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_bte",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -547,12 +747,95 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    # add(10, 20) = 30, not add(1, 2) = 3
-    execution = runner.session.entries["te1"]
-    assert execution.result.content[0].text == "30"
-    assert execution.raw_tool_call.arguments == {"a": 10, "b": 20}
+    # add(10, 20) = 30, not add(1, 2) = 3 — the rewritten call is what ran and
+    # what the durable record shows.
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 10, "b": 20}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="30")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
     # the original request block in the assistant message is untouched
-    assert runner.session.entries["a1"].parts[0].arguments == {"a": 1, "b": 2}
+    assert runner.session.entries["a1"].parts == [
+        ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+    ]
+
+
+async def test_middleware_before_tool_execution_effective_call_is_what_prepare_resolves():
+    # The hook runs AHEAD of the registry's `prepare()`, so an effective call
+    # naming a tool that does not exist fails RESOLUTION: NOT_FOUND with
+    # `details["phase"] == "prepare"`, `started_at` unset (`dispatched` False)
+    # and nothing ever resolved.
+    class RerouteMiddleware:
+        def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+            return execution.model_copy(
+                update={
+                    "raw_tool_call": execution.raw_tool_call.model_copy(
+                        update={"name": "nope"},
+                    ),
+                }
+            )
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_bte_prepare",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    registry = FakeToolRegistry([AddTool()])
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[RerouteMiddleware()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        context_tokens=5,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="nope", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,  # the birth spec stands; there is no re-snapshot
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.NOT_FOUND,
+        error=ToolExecutionError(
+            error_type="ToolNotFound",
+            error_message="Unknown tool: 'nope'.",
+            details={"phase": "prepare"},
+        ),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert registry.prepared == []
 
 
 async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls():
@@ -582,7 +865,7 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_bte_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -590,10 +873,7 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
     )
     registry = FakeToolRegistry(
         [AddTool(), MultiplyTool()],
-        decisions=[
-            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # tc2
-            ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000),  # tc3
-        ],
+        decisions=[ALLOW_1000, DENY_1000],  # tc2, then tc3
     )
     runner = DeterministicRunner(
         session,
@@ -644,7 +924,7 @@ async def test_middleware_after_tool_execution_return_persisted():
             faux_assistant_message([faux_text("ok")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_ate",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -662,10 +942,32 @@ async def test_middleware_after_tool_execution_return_persisted():
     async with runner.run() as run:
         events = [event async for event in run]
 
-    assert runner.session.entries["te1"].result.content[0].text == "RESULT_MODIFIED"
-    # the ToolExecuted event projects the transformed execution
-    assert events[3].type == "tool_executed"
-    assert events[3].result_text == "RESULT_MODIFIED"
+    # `context_tokens` stays the 0 derived from the tool's own "3": context
+    # settles BEFORE the hook and is never recalculated behind it.
+    persisted = ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="RESULT_MODIFIED")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["te1"] == persisted
+    # the ToolExecuted event projects that same transformed execution
+    assert events[3] == ToolExecuted(
+        tool_call_id="tc1",
+        execution=persisted,
+        result_text="RESULT_MODIFIED",
+        is_error=False,
+    )
 
 
 async def test_middleware_after_tool_execution_observes_every_outcome():
@@ -707,7 +1009,7 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_ate_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -715,11 +1017,7 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
     )
     registry = FakeToolRegistry(
         [AddTool(), MultiplyTool(), RaisingTool()],
-        decisions=[
-            ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000),  # tc2
-            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # tc3
-            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # tc4
-        ],
+        decisions=[DENY_1000, ALLOW_1000, ALLOW_1000],  # tc2, tc3, tc4
     )
     runner = DeterministicRunner(
         session,
@@ -763,7 +1061,7 @@ async def test_middlewares_applied_in_order_second_receives_first_output():
             faux_assistant_message([faux_text("ok")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_order",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -801,7 +1099,7 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
             faux_assistant_message([faux_text("ok")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_order2",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -859,7 +1157,7 @@ async def test_mixin_subclass_partial_override_does_not_clobber_post_message():
         def after_llm_response(self, message):
             return message
 
-    session = AgentSession(
+    session = make_session(
         id="s_mw_sub",
         active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
@@ -892,7 +1190,7 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
             faux_assistant_message([faux_text("3")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mw_mixin_run",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
         active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
@@ -914,9 +1212,30 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
     assert faux.requests[0].model == "test-model-routed"
     # …and every inherited hook passed its stage through untouched: the tool
     # ran with the original args, the result and final answer were stored.
-    assert runner.session.entries["te1"].status == ExecutionStatus.COMPLETED
-    assert runner.session.entries["te1"].result.content[0].text == "3"
-    assert runner.session.entries["a2"].parts == [TextContent(text="3")]
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[ALLOW_1000],
+        started_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert runner.session.entries["a2"] == AssistantMessage(
+        id="a2",
+        parent_id="te1",
+        created_at=1000,
+        parts=[TextContent(text="3")],
+        llm_config=MODEL,
+        stop_reason="stop",
+    )
 
 
 # ── compaction ────────────────────────────────────────────────────────────────

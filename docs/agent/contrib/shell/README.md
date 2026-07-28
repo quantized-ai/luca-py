@@ -51,7 +51,7 @@ Domain failures (missing file, ambiguous edit, non-zero exit) come back as
 ## 3. The two-step permission model
 
 Every call declares two ordered approval steps through
-`build_permission_requests`:
+`build_permission_requests(args, session)`:
 
 ```
 access_directory <directory the call touches>   # step 1

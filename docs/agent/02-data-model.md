@@ -181,11 +181,12 @@ request:
 |---|---|
 | `tool_call_id` | the correlation key back to the `tool_call` part |
 | `raw_tool_call` | the request being executed — starts as the model's, middleware may swap it ([07](07-middleware.md)) |
-| `tool_spec` | identity snapshot of the resolved tool (name, kind, version, declared `timeout_in_ms`); `None` if it never resolved |
+| `tool_spec_id` | the durable reference to the resolved tool — a key into `session.tool_specs` (§7); `None` if it never resolved |
+| `tool_spec` | the resolved tool itself (`name`, `description`, `input_schema`, kind, version, declared `timeout_in_ms`) — a cache restored from `tool_spec_id`, never the durable truth (§7) |
 | `status` | the lifecycle state (table below) |
 | `result` | what the tool returned — set iff `status=completed` |
-| `error` | structured failure (`error_type`, `error_message`, `details`) for `failed` / `not_found` / `invalid` |
-| `started_at` / `ended_at` | body dispatch / terminal transition (unix ms) |
+| `error` | structured failure (`error_type`, `error_message`, `details`) for `failed` / `not_found` / `invalid`; the runner records the failing `phase` under `details` |
+| `started_at` / `ended_at` | when the body was dispatched / when the execution turned terminal (unix ms) |
 | `cancel_signalled_at` | when a run cancellation reached this execution |
 | `is_doom_loop_flagged` | set by doom-loop detection ([08](08-runtime-config.md)) |
 
@@ -196,18 +197,27 @@ The lifecycle (`ExecutionStatus`):
 | `pending` | body not started, no terminal outcome |
 | `running` | body started, no terminal outcome |
 | `completed` | the body returned a result |
-| `failed` | tool code raised |
+| `failed` | tool- or registry-owned code raised — while resolving the call, or inside the body |
 | `not_found` | no such tool |
 | `invalid` | arguments failed validation |
 | `rejected` | the registry's decide() denied it |
 | `cancelled` | cancellation prevented the body from starting |
 | `interrupted` | a started body didn't finish (crash, orphan recovery) |
-| `timed_out` | the framework-enforced deadline expired |
+| `timed_out` | the framework-enforced deadline on the body expired |
 
 > ⚠️ **`completed` ≠ "the tool succeeded."** It means the framework received a
 > result. The tool's own verdict is `result.is_error`: a file tool returning
 > "file does not exist" with `is_error=True` is still `completed` — `failed`
 > is reserved for tool code that *raised*.
+
+`started_at` is stamped **iff the body was dispatched**, and `execution.dispatched`
+is exactly `started_at is not None`. Everything the framework settles before
+dispatch leaves it `None`:
+
+| `dispatched` | Statuses |
+|---|---|
+| `True` | `running`, `completed`, `timed_out`, `interrupted`, and a `failed` raised by the tool body |
+| `False` | `pending`, `rejected`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
 
 Every tool call yields **exactly one** tool output for the model — even a
 denied, cancelled, or malformed one (error text is derived from `status` +
@@ -366,10 +376,44 @@ The full container:
 | `id` | the session id |
 | `entries` | the append-only bag |
 | `tool_executions` | denormalized index `tool_call_id → [execution ids]` — never scan the bag |
+| `tool_specs` | normalized spec store `spec_id → ToolSpec`, append-only: one row per distinct tool definition ever *called* |
 | `usages` | provider-usage records, `conversation_id → entry_id → Usage` ([11](11-context-and-usage.md)) |
 | `active_conversation` | `Conversation`: `id`, `nodes`, `status`, timestamps |
 | `conversation_history` | prior `Conversation` paths kept alongside the active one |
 | `session_config` | `LLMConfig` + `RuntimeConfig` (§10) |
+
+An execution names its tool by `tool_spec_id`; the spec is stored once, under an
+id derived from its own content:
+
+```python
+from luca.agent.core import ToolKind, ToolSpec
+
+spec = ToolSpec(
+    name="read_file",
+    description="Read a UTF-8 text file.",
+    input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+    tool_kind=ToolKind.READ,
+)
+spec.spec_id()      # '243938d2…' — 64 hex chars
+
+session.tool_specs[execution.tool_spec_id] is execution.tool_spec   # True
+```
+
+`description` and `input_schema` are required: a tool that takes no arguments
+declares the empty object schema `{"type": "object", "properties": {}}`, never
+`None` — an absent schema and an empty one mean different things to a provider.
+`spec_id()` is SHA-256 over the spec's JSON with recursively sorted keys and no
+whitespace, hex-encoded in full, so the same definition yields the same 64
+characters in every process and every language: two calls to one tool write one
+row and share one `ToolSpec` object. A tool whose definition changes writes a
+second row, and the executions that ran the old definition keep resolving to the
+old one. Only the runner writes this store — a registry returns a spec and never
+computes an id.
+
+> ⚠️ **A `ToolSpec` must be a pure function of the tool definition.** A registry
+> that puts anything volatile in `metadata` — a timestamp, a request id — mints
+> a new `tool_specs` row on every call and silently defeats the normalization,
+> with no error and no warning.
 
 ## 8. Forking
 
@@ -483,6 +527,42 @@ loaded session and supplying the collaborators again. An open turn resumes
 (§5), a stale status self-heals (§10), a pending approval is still pending
 (§4).
 
+Tool specs go out normalized and come back restored. Two calls to the same tool
+are one stored spec and two references — the inline `tool_spec` is not written
+at all:
+
+```jsonc
+{
+  "tool_specs": {
+    "243938d2…64 hex chars…": {
+      "name": "read_file",
+      "description": "Read a UTF-8 text file.",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } } }
+    }
+  },
+  "entries": {
+    "e1": { "type": "tool_execution", "tool_spec_id": "243938d2…" },
+    "e2": { "type": "tool_execution", "tool_spec_id": "243938d2…" }
+  }
+}
+```
+
+Constructing the session puts `tool_spec` back on every execution, all of them
+sharing the one object. Serializing a `ToolExecution` **on its own** keeps its
+spec inline instead — that is what the tool lifecycle events carry to consumers
+holding no session ([04](04-runner.md)).
+
+Two shapes refuse to construct — a loaded file or a hand-built literal alike —
+rather than degrade quietly:
+
+| Serialized shape | Why it raises |
+|---|---|
+| `tool_spec_id` naming a spec absent from `tool_specs` | the session would run with the tool's declared `timeout_in_ms` and `tool_kind` gone — an unbounded body and a different approval path, both untraceable |
+| an inline `tool_spec` with no `tool_spec_id` | tolerating it would load and run fine, then lose every spec on the first save — the serializer strips inline specs and would have no id to write instead |
+
+> ⚠️ **No migration.** Session files written before tool-spec normalization are
+> exactly the second shape and do not load. Regenerate them.
+
 ## 12. Entry types, recapped
 
 | Entry `type` | Carries | Mutable? |
@@ -502,7 +582,9 @@ loaded session and supplying the collaborators again. An open turn resumes
 `id` and `created_at` are `None` until an entry is **committed**. A template a
 strategy builds — a registry's birth draft, a `ContextManager` pruned
 replacement, a compaction plan's new entry — carries no identity; the
-persisting door stamps both. Every entry in `session.entries` has them.
+persisting door stamps both. Every entry in `session.entries` has them. A
+registry's draft likewise carries its `tool_spec` with no `tool_spec_id` — the
+same door files the spec and stamps the id (§7).
 
 ## 13. Read a saved session
 

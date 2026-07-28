@@ -12,6 +12,7 @@ from luca.agent.contrib.simple_tool_registry import (
     SimpleToolRegistry, ProxyToolRegistry,            # the registries
     PermissionPolicy, YoloPermissionPolicy,           # the approval strategy
 )
+from luca.agent.contrib.tools import Tool             # the tools it holds
 ```
 
 ## 1. `SimpleToolRegistry` in 30 seconds
@@ -23,19 +24,44 @@ registry = SimpleToolRegistry(tools=TOOLS, permission_policy=YoloPermissionPolic
 runner = AgentSessionRunner(session, tool_registry=registry)
 ```
 
-What it does per contract method:
+What it does per contract method — all four `async`, session first:
 
 | Method | Behavior |
 |---|---|
-| `get_tools` | returns the static list |
-| `create_execution` | the classic preflight: resolve the name (miss → `NOT_FOUND` birth), validate `Args` (failure → `INVALID` birth), collect the duck-typed approval context (a raise → `FAILED` birth; success → stored under `extras["approval_context"]`), else a `PENDING` birth carrying the tool's `ToolSpec` (incl. `timeout_in_ms`) |
-| `decide` | delegates to `permission_policy.decide(execution)` |
-| `execute` | re-resolves by the *effective* call's name, re-validates, invokes `tool.execute(args, context, cancellation_token=...)` |
+| `get_tools(session)` | one `ToolSpec` per tool, from `Tool.get_tool_spec()` |
+| `create_execution(session, call)` | the classic preflight: resolve the name (miss → `NOT_FOUND` birth), validate `Args` (failure → `INVALID` birth), collect the duck-typed `get_approval_context(args, session)` (a raise → `FAILED` birth with `details={"phase": "approval_context"}`; success → stored under `extras["approval_context"]`), else a `PENDING` birth carrying the tool's `ToolSpec` (incl. `timeout_in_ms`) |
+| `decide(session, execution)` | delegates to `permission_policy.decide(session, execution)` |
+| `prepare(session, execution)` | resolves by `raw_tool_call.name` (the middleware-effective call), validates `Args`, and returns a closure binding the validated arguments and the session |
+
+`prepare()` does everything fallible; the callable it returns runs the body:
+
+```python
+prepared = await registry.prepare(session, execution)   # ToolNotFound / InvalidToolArguments
+result = await prepared(cancellation_token=token)       # tool.execute(args, session, …)
+```
+
+A raise means the body never ran — `ToolNotFound` records `NOT_FOUND`,
+`InvalidToolArguments` records `INVALID`, both with `started_at=None`.
+
+> ⚠️ **`timeout_in_ms` bounds the body only.** The spec's deadline applies to
+> the prepared callable; resolution, validation and approval sit outside it, so
+> a tool with `timeout_in_ms=5000` is not bounded end to end.
 
 ## 2. The policy seam
 
-`PermissionPolicy` is one async hook — see
-[`05-permissions.md`](../../05-permissions.md) for the contract, the PENDING
+`PermissionPolicy` is one async hook over the live session and the execution —
+both read-only:
+
+```python
+class ReadOnlyPolicy(PermissionPolicy):
+    async def decide(self, session, tool_execution) -> ApprovalDecision:
+        allowed = tool_execution.raw_tool_call.name.startswith("read")
+        return ApprovalDecision(
+            decision=ApprovalOption.ALLOW if allowed else ApprovalOption.DENY,
+        )
+```
+
+See [`05-permissions.md`](../../05-permissions.md) for the contract, the PENDING
 gate, and idempotency; see
 [`resource_permissions`](../resource_permissions/README.md) for the
 full-featured rule-based implementation:
@@ -56,19 +82,21 @@ proxy.add_registry(another)
 runner = AgentSessionRunner(session, tool_registry=proxy)
 ```
 
-Routing: `get_tools` concatenates the children's tools in child order —
-duplicate tool names raise `ValueError` — and rebuilds an internal
-`{name → child}` route; the other three methods route through it. Nesting
-proxies needs nothing special.
+Routing, per method:
 
-On a route **miss** (a name no child claimed), the proxy degrades instead of
-guessing: `create_execution` authors a `NOT_FOUND` birth, `decide` allows (so
-`execute` produces the honest `NOT_FOUND` terminal rather than a false
-`REJECTED`), and `execute` raises `ToolNotFound`.
+| Method | Routing |
+|---|---|
+| `get_tools` | concatenates the children's specs in child order — duplicate tool names raise `ValueError` — and rebuilds the internal `{name → child}` cache |
+| `create_execution` | reads that cache as-is; a name no child claimed gets a `NOT_FOUND` birth (a tool call only ever arrives after an LLM call, which warmed the cache on its way out) |
+| `decide` / `prepare` | resolve *independently* of the cache: on a miss they warm it once from the children and try again |
 
-> ⚠️ **Cold-resume degradation.** The route is warmed by `get_tools` (an LLM
-> call). Resuming a gated session in a fresh process and driving it *without*
-> any LLM call first means pending calls terminalize as `NOT_FOUND` instead of
-> re-asking. Predictable, documented — for now.
+So a call left pending approval by a previous process resolves in a fresh one
+with no LLM call first, is gated by its owning child's policy, and dispatches.
+Nesting proxies needs nothing special.
+
+> ⚠️ **An unresolvable name is allowed, then not found.** For a name still
+> unclaimed after that resolution, `decide` returns ALLOW and `prepare` raises
+> `ToolNotFound`, so the call records the honest `NOT_FOUND` instead of a false
+> `REJECTED`. Anything that resolves is always gated.
 
 Next: [`plugins/README.md`](../plugins/README.md).

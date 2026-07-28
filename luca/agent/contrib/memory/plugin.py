@@ -22,11 +22,10 @@ from luca.agent.contrib.simple_tool_registry import (
     SimpleToolRegistry,
     YoloPermissionPolicy,
 )
+from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
-    Tool,
-    ToolContext,
 )
 
 SCRATCHPAD_SYSTEM_PROMPT = """
@@ -58,7 +57,7 @@ class ReadScratchPadTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -80,7 +79,7 @@ class WriteScratchPadTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -115,7 +114,7 @@ class ReadTodoTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -139,7 +138,7 @@ class UpdateTodosTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:

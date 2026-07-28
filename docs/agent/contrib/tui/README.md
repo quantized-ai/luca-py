@@ -24,14 +24,17 @@ uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 ```
 
-`--model` / `--reasoning` update the session's `LLMConfig` (provider
-stays openrouter); they persist with the session and override the stored
-values on a resume.
+`--model` / `--provider` / `--reasoning` update the session's `LLMConfig`;
+they persist with the session and override the stored values on a resume.
 
 `--pretty-print` replaces the app: it loads `<id>.json`, writes the
 [`pretty_print`](../../02-data-model.md#13-read-a-saved-session) transcript to
 stdout and exits, so it requires `--conversation` (a usage error without one)
 and ignores every other flag — nothing is started, nothing is saved.
+
+> ⚠️ **Old session files do not load.** A `<id>.json` written before tool-spec
+> normalization fails validation on `--conversation` and on `--pretty-print`.
+> There is no migration — start a fresh session.
 
 Defaults, custom providers, permission mode, runtime limits, compaction, and
 the workspace can all live in a `luca.json` file instead of flags. See
@@ -45,7 +48,7 @@ the workspace can all live in a `luca.json` file instead of flags. See
 
 | Piece | Behavior |
 |---|---|
-| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
+| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/compaction` |
@@ -91,7 +94,7 @@ thin:
 
 | Module | Role |
 |---|---|
-| `wiring.py` | `build_runner(session, workspace=, provider=, mode=, compaction_policy=)` — shell + memory plugins, the demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
+| `wiring.py` | `build_runner(session, workspace=, provider=, mode=, compaction_policy=, additional_directories=, extra_rules=)` — shell + memory plugins, the demo math tools ([`contrib.tools.Tool`](../tools/README.md) subclasses), one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | `build_approval_prompts(execution, strategy)` — pending steps → `ApprovalPrompt`s whose options carry fully-built `ApprovalAnswer`s (the whole gate policy, no UI) |
 | `sessions.py` | `<session-id>.json` load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
 | `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift) |
@@ -146,6 +149,7 @@ key, `faux_hang()` + Esc for cancellation, reload-and-replay for resume.
 
 > ⚠️ **The app owns the wiring.** `AgentApp` builds its runner via
 > `build_runner` — inject behavior through `provider=`, `workspace=`,
-> `mode=` ("ask" / "yolo") and `compaction_policy=`, not by passing a runner.
+> `mode=` ("ask" / "yolo" / "auto") and `compaction_policy=`, not by passing a
+> runner.
 
-Next: back to the [contrib index](../README.md).
+Next: [`compaction/README.md`](../compaction/README.md).

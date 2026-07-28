@@ -4,8 +4,13 @@ construction — the directly-passed registry and every plugin registry land as
 children of ONE `ProxyToolRegistry` (in order), prompt parts and middleware
 extend the constructor lists after the directly-passed items, hooks run once
 with the session — and the result compares equal to a directly-configured
-`AgentSessionRunner`. Construction-level only; the composed registry's
-behavior is covered by `test_simple_tool_registry.py`.
+`AgentSessionRunner`.
+
+Construction-level only; the composed registry's behavior is covered by
+`test_simple_tool_registry.py`. The one listing here is the observable payoff
+of composition: `get_tools` is async and answers `ToolSpec`s, so a plugin may
+contribute ANY `ToolRegistry` — contrib's `SimpleToolRegistry` over Python
+`Tool` classes, or a registry that has none at all.
 """
 
 from pydantic import BaseModel, ConfigDict
@@ -16,6 +21,7 @@ from luca.agent.contrib.simple_tool_registry import (
     SimpleToolRegistry,
     YoloPermissionPolicy,
 )
+from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
     AgentSession,
     AgentSessionRunner,
@@ -24,8 +30,8 @@ from luca.agent.core import (
     LLMConfig,
     SessionConfig,
     SystemPromptPart,
-    Tool,
-    ToolContext,
+    ToolRegistry,
+    ToolSpec,
 )
 
 MODEL = LLMConfig(model="test-model", provider="faux")
@@ -48,6 +54,14 @@ class NoArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+NO_ARGS_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {},
+    "title": "NoArgs",
+    "type": "object",
+}
+
+
 class PingTool(Tool):
     name = "ping"
     description = "Answer pong."
@@ -56,7 +70,7 @@ class PingTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -66,6 +80,37 @@ class PingTool(Tool):
 class EchoTool(PingTool):
     name = "echo"
     description = "Echo back."
+
+
+# The specs the composed proxy advertises for the tools above — written out
+# rather than derived, so the expected listing is the literal wire data.
+PING_SPEC = ToolSpec(
+    name="ping",
+    description="Answer pong.",
+    input_schema=NO_ARGS_SCHEMA,
+)
+ECHO_SPEC = ToolSpec(
+    name="echo",
+    description="Echo back.",
+    input_schema=NO_ARGS_SCHEMA,
+)
+# What a registry backed by a remote tool server hands back: JSON Schema it
+# already has, with no Python tool class anywhere behind it.
+REMOTE_SPEC = ToolSpec(
+    name="remote",
+    description="Runs somewhere else.",
+    input_schema={"type": "object", "properties": {}},
+)
+
+
+class RemoteToolRegistry(ToolRegistry):
+    """A plugin registry that is NOT contrib's `SimpleToolRegistry`: it owns
+    no `Tool` classes and answers the listing with a hand-written `ToolSpec`.
+    Only `get_tools` is reached at composition time — the three lifecycle
+    methods stay the base's `NotImplementedError`."""
+
+    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+        return [REMOTE_SPEC]
 
 
 class RecordingMiddleware:
@@ -110,6 +155,17 @@ class RegistrylessPlugin:
         return None
 
 
+class RemotePlugin:
+    """Contributes a bare `ToolRegistry` — the hook's contract is the core
+    four-method one, not contrib's `Tool`-backed registry."""
+
+    def __init__(self) -> None:
+        self.registry = RemoteToolRegistry()
+
+    def get_tool_registry(self, agent_session: AgentSession):
+        return self.registry
+
+
 # ── composition ───────────────────────────────────────────────────────────────
 
 
@@ -119,20 +175,32 @@ def test_user_registry_and_plugin_registries_land_in_one_proxy_in_order():
         permission_policy=YoloPermissionPolicy(),
     )
     plugin = FullPlugin()
-    session = make_session()
 
     runner = PluginAgentSessionRunner(
-        session,
+        make_session(),
         tool_registry=user_registry,
         plugins=[plugin],
     )
 
     assert type(runner.tool_registry) is ProxyToolRegistry
     assert runner.tool_registry.registries == [user_registry, plugin.registry]
-    assert [tool.name for tool in runner.tool_registry.get_tools(session)] == [
-        "echo",
-        "ping",
-    ]
+
+
+async def test_the_composed_proxy_lists_every_contributed_registrys_tools():
+    user_registry = SimpleToolRegistry(
+        tools=[EchoTool()],
+        permission_policy=YoloPermissionPolicy(),
+    )
+    session = make_session()
+    runner = PluginAgentSessionRunner(
+        session,
+        tool_registry=user_registry,
+        plugins=[FullPlugin(), RemotePlugin()],
+    )
+
+    specs = await runner.tool_registry.get_tools(session)
+
+    assert specs == [ECHO_SPEC, PING_SPEC, REMOTE_SPEC]
 
 
 def test_without_a_user_registry_the_proxy_holds_only_plugin_registries():

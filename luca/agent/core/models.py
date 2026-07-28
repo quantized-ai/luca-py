@@ -16,18 +16,31 @@ behavior lives here. Implements `data_model_proposal_v0.md`:
   of an entry's model-facing content; provider-reported `Usage` is accessory
   data on the conversation-entry relationship, stored in
   `AgentSession.usages[conversation_id][entry_id]` — never on the entry.
+- Tool specs are NORMALIZED: each distinct `ToolSpec` is stored once in
+  `AgentSession.tool_specs` under its content-derived `spec_id()`, and a
+  `ToolExecution` references it by `tool_spec_id`. `tool_spec` stays on the
+  execution as a restorable cache — see `ToolExecution` and `AgentSession`.
 
 Pydantic v2 idioms only; `extra="forbid"` on every model.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 def _now_ms() -> int:
@@ -232,24 +245,83 @@ class ApprovalOption(str, Enum):
 
 
 class ToolSpec(BaseModel):
-    """Historical snapshot of the RESOLVED tool's identity and classification,
-    captured when the tool is resolved — so an old conversation can describe
-    the tool selected at the time even if the registry later changes or drops
-    it. Carries no invocation arguments: those belong to
-    `ToolExecution.raw_tool_call`."""
+    """The core's ONLY tool type — plain, language-neutral, JSON-serializable
+    data. It plays two roles at once:
+
+    - the ADVERTISEMENT sent to the model (`name`, `description`,
+      `input_schema`), and
+    - the historical IDENTITY SNAPSHOT attached to a past execution
+      (`tool_kind`, `namespace`, `version`, `timeout_in_ms`), so an old
+      conversation still describes the tool selected at the time even if the
+      registry later changes or drops it.
+
+    Nothing here references a Python class: a session whose tools were deleted
+    from the codebase years ago still renders its name, description, schema and
+    kind. Carries no invocation arguments — those belong to
+    `ToolExecution.raw_tool_call`.
+
+    A `ToolSpec` MUST be a pure function of the tool definition, never of the
+    call. Specs are normalized (stored once per session under `spec_id()`), so
+    a registry that puts anything volatile in `metadata` — a timestamp, a
+    request id — mints a new stored row on every single call and silently
+    defeats the normalization, with no error and no warning."""
 
     name: str
-    description: str | None = None
-    metadata: dict | None = None
+    description: str  # required: the client's wire tool type rejects null
+    # The tool's arguments as a JSON Schema dict. Never a Pydantic model class
+    # and never a TypeAdapter — the whole point is that it survives a round
+    # trip through JSON. Required and never None, including for a tool that
+    # takes no arguments: that case is the empty object schema,
+    # `{"type": "object", "properties": {}}`. An absent schema and an empty
+    # schema mean different things to a model provider.
+    input_schema: dict
+    metadata: dict | None = None  # free-form, registry-owned; never interpreted
     tool_kind: ToolKind = ToolKind.OTHER  # permission/classification kind
     namespace: str | None = None  # owning tool group, e.g. "builtin.shell_tools"
     version: str | None = None  # tool version at call time, e.g. "0.0.1"
     # The tool's declared execution deadline (ms), stamped by the registry at
     # birth; None when the tool declares none. The runner reads it at dispatch,
-    # falling back to RuntimeConfig.tool_execution_timeout_in_ms.
+    # falling back to RuntimeConfig.tool_execution_timeout_in_ms. It bounds the
+    # tool BODY only — not resolution, validation or any other registry phase.
     timeout_in_ms: int | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    def spec_id(self) -> str:
+        """This spec's content-derived id — the key it is filed under in
+        `AgentSession.tool_specs`.
+
+        A METHOD, not a field: a stored `spec_id` would be self-referential,
+        and `extra="forbid"` would make a stray serialized key fail to load.
+
+        The rule is pinned so the id is identical across processes, machines
+        and independent implementations of luca in other languages, which is
+        why it is deliberately NOT an overridable runner hook like
+        `generate_id()` / `now_ms()`: here determinism is a data-integrity
+        requirement, and a subclass that changed it would corrupt the store.
+
+        1. Render the spec to its JSON representation (enums as their string
+           values, `None`-valued fields included).
+        2. Serialize with recursively sorted keys, no whitespace, non-ASCII
+           emitted literally, encoded UTF-8.
+        3. SHA-256 the bytes.  4. Hex-encode, full 64 characters.
+
+        Not MD5 (raises on FIPS-enabled builds) and not truncated (every free
+        parameter is a place a second implementation can silently diverge).
+
+        JSON arrays are order-sensitive, so a reordered `required: [...]`, a
+        Pydantic upgrade that changes `model_json_schema()` output, or a field
+        added to `ToolSpec` later all mint a NEW id. All three heal the same
+        way: one redundant stored row, with the old row still resolvable by the
+        executions that point at it. A content hash's only failure mode is a
+        redundant row, never a wrong lookup."""
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ── approval decision (produced by the tool registry's decide()) ────────────
@@ -365,6 +437,17 @@ class ToolExecution(Entry):
     deliberately duplicates `raw_tool_call.id` — it is the durable correlation
     key for the execution index and the LLM wire protocol.
 
+    `tool_spec_id` is the DURABLE reference into `AgentSession.tool_specs`;
+    `tool_spec` is a cache of the same spec, restored from that id whenever a
+    session is constructed and stripped from a serialized session. The id is
+    authoritative and `tool_spec` must never be the source of truth for
+    anything durable — a deliberate exception to the rule that nothing on the
+    session is transient, alongside `AgentSession.session_runtime_status`.
+    Both are `None` when the tool never resolved. Reading `tool_spec` works
+    unchanged for every consumer, in memory and after a reload, which is what
+    keeps the tool lifecycle EVENTS (which carry a deep copy of the execution
+    and no session) self-describing.
+
     Approval is read from `approval_status`, never reconstructed from the
     log: `approval_decisions` is an append-only audit trail of registry
     responses (repeated PENDING responses are valid and stay visible).
@@ -382,7 +465,8 @@ class ToolExecution(Entry):
     type: Literal["tool_execution"] = "tool_execution"
     tool_call_id: str  # → duplicates raw_tool_call.id (correlation key)
     raw_tool_call: ToolCall  # the (possibly middleware-effective) request
-    tool_spec: ToolSpec | None = None  # resolved-tool snapshot; None if unresolved
+    tool_spec: ToolSpec | None = None  # restorable cache; None if unresolved
+    tool_spec_id: str | None = None  # → AgentSession.tool_specs; the durable ref
 
     extras: dict = Field(default_factory=dict)
     approval_status: ApprovalStatus | None = None
@@ -728,9 +812,24 @@ class SessionRuntimeStatus(BaseModel):
 
 
 class AgentSession(BaseModel):
+    """The whole durable session: one flat entry store, the traversal paths
+    over it, and the normalized tool-spec store.
+
+    Constructing one RESTORES `ToolExecution.tool_spec` from `tool_spec_id`
+    and refuses a session it cannot restore — see `_restore_tool_specs`.
+    Serializing one STRIPS the per-execution spec copies and writes the shared
+    `tool_specs` dict once; serializing a `ToolExecution` on its own still
+    includes its spec inline, so an event forwarded to a web UI or a log sink
+    stays self-describing."""
+
     id: str
     entries: dict[str, AnyEntry] = Field(default_factory=dict)  # append-only store
     tool_executions: dict[str, list[str]] = Field(default_factory=dict)  # denorm index
+    # spec_id → ToolSpec. Append-only (never garbage-collected), written only
+    # through `SessionLedger`'s write doors. Holds the specs referenced by an
+    # execution — tools that were actually CALLED, not the set advertised on
+    # any given turn.
+    tool_specs: dict[str, ToolSpec] = Field(default_factory=dict)
     # Accessory provider-usage records, conversation-first so per-conversation
     # reads and cleanup are direct: usages[conversation_id][entry_id] → Usage.
     # Written only through `SessionLedger.record_usage()`.
@@ -740,6 +839,76 @@ class AgentSession(BaseModel):
     session_config: SessionConfig
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _restore_tool_specs(self) -> AgentSession:
+        """Point every execution's `tool_spec` at the shared spec its
+        `tool_spec_id` names, and refuse a session that cannot be fully
+        restored. A session never exists half-restored.
+
+        Every execution referencing the same id ends up holding the SAME
+        `ToolSpec` instance — the one in `tool_specs` — a value object held by
+        reference, not a per-execution copy.
+
+        Two shapes raise:
+
+        - a `tool_spec_id` absent from `tool_specs`. In normal operation this
+          cannot happen (the ledger writes both sides together); it happens
+          when a session is assembled by something else — entries copied
+          between sessions without their specs, a hand-edited or truncated
+          file, a literal that sets the id and forgets the store. Tolerating
+          it is silent: the dispatch deadline would fall back to
+          `RuntimeConfig.tool_execution_timeout_in_ms` (default: unbounded)
+          and `tool_kind` would vanish, changing the approval path.
+        - a `tool_spec` with NO `tool_spec_id`. That can only come from a
+          pre-normalization file, which would otherwise load and run fine and
+          then lose every spec on the first save — the serializer strips
+          inline specs and would have no id to write in their place.
+
+        It fires on CONSTRUCTION only. A registry's in-memory birth draft
+        legitimately carries `tool_spec` with no id yet; the ledger's write
+        door assigns it. A session literal needs `tool_spec_id` plus its
+        `tool_specs` row — `tool_spec` itself is optional there, since this
+        validator restores it."""
+        for entry in self.entries.values():
+            if not isinstance(entry, ToolExecution):
+                continue
+            if entry.tool_spec_id is None:
+                if entry.tool_spec is not None:
+                    raise ValueError(
+                        f"ToolExecution {entry.id!r} carries a tool_spec with no "
+                        f"tool_spec_id. Sessions written before tool-spec "
+                        f"normalization do not load; regenerate them."
+                    )
+                continue
+            spec = self.tool_specs.get(entry.tool_spec_id)
+            if spec is None:
+                raise ValueError(
+                    f"ToolExecution {entry.id!r} references tool_spec_id "
+                    f"{entry.tool_spec_id!r}, which is absent from "
+                    f"session.tool_specs."
+                )
+            entry.tool_spec = spec
+        return self
+
+    @model_serializer(mode="wrap")
+    def _strip_inline_tool_specs(self, handler):
+        """Drop the per-execution `tool_spec` copies from a serialized
+        SESSION: the shared `tool_specs` dict already holds each distinct spec
+        once, and `_restore_tool_specs` puts them back on load.
+
+        Deliberately here and not `Field(exclude=True)` on
+        `ToolExecution.tool_spec`: that one line would strip the field from
+        EVERY serialization, including a standalone `ToolExecution`, which is
+        exactly what the tool lifecycle events forward to consumers holding no
+        session. Normalization is a session-storage concern."""
+        data = handler(self)
+        entries = data.get("entries")
+        if isinstance(entries, dict):
+            for entry in entries.values():
+                if isinstance(entry, dict) and entry.get("type") == "tool_execution":
+                    entry.pop("tool_spec", None)
+        return data
 
     @property
     def session_runtime_status(self) -> SessionRuntimeStatus:

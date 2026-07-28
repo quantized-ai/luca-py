@@ -7,6 +7,11 @@ Unit boundary: deterministic derivation from durable entries. Ground truths:
 entry constructors produce correct objects; client DTOs compare by value.
 Projection errors fail loudly (ProjectionError) — never silent omissions or
 synthetic fallbacks.
+
+`tool_spec` is carried by every real `ToolExecution` but the projector never
+reads it — the wire form comes from `raw_tool_call` and `result`/`error` — so
+the literals here use `scenarios.spec()` rather than spelling out a required
+`description` and `input_schema` this file does not own.
 """
 
 from typing import ClassVar
@@ -36,7 +41,6 @@ from luca.agent.core.models import (
     ToolCall,
     ToolExecution,
     ToolExecutionError,
-    ToolSpec,
     TurnFinish,
     TurnOutcome,
     TurnStart,
@@ -59,6 +63,7 @@ from luca.client.types import (
     ToolMessage,
     UserMessage as LucaUserMessage,
 )
+from tests.agent.scenarios import spec
 
 PROJECTOR = ConversationProjector()
 
@@ -128,7 +133,7 @@ def test_full_tool_call_turn():
             created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -518,7 +523,7 @@ def test_failed_turn_finish_is_dropped_but_its_content_projects():
             created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -589,7 +594,7 @@ def _execution(**overrides) -> ToolExecution:
         "created_at": 1000,
         "tool_call_id": "tc1",
         "raw_tool_call": ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-        "tool_spec": ToolSpec(name="add"),
+        "tool_spec": spec("add"),
     }
     return ToolExecution(**{**base, **overrides})
 
@@ -640,7 +645,10 @@ def test_invalid_projects_message_plus_validation_errors():
         error=ToolExecutionError(
             error_type="InvalidToolArguments",
             error_message="Arguments for tool 'add' are invalid.",
+            # exactly what the runner writes: the phase alongside the
+            # structured errors, which the projector must pick out and render
             details={
+                "phase": "prepare",
                 "errors": [
                     {"type": "missing", "loc": ["b"], "msg": "Field required", "input": {"a": 1}},
                 ],
@@ -875,7 +883,7 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
             created_at=1003,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,

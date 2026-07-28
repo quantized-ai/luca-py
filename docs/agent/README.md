@@ -10,11 +10,13 @@ prompt are **strategies you hand to the runner** — never stored in the session
 > round-trips through JSON losslessly. Everything transient (the live model
 > call, the tool registry, cancellation) lives on the runner.
 
-Everything the core knows lives in `luca.agent.core`; the batteries-included
-registry lives in contrib:
+Everything the core knows lives in `luca.agent.core` — its only tool type is the
+plain-data `ToolSpec`. The ergonomic `Tool` base class and the batteries-included
+registry live in contrib:
 
 ```python
-from luca.agent.core import AgentSessionRunner, Tool, LLMConfig
+from luca.agent.core import AgentSessionRunner, LLMConfig
+from luca.agent.contrib.tools import Tool
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
 ```
 
@@ -23,8 +25,9 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPerm
 ```python
 import asyncio
 from pydantic import BaseModel
-from luca.agent.core import AgentSessionRunner, CancellationToken, Tool, LLMConfig, ToolContext
+from luca.agent.core import AgentSession, AgentSessionRunner, CancellationToken, LLMConfig
 from luca.agent.core.events import TextBlock, ToolExecuted
+from luca.agent.contrib.tools import Tool
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
 
 class AddArgs(BaseModel):
@@ -36,7 +39,7 @@ class AddTool(Tool):
     description = "Add two numbers and return the sum."
     Args = AddArgs
     async def _execute(
-        self, args: dict, context: ToolContext,
+        self, args: dict, session: AgentSession,
         *, cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -66,7 +69,7 @@ Read top to bottom; each page starts simple and deepens.
 |---|---|
 | [`01-quickstart.md`](01-quickstart.md) | A full runnable agent + the drive loop |
 | [`02-data-model.md`](02-data-model.md) | `AgentSession`, entries, turns, serialize / resume / fork |
-| [`03-tools.md`](03-tools.md) | Define a tool → context → rich results → cancellation → the registry |
+| [`03-tools.md`](03-tools.md) | `ToolSpec`, the core's tool contract — and the contrib `Tool` class that mints one |
 | [`04-runner.md`](04-runner.md) | `run()`/`start()`, events, streaming, async, cancel, the status machine |
 | [`05-permissions.md`](05-permissions.md) | The `ToolRegistry` contract — approval as a registry concern |
 | [`06-system-prompts.md`](06-system-prompts.md) | System-prompt parts (static or callable) + the assembler |

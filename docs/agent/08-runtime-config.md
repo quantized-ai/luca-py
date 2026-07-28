@@ -7,7 +7,9 @@ kwargs for these). The defaults reproduce the unconfigured behavior exactly:
 nothing is limited.
 
 ```python
-from luca.agent.core import RuntimeConfig, Seconds, MilliSeconds, Inf
+from luca.agent.core import (
+    AgentSessionRunner, LLMConfig, RuntimeConfig, Seconds, MilliSeconds, Inf,
+)
 
 session = AgentSessionRunner.new_session(
     LLMConfig(model="openai/gpt-4o-mini", provider="openrouter"),
@@ -20,22 +22,36 @@ session = AgentSessionRunner.new_session(
 ```
 
 Durations are **integer milliseconds**. `Seconds(30)` → `30000`;
-`MilliSeconds(500)` is an explicit-unit identity. Any int knob accepts `Inf`
-(`-1`) or `0` to **disable** the limit.
+`MilliSeconds(500)` is an explicit-unit identity. `Inf` (`-1`) **disables** any
+knob; `0` disables a step/doom-loop count, but on a duration it means zero — an
+immediate deadline, no grace.
 
 ## Timeouts
 
 | Field | Effect |
 |---|---|
-| `tool_execution_timeout_in_ms` | Deadline for a tool call. Expiry hard-cancels it → `TIMED_OUT` (resultless). A tool's own `timeout_in_ms` class var (snapshotted into the birth `ToolSpec`) beats this. |
-| `client_completion_timeout_in_ms` | Wall-clock (`total_timeout`) for a model call. |
+| `tool_execution_timeout_in_ms` | Deadline for the dispatched tool **body**. Expiry hard-cancels it → `TIMED_OUT` (resultless). The birth `ToolSpec.timeout_in_ms` beats it — `Inf` there means that tool's body is unbounded whatever this says. |
+| `client_completion_timeout_in_ms` | Wall-clock (`total_timeout`) for a model call; also bounds a compaction policy's `compact()`. |
 | `builtin_client_completion_timeout_in_ms` | Per-phase HTTP timeout. **Inert** when the runner is built with a `provider=` instance (the caller owns that lifecycle). |
-| `tool_cancellation_grace_period` | On cancel, how long a tool may keep running before a hard kill. `0` = immediate. A tool returning within grace records its real result. |
-| `llm_completion_cancellation_grace_period` | Same grace window for an in-flight model call. |
+| `tool_cancellation_grace_period` | On cancel, how long a dispatched body may keep running before a hard kill. `0` = immediate. A tool returning within grace records its real result. |
+| `llm_completion_cancellation_grace_period` | Same grace window for an in-flight model call (and for `compact()`). |
+
+> ⚠️ **The deadline bounds the body, not the call.** It starts when the prepared
+> callable is invoked; the registry's `get_tools`, `create_execution`, `decide`
+> and `prepare` have **no deadline at all**. A tool configured with
+> `timeout_in_ms=5000` is therefore not bounded end to end — the 5s bounds its
+> body, and a registry that hangs in `prepare()` hangs the run indefinitely.
+
+What ends a hang in those four phases is `cancel()`, not a deadline — and only
+if the code there is cancellable. Each of them is raced against the run's token
+with zero grace, and the runner awaits the killed task's unwinding so a
+`finally` / `async with` cleanup completes. A phase that blocks the event loop
+(sync I/O, a CPU spin) cannot be interrupted and will ignore the cancel until it
+returns; push blocking work into `asyncio.to_thread`.
 
 A model call that times out closes the turn `TIMED_OUT` and re-raises (status →
-`PENDING`, retry-ready). See [`03-tools.md`](03-tools.md) §6 for the cooperative
-side of tool cancellation.
+`PENDING`, retry-ready). See [`contrib/tools/`](contrib/tools/README.md) §6 for
+the cooperative side of tool cancellation.
 
 ## Step limits
 
@@ -74,7 +90,7 @@ text answer. `Inf` / `0` disables detection.
 The config is on the session, so it serializes and reloads with everything else:
 
 ```python
-session.session_config.runtime_config.hard_max_steps   # 30
+session.session_config.runtime_config.hard_max_steps   # 50
 ```
 
 Next: [`09-plugins.md`](09-plugins.md).

@@ -84,7 +84,8 @@ Docs are only trusted if they run. Before you commit a page:
 
   ```bash
   uv run python - <<'PY'
-  from luca.agent.core import AgentSessionRunner, Tool, ToolRegistry, LLMConfig
+  from luca.agent.core import AgentSessionRunner, ToolRegistry, ToolSpec, LLMConfig
+  from luca.agent.contrib.tools import Tool
   from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
   # …paste the doc's classes/calls; assert the shapes you claim…
   print("ok")

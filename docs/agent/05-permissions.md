@@ -8,36 +8,93 @@ all of that lives inside *your* registry (or the batteries-included one in
 contrib). The core only knows the contract.
 
 ```python
-from luca.agent.core import ToolRegistry, ApprovalDecision, ApprovalOption
+from luca.agent.core import (
+    ToolRegistry, PreparedTool, ApprovalDecision, ApprovalOption,
+)
 ```
 
 ## 1. The contract
 
 ```python
 class ToolRegistry:
-    def get_tools(self, agent_session) -> list[Tool]: ...
-    async def create_execution(self, call, context) -> ToolExecution: ...
-    async def decide(self, tool_execution, context) -> ApprovalDecision: ...
-    async def execute(self, tool_execution, context, *, cancellation_token) -> ExecutionResult: ...
+    async def get_tools(self, session: AgentSession) -> list[ToolSpec]: ...
+    async def create_execution(self, session: AgentSession, call: ToolCall) -> ToolExecution: ...
+    async def decide(self, session: AgentSession, tool_execution: ToolExecution) -> ApprovalDecision: ...
+    async def prepare(self, session: AgentSession, tool_execution: ToolExecution) -> PreparedTool: ...
 ```
+
+All four are async and take the live `AgentSession` first; none receives the
+cancellation token — the runner races each call against it instead. Treat the
+session and the passed `tool_execution` as **read-only**: the runner owns every
+session write.
 
 | Method | Owns | Notes |
 |---|---|---|
-| `get_tools` | the tool list for the next LLM call | queried fresh per call — may vary with session state |
-| `create_execution` | the birth draft | placeholder identity (`id=""`, `created_at=0`); the runner stamps ids/timestamps. PENDING, or terminal-at-birth `NOT_FOUND`/`INVALID`/`FAILED` with a registry-authored `error` |
+| `get_tools` | the tool list for the next LLM call | returns `ToolSpec`s — plain JSON-serializable data, not Python classes, so a registry fronting a remote tool server hands back the JSON Schema it already has. Queried fresh per call — may vary with session state |
+| `create_execution` | the birth draft | carries no identity (`id` / `created_at` stay `None`); the runner stamps those and the ledger files the spec and stamps `tool_spec_id`. PENDING, or terminal-at-birth `NOT_FOUND`/`INVALID`/`FAILED` with a registry-authored `error` |
 | `decide` | approval | ALLOW / DENY / PENDING; exceptions abort the run and the next `run()` asks again |
-| `execute` | the body | raises map to statuses: `ToolNotFound` → `NOT_FOUND`, `InvalidToolArguments`/`ValidationError` → `INVALID`, anything else → `FAILED`; a return → `COMPLETED` |
+| `prepare` | resolution + argument validation | returns a **callable** that runs the body; called once per dispatch attempt, and only for an already-approved call — a deferred or denied one is never prepared |
 
 Each `decide()` response is applied twice on the execution: `approval_status`
 (the current state — `allowed` / `rejected` / `pending`) and a new entry in the
 append-only `approval_decisions` audit log. Read state from `approval_status`,
-history from the log. Treat the passed `tool_execution` as **read-only** — the
-runner owns every session write.
+history from the log.
 
 > ⚠️ **No global gate.** Each registry answers `decide()` for its own tools —
 > there is no cross-registry approval hook anywhere. Cross-cutting policy
 > ("ASK for everything") is composition: share one strategy instance across
 > your registries.
+
+### The prepared callable
+
+`prepare()` does everything fallible up front — resolve the tool, validate the
+arguments — then hands back the thing that runs the body:
+
+```python
+PreparedTool = Callable[..., Awaitable[ExecutionResult]]
+
+async def run(*, cancellation_token: CancellationToken) -> ExecutionResult: ...
+```
+
+It takes the run's cancellation token and nothing else, so capture whatever
+else the body needs during `prepare()`. It must be a *callable*, not a
+coroutine object: the runner may never invoke it (a cancellation landing
+between the return and the call), and a bare coroutine would warn. The
+`AgentSession` is the live object, but the `tool_execution` is a detached
+snapshot — by the time the callable runs the runner has persisted RUNNING, so
+read current durable state through `session.entries[execution.id]`.
+
+Raising means the body never runs and the execution is never marked RUNNING —
+`started_at=None`, `dispatched=False`, no `ToolExecutionStarted` event, and
+`details["phase"] == "prepare"` on the recorded error:
+
+| Raised from `prepare()` | Status |
+|---|---|
+| `ToolNotFound` | `NOT_FOUND` |
+| `InvalidToolArguments` / pydantic `ValidationError` | `INVALID` |
+| anything else — or a return that isn't callable | `FAILED` |
+
+Once the callable is invoked the mapping ends: every raise from there on is
+`FAILED`, with `started_at` set and `dispatched=True`.
+
+> ⚠️ **`timeout_in_ms` bounds the body only.** `get_tools`,
+> `create_execution`, `decide` and `prepare` have no deadline. A tool with
+> `timeout_in_ms=5000` is not bounded end to end — the 5s bounds its prepared
+> callable.
+
+### Rules for registry authors
+
+| Rule | Why |
+|---|---|
+| `prepare()` must be safe to call more than once | a crash during preparation leaves the call PENDING and the next drive prepares it again. No call-scoped side effects — don't consume a token, advance a cursor, or write a record keyed to this call |
+| `prepare()` must not return holding a lock, lease, slot or connection | the runner may never invoke the callable, and nothing runs a cleanup path for it. `async with` *inside* `prepare()` is fine; otherwise acquire inside the callable, under `try/finally` |
+| `prepare()` must not block | no deadline applies to it. Resolve from local state; a registry fronting a remote tool server keeps a cached tool list refreshed out of band and does its network work inside the callable |
+| The returned callable is where wrapping belongs | retries, rate limiting, metrics, tracing, exception translation, result post-processing. Returning a tool's bound method directly is valid but gives all of that up |
+
+> ⚠️ **The core never validates arguments.** It knows every tool's
+> `input_schema` and never checks a call against it — a registry may delegate
+> to a remote server that validates on its own side, and double validation
+> would break it. Validation is yours, in `prepare()`.
 
 ## 2. The batteries-included registry
 
@@ -55,7 +112,7 @@ runner = AgentSessionRunner(session, tool_registry=registry)
 
 ```python
 class PermissionPolicy:
-    async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision: ...
+    async def decide(self, session: AgentSession, tool_execution: ToolExecution) -> ApprovalDecision: ...
 ```
 
 ```python
@@ -71,7 +128,7 @@ allowlist by tool name, everything else denied:
 class AllowlistPolicy(PermissionPolicy):
     def __init__(self, allowed: set[str]):
         self.allowed = allowed
-    async def decide(self, tool_execution):
+    async def decide(self, session, tool_execution):
         ok = tool_execution.raw_tool_call.name in self.allowed
         return ApprovalDecision(decision=ApprovalOption.ALLOW if ok else ApprovalOption.DENY)
 ```
@@ -118,7 +175,7 @@ class HumanGatePolicy(PermissionPolicy):
         self._answers: dict[str, ApprovalOption] = {}   # execution id → verdict
     def record(self, execution_id: str, verdict: ApprovalOption):
         self._answers[execution_id] = verdict
-    async def decide(self, tool_execution):
+    async def decide(self, session, tool_execution):
         verdict = self._answers.get(tool_execution.id, ApprovalOption.PENDING)
         return ApprovalDecision(decision=verdict)
 ```
@@ -132,15 +189,16 @@ again until every call in the batch is terminal.
 
 ## 5. `extras["approval_context"]` — the tool ↔ policy vocabulary
 
-`decide()` only sees a `ToolExecution`. Its richest input is the approval
-context `SimpleToolRegistry` stored under `extras["approval_context"]` — the
-free-form dict the tool supplied via its duck-typed `get_approval_context`
-([`03-tools.md`](03-tools.md) §3). The core never interprets `extras`; the
-vocabulary is a contract you own on both ends. A common convention:
+`decide()` sees the session and a `ToolExecution`. Its richest input is the
+approval context `SimpleToolRegistry` stored under `extras["approval_context"]`
+— the free-form dict the tool supplied via its duck-typed
+`get_approval_context` ([`contrib/tools/`](contrib/tools/README.md) §3). The core never
+interprets `extras`; the vocabulary is a contract you own on both ends. A
+common convention:
 
 ```python
 # tool side:
-async def get_approval_context(self, args, context):
+async def get_approval_context(self, args, session):
     return {"requests": [{
         "resources": [{"permission": "read", "resource": args["path"]}],
         "answer_options": [
@@ -151,7 +209,7 @@ async def get_approval_context(self, args, context):
     }]}
 
 # policy side:
-async def decide(self, tool_execution):
+async def decide(self, session, tool_execution):
     ctx = tool_execution.extras.get("approval_context", {})
     for request in ctx.get("requests", []):
         for pair in request.get("resources", []):
@@ -179,7 +237,18 @@ trusted   = SimpleToolRegistry(tools=[ClockTool()], permission_policy=YoloPermis
 runner = AgentSessionRunner(session, tool_registry=ProxyToolRegistry(app_tools, trusted))
 ```
 
-Duplicate tool names across children raise; nesting proxies works transparently.
+Duplicate tool names across children raise; nesting proxies works
+transparently. `get_tools` rebuilds the `{name → child}` routing cache, but
+`decide` and `prepare` resolve **independently of it** — on a miss they warm it
+once from the children and try again — so a call left pending approval by a
+previous process is gated by its owning child on a cold resume and then
+dispatches, with no LLM call in between.
+
+> ⚠️ **A cache miss is not an ALLOW.** The proxy allows only a name that is
+> still unresolvable after that cache-independent lookup; `prepare()` then
+> raises `ToolNotFound` and the call records `NOT_FOUND`, which is the honest
+> outcome — a DENY there would record `REJECTED` for a tool that never existed.
+
 See [`contrib/simple_tool_registry`](contrib/simple_tool_registry/README.md)
 for the routing/miss semantics. Next:
 [`06-system-prompts.md`](06-system-prompts.md).

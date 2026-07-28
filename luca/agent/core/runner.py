@@ -58,8 +58,16 @@ The whole tool lifecycle is delegated to the `ToolRegistry` the runner is
 constructed with (`tool_registry.py`; `None` = toolless agent). The runner
 touches tools through exactly four registry methods: `get_tools` (queried
 fresh per LLM call), `create_execution` (the birth draft — the runner stamps
-identity and appends), `decide` (approval), and `execute` (the body). The
-loop has exactly ONE decide() call site — its top: "any undecided
+identity and appends), `decide` (approval), and `prepare` (resolution +
+validation, returning the callable that runs the body). All four are async,
+all four take the live session, and all four are raced against the run's
+cancellation token, so no registry or tool-owned code can make `cancel()` a
+no-op. Because preparation is separate from the body, the durable `RUNNING`
+row is written only once `prepare()` has returned: `started_at` /
+`dispatched` mean "the body was dispatched", for every outcome, and NOT_FOUND
+/ INVALID mean resolution and validation failed rather than that a body raised
+a similarly-named exception. The loop has exactly ONE decide() call site — its
+top: "any undecided
 executions? → ask the registry" — which serves the fresh path (executions
 created this iteration) and every resume path (a re-entered run, a reloaded
 session) identically. An execution is created **eagerly** (persisted before
@@ -118,7 +126,7 @@ from .compaction import (
     check_snapshot,
     validate_plan,
 )
-from .context import CancellationToken, ToolContext
+from .context import CancellationToken
 from .context_manager import ContextManager
 from .events import (
     AgentEvent,
@@ -158,7 +166,6 @@ from .models import (
     ContentPart,
     Conversation,
     ConversationStatus,
-    ExecutionResult,
     ExecutionStatus,
     Inf,
     LLMConfig,
@@ -181,7 +188,7 @@ from .system_prompt import (
     SystemPromptPartInput,
     coerce_system_prompt_part,
 )
-from .tool_registry import ToolRegistry
+from .tool_registry import PreparedTool, ToolRegistry
 
 EventCallback = Callable[[AgentEvent], "Awaitable[None] | None"]
 
@@ -251,7 +258,6 @@ class AgentRun:
         self._cursor = 0  # the handle's single logical pass
         self._wake = asyncio.Event()  # eager: buffer grew / task finished
         self._token: CancellationToken | None = None
-        self._context: ToolContext | None = None
         self._finished = False  # the engine produced its last event
         self._entered = False
         self._exited = False
@@ -340,7 +346,6 @@ class AgentRun:
             self._runner._begin_run(self)  # raises on IDLE / concurrent run
             self._engine = self._runner._drive(
                 streaming=self._streaming,
-                context=self._context,
                 token=self._token,
             )
         try:
@@ -390,7 +395,6 @@ class AgentRun:
         does — it is the app's own hook, awaited inline)."""
         engine = self._runner._drive(
             streaming=self._streaming,
-            context=self._context,
             token=self._token,
         )
         try:
@@ -800,16 +804,13 @@ class AgentSessionRunner:
 
     def _begin_run(self, run: AgentRun) -> None:
         """First-drive gate: one engine at a time, runnable status, and the
-        run's own CancellationToken + ToolContext."""
+        run's own CancellationToken. There is no per-run context object:
+        registries and tools receive the live session (`context.py`)."""
         if self._active_run is not None:
             raise AgentError("another run is already active on this runner; finish or finalize it first")
         if self.idle():
             raise AgentError("Nothing to run; call post_message() first.")
         run._token = CancellationToken()
-        run._context = ToolContext(
-            session_id=self.session.id,
-            model=self.session.session_config.llm_config,
-        )
         # Per-run, so a handle re-driven after an approval pause (or a
         # suspended lazy run resumed by a fresh `run()`) never reports the
         # previous bracket's outcome. `None` is correct for a run that closed
@@ -912,7 +913,10 @@ class AgentSessionRunner:
         `context_tokens` (context calculation is part of preparing a complete
         entry — it runs BEFORE middleware, and never again after), then thread
         it through `before_entry_written`."""
-        entry.context_tokens = self.context_manager.calculate_context(entry)
+        entry.context_tokens = self.context_manager.calculate_context(
+            self.session,
+            entry,
+        )
         return self._run_middlewares("before_entry_written", entry)
 
     def _append(self, build_fn) -> AnyEntry:
@@ -923,7 +927,7 @@ class AgentSessionRunner:
             )
         )
 
-    def _prepare(
+    def _complete_uncommitted(
         self,
         build_fn,
         parent_id: str | None,
@@ -933,8 +937,38 @@ class AgentSessionRunner:
         other half of `_append`, for entries that belong to a conversation
         which does not exist yet (a compaction plan's). Identity comes from
         the same hooks; the caller supplies the parent, because the new
-        conversation's leaf is not the active path's."""
+        conversation's leaf is not the active path's.
+
+        (Named for what it does rather than `_prepare`, so `prepare` in this
+        file means the tool-lifecycle phase and nothing else.)"""
         return self._complete_entry(build_fn(self.generate_id(), parent_id, ts))
+
+    def recalculate_context_tokens(self) -> None:
+        """Re-derive `context_tokens` for EVERY entry in `session.entries`,
+        threading each through `before_entry_written`.
+
+        `Entry.context_tokens` is stored, so a `ContextManager` that counts
+        against the active model leaves every stored count stale the moment
+        `session_config.llm_config` changes — and a context gauge that sums
+        them then reports a number with no single basis. This is the way back.
+
+        Every entry, not just the active path: the count is intrinsic to an
+        entry and shared by every conversation that references it, so
+        refreshing only the active path would leave archived conversations on
+        the old basis. Through the middleware door, because middleware has the
+        final say on context and nothing is recomputed behind it. It sets no
+        other field.
+
+        NOTHING IN THE FRAMEWORK CALLS THIS. There is no constructor keyword,
+        no CLI flag, and no automatic invocation on a model switch (which
+        would put an unbounded rewrite behind an innocuous-looking
+        assignment). The shipped `ContextManager` is a character estimate that
+        no model choice affects; this exists for the application that swaps in
+        a real tokenizer, and that application calls it."""
+        for entry_id in list(self.session.entries):
+            entry = self.session.entries[entry_id]
+            refreshed = self._complete_entry(entry.model_copy())
+            self.ledger.refresh_entry(refreshed)
 
     def _persist_entry(
         self,
@@ -977,25 +1011,29 @@ class AgentSessionRunner:
         self,
         execution: ToolExecution,
         exception: Exception,
+        *,
+        phase: str,
     ) -> ToolExecutionError:
         """Convert a live exception into the durable `ToolExecutionError`.
         Override to redact secrets, preserve domain codes, or add a traceback
         to `details` — the live exception itself is never persisted.
 
-        The default keeps the exception's type and message, nests structured
-        validation errors under `details["errors"]`, and records the failure
-        phase for registry/tool-owned raises (`create_execution` before
-        dispatch, `execution` after — derived from `started_at`)."""
+        The default keeps the exception's type and message and records the
+        failure phase, nesting structured validation errors under
+        `details["errors"]` where they exist.
+
+        `phase` is a FACT the caller knows — which of the runner's three
+        observation points the raise came out of — not an inference from
+        `started_at`: `"create_execution"`, `"prepare"`, or `"execution"`. It
+        is populated on every registry- or tool-owned raise. Those three
+        values are the RUNNER's vocabulary for raises it observed; a registry
+        authoring a terminal-at-birth error owns its own `details` and may use
+        its own phase vocabulary."""
+        details: dict = {"phase": phase}
         if isinstance(exception, InvalidToolArguments):
-            details: dict = {"errors": exception.errors}
-        elif isinstance(exception, ToolNotFound):
-            details = {}
+            details["errors"] = exception.errors
         elif isinstance(exception, ValidationError):
-            details = {"errors": json.loads(exception.json(include_url=False))}
-        else:
-            details = {
-                "phase": ("execution" if execution.started_at is not None else "create_execution"),
-            }
+            details["errors"] = json.loads(exception.json(include_url=False))
         return ToolExecutionError(
             error_type=type(exception).__name__,
             error_message=str(exception),
@@ -1032,6 +1070,7 @@ class AgentSessionRunner:
         execution = execution.model_copy(
             update={
                 "context_tokens": self.context_manager.calculate_context(
+                    self.session,
                     execution,
                 ),
             },
@@ -1083,14 +1122,23 @@ class AgentSessionRunner:
         model_string = f"{llm_cfg.provider}:{llm_cfg.model}"
         return self._run_middlewares("build_model_string", model_string, llm_cfg)
 
-    def build_tool_list(self) -> list[LucaTool]:
+    async def build_tool_list(self) -> list[LucaTool]:
         """Return the wire tool list for this LLM call: query the registry
         fresh (`get_tools` is dynamic — the result may vary with session
-        state; a toolless runner contributes none), convert each tool via the
-        adapter, and thread the list through any `build_tool_list`
-        middleware. Called per LLM invocation."""
-        tools = self.tool_registry.get_tools(self.session) if self.tool_registry is not None else []
-        tool_list = [adapter.tool_to_luca_tool(tool) for tool in tools]
+        state; a toolless runner contributes none), convert each `ToolSpec`
+        via the adapter, and thread the list through any `build_tool_list`
+        middleware. Called per LLM invocation.
+
+        Async because `get_tools` is — a registry that needs I/O to list its
+        tools (a remote tool server, a plugin host, a permissions service)
+        must not block the event loop. The `build_tool_list` MIDDLEWARE hook
+        stays synchronous and unchanged: it runs on the converted WIRE list,
+        after the await. The drive races this whole method against the
+        cancellation token rather than the inner `get_tools`, so a subclass
+        that overrides it is covered for free and the token never has to
+        appear in this public signature."""
+        specs = await self.tool_registry.get_tools(self.session) if self.tool_registry is not None else []
+        tool_list = [adapter.tool_spec_to_luca_tool(spec) for spec in specs]
         return self._run_middlewares("build_tool_list", tool_list)
 
     def build_messages(self) -> list:
@@ -1438,7 +1486,7 @@ class AgentSessionRunner:
             if isinstance(node, str):
                 parent = node
             else:
-                built = self._prepare(
+                built = self._complete_uncommitted(
                     lambda entry_id, parent_id, stamp, template=node: template.model_copy(
                         update={
                             "id": entry_id,
@@ -1452,7 +1500,7 @@ class AgentSessionRunner:
                 created.append(built)
                 parent = built.id
             nodes.append(parent)
-        closing = self._prepare(
+        closing = self._complete_uncommitted(
             lambda entry_id, parent_id, stamp: TurnFinish(
                 id=entry_id,
                 parent_id=parent_id,
@@ -1477,7 +1525,6 @@ class AgentSessionRunner:
     async def _drive(
         self,
         streaming: bool,
-        context: ToolContext,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """The single engine behind both methods; `AgentRun` is its only
@@ -1536,9 +1583,12 @@ class AgentSessionRunner:
             # land before any denial event is yielded.
             undecided = self.ledger.open_turn_undecided_executions()
             if undecided:
-                pairs = await asyncio.gather(*(self._decide_with_middleware(ex, context) for ex in undecided))
+                pairs = await asyncio.gather(*(self._decide_one(ex, token) for ex in undecided))
                 denial_events: list[AgentEvent] = []
-                for modified, decision in pairs:
+                for pair in pairs:
+                    if pair is None:
+                        continue  # the token won this decide — nothing decided
+                    modified, decision = pair
                     denied = decision.decision == ApprovalOption.DENY
                     changes: dict = {
                         "approval_decisions": [
@@ -1562,7 +1612,7 @@ class AgentSessionRunner:
             # runner parks only after all currently runnable work advanced.
             ready = self.ledger.open_turn_ready_executions()
             if ready:
-                async for event in self._dispatch_batch(ready, context, token):
+                async for event in self._dispatch_batch(ready, token):
                     yield event
 
             # 3) Park while any approval remains explicitly deferred (a
@@ -1624,7 +1674,23 @@ class AgentSessionRunner:
             llm_cfg = self.session.session_config.llm_config
             model_string = self.build_model_string(llm_cfg)
             messages, system_message = self.prepare_llm_call()
-            tool_list = self.build_tool_list()
+            # `get_tools` is application code and may block indefinitely, so
+            # the whole step is raced. A lost race produces no tool list and
+            # makes no LLM call: control returns to the loop top, which winds
+            # the turn down — exactly the aborted-LLM-call path. A RAISE is
+            # deliberately not caught here: it propagates and aborts the run
+            # with the turn left open and resumable, and the next run() asks
+            # again. Substituting an empty tool list would silently change the
+            # model's answer.
+            tools_task = asyncio.ensure_future(self.build_tool_list())
+            tools_done, tool_list, _ = await _race_cancellation(
+                tools_task,
+                token,
+                0,
+                None,
+            )
+            if not tools_done:
+                continue
             grace_ms = config.llm_completion_cancellation_grace_period
             request_timeout = _ms_to_seconds(
                 config.builtin_client_completion_timeout_in_ms,
@@ -1732,7 +1798,7 @@ class AgentSessionRunner:
             # ("stop" + calls) nor loop it ("tool_use" + none).
             events = self._record_assistant(message, finish_reason, llm_cfg)
             if message.tool_calls:
-                events.extend(await self._create_executions(message, context))
+                events.extend(await self._create_executions(message, token))
                 for event in events:
                     yield event
                 continue  # → step 1 hands the fresh executions to decide()
@@ -1814,7 +1880,11 @@ class AgentSessionRunner:
         events.append(FinishReason(finish_reason=finish_reason))
         return events
 
-    async def _create_executions(self, message, ctx: ToolContext) -> list[AgentEvent]:
+    async def _create_executions(
+        self,
+        message,
+        token: CancellationToken,
+    ) -> list[AgentEvent]:
         """Set-oriented birth: ask the registry for one draft per call in the
         assistant response (concurrently — each call gets a deep-copied
         `ToolCall`, so a draft can never alias the assistant message part),
@@ -1823,13 +1893,19 @@ class AgentSessionRunner:
         `tool_spec`, the birth `status` — PENDING or terminal-at-birth —
         `error`, `extras`); the runner re-stamps identity (`id`, `parent_id`,
         `created_at`), `ended_at` for a terminal birth, `context_tokens`
-        (via `_append`), and `is_doom_loop_flagged`. Failures are isolated
-        per call: a raising `create_execution` (or a toolless runner) never
-        breaks the set — the runner synthesizes the draft itself, FAILED for
-        a raise and NOT_FOUND for the toolless case — preserving the
-        invariant that every tool call produces exactly one tool output.
-        Terminal births immediately run the outcome middleware pair."""
-        drafts = await asyncio.gather(*(self._birth_draft(tc, ctx) for tc in message.tool_calls))
+        (via `_append`), and `is_doom_loop_flagged`, and the ledger files the
+        spec and stamps `tool_spec_id`. Failures are isolated per call: a
+        raising `create_execution` (or a toolless runner) never breaks the
+        set — the runner synthesizes the draft itself, FAILED for a raise and
+        NOT_FOUND for the toolless case — preserving the invariant that every
+        tool call produces exactly one tool output. Terminal births
+        immediately run the outcome middleware pair.
+
+        The cancellation race is PER CALL, inside `_birth_draft`, never around
+        this gather: killing the gather would lose every draft and break
+        one-output-per-call. A response with N tool calls yields N tool
+        executions even when a cancellation lands mid-batch."""
+        drafts = await asyncio.gather(*(self._birth_draft(tc, token) for tc in message.tool_calls))
         events: list[AgentEvent] = []
         for tc, (draft, exception) in zip(message.tool_calls, drafts, strict=False):
             # Doom-loop check runs before the append so it only sees
@@ -1869,14 +1945,24 @@ class AgentSessionRunner:
     async def _birth_draft(
         self,
         tc,
-        ctx: ToolContext,
+        token: CancellationToken,
     ) -> tuple[ToolExecution, Exception | None]:
         """One call's guarded birth: delegate to
-        `tool_registry.create_execution` with a deep-copied `ToolCall`. The
-        draft comes back with no identity (`id` / `created_at` are `None`)
-        for `_create_executions` to stamp. A raise is caught and becomes a
-        runner-synthesized FAILED draft (the live exception is returned for
-        the outcome middleware); a toolless runner synthesizes NOT_FOUND."""
+        `tool_registry.create_execution` with a deep-copied `ToolCall`, raced
+        against the run's cancellation token. The draft comes back with no
+        identity (`id` / `created_at` are `None`) for `_create_executions` to
+        stamp. A raise is caught and becomes a runner-synthesized FAILED draft
+        (the live exception is returned for the outcome middleware); a
+        toolless runner synthesizes NOT_FOUND.
+
+        A LOST RACE is not a failure: it synthesizes a plain PENDING draft so
+        the call still gets its one execution, and the loop-top wind-down
+        records it CANCELLED. A cancelled birth is CANCELLED, never FAILED —
+        a cancellation is not a tool failure. (No `except CancelledError`
+        clause is needed for that: `asyncio.CancelledError` derives from
+        `BaseException`, so the broad `except Exception` below never sees it,
+        and the race helper absorbs the kill it issued and reports the outcome
+        as a boolean rather than re-raising.)"""
         raw = ToolCall(
             id=tc.id,
             name=tc.name,
@@ -1889,30 +1975,74 @@ class AgentSessionRunner:
                 raw_tool_call=raw,
                 status=ExecutionStatus.NOT_FOUND,
             )
-            draft.error = self.to_tool_execution_error(draft, exc)
+            draft.error = self.to_tool_execution_error(
+                draft,
+                exc,
+                phase="create_execution",
+            )
             return draft, exc
+        task = asyncio.ensure_future(
+            self.tool_registry.create_execution(self.session, raw),
+        )
         try:
-            return await self.tool_registry.create_execution(raw, ctx), None
+            completed, draft, _ = await _race_cancellation(task, token, 0, None)
         except Exception as exc:
-            draft = ToolExecution(
+            failed = ToolExecution(
                 tool_call_id=raw.id,
                 raw_tool_call=raw,
                 status=ExecutionStatus.FAILED,
             )
-            draft.error = self.to_tool_execution_error(draft, exc)
-            return draft, exc
+            failed.error = self.to_tool_execution_error(
+                failed,
+                exc,
+                phase="create_execution",
+            )
+            return failed, exc
+        if not completed:
+            return ToolExecution(
+                tool_call_id=raw.id,
+                raw_tool_call=raw,
+                status=ExecutionStatus.PENDING,
+            ), None
+        return draft, None
+
+    async def _decide_one(
+        self,
+        execution: ToolExecution,
+        token: CancellationToken,
+    ) -> tuple[ToolExecution, ApprovalDecision] | None:
+        """`_decide_with_middleware` under the cancellation race — `None` when
+        the token won, and then the caller records NOTHING for this execution.
+
+        The race wraps the whole middleware pair, not `registry.decide` alone,
+        so a token already tripped when this is entered fires no hook at all —
+        the inner task is killed before it ever runs. (In `_drive` the loop-top
+        cancel check normally reaches a parked cancellation first; this is what
+        makes the guarantee hold anyway, and it is why the race goes around the
+        pair rather than inside it.)
+
+        A token tripping DURING `decide` is the reachable case, and it still
+        leaves `before_permission_check` fired with its returned execution
+        discarded: the execution has to stay PENDING for the wind-down, so
+        there is nowhere to put it, and a decision that never happened has
+        nothing to apply. In particular `after_permission_decision` must not
+        fire. Siblings decided in the same batch have all been scheduled by
+        then, so their hooks fire too — the guarantee is about entry, not about
+        interrupting a batch already under way."""
+        task = asyncio.ensure_future(self._decide_with_middleware(execution))
+        completed, pair, _ = await _race_cancellation(task, token, 0, None)
+        return pair if completed else None
 
     async def _decide_with_middleware(
         self,
         execution: ToolExecution,
-        ctx: ToolContext,
     ) -> tuple[ToolExecution, ApprovalDecision]:
         """Apply `before_permission_check` middleware, call the registry's
         `decide()`, then apply `after_permission_decision` middleware.
         Returns `(modified_execution, decision)` — the modified execution is
         what the registry saw AND the execution the decision is applied to
         and persisted (its changes are not restricted to the decide call).
-        A toolless runner allows — `execute` then produces the honest
+        A toolless runner allows — the prepare step then produces the honest
         NOT_FOUND terminal rather than recording a false REJECTED."""
         modified = self._run_middlewares("before_permission_check", execution)
         if self.tool_registry is None:
@@ -1921,7 +2051,7 @@ class AgentSessionRunner:
                 created_at=self.now_ms(),
             )
         else:
-            decision = await self.tool_registry.decide(modified, ctx)
+            decision = await self.tool_registry.decide(self.session, modified)
         return modified, self._run_middlewares(
             "after_permission_decision",
             decision,
@@ -1931,37 +2061,99 @@ class AgentSessionRunner:
     async def _dispatch_batch(
         self,
         ready: list[ToolExecution],
-        ctx: ToolContext,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """Dispatch every ready (PENDING + ALLOWED) execution with the
         implementation-chosen sequential scheduler — any scheduler conforms
         as long as every execution stays independent: one call's return,
         raise, or timeout never assigns an outcome to a sibling, and each
-        call has its own deadline. A token tripped mid-batch finishes the
-        in-flight call (per its grace) and skips the rest — the loop-top
-        wind-down cancels them."""
+        call has its own deadline.
+
+        A cancellation observed before an execution's turn comes up stops the
+        batch here: this execution and every one after it are untouched —
+        still PENDING, no middleware fired — and the loop-top wind-down
+        terminalizes them. Only the executions the batch actually reached are
+        the dispatch path's to finish."""
         for execution in ready:
             if token.cancelled:
                 return
-            async for event in self._dispatch_one(execution, ctx, token):
+            async for event in self._dispatch_one(execution, token):
                 yield event
 
     async def _dispatch_one(
         self,
         execution: ToolExecution,
-        ctx: ToolContext,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
-        """Dispatch preparation + body invocation for one allowed execution:
-        apply `before_tool_execution` (its returned `raw_tool_call` is the
-        effective call), persist RUNNING with `started_at` (the birth
-        `tool_spec` stands — there is NO dispatch-time re-snapshot), emit
-        `ToolExecutionStarted`, and run the body via `registry.execute`.
-        Resolution and validation live inside the registry, so their
-        failures land AFTER `started_at` is set, with `ToolExecutionStarted`
-        emitted — RUNNING must be durably persisted before the body runs."""
+        """Prepare, then run, for one allowed execution.
+
+        1. `before_tool_execution` fires — its returned `raw_tool_call` is the
+           effective call, which is why the hook stays AHEAD of `prepare()`.
+        2. `prepare()` runs, raced against the token.
+        3. A raise, or a return that is not callable, terminalizes the
+           execution WITHOUT it ever being marked RUNNING: `started_at` stays
+           None, `dispatched` stays False, no `ToolExecutionStarted` is
+           emitted, and `details["phase"]` is `"prepare"`.
+        4. A cancellation observed at any point up to and including
+           `prepare()` settling means the body is NOT dispatched — even when
+           `prepare()` returned successfully. The grace window exists to let
+           in-flight work finish, not to start new work after a cancellation
+           was requested.
+        5. Otherwise RUNNING + `started_at` are persisted, the birth
+           `tool_spec` standing (there is NO dispatch-time re-snapshot),
+           `ToolExecutionStarted` is emitted, and the callable is invoked
+           under the cancellation race and the deadline.
+
+        Every path from step 3 on finalizes through `_finalize_outcome`, NEVER
+        `_finalize_undispatched`: `before_tool_execution` has already fired for
+        this call and the undispatched pipeline would fire it a second time.
+        The hook is the boundary — an execution whose hook has not fired
+        belongs to the loop-top wind-down, one whose hook has fired belongs
+        here."""
         execution = self._run_middlewares("before_tool_execution", execution)
+
+        prepare_task = asyncio.ensure_future(self._prepare_tool(execution))
+        try:
+            prepared_ok, prepared, _ = await _race_cancellation(
+                prepare_task,
+                token,
+                0,
+                None,
+            )
+        except Exception as exc:
+            _, event = self._finalize_outcome(
+                self._terminal_for_prepare_failure(execution, exc),
+                exc,
+            )
+            yield event
+            return
+        if not prepared_ok:
+            _, event = self._finalize_outcome(self._cancelled_in_place(execution))
+            yield event
+            return
+        if not callable(prepared):
+            # A registry that returned None, a plain value, or anything else
+            # that cannot be invoked. The runner synthesizes the failure
+            # rather than letting it blow up later: nothing has been
+            # dispatched, so this is a preparation failure and must record
+            # like one. (A bare coroutine also lands here — and, being
+            # un-awaited, additionally warns; §5.2 is why the contract asks
+            # for a callable.)
+            exc = AgentError(
+                f"prepare() for tool {execution.raw_tool_call.name!r} returned "
+                f"{type(prepared).__name__}, which is not callable."
+            )
+            _, event = self._finalize_outcome(
+                self._terminal_for_prepare_failure(execution, exc),
+                exc,
+            )
+            yield event
+            return
+        if token.cancelled:
+            _, event = self._finalize_outcome(self._cancelled_in_place(execution))
+            yield event
+            return
+
         execution = self._persist_execution(
             execution,
             status=ExecutionStatus.RUNNING,
@@ -1971,50 +2163,102 @@ class AgentSessionRunner:
             tool_call_id=execution.tool_call_id,
             execution=execution.model_copy(deep=True),
         )
-        terminal, exception = await self._run_tool_body(execution, ctx, token)
+        terminal, exception = await self._run_tool_body(execution, prepared, token)
         _, event = self._finalize_outcome(terminal, exception)
         yield event
 
-    async def _execute_body(
+    def _terminal_for_prepare_failure(
         self,
         execution: ToolExecution,
-        ctx: ToolContext,
-        token: CancellationToken,
-    ) -> ExecutionResult:
-        """The single `registry.execute` call site. A toolless runner raises
+        exception: Exception,
+    ) -> ToolExecution:
+        """The terminal (not yet persisted) execution for a `prepare()` that
+        raised or returned a non-callable.
+
+        The exception-type-to-status mapping did not disappear with `execute`
+        — it MOVED here, where it is accurate, because the only work done at
+        this point is resolution and validation. Once the callable has been
+        invoked every raise is FAILED."""
+        if isinstance(exception, ToolNotFound):
+            status = ExecutionStatus.NOT_FOUND
+        elif isinstance(exception, (InvalidToolArguments, ValidationError)):
+            status = ExecutionStatus.INVALID
+        else:
+            status = ExecutionStatus.FAILED
+        terminal = execution.model_copy(
+            update={
+                "status": status,
+                "ended_at": self.now_ms(),
+            },
+        )
+        terminal.error = self.to_tool_execution_error(
+            terminal,
+            exception,
+            phase="prepare",
+        )
+        return terminal
+
+    def _cancelled_in_place(self, execution: ToolExecution) -> ToolExecution:
+        """The terminal execution for a cancellation during (or right after)
+        `prepare()` — the one asymmetry in the cancellation rules.
+
+        Everywhere else a cancelled registry phase leaves the execution
+        PENDING for the loop-top wind-down. Here it cannot:
+        `before_tool_execution` has already fired, and the wind-down would
+        fire it again. The durable shape is identical to a wind-down
+        cancellation — resultless, errorless, `cancel_signalled_at` and
+        `ended_at` stamped, `started_at` unset, `dispatched` False."""
+        ts = self.now_ms()
+        return execution.model_copy(
+            update={
+                "cancel_signalled_at": ts,
+                "status": ExecutionStatus.CANCELLED,
+                "result": None,
+                "error": None,
+                "ended_at": ts,
+            },
+        )
+
+    async def _prepare_tool(self, execution: ToolExecution) -> PreparedTool:
+        """The single `registry.prepare` call site. A toolless runner raises
         `ToolNotFound` so a loaded ready execution still terminalizes
         honestly (NOT_FOUND) instead of crashing the run."""
         if self.tool_registry is None:
             raise ToolNotFound(f"Unknown tool: {execution.raw_tool_call.name!r}.")
-        return await self.tool_registry.execute(
-            execution,
-            ctx,
-            cancellation_token=token,
-        )
+        return await self.tool_registry.prepare(self.session, execution)
 
     async def _run_tool_body(
         self,
         execution: ToolExecution,
-        ctx: ToolContext,
+        prepared: PreparedTool,
         token: CancellationToken,
     ) -> tuple[ToolExecution, Exception | None]:
-        """Invoke `registry.execute` under the cancellation race and the
+        """Invoke the prepared callable under the cancellation race and the
         outside deadline; return the terminal (not yet persisted) execution
         and the live exception, if one exists. Outcomes: the body *returned*
         (even early, cooperatively, within the cancel grace) → COMPLETED with
-        its real result, whatever `is_error` says; it *raised* → the contract
-        mapping (`ToolNotFound` → NOT_FOUND, `InvalidToolArguments` /
-        `ValidationError` → INVALID, anything else → FAILED) with a
-        structured error; the deadline expired → hard-cancelled, TIMED_OUT;
-        the cancel grace expired → hard-cancelled, INTERRUPTED. When run
-        cancellation is signalled while the body is in flight, the RUNNING
-        execution is persisted with `cancel_signalled_at` BEFORE the grace
-        window runs, so the signal is durable whatever settles the call. The
-        deadline is outside enforcement only — the birth
-        `tool_spec.timeout_in_ms` beats
+        its real result, whatever `is_error` says; it *raised* → FAILED for
+        EVERY exception type, because resolution and validation already
+        happened in `prepare()` and a body that raises `ToolNotFound` looking
+        up a sub-resource is a tool failure, not a resolution failure; the
+        deadline expired → hard-cancelled, TIMED_OUT; the cancel grace
+        expired → hard-cancelled, INTERRUPTED. When run cancellation is
+        signalled while the body is in flight, the RUNNING execution is
+        persisted with `cancel_signalled_at` BEFORE the grace window runs, so
+        the signal is durable whatever settles the call. The deadline is
+        outside enforcement only — the birth `tool_spec.timeout_in_ms` beats
         `RuntimeConfig.tool_execution_timeout_in_ms`; it never touches the
         shared token (one call's deadline must not cancel siblings) and does
-        not populate `cancel_signalled_at`."""
+        not populate `cancel_signalled_at`.
+
+        The INVOCATION sits inside the failure handling. A callable that
+        returns a plain value rather than an awaitable makes
+        `asyncio.ensure_future` raise `TypeError` synchronously, and that
+        callable has ALREADY been invoked — so the honest record is a
+        post-dispatch failure like any other, not a crashed run. Testing
+        awaitability any earlier would mean invoking the body before RUNNING
+        is durable, which is exactly what the prepare split exists to
+        prevent."""
         config = self.session.session_config.runtime_config
         grace_ms = config.tool_cancellation_grace_period
         spec_timeout = execution.tool_spec.timeout_in_ms if execution.tool_spec is not None else None
@@ -2028,8 +2272,8 @@ class AgentSessionRunner:
                 cancel_signalled_at=self.now_ms(),
             )
 
-        tool_task = asyncio.ensure_future(self._execute_body(current, ctx, token))
         try:
+            tool_task = asyncio.ensure_future(prepared(cancellation_token=token))
             if deadline_ms == Inf:
                 completed, result, _ = await _race_cancellation(
                     tool_task,
@@ -2061,19 +2305,17 @@ class AgentSessionRunner:
                         },
                     ), None
         except Exception as exc:
-            if isinstance(exc, ToolNotFound):
-                status = ExecutionStatus.NOT_FOUND
-            elif isinstance(exc, (InvalidToolArguments, ValidationError)):
-                status = ExecutionStatus.INVALID
-            else:
-                status = ExecutionStatus.FAILED
             terminal = current.model_copy(
                 update={
-                    "status": status,
+                    "status": ExecutionStatus.FAILED,
                     "ended_at": self.now_ms(),
                 },
             )
-            terminal.error = self.to_tool_execution_error(terminal, exc)
+            terminal.error = self.to_tool_execution_error(
+                terminal,
+                exc,
+                phase="execution",
+            )
             return terminal, exc
         if not completed:
             return current.model_copy(
@@ -2085,11 +2327,16 @@ class AgentSessionRunner:
         # The returned result passes through the context manager BEFORE the
         # terminal execution is constructed (and thus before any middleware):
         # what persists, projects, and feeds the ToolExecuted event is the
-        # processed output.
+        # processed output. The execution it sees is IN TRANSITION — still
+        # RUNNING, no result attached — and is there to be read for identity.
         return current.model_copy(
             update={
                 "status": ExecutionStatus.COMPLETED,
-                "result": self.context_manager.process_tool_output(result),
+                "result": self.context_manager.process_tool_output(
+                    self.session,
+                    current,
+                    result,
+                ),
                 "ended_at": self.now_ms(),
             },
         ), None

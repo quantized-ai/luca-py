@@ -1,6 +1,7 @@
 """Declarative matrix for the SessionLedger — the entry-derived queries the
 runner's status cache is re-derived from, plus the uniform append/put
-bookkeeping. Known session data in, exact answer out; no loop, no provider.
+bookkeeping and the tool-spec normalization every write door performs. Known
+session data in, exact answer out; no loop, no provider.
 
 The execution vocabulary under test (over `status` + `approval_status`):
 PENDING splits into UNDECIDED (`approval_status` None or PENDING — what the
@@ -9,6 +10,15 @@ policy explicitly deferred; drives AWAITING_APPROVAL), and READY
 (`approval_status` ALLOWED — dispatchable). RUNNING executions are orphans at
 drive start. Approval state is read from `approval_status`, never
 reconstructed from the `approval_decisions` audit log.
+
+The tool-spec doors under test: `append`, `put_entry`,
+`transition_conversation` (over `updates`, `created` AND `closing`) and
+`refresh_entry` each file a `ToolExecution`'s `tool_spec` in
+`session.tool_specs` under its content id and stamp that id on the execution.
+`prune()` is deliberately not one of them. Session literals carrying an
+execution go through `scenarios.make_session()` — a hand-written
+`AgentSession` would have to file every spec itself, which is never what the
+test is about.
 """
 
 import pytest
@@ -35,18 +45,27 @@ from luca.agent.core.models import (
     TextContent,
     ToolCall,
     ToolExecution,
-    ToolSpec,
     TurnFinish,
     TurnOutcome,
     TurnStart,
     Usage,
     UserMessage,
 )
-from tests.agent.scenarios import MODEL
+from tests.agent.scenarios import MODEL, make_session, spec
 
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 DENY_1000 = ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000)
+
+# The two specs the tool-spec doors are exercised with, plus the content ids
+# they hash to. `REVISED_ADD_SPEC` differs from `ADD_SPEC` only in its
+# description — enough for a different id, so a re-stamp is visible.
+ADD_SPEC = spec("add")
+ADD_SPEC_ID = ADD_SPEC.spec_id()
+REVISED_ADD_SPEC = spec("add", description="Add two numbers, revised.")
+REVISED_ADD_SPEC_ID = REVISED_ADD_SPEC.spec_id()
+MULTIPLY_SPEC = spec("multiply")
+MULTIPLY_SPEC_ID = MULTIPLY_SPEC.spec_id()
 
 
 # ── open_turn_index ────────────────────────────────────────────────────────────
@@ -156,7 +175,7 @@ def test_derive_status_pending_with_open_turn_and_no_executions():
 
 
 def test_derive_status_awaiting_when_approval_status_is_pending():
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -165,7 +184,7 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
                 approval_status=ApprovalStatus.PENDING,
                 approval_decisions=[PENDING_1000],
@@ -187,7 +206,7 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
 def test_derive_status_pending_when_execution_was_never_processed():
     # crash mid-decide: approval_status None — the strategy was never asked,
     # so the right move is a plain run() (which asks it), NOT the gate.
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -196,7 +215,7 @@ def test_derive_status_pending_when_execution_was_never_processed():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
                 approval_status=None,
                 approval_decisions=[],
@@ -216,7 +235,7 @@ def test_derive_status_pending_when_execution_was_never_processed():
 
 
 def test_derive_status_pending_when_execution_is_allowed_but_unrun():
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -225,7 +244,7 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[PENDING_1000, ALLOW_1000],
@@ -247,7 +266,7 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
 def test_derive_status_pending_with_orphaned_running_execution():
     # a persisted RUNNING execution means: call run() — the next drive
     # recovers it to INTERRUPTED and continues the turn.
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -256,7 +275,7 @@ def test_derive_status_pending_with_orphaned_running_execution():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.RUNNING,
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ALLOW_1000],
@@ -300,7 +319,7 @@ def test_derive_status_idle_after_closed_turn():
 def test_derive_status_cancelling_beats_awaiting_approval():
     # an unconsumed CancelRequested wins over the approval gate: the next
     # drive is a flush, not a re-ask.
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -309,7 +328,7 @@ def test_derive_status_cancelling_beats_awaiting_approval():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
                 approval_status=ApprovalStatus.PENDING,
                 approval_decisions=[PENDING_1000],
@@ -417,7 +436,7 @@ def test_derive_status_idle_after_cancelled_turn():
 # (never processed), awaiting (policy deferred), ready (allowed, unrun), and
 # orphaned RUNNING.
 
-MATRIX_SESSION = AgentSession(
+MATRIX_SESSION = make_session(
     id="s_matrix",
     entries={
         "ts": TurnStart(id="ts", created_at=1),
@@ -426,7 +445,7 @@ MATRIX_SESSION = AgentSession(
             created_at=2,
             tool_call_id="tc0",
             raw_tool_call=ToolCall(id="tc0", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -439,7 +458,7 @@ MATRIX_SESSION = AgentSession(
             created_at=4,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.PENDING,
             approval_status=None,
             approval_decisions=[],
@@ -449,7 +468,7 @@ MATRIX_SESSION = AgentSession(
             created_at=5,
             tool_call_id="tc2",
             raw_tool_call=ToolCall(id="tc2", name="multiply"),
-            tool_spec=ToolSpec(name="multiply"),
+            tool_spec=spec("multiply"),
             status=ExecutionStatus.PENDING,
             approval_status=ApprovalStatus.PENDING,
             approval_decisions=[PENDING_1000],
@@ -459,7 +478,7 @@ MATRIX_SESSION = AgentSession(
             created_at=6,
             tool_call_id="tc3",
             raw_tool_call=ToolCall(id="tc3", name="subtract"),
-            tool_spec=ToolSpec(name="subtract"),
+            tool_spec=spec("subtract"),
             status=ExecutionStatus.PENDING,
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
@@ -469,7 +488,7 @@ MATRIX_SESSION = AgentSession(
             created_at=7,
             tool_call_id="tc4",
             raw_tool_call=ToolCall(id="tc4", name="add"),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
             status=ExecutionStatus.RUNNING,
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
@@ -554,7 +573,7 @@ def test_execution_subsets_are_empty_without_open_turn():
 def test_approval_state_is_read_from_approval_status_not_the_log():
     # the audit log trails a PENDING decision, but approval_status says
     # ALLOWED — the status field wins (middleware may author such state).
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "ts": TurnStart(id="ts", created_at=1),
@@ -563,7 +582,7 @@ def test_approval_state_is_read_from_approval_status_not_the_log():
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[PENDING_1000],
@@ -835,7 +854,7 @@ def test_append_tool_execution_indexes_by_tool_call_id():
             created_at=ts,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
-            tool_spec=ToolSpec(name="add"),
+            tool_spec=spec("add"),
         )
     )
 
@@ -843,7 +862,7 @@ def test_append_tool_execution_indexes_by_tool_call_id():
 
 
 def test_put_entry_stores_the_replacement_and_touches_conversation():
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "te1": ToolExecution(
@@ -851,7 +870,7 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.PENDING,
             ),
         },
@@ -878,7 +897,8 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
-        tool_spec=ToolSpec(name="add"),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
         status=ExecutionStatus.REJECTED,
         approval_status=ApprovalStatus.REJECTED,
         approval_decisions=[DENY_1000],
@@ -888,11 +908,313 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
     assert session.active_conversation.updated_at == 1000
 
 
+# ── refresh_entry: the derived-field door ─────────────────────────────────────
+
+
+def test_refresh_entry_stores_the_replacement_without_touching_the_conversation():
+    session = AgentSession(
+        id="s",
+        entries={
+            "u1": UserMessage(
+                id="u1",
+                created_at=0,
+                parts=[TextContent(text="hi")],
+                context_tokens=3,
+            ),
+        },
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+    replacement = session.entries["u1"].model_copy(update={"context_tokens": 12})
+
+    stored = ledger.refresh_entry(replacement)
+
+    assert stored is replacement
+    assert session.entries["u1"] == UserMessage(
+        id="u1",
+        created_at=0,
+        parts=[TextContent(text="hi")],
+        context_tokens=12,
+    )
+    # re-deriving a stored estimate is not a mutation of the conversation:
+    # unlike put_entry, this door leaves `updated_at` exactly where it was.
+    assert session.active_conversation == Conversation(
+        id="c1",
+        nodes=["u1"],
+        created_at=0,
+        updated_at=0,
+    )
+
+
+def test_refresh_entry_refuses_an_uncommitted_entry():
+    session = AgentSession(
+        id="s",
+        entries={},
+        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    with pytest.raises(AgentError, match="Cannot refresh entry None"):
+        ledger.refresh_entry(CompactionEntry(source=CompactionSource.USER))
+
+    assert session.entries == {}
+
+
+def test_refresh_entry_refuses_to_create_an_unknown_entry():
+    session = AgentSession(
+        id="s",
+        entries={},
+        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    with pytest.raises(AgentError, match="Cannot refresh entry 'nope'"):
+        ledger.refresh_entry(
+            CompactionEntry(
+                id="nope",
+                created_at=0,
+                source=CompactionSource.USER,
+            ),
+        )
+
+    assert session.entries == {}
+
+
+# ── tool specs: the write doors that normalize them ───────────────────────────
+#
+# `append`, `put_entry`, `transition_conversation` and `refresh_entry` each
+# file an execution's `tool_spec` in `session.tool_specs` under its
+# content-derived id and stamp that id on the execution. `prune` is
+# deliberately not one of them.
+
+
+def test_append_files_the_tool_spec_and_stamps_the_reference():
+    session = AgentSession(
+        id="s",
+        entries={"ts": TurnStart(id="ts", created_at=0)},
+        active_conversation=Conversation(id="c1", nodes=["ts"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te1")
+
+    appended = ledger.append(
+        lambda entry_id, parent_id, ts: ToolExecution(
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add"),
+            tool_spec=spec("add"),
+        )
+    )
+
+    assert appended == ToolExecution(
+        id="te1",
+        parent_id="ts",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+    )
+    assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+
+
+def test_append_leaves_an_unresolved_execution_with_no_spec_reference():
+    # a NOT_FOUND birth resolved to no tool at all: nothing to file, nothing
+    # to stamp, and the store stays empty.
+    session = AgentSession(
+        id="s",
+        entries={"ts": TurnStart(id="ts", created_at=0)},
+        active_conversation=Conversation(id="c1", nodes=["ts"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te1")
+
+    appended = ledger.append(
+        lambda entry_id, parent_id, ts: ToolExecution(
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="ghost"),
+            status=ExecutionStatus.NOT_FOUND,
+        )
+    )
+
+    assert appended == ToolExecution(
+        id="te1",
+        parent_id="ts",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="ghost"),
+        status=ExecutionStatus.NOT_FOUND,
+    )
+    assert session.tool_specs == {}
+
+
+def test_the_same_spec_written_twice_is_stored_once():
+    # normalization: equal content hashes to the same id, so the second write
+    # finds the row already filed and adds nothing.
+    session = make_session(
+        id="s",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te2")
+
+    appended = ledger.append(
+        lambda entry_id, parent_id, ts: ToolExecution(
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(id="tc2", name="add"),
+            tool_spec=spec("add"),
+        )
+    )
+
+    assert appended == ToolExecution(
+        id="te2",
+        parent_id="te1",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="add"),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+    )
+    assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+
+
+def test_put_entry_re_stamps_a_spec_replaced_between_writes():
+    # the id is recomputed on every write and never short-circuited on an
+    # already-set one: middleware rewrote the spec, and a skipped recompute
+    # would leave the execution pointing at the previous version.
+    session = make_session(
+        id="s",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+    replacement = session.entries["te1"].model_copy(
+        update={"tool_spec": REVISED_ADD_SPEC, "updated_at": 1000},
+    )
+
+    ledger.put_entry(replacement)
+
+    assert session.entries["te1"] == ToolExecution(
+        id="te1",
+        created_at=0,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+        tool_spec=REVISED_ADD_SPEC,
+        tool_spec_id=REVISED_ADD_SPEC_ID,
+        updated_at=1000,
+    )
+    # append-only: the superseded spec stays filed, so every older execution
+    # referencing it still resolves.
+    assert session.tool_specs == {
+        ADD_SPEC_ID: ADD_SPEC,
+        REVISED_ADD_SPEC_ID: REVISED_ADD_SPEC,
+    }
+
+
+def test_put_entry_drops_the_reference_when_the_spec_is_removed():
+    # the mirror of the re-stamp: a dangling id is the one shape a session
+    # refuses to load with, so clearing the spec must clear the id too.
+    session = make_session(
+        id="s",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+    replacement = session.entries["te1"].model_copy(update={"tool_spec": None})
+
+    ledger.put_entry(replacement)
+
+    assert session.entries["te1"] == ToolExecution(
+        id="te1",
+        created_at=0,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+    )
+    assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+
+
+def test_refresh_entry_files_a_spec_that_arrives_late():
+    # the fourth door: a recalculation pass hands back an execution whose spec
+    # was never filed, and it is filed and stamped here like anywhere else.
+    session = AgentSession(
+        id="s",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+    replacement = session.entries["te1"].model_copy(
+        update={"tool_spec": ADD_SPEC, "context_tokens": 5},
+    )
+
+    ledger.refresh_entry(replacement)
+
+    assert session.entries["te1"] == ToolExecution(
+        id="te1",
+        created_at=0,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        context_tokens=5,
+    )
+    assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+
+
 # ── prune: the single path-replacement door ────────────────────────────────────
 
 
 def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
@@ -902,7 +1224,7 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
                 created_at=1,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
                 started_at=1,
@@ -957,6 +1279,58 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
     # the original is untouched: still in the store, still indexed
     assert session.entries["te1"].status == ExecutionStatus.COMPLETED
     assert session.tool_executions == {"tc1": ["te1"]}
+
+
+def test_prune_is_not_a_tool_spec_door():
+    # the door that looks like one and deliberately is not: prune only ever
+    # writes a `PrunedEntry`, so the spec store keeps exactly the rows the
+    # precondition filed and the pruned execution keeps its own reference.
+    session = make_session(
+        id="s",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=0,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="3")]),
+                started_at=0,
+                ended_at=0,
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
+
+    ledger.prune(
+        "te1",
+        lambda entry_id, parent_id, ts: PrunedEntry(
+            id=entry_id,
+            parent_id=parent_id,
+            created_at=ts,
+            pruned_entry_type="tool_execution",
+            pruned_entry_id="te1",
+            content=[TextContent(text="[pruned]")],
+        ),
+    )
+
+    assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
+    assert session.entries["te1"] == ToolExecution(
+        id="te1",
+        created_at=0,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        started_at=0,
+        ended_at=0,
+    )
 
 
 def test_prune_rejects_a_missing_entry():
@@ -1037,7 +1411,7 @@ def test_prune_rejects_a_mismatched_pruned_entry_type():
 
 
 def test_prune_rejects_a_nonterminal_execution():
-    session = AgentSession(
+    session = make_session(
         id="s",
         entries={
             "te1": ToolExecution(
@@ -1045,7 +1419,7 @@ def test_prune_rejects_a_nonterminal_execution():
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
-                tool_spec=ToolSpec(name="add"),
+                tool_spec=spec("add"),
                 status=ExecutionStatus.RUNNING,
                 started_at=0,
             ),
@@ -1615,6 +1989,167 @@ def test_a_created_entry_with_no_id_raises_before_anything_is_written():
         )
 
     assert session == before
+
+
+# ── transition_conversation: the third tool-spec write door ───────────────────
+#
+# No ordinary tool call travels through this door, only a compaction plan that
+# carries or creates a `ToolExecution` — and it can arrive on ANY of the three
+# entry inputs, since `updates` and `created` are public `list[AnyEntry]`.
+
+# The transition shape with an answered tool call already on the path.
+TRANSITION_TOOL_SESSION = make_session(
+    id="s_transition_tool",
+    entries={
+        "te1": ToolExecution(
+            id="te1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add"),
+            tool_spec=spec("add"),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="3")]),
+            started_at=500,
+            ended_at=500,
+        ),
+        "ts_c": TurnStart(id="ts_c", parent_id="te1", created_at=600),
+        "cmp": CompactionEntry(
+            id="cmp",
+            parent_id="ts_c",
+            created_at=600,
+            source=CompactionSource.POLICY,
+            started_at=600,
+        ),
+    },
+    tool_executions={"tc1": ["te1"]},
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["te1", "ts_c", "cmp"],
+        created_at=500,
+        updated_at=600,
+        status=ConversationStatus.RUNNING,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def test_transition_files_the_spec_of_an_updated_execution():
+    session = TRANSITION_TOOL_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+    rewritten = session.entries["te1"].model_copy(
+        update={"tool_spec": REVISED_ADD_SPEC},
+    )
+
+    ledger.transition_conversation(
+        updates=[rewritten],
+        created=[],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "te1"],
+        ts=1000,
+    )
+
+    assert session.entries["te1"] == ToolExecution(
+        id="te1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add"),
+        tool_spec=REVISED_ADD_SPEC,
+        tool_spec_id=REVISED_ADD_SPEC_ID,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        started_at=500,
+        ended_at=500,
+    )
+    assert session.tool_specs == {
+        ADD_SPEC_ID: ADD_SPEC,
+        REVISED_ADD_SPEC_ID: REVISED_ADD_SPEC,
+    }
+
+
+def test_transition_files_the_spec_of_a_created_execution():
+    session = TRANSITION_TOOL_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+    minted = ToolExecution(
+        id="te2",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="multiply"),
+        tool_spec=MULTIPLY_SPEC,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="12")]),
+        started_at=1000,
+        ended_at=1000,
+    )
+
+    ledger.transition_conversation(
+        updates=[],
+        created=[minted],
+        closing=CLOSING.model_copy(deep=True),
+        nodes=["cmp", "te2"],
+        ts=1000,
+    )
+
+    assert session.entries["te2"] == ToolExecution(
+        id="te2",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="multiply"),
+        tool_spec=MULTIPLY_SPEC,
+        tool_spec_id=MULTIPLY_SPEC_ID,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="12")]),
+        started_at=1000,
+        ended_at=1000,
+    )
+    assert session.tool_specs == {
+        ADD_SPEC_ID: ADD_SPEC,
+        MULTIPLY_SPEC_ID: MULTIPLY_SPEC,
+    }
+
+
+def test_transition_files_the_spec_of_a_closing_execution():
+    # `closing` is typed `AnyEntry | None`, so the helper runs over it too —
+    # an execution handed in as the outgoing path's last node is filed exactly
+    # like one on `updates` or `created`.
+    session = TRANSITION_TOOL_SESSION.model_copy(deep=True)
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
+    closing = ToolExecution(
+        id="te2",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="multiply"),
+        tool_spec=MULTIPLY_SPEC,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="12")]),
+        started_at=1000,
+        ended_at=1000,
+    )
+
+    ledger.transition_conversation(
+        updates=[],
+        created=[],
+        closing=closing,
+        nodes=["cmp"],
+        ts=1000,
+    )
+
+    assert session.entries["te2"] == ToolExecution(
+        id="te2",
+        created_at=1000,
+        tool_call_id="tc2",
+        raw_tool_call=ToolCall(id="tc2", name="multiply"),
+        tool_spec=MULTIPLY_SPEC,
+        tool_spec_id=MULTIPLY_SPEC_ID,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="12")]),
+        started_at=1000,
+        ended_at=1000,
+    )
+    assert session.tool_specs == {
+        ADD_SPEC_ID: ADD_SPEC,
+        MULTIPLY_SPEC_ID: MULTIPLY_SPEC,
+    }
+    assert session.conversation_history[-1].nodes == ["te1", "ts_c", "cmp", "te2"]
 
 
 # ── open_compaction_entry: is there a compaction to RESUME? ───────────────────

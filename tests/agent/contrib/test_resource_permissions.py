@@ -1,8 +1,15 @@
 """Self-scoped tests for `luca.agent.contrib.resource_permissions`.
 
-Everything outside the package is an invariant: no runner, no session, no
-engine. Each test is GIVEN a known strategy state (mode + match mode + rules
-+ recorded answers) and a known `ToolExecution` literal, WHEN one call
+Everything outside the package is an invariant: no runner, no engine, and one
+inert `AgentSession` literal. Both package entry points now take the live
+session first — `PermissionStrategy.decide(session, tool_execution)` and the
+mixin's `get_approval_context(args, session)` — but the package itself reads
+NOTHING from it: the strategy ignores it, and the mixin only hands it through
+to the tool's `build_permission_requests` (asserted once, an invariant
+everywhere else).
+
+Each test is GIVEN a known strategy state (mode + match mode + rules +
+recorded answers) and a known `ToolExecution` literal, WHEN one call
 (`decide` / `apply_answer` / `add_rule` / the mixin's `get_approval_context`),
 THEN one asserted outcome. `ApprovalDecision.created_at` self-stamps
 wall-clock, so decide() asserts read `(decision, metadata)` instead of the
@@ -26,24 +33,41 @@ from luca.agent.contrib.resource_permissions import (
     ToolKindRule,
     ToolRule,
 )
+from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
+    AgentSession,
     ApprovalOption,
+    Conversation,
     ExecutionStatus,
-    LLMConfig,
-    Tool,
+    SessionConfig,
     ToolCall,
-    ToolContext,
     ToolExecution,
     ToolKind,
-    ToolSpec,
 )
+from tests.agent.scenarios import MODEL, spec
+
+# The session handed to every entry point. Inert by design — nothing in the
+# package reads it — so it stays one shared literal rather than a per-test one.
+SESSION = AgentSession(
+    id="s_permissions",
+    active_conversation=Conversation(
+        id="c1",
+        nodes=[],
+        created_at=500,
+        updated_at=500,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
 
 # ── execution literals (created_at=500, matching tests/agent/scenarios.py) ────
 # The strategy reads the tool NAME from `raw_tool_call`, the KIND from the
 # resolved `tool_spec` snapshot, and the approval requests — each a list of
 # (permission, resource) pairs plus suggested answer options — from the
 # `{"requests": [...]}` dict `SimpleToolRegistry` stores under
-# `extras["approval_context"]`.
+# `extras["approval_context"]`. These executions stand alone — they are never
+# put in a session — so each carries an inline `tool_spec` and no
+# `tool_spec_id`.
 
 
 def _pair(permission: str, resource: str | None) -> dict:
@@ -59,7 +83,7 @@ READ_EXECUTION = ToolExecution(
         name="read_file",
         arguments={"path": "/etc/hosts"},
     ),
-    tool_spec=ToolSpec(name="read_file", tool_kind=ToolKind.READ),
+    tool_spec=spec("read_file", tool_kind=ToolKind.READ),
     extras={
         "approval_context": {
             "requests": [
@@ -88,7 +112,7 @@ SIBLING_EXECUTION = ToolExecution(
         name="read_file",
         arguments={"path": "/etc/passwd"},
     ),
-    tool_spec=ToolSpec(name="read_file", tool_kind=ToolKind.READ),
+    tool_spec=spec("read_file", tool_kind=ToolKind.READ),
     extras={
         "approval_context": {
             "requests": [
@@ -112,7 +136,7 @@ MULTI_RESOURCE_EXECUTION = ToolExecution(
         name="read_file",
         arguments={"paths": ["/etc/hosts", "/tmp/scratch"]},
     ),
-    tool_spec=ToolSpec(name="read_file", tool_kind=ToolKind.READ),
+    tool_spec=spec("read_file", tool_kind=ToolKind.READ),
     extras={
         "approval_context": {
             "requests": [
@@ -139,7 +163,7 @@ SWAP_EXECUTION = ToolExecution(
         name="swap_files",
         arguments={"from": "/src/main.py", "to": "/src/new_main.py"},
     ),
-    tool_spec=ToolSpec(name="swap_files", tool_kind=ToolKind.EDIT),
+    tool_spec=spec("swap_files", tool_kind=ToolKind.EDIT),
     extras={
         "approval_context": {
             "requests": [
@@ -174,7 +198,7 @@ RESOURCELESS_EXECUTION = ToolExecution(
     created_at=500,
     tool_call_id="c_add",
     raw_tool_call=ToolCall(id="c_add", name="add", arguments={"a": 1, "b": 2}),
-    tool_spec=ToolSpec(name="add"),
+    tool_spec=spec("add"),
     extras={},
     status=ExecutionStatus.PENDING,
 )
@@ -188,7 +212,7 @@ EMPTY_REQUEST_EXECUTION = ToolExecution(
         name="apply_patch",
         arguments={"patch_text": "nope"},
     ),
-    tool_spec=ToolSpec(name="apply_patch", tool_kind=ToolKind.EDIT),
+    tool_spec=spec("apply_patch", tool_kind=ToolKind.EDIT),
     extras={
         "approval_context": {
             "requests": [
@@ -209,7 +233,7 @@ EMPTY_REQUEST_EXECUTION = ToolExecution(
 
 async def test_ask_mode_without_rules_leaves_resourceful_call_pending():
     strategy = PermissionStrategy(mode=PermissionMode.ASK)
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -218,7 +242,7 @@ async def test_ask_mode_without_rules_leaves_resourceful_call_pending():
 
 async def test_ask_mode_without_rules_leaves_resourceless_call_pending():
     strategy = PermissionStrategy(mode=PermissionMode.ASK)
-    decision = await strategy.decide(RESOURCELESS_EXECUTION)
+    decision = await strategy.decide(SESSION, RESOURCELESS_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -227,7 +251,7 @@ async def test_ask_mode_without_rules_leaves_resourceless_call_pending():
 
 async def test_yolo_mode_promotes_unresolved_to_allow():
     strategy = PermissionStrategy(mode=PermissionMode.YOLO)
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "mode"},
@@ -236,7 +260,7 @@ async def test_yolo_mode_promotes_unresolved_to_allow():
 
 async def test_auto_mode_promotes_unresolved_to_allow():
     strategy = PermissionStrategy(mode=PermissionMode.AUTO)
-    decision = await strategy.decide(RESOURCELESS_EXECUTION)
+    decision = await strategy.decide(SESSION, RESOURCELESS_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "mode"},
@@ -256,7 +280,7 @@ async def test_explicit_deny_rule_blocks_even_in_yolo_mode():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "rule"},
@@ -279,7 +303,7 @@ async def test_tool_rule_glob_allows_matching_pair():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -299,7 +323,7 @@ async def test_tool_rule_requires_matching_permission():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -320,7 +344,7 @@ async def test_relaxed_match_mode_ignores_the_rule_tool_name():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -342,7 +366,7 @@ async def test_strict_match_mode_requires_the_rule_tool_name():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -364,7 +388,7 @@ async def test_strict_match_mode_matches_the_calling_tool():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -385,7 +409,7 @@ async def test_strict_match_mode_treats_none_tool_name_as_any_tool():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -412,7 +436,7 @@ async def test_last_matching_rule_wins():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "rule"},
@@ -424,7 +448,7 @@ async def test_tool_kind_rule_matches_by_kind():
         mode=PermissionMode.ASK,
         rules=[ToolKindRule(tool_kind=ToolKind.READ, decision=ApprovalOption.ALLOW)],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "kind_default"},
@@ -441,7 +465,7 @@ async def test_resourceless_call_matches_a_none_resource_rule_by_tool_name():
             ),
         ],
     )
-    decision = await strategy.decide(RESOURCELESS_EXECUTION)
+    decision = await strategy.decide(SESSION, RESOURCELESS_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -458,7 +482,7 @@ async def test_resourceless_rule_does_not_cover_resourceful_call():
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -478,7 +502,7 @@ async def test_glob_rule_does_not_cover_resourceless_call():
             ),
         ],
     )
-    decision = await strategy.decide(RESOURCELESS_EXECUTION)
+    decision = await strategy.decide(SESSION, RESOURCELESS_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -495,7 +519,7 @@ async def test_empty_resources_request_degrades_to_the_tool_name_pair():
             ),
         ],
     )
-    decision = await strategy.decide(EMPTY_REQUEST_EXECUTION)
+    decision = await strategy.decide(SESSION, EMPTY_REQUEST_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -525,7 +549,7 @@ async def test_deny_on_one_pair_beats_allow_on_another():
             ),
         ],
     )
-    decision = await strategy.decide(MULTI_RESOURCE_EXECUTION)
+    decision = await strategy.decide(SESSION, MULTI_RESOURCE_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "rule"},
@@ -545,7 +569,7 @@ async def test_one_unmatched_pair_keeps_the_call_pending():
             ),
         ],
     )
-    decision = await strategy.decide(MULTI_RESOURCE_EXECUTION)
+    decision = await strategy.decide(SESSION, MULTI_RESOURCE_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -565,7 +589,7 @@ async def test_covering_only_one_request_keeps_the_call_pending():
             ),
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -592,7 +616,7 @@ async def test_rules_covering_every_request_allow_the_call():
             ),
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -619,7 +643,7 @@ async def test_deny_rule_on_one_request_denies_the_call():
             ),
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "rule"},
@@ -645,7 +669,7 @@ async def test_approve_once_with_the_exact_option_allows_the_call():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
@@ -685,7 +709,7 @@ async def test_approve_once_does_not_cover_a_sibling_call():
             )
         ],
     )
-    decision = await strategy.decide(SIBLING_EXECUTION)
+    decision = await strategy.decide(SESSION, SIBLING_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -707,7 +731,7 @@ async def test_approve_once_with_a_glob_option_covers_the_requirement():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
@@ -729,7 +753,7 @@ async def test_approve_once_with_a_glob_option_still_does_not_leak_to_a_sibling(
             )
         ],
     )
-    decision = await strategy.decide(SIBLING_EXECUTION)
+    decision = await strategy.decide(SESSION, SIBLING_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -751,7 +775,7 @@ async def test_approve_once_covering_one_pair_leaves_the_call_pending():
             )
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -781,7 +805,7 @@ async def test_answers_covering_every_pair_in_one_call_allow_the_call():
             ),
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
@@ -816,7 +840,7 @@ async def test_answers_accumulate_across_apply_answer_calls():
             )
         ],
     )
-    decision = await strategy.decide(SWAP_EXECUTION)
+    decision = await strategy.decide(SESSION, SWAP_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
@@ -838,7 +862,7 @@ async def test_deny_once_denies_the_call():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "user"},
@@ -868,7 +892,7 @@ async def test_a_deny_verdict_beats_a_coexisting_allow_verdict_on_the_same_pair(
             ),
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "user"},
@@ -904,8 +928,8 @@ async def test_an_explicit_deny_pins_the_call_against_a_rule_from_the_same_pause
             )
         ],
     )
-    sibling = await strategy.decide(SIBLING_EXECUTION)
-    read = await strategy.decide(READ_EXECUTION)
+    sibling = await strategy.decide(SESSION, SIBLING_EXECUTION)
+    read = await strategy.decide(SESSION, READ_EXECUTION)
     assert (
         (sibling.decision, sibling.metadata),
         (read.decision, read.metadata),
@@ -968,7 +992,7 @@ async def test_approve_always_resolves_the_call_via_the_written_rule():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "rule"},
@@ -991,7 +1015,7 @@ async def test_deny_always_writes_a_deny_rule_that_blocks_the_call():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert strategy.rules == [
         ToolRule(
             tool_name="read_file",
@@ -1024,7 +1048,7 @@ async def test_deny_always_blocks_even_in_yolo_mode():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.DENY,
         {"via": "rule"},
@@ -1047,7 +1071,7 @@ async def test_approve_always_on_a_resourceless_call_writes_a_none_resource_rule
             )
         ],
     )
-    decision = await strategy.decide(RESOURCELESS_EXECUTION)
+    decision = await strategy.decide(SESSION, RESOURCELESS_EXECUTION)
     assert strategy.rules == [
         ToolRule(
             tool_name="add",
@@ -1076,7 +1100,7 @@ async def test_a_non_covering_answer_leaves_the_call_pending():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.PENDING,
         {"via": "mode"},
@@ -1098,7 +1122,7 @@ async def test_a_custom_option_the_tool_never_emitted_is_accepted():
             )
         ],
     )
-    decision = await strategy.decide(READ_EXECUTION)
+    decision = await strategy.decide(SESSION, READ_EXECUTION)
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
@@ -1178,7 +1202,7 @@ class StubReadTool(ResourcePermissionToolMixin, Tool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1207,7 +1231,7 @@ class StubSwapTool(ResourcePermissionToolMixin, Tool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1234,7 +1258,7 @@ class NoOptionsTool(ResourcePermissionToolMixin, Tool):
     def build_permission_requests(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1251,17 +1275,38 @@ class UnimplementedTool(ResourcePermissionToolMixin, Tool):
     Args = PathArgs
 
 
-def tool_context() -> ToolContext:
-    return ToolContext(
-        session_id="s1",
-        model=LLMConfig(model="test-model", provider="faux"),
-    )
+class SessionCapturingTool(ResourcePermissionToolMixin, Tool):
+    """Records what the mixin hands its one override point — the mixin is the
+    only thing between the registry's `get_approval_context(args, session)`
+    call and the tool's `build_permission_requests`."""
+
+    name = "capture"
+    description = "Records the arguments and session it was built with."
+    Args = PathArgs
+    tool_kind = ToolKind.READ
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[dict, AgentSession]] = []
+
+    def build_permission_requests(
+        self,
+        args: dict,
+        session: AgentSession,
+    ) -> list[PermissionRequest]:
+        self.seen.append((args, session))
+        return [
+            PermissionRequest(
+                resources=[
+                    ResourcePermission(permission="read", resource=args["path"]),
+                ],
+            )
+        ]
 
 
 async def test_mixin_serializes_the_typed_requests_to_the_wire_dict():
     context = await StubReadTool().get_approval_context(
         {"path": "/etc/hosts"},
-        tool_context(),
+        SESSION,
     )
     assert context == {
         "requests": [
@@ -1281,10 +1326,16 @@ async def test_mixin_serializes_the_typed_requests_to_the_wire_dict():
     }
 
 
+async def test_mixin_hands_the_arguments_and_the_live_session_to_the_tool():
+    tool = SessionCapturingTool()
+    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION)
+    assert tool.seen == [({"path": "/etc/hosts"}, SESSION)]
+
+
 async def test_mixin_preserves_the_request_order():
     context = await StubSwapTool().get_approval_context(
         {"source": "/src/a.py", "target": "/src/b.py"},
-        tool_context(),
+        SESSION,
     )
     assert [request["metadata"]["preview"] for request in context["requests"]] == [
         "Read /src/a.py",
@@ -1295,7 +1346,7 @@ async def test_mixin_preserves_the_request_order():
 async def test_mixin_defaults_answer_options_and_metadata_in_the_dump():
     context = await NoOptionsTool().get_approval_context(
         {"path": "/srv"},
-        tool_context(),
+        SESSION,
     )
     assert context == {
         "requests": [
@@ -1312,14 +1363,14 @@ async def test_mixin_without_build_permission_requests_raises():
     with pytest.raises(NotImplementedError):
         await UnimplementedTool().get_approval_context(
             {"path": "/etc/hosts"},
-            tool_context(),
+            SESSION,
         )
 
 
 async def test_mixin_output_hydrates_and_drives_the_strategy():
     context = await StubSwapTool().get_approval_context(
         {"source": "/src/a.py", "target": "/src/b.py"},
-        tool_context(),
+        SESSION,
     )
     execution = ToolExecution(
         id="x_mixin",
@@ -1345,10 +1396,10 @@ async def test_mixin_output_hydrates_and_drives_the_strategy():
         ResourcePermission(permission="write", resource="/src/*"),
         ApprovalOption.ALLOW,
     )
-    decision = await strategy.decide(execution)
+    decision = await strategy.decide(SESSION, execution)
     assert strategy.permission_requests(execution) == StubSwapTool().build_permission_requests(
         {"source": "/src/a.py", "target": "/src/b.py"},
-        tool_context(),
+        SESSION,
     )
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,

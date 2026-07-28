@@ -6,11 +6,19 @@ Pure value-object checks — full-object asserts and JSON round-trips, no logic,
 no helpers. Locks the execution-lifecycle vocabulary (`ExecutionStatus`), the
 orthogonal approval state (`ApprovalStatus` + the ApprovalDecision audit log),
 the structured `ToolExecutionError`, and the `ToolExecution` record with its
-`raw_tool_call` / optional `tool_spec` split and lifecycle timestamps. The
-core carries NO permission vocabulary beyond these: no modes, no rules, no
-intents. Cross-field combinations are framework conventions, not validators —
-the model must accept what application middleware authors.
+`raw_tool_call` / `tool_spec_id` split and lifecycle timestamps. The core
+carries NO permission vocabulary beyond these: no modes, no rules, no intents.
+Cross-field combinations are framework conventions, not validators — the model
+must accept what application middleware authors.
+
+Also locks tool-spec NORMALIZATION, which is the data model's only piece of
+behavior: `ToolSpec.spec_id()` (the pinned content hash), the shared
+`AgentSession.tool_specs` store, and the construction-time restore that hands
+every execution referencing an id the one stored instance — plus the two
+shapes a session refuses to load.
 """
+
+import hashlib
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -53,29 +61,203 @@ from luca.agent.core.models import (
     UserMessage,
     is_compaction_bracket,
 )
-from tests.agent.scenarios import MODEL
+from tests.agent.scenarios import (
+    ADD_SPEC,
+    EMPTY_SCHEMA,
+    MODEL,
+    READ_FILE_SPEC,
+    make_session,
+)
+
+# The same tool called twice in one session — the precondition for the
+# normalization tests: two executions, one distinct spec between them.
+REPEATED_CALL_SESSION = make_session(
+    id="s_repeated",
+    entries={
+        "te1": ToolExecution(
+            id="te1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=ADD_SPEC,
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="3")]),
+            started_at=500,
+            ended_at=500,
+            updated_at=500,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            parent_id="te1",
+            created_at=600,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 3, "b": 4}),
+            tool_spec=ADD_SPEC,
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="7")]),
+            started_at=600,
+            ended_at=600,
+            updated_at=600,
+        ),
+    },
+    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["te1", "te2"],
+        created_at=500,
+        updated_at=600,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+# The same tool one release later: only the wording of `description` changed.
+REPHRASED_ADD_SPEC = ADD_SPEC.model_copy(update={"description": "Add two integers."})
+
+# A spec carrying every optional identity field — the historical snapshot an
+# archived conversation still renders itself from.
+BASH_SPEC = ToolSpec(
+    name="bash",
+    description="Run a shell command.",
+    input_schema={
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+        "required": ["command"],
+    },
+    tool_kind=ToolKind.EXECUTE,
+    namespace="builtin.shell_tools",
+    version="0.0.1",
+    timeout_in_ms=30_000,
+)
 
 
 def test_tool_spec_defaults_to_other_kind_and_null_namespace_version():
-    assert ToolSpec(name="bash") == ToolSpec(
+    assert ToolSpec(
         name="bash",
-        description=None,
+        description="Run a shell command.",
+        input_schema=EMPTY_SCHEMA,
+    ) == ToolSpec(
+        name="bash",
+        description="Run a shell command.",
+        input_schema=EMPTY_SCHEMA,
         metadata=None,
         tool_kind=ToolKind.OTHER,
         namespace=None,
         version=None,
+        timeout_in_ms=None,
     )
+
+
+def test_tool_spec_requires_a_description_and_an_input_schema():
+    # both are what the model is shown; the client's wire tool type rejects
+    # null for either
+    with pytest.raises(ValidationError):
+        ToolSpec(name="bash")
+
+
+def test_tool_spec_rejects_a_null_input_schema():
+    # "takes no arguments" is the empty object schema, not the absence of one
+    with pytest.raises(ValidationError):
+        ToolSpec(name="bash", description="Run a shell command.", input_schema=None)
 
 
 def test_tool_spec_carries_no_invocation_arguments():
     # arguments belong to ToolExecution.raw_tool_call, not the tool snapshot
     with pytest.raises(ValidationError):
-        ToolSpec(name="bash", parameters={"command": "ls"})
+        ToolSpec(
+            name="bash",
+            description="Run a shell command.",
+            input_schema=EMPTY_SCHEMA,
+            parameters={"command": "ls"},
+        )
 
 
 def test_tool_spec_forbids_unknown_fields():
     with pytest.raises(ValidationError):
-        ToolSpec(name="bash", bogus="nope")
+        ToolSpec(
+            name="bash",
+            description="Run a shell command.",
+            input_schema=EMPTY_SCHEMA,
+            bogus="nope",
+        )
+
+
+def test_a_tool_taking_no_arguments_round_trips_with_the_empty_object_schema():
+    no_args = ToolSpec(
+        name="ping",
+        description="Ping the server.",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    reloaded = ToolSpec.model_validate_json(no_args.model_dump_json())
+
+    assert reloaded == no_args
+    # and it still keys the same row in the store after the round trip
+    assert reloaded.spec_id() == no_args.spec_id()
+
+
+# ── spec_id: the pinned content-derived identity ──────────────────────────────
+
+
+def test_spec_id_is_the_sha256_hex_of_the_canonical_json():
+    executable = ToolSpec(
+        name="bash",
+        description="Run a shell command.",
+        input_schema=EMPTY_SCHEMA,
+        tool_kind=ToolKind.EXECUTE,
+    )
+
+    # the exact bytes the rule pins: recursively sorted keys, no whitespace,
+    # enums as their string values, None-valued fields kept in the payload
+    canonical = (
+        '{"description":"Run a shell command.",'
+        '"input_schema":{"properties":{},"type":"object"},'
+        '"metadata":null,"name":"bash","namespace":null,'
+        '"timeout_in_ms":null,"tool_kind":"execute","version":null}'
+    )
+
+    assert executable.spec_id() == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_two_separately_built_identical_specs_share_one_id():
+    assert (
+        ToolSpec(
+            name="add",
+            description="Add two numbers.",
+            input_schema=EMPTY_SCHEMA,
+        ).spec_id()
+        == ToolSpec(
+            name="add",
+            description="Add two numbers.",
+            input_schema=EMPTY_SCHEMA,
+        ).spec_id()
+    )
+
+
+def test_input_schema_key_order_does_not_affect_the_spec_id():
+    # a dict literal remembers its insertion order; the canonical rendering
+    # sorts keys recursively, so a reordered schema is the same tool
+    assert (
+        ToolSpec(
+            name="add",
+            description="Add two numbers.",
+            input_schema={
+                "type": "object",
+                "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+            },
+        ).spec_id()
+        == ToolSpec(
+            name="add",
+            description="Add two numbers.",
+            input_schema={
+                "properties": {"b": {"type": "integer"}, "a": {"type": "integer"}},
+                "type": "object",
+            },
+        ).spec_id()
+    )
+
+
+def test_a_reworded_description_mints_a_new_spec_id():
+    assert ADD_SPEC.spec_id() != REPHRASED_ADD_SPEC.spec_id()
 
 
 def test_tool_kind_members():
@@ -171,25 +353,46 @@ def test_tool_execution_error_forbids_unknown_fields():
 
 
 def test_tool_execution_defaults_to_birth_state():
-    execution = ToolExecution(
+    assert ToolExecution(
         id="te1",
         created_at=1,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1}),
+    ) == ToolExecution(
+        id="te1",
+        parent_id=None,
+        created_at=1,
+        type="tool_execution",
+        context_tokens=0,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        tool_spec=None,
+        tool_spec_id=None,
+        extras={},
+        approval_status=None,
+        approval_decisions=[],
+        status=ExecutionStatus.PENDING,
+        result=None,
+        error=None,
+        started_at=None,
+        ended_at=None,
+        cancel_signalled_at=None,
+        updated_at=None,
+        is_doom_loop_flagged=False,
     )
 
-    assert execution.tool_spec is None
-    assert execution.extras == {}
-    assert execution.approval_status is None
-    assert execution.approval_decisions == []
-    assert execution.status == ExecutionStatus.PENDING
-    assert execution.result is None
-    assert execution.error is None
-    assert execution.started_at is None
-    assert execution.ended_at is None
-    assert execution.cancel_signalled_at is None
-    assert execution.updated_at is None
-    assert execution.is_doom_loop_flagged is False
+
+def test_an_uncommitted_registry_draft_may_carry_a_spec_with_no_id():
+    draft = ToolExecution(
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+    )
+
+    # refusing an unstamped spec is a SESSION rule: a birth draft has no
+    # identity yet, and the ledger's write door is what files it and stamps
+    # the id
+    assert (draft.id, draft.tool_spec, draft.tool_spec_id) == (None, ADD_SPEC, None)
 
 
 def test_tool_execution_requires_raw_tool_call():
@@ -248,12 +451,8 @@ def test_versioned_tool_execution_round_trips_through_json():
             name="bash",
             arguments={"command": "pytest -x -q"},
         ),
-        tool_spec=ToolSpec(
-            name="bash",
-            tool_kind=ToolKind.EXECUTE,
-            namespace="builtin.shell_tools",
-            version="0.0.1",
-        ),
+        tool_spec=BASH_SPEC,
+        tool_spec_id=BASH_SPEC.spec_id(),
         extras={
             "approval_context": {
                 "resources": ["pytest -x -q"],
@@ -294,7 +493,8 @@ def test_failed_tool_execution_round_trips_with_structured_error():
             name="read_file",
             arguments={"encoding": "utf-16"},
         ),
-        tool_spec=ToolSpec(name="read_file"),
+        tool_spec=READ_FILE_SPEC,
+        tool_spec_id=READ_FILE_SPEC.spec_id(),
         status=ExecutionStatus.INVALID,
         error=ToolExecutionError(
             error_type="InvalidToolArguments",
@@ -313,6 +513,183 @@ def test_failed_tool_execution_round_trips_with_structured_error():
         ended_at=1780495331220,
     )
     assert ToolExecution.model_validate_json(execution.model_dump_json()) == execution
+
+
+# ── tool-spec normalization inside a session ─────────────────────────────────
+
+
+def test_the_same_tool_called_twice_is_stored_once():
+    assert REPEATED_CALL_SESSION.tool_specs == {ADD_SPEC.spec_id(): ADD_SPEC}
+
+
+def test_a_serialized_session_carries_no_inline_tool_spec():
+    dumped = REPEATED_CALL_SESSION.model_dump(mode="json")
+
+    # the whole persisted shape of one execution — `tool_spec` is gone and the
+    # id is what stays behind (`te2` is the same shape one call later)
+    assert dumped["entries"]["te1"] == {
+        "id": "te1",
+        "parent_id": None,
+        "created_at": 500,
+        "type": "tool_execution",
+        "context_tokens": 0,
+        "tool_call_id": "tc1",
+        "raw_tool_call": {
+            "type": "tool_call",
+            "id": "tc1",
+            "name": "add",
+            "arguments": {"a": 1, "b": 2},
+        },
+        "tool_spec_id": ADD_SPEC.spec_id(),
+        "extras": {},
+        "approval_status": None,
+        "approval_decisions": [],
+        "status": "completed",
+        "result": {
+            "content": [{"type": "text", "text": "3"}],
+            "metadata": {},
+            "is_error": False,
+        },
+        "error": None,
+        "started_at": 500,
+        "ended_at": 500,
+        "cancel_signalled_at": None,
+        "updated_at": 500,
+        "is_doom_loop_flagged": False,
+    }
+
+
+def test_a_session_round_trip_restores_every_tool_spec_by_reference():
+    reloaded = AgentSession.model_validate_json(REPEATED_CALL_SESSION.model_dump_json())
+
+    assert reloaded == REPEATED_CALL_SESSION
+    # both executions hold the ONE stored instance, not a copy each
+    assert reloaded.entries["te1"].tool_spec is reloaded.tool_specs[ADD_SPEC.spec_id()]
+    assert reloaded.entries["te2"].tool_spec is reloaded.tool_specs[ADD_SPEC.spec_id()]
+
+
+def test_a_standalone_tool_execution_still_serializes_its_spec_inline():
+    execution = ToolExecution(
+        id="te1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        started_at=500,
+        ended_at=500,
+        updated_at=500,
+    )
+
+    # nothing restores an execution forwarded on its own (a lifecycle event
+    # reaching a log sink holds no session), so an equal round trip is the
+    # proof the spec travelled with it
+    assert ToolExecution.model_validate_json(execution.model_dump_json()) == execution
+
+
+def test_a_dangling_tool_spec_id_refuses_to_load():
+    # entries copied between sessions without their specs, a truncated file
+    with pytest.raises(ValidationError):
+        AgentSession(
+            id="s_dangling",
+            entries={
+                "te1": ToolExecution(
+                    id="te1",
+                    created_at=500,
+                    tool_call_id="tc1",
+                    raw_tool_call=ToolCall(id="tc1", name="add"),
+                    tool_spec_id=ADD_SPEC.spec_id(),
+                ),
+            },
+            tool_executions={"tc1": ["te1"]},
+            tool_specs={},
+            active_conversation=Conversation(
+                id="c1",
+                nodes=["te1"],
+                created_at=500,
+                updated_at=500,
+            ),
+            session_config=SessionConfig(llm_config=MODEL),
+        )
+
+
+def test_a_pre_normalization_session_refuses_to_load():
+    # an inline spec with no id is a file written before normalization: it
+    # would load and run, then lose every spec on the first save
+    with pytest.raises(ValidationError):
+        AgentSession(
+            id="s_pre_normalization",
+            entries={
+                "te1": ToolExecution(
+                    id="te1",
+                    created_at=500,
+                    tool_call_id="tc1",
+                    raw_tool_call=ToolCall(id="tc1", name="add"),
+                    tool_spec=ADD_SPEC,
+                ),
+            },
+            tool_executions={"tc1": ["te1"]},
+            active_conversation=Conversation(
+                id="c1",
+                nodes=["te1"],
+                created_at=500,
+                updated_at=500,
+            ),
+            session_config=SessionConfig(llm_config=MODEL),
+        )
+
+
+def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec():
+    session = make_session(
+        id="s_two_versions",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=500,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                tool_spec=ADD_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="3")]),
+                started_at=500,
+                ended_at=500,
+                updated_at=500,
+            ),
+            "te2": ToolExecution(
+                id="te2",
+                parent_id="te1",
+                created_at=600,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 3, "b": 4}),
+                tool_spec=REPHRASED_ADD_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="7")]),
+                started_at=600,
+                ended_at=600,
+                updated_at=600,
+            ),
+        },
+        tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+        active_conversation=Conversation(
+            id="c1",
+            nodes=["te1", "te2"],
+            created_at=500,
+            updated_at=600,
+        ),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    reloaded = AgentSession.model_validate_json(session.model_dump_json())
+
+    # both rows survive — a stored spec is never rewritten in place
+    assert reloaded.tool_specs == {
+        ADD_SPEC.spec_id(): ADD_SPEC,
+        REPHRASED_ADD_SPEC.spec_id(): REPHRASED_ADD_SPEC,
+    }
+    assert reloaded.entries["te1"].tool_spec == ADD_SPEC
+    assert reloaded.entries["te2"].tool_spec == REPHRASED_ADD_SPEC
 
 
 def test_session_config_has_no_permission_state():

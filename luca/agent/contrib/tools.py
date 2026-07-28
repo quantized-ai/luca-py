@@ -1,20 +1,38 @@
-"""Agent-level Tool definitions — the runtime extension point.
+"""`Tool` — the ergonomic way to write a tool in Python.
 
-A `Tool` describes itself to the LLM (the adapter builds a `luca.client.Tool`
-from its `name` / `description` / `Args`), declares its classification
-`tool_kind`, and executes. This is the EXECUTION contract only: everything
-around it — resolution, argument validation, approval — is owned by the
-`ToolRegistry` the runner is constructed with (`tool_registry.py`).
+The CORE knows nothing about this module. Its only tool type is `ToolSpec`
+(`luca.agent.core.models`): plain, language-neutral, JSON-serializable data.
+`Tool` is contrib — a convenience for people whose tools live in this process
+and who would rather declare a Pydantic `Args` model than hand-write JSON
+Schema. A registry backed by a remote tool server never needs it.
 
-A registry drives each tool call: it snapshots the tool into a `ToolSpec`
-(including `timeout_in_ms`) at birth, validates the LLM-produced arguments
-against `Args`, and — only once the call is approved — calls `execute`.
-Subclasses cooperate by overriding `_execute` (the simple text path) or
-`execute` (for is_error / metadata / multi-block results).
+A `Tool` describes itself to the LLM (`name` / `description` / `Args`),
+declares its classification `tool_kind`, and executes. This is the EXECUTION
+contract only: everything around it — resolution, argument validation,
+approval — is owned by the `ToolRegistry` the runner is constructed with
+(`luca.agent.core.tool_registry`).
+
+A registry drives each tool call: it snapshots the tool into a `ToolSpec` via
+`get_tool_spec()` at birth, validates the LLM-produced arguments against
+`Args`, and — only once the call is approved — resolves and validates again in
+`prepare()` and returns a callable over `execute`. Subclasses cooperate by
+overriding `_execute` (the simple text path) or `execute` (for is_error /
+metadata / multi-block results).
+
+It lives here rather than inside a registry package because `resource_
+permissions`, `shell` and `memory` all build on `Tool` without going through
+any particular registry.
 
 `tool()` / `tool_class()` (bottom of this module) build a `Tool` on the fly
 from plain callables — convenience helpers for runtime-constructed tools.
 Subclassing `Tool` with an `Args` model stays the recommended mechanism.
+
+WHAT A TOOL RECEIVES. `execute` / `_execute` / the duck-typed
+`get_approval_context` take the live `AgentSession` — read `session.id` and
+`session.session_config.llm_config`. Treat it as READ-ONLY: the runner owns
+every write to session state. Per-run application state is not the framework's
+concern; a tool is application code and can hold its own references or read a
+`contextvars.ContextVar`.
 
 Cancellation & deadline contract. The runner races every execution against
 the run's `CancellationToken` (passed explicitly as the keyword-only
@@ -27,7 +45,10 @@ the run's `CancellationToken` (passed explicitly as the keyword-only
   `cancellation_token` and return early within the grace window:
   whatever it returns is its real result (say "cut short" in the content and
   choose `is_error` yourself).
-- Deadline expiry hard-cancels the same way — recorded TIMED_OUT.
+- Deadline expiry hard-cancels the same way — recorded TIMED_OUT. The
+  deadline bounds the BODY only: a tool configured with `timeout_in_ms=5000`
+  is NOT bounded end to end, since resolution, validation and approval
+  preflight all happen outside it.
 - Tools that spawn processes MUST kill their process group on
   `asyncio.CancelledError` (`start_new_session=True` + `os.killpg`) — the
   hard cancel for cancellation and timeout is identical. Blocking sync work
@@ -42,16 +63,23 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, create_model
 
-from .context import CancellationToken, ToolContext
-from .models import ExecutionResult, TextContent, ToolKind, ToolSpec
+from luca.agent.core import (
+    AgentSession,
+    CancellationToken,
+    ExecutionResult,
+    TextContent,
+    ToolKind,
+    ToolSpec,
+)
 
 
 class Tool:
     """Base tool. Subclasses set the `ClassVar`s and override `_execute`.
 
-    `Args` is a Pydantic model describing the call arguments; the adapter turns
-    it into the wire JSON schema. `tool_kind` / `namespace` / `version` feed the
-    `ToolSpec` snapshot so a saved conversation stays identifiable forever.
+    `Args` is a Pydantic model describing the call arguments; `get_tool_spec()`
+    turns it into the `input_schema` the model is shown. `tool_kind` /
+    `namespace` / `version` feed the `ToolSpec` snapshot so a saved
+    conversation stays identifiable forever.
     """
 
     name: ClassVar[str]
@@ -64,15 +92,26 @@ class Tool:
     # Per-tool execution deadline (ms), snapshotted into ToolSpec at birth.
     # Beats RuntimeConfig.tool_execution_timeout_in_ms; None defers to it;
     # -1 (Inf) disables. Expiry hard-cancels the call and records TIMED_OUT
-    # (resultless).
+    # (resultless). It bounds the BODY only.
     timeout_in_ms: ClassVar[int | None] = None
 
     def get_tool_spec(self) -> ToolSpec:
-        """A self-contained snapshot of this tool's identity, independent of
-        any argument payload (arguments live on `ToolExecution.raw_tool_call`)."""
+        """A self-contained snapshot of this tool's identity and its argument
+        schema, independent of any argument payload (arguments live on
+        `ToolExecution.raw_tool_call`).
+
+        `input_schema` is `Args.model_json_schema()` verbatim — byte-identical
+        to what the transport used to derive from `Args` at send time, so the
+        wire payload is unchanged; the schema is simply computed at snapshot
+        time instead.
+
+        It must stay a pure function of the tool DEFINITION: specs are stored
+        once per session under a content hash, so anything call-scoped here
+        would mint a new stored row on every call."""
         return ToolSpec(
             name=self.name,
             description=self.description,
+            input_schema=self.Args.model_json_schema(),
             tool_kind=self.tool_kind,
             namespace=self.namespace,
             version=self.version,
@@ -82,20 +121,19 @@ class Tool:
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         """The simple override point: do the work, return text for the LLM.
-        The `context` carries the session id and active model; the
-        `cancellation_token` may be checked cooperatively (V1 tools may
-        ignore it)."""
+        `session` is the live session — read-only; the `cancellation_token`
+        may be checked cooperatively (V1 tools may ignore it)."""
         raise NotImplementedError
 
     async def execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -104,7 +142,7 @@ class Tool:
         `ToolExecution` (`started_at` / `ended_at`), not on the result."""
         output = await self._execute(
             args,
-            context,
+            session,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -115,9 +153,9 @@ def tool_class(
     name: str,
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
-    execute: Callable[[dict, ToolContext], Awaitable[str]],
+    execute: Callable[[dict, AgentSession], Awaitable[str]],
     tool_kind: ToolKind = ToolKind.OTHER,
-    get_approval_context: Callable[[dict, ToolContext], Awaitable[dict]] | None = None,
+    get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
     class_attrs: dict[str, Any] | None = None,
 ) -> type[Tool]:
@@ -132,7 +170,7 @@ def tool_class(
       or a `create_model` field spec — `{"path": (str, Field(default="."))}` —
       compiled into an `extra="forbid"` model.
     - `execute` becomes `_execute`, the simple text path: an async
-      `(args, context) -> str`. Per-instance configuration belongs in the
+      `(args, session) -> str`. Per-instance configuration belongs in the
       callable's closure, not on the class.
     - `get_approval_context`, when given, overrides any inherited one —
       including a `bases` mixin's (class dict beats MRO); passing both is
@@ -162,8 +200,17 @@ def tool_class(
             **arguments,
         )
 
-    async def _execute(self: Tool, args: dict, context: ToolContext) -> str:
-        return await execute(args, context)
+    # Matches `Tool.execute`'s call exactly — including the keyword-only
+    # `cancellation_token` it always passes. The wrapped callable keeps the
+    # two-argument shape the factory advertises.
+    async def _execute(
+        self: Tool,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        return await execute(args, session)
 
     ns: dict[str, Any] = {
         "name": name,
@@ -177,9 +224,9 @@ def tool_class(
         async def _get_approval_context(
             self: Tool,
             args: dict,
-            context: ToolContext,
+            session: AgentSession,
         ) -> dict:
-            return await get_approval_context(args, context)
+            return await get_approval_context(args, session)
 
         ns["get_approval_context"] = _get_approval_context
 
@@ -198,13 +245,13 @@ def tool(
     name: str,
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
-    execute: Callable[[dict, ToolContext], Awaitable[str]],
+    execute: Callable[[dict, AgentSession], Awaitable[str]],
     tool_kind: ToolKind = ToolKind.OTHER,
-    get_approval_context: Callable[[dict, ToolContext], Awaitable[dict]] | None = None,
+    get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
     class_attrs: dict[str, Any] | None = None,
 ) -> Tool:
-    """Build a tool on the fly and return it ready to pass to the runner —
+    """Build a tool on the fly and return it ready to pass to a registry —
     `tool_class(...)()`. Same parameters and caveats as `tool_class`."""
     return tool_class(
         name=name,

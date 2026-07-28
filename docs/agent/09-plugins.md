@@ -45,8 +45,8 @@ plugin's registry.
 > ⚠️ **Construction-time only.** Hooks run once, inside
 > `PluginAgentSessionRunner.__init__` — never again. Per-call behavior (varying
 > the tool list by turn, injecting context per LLM call) belongs in your
-> registry's dynamic `get_tools`, [middleware](07-middleware.md), or a callable
-> prompt part.
+> registry's dynamic `get_tools(session)` ([03](03-tools.md)),
+> [middleware](07-middleware.md), or a callable prompt part.
 
 ## 2. Example: the memory plugin
 
@@ -64,7 +64,7 @@ parts that teach the model to use them:
 
 A `TodoItem` is `{"content": str, "status": "pending" | "in_progress" |
 "completed" | "cancelled"}` — validated by the tool's `Args` schema, so a bad
-status becomes a clean tool error.
+status is born INVALID and the body never runs.
 
 The plugin itself is the whole pattern in ~25 lines
 ([full source](../../luca/agent/contrib/memory/plugin.py)):
@@ -75,7 +75,7 @@ class MemoryPlugin:
         self.scratchpad_store: dict = {}
         self.todo_store: dict = {}
 
-    def get_tools(self):
+    def get_tools(self) -> list[Tool]:          # not a hook — see below
         return [
             ReadScratchPadTool(self.scratchpad_store),
             WriteScratchPadTool(self.scratchpad_store),
@@ -91,6 +91,12 @@ class MemoryPlugin:
     def get_system_prompt_parts(self, agent_session):
         return [SCRATCHPAD_SYSTEM_PROMPT, TODO_SYSTEM_PROMPT]
 ```
+
+> ⚠️ **Two different `get_tools`.** The plugin's takes no arguments and returns
+> contrib `Tool` objects (`from luca.agent.contrib.tools import Tool`) — a
+> convenience for anyone dropping these tools into their own registry. The
+> `ToolRegistry` contract's is `async get_tools(session) -> list[ToolSpec]`
+> ([03](03-tools.md)); a plugin never implements it, its registry does.
 
 The plugin owns the shared state (one store handed to each tool pair) — the
 piece you couldn't express by passing loose tools — and its Yolo registry means

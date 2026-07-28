@@ -39,15 +39,22 @@ from luca.agent.core.exceptions import (
 )
 from luca.agent.core.models import (
     AgentSession,
+    ApprovalDecision,
+    ApprovalOption,
+    ApprovalStatus,
     CompactionEntry,
     CompactionSource,
     Conversation,
     ConversationStatus,
+    ExecutionResult,
+    ExecutionStatus,
     ImageBase64,
     ImageContent,
     RuntimeConfig,
     SessionConfig,
     TextContent,
+    ToolCall,
+    ToolExecution,
     TurnFinish,
     TurnOutcome,
     Usage,
@@ -59,6 +66,7 @@ from luca.client.exceptions import ProviderAPIError, TimeoutError as ClientTimeo
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from luca.client.types import TextBlock, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
+    ADD_SPEC,
     CANCEL_PARKED_SESSION,
     CHEAP,
     CLEARED_SESSION,
@@ -69,15 +77,22 @@ from tests.agent.scenarios import (
     COMPACTION_SCHEDULED_SESSION,
     GATED_SESSION,
     MODEL,
+    MULTIPLY_SPEC,
     POST_COMPACTION_SESSION,
+    READ_FILE_SPEC,
     RICH_IDLE_SESSION,
     RICH_SESSION,
     DeterministicRunner,
     FakeCompactionPolicy,
+    spec,
 )
 
 SUMMARY = [TextContent(text="Everything so far, in brief.")]  # 28 chars → 7
 USAGE = UsageCounters(input=500, output=40, total_tokens=540)
+
+# The spec of a tool no session literal ever called, so a row for it in
+# `tool_specs` can only have been filed by the transition door itself.
+ECHO_SPEC = spec("echo")
 
 # `c1`'s path before any compaction, and the ids a fold-everything plan
 # replaces on the trailing-question session.
@@ -166,6 +181,25 @@ def frame_then_summarize(session, nodes, entry):
             entry.id,
             UserMessage(parts=[TextContent(text="[continue from here]")]),
             "a2",
+        ],
+        usage=USAGE,
+    )
+
+
+def fold_and_create_a_tool_execution(session, nodes, entry):
+    # a plan may invent any entry type, a `ToolExecution` included — the only
+    # way one ever reaches the transition door's `created` list
+    return CompactionPlan(
+        entry=entry.model_copy(update={"parts": SUMMARY, "llm_config": CHEAP}),
+        nodes=[
+            entry.id,
+            ToolExecution(
+                tool_call_id="tc9",
+                raw_tool_call=ToolCall(id="tc9", name="echo", arguments={}),
+                tool_spec=ECHO_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="echoed")]),
+            ),
         ],
         usage=USAGE,
     )
@@ -663,6 +697,96 @@ async def test_the_compacted_session_round_trips_through_json():
     )
 
     assert reloaded == runner.session
+
+
+async def test_a_created_tool_execution_has_its_spec_filed_and_survives_a_reload():
+    # `transition_conversation` is the tool-spec write door no ordinary tool
+    # call travels through: only a compaction plan puts an execution on it.
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        compaction_policy=FakeCompactionPolicy(
+            plan=fold_and_create_a_tool_execution,
+        ),
+        ids=["ts_c", "cmp", "te9", "tf_c", "c2"],
+        now=1000,
+    )
+
+    runner.schedule_compaction()
+    await runner.run()
+
+    reloaded = AgentSession.model_validate_json(
+        runner.session.model_dump_json(),
+    )
+
+    assert reloaded == runner.session
+    assert reloaded.entries["te9"] == ToolExecution(
+        id="te9",
+        parent_id="cmp",
+        created_at=1000,
+        context_tokens=1,  # "echoed" → 6 // 4
+        tool_call_id="tc9",
+        raw_tool_call=ToolCall(id="tc9", name="echo", arguments={}),
+        tool_spec=ECHO_SPEC,
+        tool_spec_id=ECHO_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="echoed")]),
+    )
+    assert reloaded.tool_specs == {
+        ADD_SPEC.spec_id(): ADD_SPEC,
+        READ_FILE_SPEC.spec_id(): READ_FILE_SPEC,
+        MULTIPLY_SPEC.spec_id(): MULTIPLY_SPEC,
+        ECHO_SPEC.spec_id(): ECHO_SPEC,
+    }
+
+
+async def test_an_updated_tool_execution_has_its_spec_filed_and_survives_a_reload():
+    # the same door, the other list: `updates` is public and typed
+    # `list[AnyEntry]`, so an execution can arrive there too — here with its
+    # spec REPLACED, which is also why the id is recomputed rather than kept.
+    session = RICH_IDLE_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(session, ids=["c2"], now=1000)
+    respecced = session.entries["te1"].model_copy(update={"tool_spec": ECHO_SPEC})
+
+    runner.ledger.transition_conversation(
+        updates=[respecced],
+        created=[],
+        closing=None,
+        nodes=["te1"],
+        ts=1000,
+    )
+
+    reloaded = AgentSession.model_validate_json(
+        runner.session.model_dump_json(),
+    )
+
+    assert reloaded == runner.session
+    assert reloaded.entries["te1"] == ToolExecution(
+        id="te1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ECHO_SPEC,
+        tool_spec_id=ECHO_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
+        ],
+        started_at=500,
+        ended_at=500,
+        updated_at=500,
+    )
+    # the displaced `add` row stays: `tool_specs` is append-only, and te0/te2/
+    # te3 still reference the other two
+    assert reloaded.tool_specs == {
+        ADD_SPEC.spec_id(): ADD_SPEC,
+        READ_FILE_SPEC.spec_id(): READ_FILE_SPEC,
+        MULTIPLY_SPEC.spec_id(): MULTIPLY_SPEC,
+        ECHO_SPEC.spec_id(): ECHO_SPEC,
+    }
 
 
 async def test_the_events_are_scheduled_started_finished():

@@ -24,6 +24,24 @@ built by the caller's callback and swaps it for the original node id IN
 PLACE — the original entry stays untouched in `session.entries` (and, for a
 tool execution, in the `tool_executions` index); only the path stops
 visiting it.
+`refresh_entry()` is the derived-field door: it replaces an entry in the
+store for a recalculation that changes nothing an application asked for (the
+runner's `recalculate_context_tokens()`), deliberately separate from
+`put_entry`, which is documented as the MUTATION door for the two mutable
+entry types.
+
+TOOL SPECS. Every door that puts a `ToolExecution` into the store files its
+`tool_spec` in `session.tool_specs` under the spec's content-derived id and
+stamps that id on the execution — `append` (an execution's birth),
+`put_entry` (every later update), `transition_conversation` (a compaction
+plan that carries or creates one), and `refresh_entry`. Writing the same spec
+again is a no-op: identical content produces an identical id. The id is
+recomputed on every write and never short-circuited when one is already set —
+an execution's spec can be replaced between writes (middleware may rewrite
+it), and a skipped recompute would leave a stale id pointing at the previous
+version. `prune()` is not one of these doors: it only ever writes a
+`PrunedEntry`. Registries are on none of them — they return drafts with
+`tool_spec` populated and never compute an id or touch the store.
 
 READS. The entry-derived queries — open turn, the execution-lifecycle and
 approval-state subsets, the resumable compaction, derived status. These are
@@ -91,6 +109,22 @@ class SessionLedger:
 
     # ── writes ───────────────────────────────────────────────────────────────
 
+    def _store_tool_spec(self, entry: AnyEntry) -> None:
+        """File a `ToolExecution`'s spec in `session.tool_specs` and stamp the
+        matching `tool_spec_id` on it. A no-op for every other entry type.
+
+        Always recomputes: hashing a few KB costs on the order of ten
+        microseconds, and a short-circuit on an already-set id would leave a
+        stale reference behind whenever the spec was replaced."""
+        if not isinstance(entry, ToolExecution):
+            return
+        if entry.tool_spec is None:
+            entry.tool_spec_id = None
+            return
+        spec_id = entry.tool_spec.spec_id()
+        self.session.tool_specs.setdefault(spec_id, entry.tool_spec)
+        entry.tool_spec_id = spec_id
+
     def append(self, build: Callable[[str, str | None, int], AnyEntry]) -> AnyEntry:
         """Append one entry to the path. `build(entry_id, parent_id, ts)`
         constructs the entry; the ledger does everything around it."""
@@ -99,6 +133,7 @@ class SessionLedger:
         conversation = self.session.active_conversation
         parent_id = conversation.nodes[-1] if conversation.nodes else None
         entry = build(entry_id, parent_id, ts)
+        self._store_tool_spec(entry)
         self.session.entries[entry_id] = entry
         conversation.nodes.append(entry_id)
         conversation.updated_at = ts
@@ -127,8 +162,24 @@ class SessionLedger:
             )
         if entry.id not in self.session.entries:
             raise AgentError(f"Cannot update entry {entry.id!r}: no such entry.")
+        self._store_tool_spec(entry)
         self.session.entries[entry.id] = entry
         self.session.active_conversation.updated_at = self.clock()
+        return entry
+
+    def refresh_entry(self, entry: AnyEntry) -> AnyEntry:
+        """Store a replacement for an entry ALREADY in the store, for a
+        DERIVED-field refresh — the runner's `recalculate_context_tokens()`.
+
+        Separate from `put_entry` on purpose: that door is documented as the
+        mutation path for the two mutable entry types and touches
+        `Conversation.updated_at`, and re-deriving a stored estimate is
+        neither a mutation of the conversation nor restricted to those two
+        types. Refuses to create, exactly like `put_entry`."""
+        if entry.id is None or entry.id not in self.session.entries:
+            raise AgentError(f"Cannot refresh entry {entry.id!r}: refresh_entry replaces an entry that already exists.")
+        self._store_tool_spec(entry)
+        self.session.entries[entry.id] = entry
         return entry
 
     def transition_conversation(
@@ -157,7 +208,14 @@ class SessionLedger:
 
         `updates` replace entries already in the store, `created` are brand-new
         entries whose identity the caller has already stamped, and `closing`
-        (a `TurnFinish`) is appended to the OUTGOING path, not the new one."""
+        (a `TurnFinish`) is appended to the OUTGOING path, not the new one.
+
+        This is the third tool-spec write door, and the easiest to miss: no
+        ordinary tool call travels through it, only a compaction plan that
+        carries or creates a `ToolExecution`. A `ToolExecution` can arrive on
+        EITHER list — `updates` is public and takes `list[AnyEntry]` — so the
+        helper runs over `updates`, `created` and `closing` alike, not just the
+        list the shipped caller happens to use."""
         outgoing = self.session.active_conversation
         entries = self.session.entries
 
@@ -179,8 +237,10 @@ class SessionLedger:
 
         # ── THE COMMIT POINT: plain assignments only ────────────────────────
         for entry in updates:
+            self._store_tool_spec(entry)
             entries[entry.id] = entry
         for entry in created:
+            self._store_tool_spec(entry)
             entries[entry.id] = entry
             if isinstance(entry, ToolExecution):
                 self.session.tool_executions.setdefault(
@@ -188,6 +248,7 @@ class SessionLedger:
                     [],
                 ).append(entry.id)
         if closing is not None:
+            self._store_tool_spec(closing)
             entries[closing.id] = closing
             outgoing.nodes.append(closing.id)
         outgoing.updated_at = ts

@@ -10,10 +10,14 @@ full-featured example used by `main.py`).
 
 The contract:
 
-- `decide()` receives the live `ToolExecution` — treat it as **read-only**
-  (the runner owns every session write). The registry-supplied
-  `extras["approval_context"]` dict on it is the strategy's input
-  vocabulary; the core stores `extras` verbatim and never interprets it.
+- `decide()` receives the live `AgentSession` and the `ToolExecution` — treat
+  BOTH as **read-only** (the runner owns every session write). It takes the
+  session for the same reason `ToolRegistry.decide` does: `SimpleToolRegistry`
+  now receives it and would otherwise drop it on the floor when delegating,
+  recreating one layer down the exact information asymmetry the contract
+  exists to remove. The registry-supplied `extras["approval_context"]` dict on
+  the execution is the strategy's input vocabulary; the core stores `extras`
+  verbatim and never interprets it.
 - Return ALLOW or DENY to resolve the call (it executes / is REJECTED), or
   PENDING to punt: the run pauses (status AWAITING_APPROVAL, the generator
   ends) and the application resolves out-of-band — asks its user, records the
@@ -30,14 +34,23 @@ The contract:
 
 from __future__ import annotations
 
-from luca.agent.core import ApprovalDecision, ApprovalOption, ToolExecution
+from luca.agent.core import (
+    AgentSession,
+    ApprovalDecision,
+    ApprovalOption,
+    ToolExecution,
+)
 
 
 class PermissionPolicy:
     """Strategy base: one hook, `decide()`. A duck-typed concrete base (no
     ABC), matching the system-prompt strategy — subclass and override."""
 
-    async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision:
+    async def decide(
+        self,
+        session: AgentSession,
+        tool_execution: ToolExecution,
+    ) -> ApprovalDecision:
         raise NotImplementedError
 
 
@@ -45,5 +58,9 @@ class YoloPermissionPolicy(PermissionPolicy):
     """Allow everything — the simplest strategy. Handy for demos, tests, and
     fully-trusted tool sets."""
 
-    async def decide(self, tool_execution: ToolExecution) -> ApprovalDecision:
+    async def decide(
+        self,
+        session: AgentSession,
+        tool_execution: ToolExecution,
+    ) -> ApprovalDecision:
         return ApprovalDecision(decision=ApprovalOption.ALLOW)

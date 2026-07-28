@@ -54,7 +54,7 @@ the *application's* rules shouldn't ship a registry at all — expose the tools
 and let the app compose them.
 
 > ⚠️ **Construction-time only.** Hooks run once. Per-call dynamism belongs in
-> a registry's `get_tools`, [middleware](../../07-middleware.md), or a callable
-> prompt part.
+> a registry's `async get_tools(session)`, [middleware](../../07-middleware.md),
+> or a callable prompt part.
 
 Next: [`resource_permissions/README.md`](../resource_permissions/README.md).

@@ -1,6 +1,6 @@
 """Shared declarative preconditions for the runner tests.
 
-Four kinds of building blocks:
+Six kinds of building blocks:
 
 - **`DeterministicRunner`**: the test-side extension of `AgentSessionRunner`.
   Determinism is the TEST'S concern, layered on by overriding the production
@@ -8,18 +8,26 @@ Four kinds of building blocks:
   order) and `now_ms()` is frozen to `now`. The production class carries no
   test parameters.
 - **`FakeToolRegistry`**: the core-only deterministic `ToolRegistry` double
-  (core tests must NOT import contrib). Static `get_tools`, a
+  (core tests must NOT import contrib). `get_tools` returns `ToolSpec`s, a
   preflight-faithful `create_execution` (NOT_FOUND / INVALID /
   FAILED-from-approval-context / PENDING births with the classic error
   payloads), a scripted `decide` that records every execution it was asked
   about in `seen` (no script → deterministic allow-all with `created_at`
-  frozen to `now`), and a resolve-validate-invoke `execute`.
+  frozen to `now`), and a resolve-validate-then-close-over-the-body `prepare`
+  that records the names it resolved in `prepared`.
 - **`FakeCompactionPolicy`**: the core-only scripted `CompactionPolicy`
   double — a scripted `should_compact`, a scripted plan (or `None`, a raise,
   or a cooperative hang), and `seen` / `should_calls` records.
-- **Tool doubles**: minimal `Tool` subclasses covering each behavior the
+- **Tool doubles**: minimal `FakeTool` subclasses covering each behavior the
   registry/runner must handle (plain success, a duck-typed approval context,
-  captured context, a raised exception, a rich is_error result).
+  a captured session, a raised exception, a rich is_error result). `FakeTool`
+  is deliberately NOT contrib's `Tool`: the core knows only `ToolSpec`, and
+  building the doubles out of core types is what proves it.
+- **`spec()` / `make_session()`**: the two literal factories. `ToolSpec` now
+  requires `description` and `input_schema`, and a session literal has to
+  carry `tool_specs` plus a `tool_spec_id` on every execution — neither is
+  what any test is about, so the factories fill both and the precondition
+  stays declarative.
 - **Mid-state session literals**: known `AgentSession`s exactly as they would
   sit on disk (a turn paused at the approval gate, an approved-but-unrun call,
   a crash mid-decide, a stale RUNNING status, an orphaned RUNNING execution),
@@ -33,14 +41,17 @@ All literals use `created_at=500` so entries written by the test's frozen
 clock (`now=1000`) are visually distinct from the precondition.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 from collections.abc import Iterable
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from luca.agent.core.compaction import CompactionPlan, CompactionPolicy
-from luca.agent.core.context import CancellationToken, ToolContext
+from luca.agent.core.context import CancellationToken
 from luca.agent.core.exceptions import InvalidToolArguments, ToolNotFound
 from luca.agent.core.models import (
     AgentSession,
@@ -74,13 +85,56 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.runner import AgentSessionRunner
-from luca.agent.core.tool_registry import ToolRegistry
-from luca.agent.core.tools import Tool
+from luca.agent.core.tool_registry import PreparedTool, ToolRegistry
 
 MODEL = LLMConfig(model="test-model", provider="faux")
 # What a compaction policy summarizes with — deliberately NOT the session's
 # model, so a stamped `llm_config` proves whose choice it was.
 CHEAP = LLMConfig(model="cheap-model", provider="faux")
+
+# The schema of a tool that takes no arguments — required and never None, so
+# `spec()` needs a default that means "no arguments" rather than "unknown".
+EMPTY_SCHEMA = {"type": "object", "properties": {}}
+
+
+# ── literal factories ──────────────────────────────────────────────────────────
+
+
+def spec(name: str, **over) -> ToolSpec:
+    """A complete `ToolSpec` for a precondition literal.
+
+    `description` and `input_schema` are required on `ToolSpec` and neither is
+    ever what a test is about, so they get filled here and a test overrides
+    only the field it actually cares about: `spec("bash", timeout_in_ms=10)`.
+    """
+    fields: dict = {
+        "name": name,
+        "description": f"{name} tool.",
+        "input_schema": EMPTY_SCHEMA,
+    }
+    fields.update(over)
+    return ToolSpec(**fields)
+
+
+def make_session(**fields) -> AgentSession:
+    """Build an `AgentSession` literal with its tool-spec store filled in.
+
+    A session refuses to construct with an execution carrying a `tool_spec`
+    and no `tool_spec_id`, and refuses an id absent from `tool_specs` — so a
+    hand-written literal would otherwise have to file every spec by hand.
+    This does exactly what the ledger's write doors do: hash each execution's
+    spec, stamp the id, store it once. Explicitly-passed `tool_specs` rows and
+    already-stamped ids are left alone, so a test can still author a dangling
+    reference on purpose."""
+    tool_specs: dict[str, ToolSpec] = dict(fields.pop("tool_specs", None) or {})
+    for entry in (fields.get("entries") or {}).values():
+        if not isinstance(entry, ToolExecution):
+            continue
+        if entry.tool_spec is None or entry.tool_spec_id is not None:
+            continue
+        entry.tool_spec_id = entry.tool_spec.spec_id()
+        tool_specs.setdefault(entry.tool_spec_id, entry.tool_spec)
+    return AgentSession(tool_specs=tool_specs, **fields)
 
 
 # ── registry double ────────────────────────────────────────────────────────────
@@ -88,6 +142,10 @@ CHEAP = LLMConfig(model="cheap-model", provider="faux")
 
 class FakeToolRegistry(ToolRegistry):
     """Core-only deterministic registry double.
+
+    `get_tools` answers `ToolSpec`s — the core's only tool type. Nothing here
+    imports contrib, so the doubles double as proof that the runner drives a
+    full tool call without ever seeing a Python tool class.
 
     `create_execution` is preflight-faithful: an unknown name births a
     NOT_FOUND draft (`tool_spec=None`), invalid `Args` an INVALID draft, a
@@ -98,12 +156,13 @@ class FakeToolRegistry(ToolRegistry):
     then pops the next scripted decision (calls arrive in unresolved-path
     order; exhaustion raises IndexError — the script no longer matches what
     the runner asked); with no script it ALLOWs everything, `created_at`
-    frozen to `now`. `execute` resolves by the effective call's name,
-    re-validates, and invokes the tool body."""
+    frozen to `now`. `prepare` resolves by the effective call's name,
+    validates, records the name in `prepared`, and returns a closure over the
+    tool body — it never invokes it."""
 
     def __init__(
         self,
-        tools: Iterable[Tool] = (),
+        tools: Iterable[FakeTool] = (),
         decisions: Iterable[ApprovalDecision] | None = None,
         now: int = 1000,
     ) -> None:
@@ -112,14 +171,15 @@ class FakeToolRegistry(ToolRegistry):
         self.decisions = list(decisions) if decisions is not None else None
         self.now = now
         self.seen: list[ToolExecution] = []
+        self.prepared: list[str] = []
 
-    def get_tools(self, agent_session: AgentSession) -> list[Tool]:
-        return list(self.tools)
+    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+        return [tool.get_tool_spec() for tool in self.tools]
 
     async def create_execution(
         self,
+        session: AgentSession,
         call: ToolCall,
-        context: ToolContext,
     ) -> ToolExecution:
         def draft(status, tool_spec=None, error=None, extras=None):
             return ToolExecution(
@@ -160,7 +220,7 @@ class FakeToolRegistry(ToolRegistry):
             try:
                 extras["approval_context"] = await tool.get_approval_context(
                     args.model_dump(),
-                    context,
+                    session,
                 )
             except Exception as exc:
                 return draft(
@@ -180,8 +240,8 @@ class FakeToolRegistry(ToolRegistry):
 
     async def decide(
         self,
+        session: AgentSession,
         tool_execution: ToolExecution,
-        context: ToolContext,
     ) -> ApprovalDecision:
         self.seen.append(tool_execution)
         if self.decisions is None:
@@ -191,13 +251,11 @@ class FakeToolRegistry(ToolRegistry):
             )
         return self.decisions.pop(0)
 
-    async def execute(
+    async def prepare(
         self,
+        session: AgentSession,
         tool_execution: ToolExecution,
-        context: ToolContext,
-        *,
-        cancellation_token: CancellationToken,
-    ) -> ExecutionResult:
+    ) -> PreparedTool:
         name = tool_execution.raw_tool_call.name
         tool = self.tools_by_name.get(name)
         if tool is None:
@@ -211,11 +269,17 @@ class FakeToolRegistry(ToolRegistry):
                 f"Arguments for tool {name!r} are invalid.",
                 errors=json.loads(exc.json(include_url=False)),
             ) from exc
-        return await tool.execute(
-            args.model_dump(),
-            context,
-            cancellation_token=cancellation_token,
-        )
+        payload = args.model_dump()
+        self.prepared.append(name)
+
+        async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
+            return await tool.execute(
+                payload,
+                session,
+                cancellation_token=cancellation_token,
+            )
+
+        return run
 
 
 class FakeCompactionPolicy(CompactionPolicy):
@@ -334,7 +398,55 @@ class PathArgs(BaseModel):
     path: str
 
 
-class AddTool(Tool):
+class FakeTool:
+    """Core-only tool double — deliberately NOT `luca.agent.contrib.tools.Tool`.
+
+    Core tests must not import contrib, and the core's only tool type is
+    `ToolSpec`, so the doubles carry their own `get_tool_spec()` (schema from
+    `Args`, exactly as the contrib base does) and their own body. Nothing the
+    runner touches knows this class exists: `FakeToolRegistry` is what turns
+    one into specs and prepared closures."""
+
+    name: ClassVar[str]
+    description: ClassVar[str]
+    Args: ClassVar[type[BaseModel]]
+    tool_kind: ClassVar[ToolKind] = ToolKind.OTHER
+    timeout_in_ms: ClassVar[int | None] = None
+
+    def get_tool_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=self.name,
+            description=self.description,
+            input_schema=self.Args.model_json_schema(),
+            tool_kind=self.tool_kind,
+            timeout_in_ms=self.timeout_in_ms,
+        )
+
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        raise NotImplementedError
+
+    async def execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        output = await self._execute(
+            args,
+            session,
+            cancellation_token=cancellation_token,
+        )
+        return ExecutionResult(content=[TextContent(text=output)])
+
+
+class AddTool(FakeTool):
     name = "add"
     description = "Add two numbers."
     Args = BinaryArgs
@@ -342,14 +454,14 @@ class AddTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
 
 
-class MultiplyTool(Tool):
+class MultiplyTool(FakeTool):
     name = "multiply"
     description = "Multiply two numbers."
     Args = BinaryArgs
@@ -357,35 +469,35 @@ class MultiplyTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
 
 
-class CapturingTool(Tool):
+class CapturingTool(FakeTool):
     name = "capture"
-    description = "Records the ToolContext and token it received."
+    description = "Records the AgentSession and token it received."
     Args = BinaryArgs
 
     def __init__(self) -> None:
-        self.seen: list[ToolContext] = []
+        self.seen: list[AgentSession] = []
         self.tokens: list[CancellationToken] = []
 
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
-        self.seen.append(context)
+        self.seen.append(session)
         self.tokens.append(cancellation_token)
         return "captured"
 
 
-class ReadFileTool(Tool):
+class ReadFileTool(FakeTool):
     """A context-bearing tool: emits the resources/preview/remember_as dict
     (the user-land convention, via the duck-typed `get_approval_context`
     hook `FakeToolRegistry` reads) so approval-context plumbing is
@@ -396,7 +508,7 @@ class ReadFileTool(Tool):
     Args = PathArgs
     tool_kind = ToolKind.READ
 
-    async def get_approval_context(self, args: dict, context: ToolContext) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
         return {
             "resources": [args["path"]],
             "preview": f"Read {args['path']}",
@@ -406,14 +518,14 @@ class ReadFileTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         return f"contents of {args['path']}"
 
 
-class RaisingTool(Tool):
+class RaisingTool(FakeTool):
     name = "boom"
     description = "Always raises."
     Args = BinaryArgs
@@ -421,14 +533,14 @@ class RaisingTool(Tool):
     async def _execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         raise ValueError("kaboom")
 
 
-class RichErrorTool(Tool):
+class RichErrorTool(FakeTool):
     """Overrides the rich `execute` path and reports an execution failure."""
 
     name = "report"
@@ -438,7 +550,7 @@ class RichErrorTool(Tool):
     async def execute(
         self,
         args: dict,
-        context: ToolContext,
+        session: AgentSession,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -449,12 +561,24 @@ class RichErrorTool(Tool):
         )
 
 
+# The specs the registry double produces for the doubles above. Session
+# literals use these rather than a hand-written `ToolSpec` so a precondition
+# and a freshly-created execution are byte-identical — including the
+# `input_schema` derived from `Args`.
+ADD_SPEC = AddTool().get_tool_spec()
+MULTIPLY_SPEC = MultiplyTool().get_tool_spec()
+READ_FILE_SPEC = ReadFileTool().get_tool_spec()
+CAPTURE_SPEC = CapturingTool().get_tool_spec()
+BOOM_SPEC = RaisingTool().get_tool_spec()
+REPORT_SPEC = RichErrorTool().get_tool_spec()
+
+
 # ── mid-state session literals ─────────────────────────────────────────────────
 
 # A turn paused at the approval gate: the assistant requested `add(1, 2)`, the
 # eagerly-persisted execution was handed to the strategy, and the strategy
 # punted — approval_status is PENDING and the audit log records the deferral.
-GATED_SESSION = AgentSession(
+GATED_SESSION = make_session(
     id="s_gated",
     entries={
         "u1": UserMessage(
@@ -477,7 +601,7 @@ GATED_SESSION = AgentSession(
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add", description="Add two numbers."),
+            tool_spec=ADD_SPEC,
             status=ExecutionStatus.PENDING,
             result=None,
             approval_status=ApprovalStatus.PENDING,
@@ -502,7 +626,7 @@ GATED_SESSION = AgentSession(
 # (approval_status ALLOWED; the ALLOW appended after the PENDING in the audit
 # log) but the execution has not run yet — the resume path must dispatch it
 # before anything else, without re-deciding.
-CLEARED_SESSION = AgentSession(
+CLEARED_SESSION = make_session(
     id="s_cleared",
     entries={
         "u1": UserMessage(
@@ -525,7 +649,7 @@ CLEARED_SESSION = AgentSession(
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add", description="Add two numbers."),
+            tool_spec=ADD_SPEC,
             status=ExecutionStatus.PENDING,
             result=None,
             approval_status=ApprovalStatus.ALLOWED,
@@ -581,7 +705,7 @@ CANCEL_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
 # was closed (TurnFinish carries the outcome + error) and the exception
 # re-raised. Status is retry-ready PENDING — a plain run() opens a NEW bracket
 # and re-answers; post_message is also legal (clarify before the retry).
-POST_FAILURE_SESSION = AgentSession(
+POST_FAILURE_SESSION = make_session(
     id="s_failed",
     entries={
         "u1": UserMessage(
@@ -613,7 +737,7 @@ POST_FAILURE_SESSION = AgentSession(
 # session carries an orphaned RUNNING execution and a stale RUNNING status.
 # The next drive must recover it to INTERRUPTED (after_tool_execution runs,
 # no re-dispatch) before doing anything else.
-RUNNING_ORPHAN_SESSION = AgentSession(
+RUNNING_ORPHAN_SESSION = make_session(
     id="s_orphan",
     entries={
         "u1": UserMessage(
@@ -636,7 +760,7 @@ RUNNING_ORPHAN_SESSION = AgentSession(
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add", description="Add two numbers."),
+            tool_spec=ADD_SPEC,
             status=ExecutionStatus.RUNNING,
             result=None,
             approval_status=ApprovalStatus.ALLOWED,
@@ -670,7 +794,7 @@ RUNNING_ORPHAN_SESSION = AgentSession(
 #
 # Path shape: a prior summary, an answered tool turn, a FAILED turn, a
 # CANCELLED turn, and a trailing unanswered question. Derived status: PENDING.
-RICH_SESSION = AgentSession(
+RICH_SESSION = make_session(
     id="s_rich",
     entries={
         # on c0 only — replaced by cmp0, still in the store
@@ -697,7 +821,7 @@ RICH_SESSION = AgentSession(
                 name="read_file",
                 arguments={"path": "/etc/motd"},
             ),
-            tool_spec=ToolSpec(name="read_file", description="Read a file."),
+            tool_spec=READ_FILE_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="a long listing")]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -757,7 +881,7 @@ RICH_SESSION = AgentSession(
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            tool_spec=ToolSpec(name="add", description="Add two numbers."),
+            tool_spec=ADD_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -778,7 +902,7 @@ RICH_SESSION = AgentSession(
                 name="read_file",
                 arguments={"path": "/etc/hosts"},
             ),
-            tool_spec=ToolSpec(name="read_file", description="Read a file."),
+            tool_spec=READ_FILE_SPEC,
             status=ExecutionStatus.FAILED,
             error=ToolExecutionError(
                 error_type="PermissionError",
@@ -852,7 +976,7 @@ RICH_SESSION = AgentSession(
                 name="multiply",
                 arguments={"a": 3, "b": 4},
             ),
-            tool_spec=ToolSpec(name="multiply", description="Multiply."),
+            tool_spec=MULTIPLY_SPEC,
             status=ExecutionStatus.REJECTED,
             approval_status=ApprovalStatus.REJECTED,
             approval_decisions=[

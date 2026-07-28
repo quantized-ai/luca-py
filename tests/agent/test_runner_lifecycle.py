@@ -33,7 +33,6 @@ from luca.agent.core.models import (
     TextContent,
     ToolCall,
     ToolExecution,
-    ToolSpec,
     TurnOutcome,
     UserMessage,
 )
@@ -47,18 +46,20 @@ from luca.client.testing import (
     faux_tool_call,
 )
 from tests.agent.scenarios import (
+    ADD_SPEC,
     MODEL,
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    make_session,
 )
 
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 
-ADD_SPEC = ToolSpec(name="add", description="Add two numbers.")
-
-# the three lifecycle snapshots of the standard one-tool-round turn
+# the three lifecycle snapshots of the standard one-tool-round turn. The spec
+# is filed in `session.tool_specs` by the ledger and referenced by
+# `tool_spec_id`, so every persisted copy carries the id too.
 ADD_BIRTH = ToolExecution(
     id="te1",
     parent_id="a1",
@@ -66,6 +67,7 @@ ADD_BIRTH = ToolExecution(
     tool_call_id="tc1",
     raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
     tool_spec=ADD_SPEC,
+    tool_spec_id=ADD_SPEC.spec_id(),
     status=ExecutionStatus.PENDING,
 )
 ADD_RUNNING = ADD_BIRTH.model_copy(
@@ -84,6 +86,14 @@ ADD_FINAL = ADD_RUNNING.model_copy(
         "ended_at": 1000,
     }
 )
+# the fourth snapshot: the same birth after a registry that punted on approval
+ADD_GATED = ADD_BIRTH.model_copy(
+    update={
+        "approval_status": ApprovalStatus.PENDING,
+        "approval_decisions": [PENDING_1000],
+        "updated_at": 1000,
+    }
+)
 
 # the event list of the standard one-tool-round turn used throughout
 TOOL_TURN_EVENTS = [
@@ -100,6 +110,11 @@ TOOL_TURN_EVENTS = [
     FinishReason(finish_reason="stop"),
 ]
 
+# the same turn resumed after a suspend at the tool-call boundary: the
+# execution is already durable and undecided, so the resuming drive picks up at
+# decide → dispatch and the first two events are never re-emitted.
+RESUMED_TOOL_TURN_EVENTS = TOOL_TURN_EVENTS[2:]
+
 
 # ── lazy: creation is inert ──────────────────────────────────────────────────
 
@@ -111,7 +126,7 @@ async def test_lazy_handle_creation_is_a_noop():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_inert",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -138,7 +153,7 @@ async def test_lazy_handle_creation_is_a_noop():
 
 
 async def test_run_on_idle_session_raises_at_first_drive():
-    session = AgentSession(
+    session = make_session(
         id="s_idle",
         active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
         session_config=SessionConfig(llm_config=MODEL),
@@ -152,7 +167,7 @@ async def test_run_on_idle_session_raises_at_first_drive():
 
 
 async def test_start_on_idle_session_raises_at_call_time():
-    session = AgentSession(
+    session = make_session(
         id="s_idle_eager",
         active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
         session_config=SessionConfig(llm_config=MODEL),
@@ -170,7 +185,7 @@ def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_no_loop",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -207,7 +222,7 @@ async def test_second_drive_while_a_run_is_live_raises():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_guard",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -238,7 +253,7 @@ async def test_second_drive_while_a_run_is_live_raises():
 
 
 async def test_iteration_outside_the_context_manager_raises():
-    session = AgentSession(
+    session = make_session(
         id="s_cm",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -261,7 +276,7 @@ async def test_eager_iteration_outside_the_context_manager_raises():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_cm_eager",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -291,7 +306,7 @@ async def test_await_twice_returns_the_cached_result():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_idem",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -326,7 +341,7 @@ async def test_await_inside_the_block_after_partial_iteration_drives_to_the_stop
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_mix",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -361,7 +376,7 @@ async def test_await_returns_completed_result_at_idle_stop():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_rr_idle",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -396,7 +411,7 @@ async def test_await_returns_pause_result_at_approval_stop():
             ),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_rr_gate",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -417,25 +432,7 @@ async def test_await_returns_pause_result_at_approval_stop():
     assert result == RunResult(
         status=ConversationStatus.AWAITING_APPROVAL,
         outcome=None,
-        pending_approvals=[
-            ToolExecution(
-                id="te1",
-                parent_id="a1",
-                created_at=1000,
-                tool_call_id="tc1",
-                raw_tool_call=ToolCall(
-                    id="tc1",
-                    name="add",
-                    arguments={"a": 1, "b": 2},
-                ),
-                tool_spec=ADD_SPEC,
-                status=ExecutionStatus.PENDING,
-                result=None,
-                approval_status=ApprovalStatus.PENDING,
-                approval_decisions=[PENDING_1000],
-                updated_at=1000,
-            ),
-        ],
+        pending_approvals=[ADD_GATED],
     )
     assert runner.awaiting_approval()
 
@@ -454,7 +451,7 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_suspend",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -478,20 +475,12 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
     # RUNNING) and record+create were atomic: the execution exists undecided
     assert runner.pending()
     assert runner.session.active_conversation.nodes == ["u1", "ts", "a1", "te1"]
-    assert runner.session.entries["te1"].status == ExecutionStatus.PENDING
-    assert runner.session.entries["te1"].approval_status is None
-    assert runner.session.entries["te1"].approval_decisions == []
+    assert runner.session.entries["te1"] == ADD_BIRTH
 
     async with runner.run() as resumed:
         events = [event async for event in resumed]
 
-    assert [event.type for event in events] == [
-        "tool_execution_started",
-        "tool_executed",
-        "text_block",
-        "finish_reason",
-    ]
-    assert events[1].result_text == "3"
+    assert events == RESUMED_TOOL_TURN_EVENTS
     assert runner.idle()
 
 
@@ -506,7 +495,7 @@ async def test_suspended_session_cold_resumes_after_reload():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_cold",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -535,17 +524,16 @@ async def test_suspended_session_cold_resumes_after_reload():
         now=1000,
     )
 
+    # the serialized session carries the spec ONCE, in `tool_specs`; the
+    # execution's inline copy is restored from `tool_spec_id` on load
+    assert resumed.session.tool_specs == {ADD_SPEC.spec_id(): ADD_SPEC}
+    assert resumed.session.entries["te1"] == ADD_BIRTH
     assert resumed.pending()
+
     async with resumed.run() as run:
         events = [event async for event in run]
 
-    assert [event.type for event in events] == [
-        "tool_execution_started",
-        "tool_executed",
-        "text_block",
-        "finish_reason",
-    ]
-    assert events[1].result_text == "3"
+    assert events == RESUMED_TOOL_TURN_EVENTS
     assert resumed.idle()
 
 
@@ -560,7 +548,7 @@ async def test_finalized_suspended_handle_rejects_await_and_reentry():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_final",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -594,7 +582,7 @@ async def test_completed_lazy_run_still_answers_await_after_exit():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_done",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -631,7 +619,7 @@ async def test_eager_run_completes_without_observation():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_eager",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -668,7 +656,7 @@ async def test_eager_empty_block_runs_to_completion_and_exit_joins():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_eager_cm",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -700,7 +688,7 @@ async def test_eager_late_consumer_sees_the_full_history_from_event_zero():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_late",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -735,7 +723,7 @@ async def test_eager_break_does_not_stop_the_agent_and_the_cursor_continues():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_break",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -775,7 +763,7 @@ async def test_eager_background_exception_surfaces_on_join_and_iteration():
             ),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_bg_exc",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -814,7 +802,7 @@ async def test_on_event_sync_callback_sees_every_event_of_an_awaited_run():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_hook",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -843,7 +831,7 @@ async def test_on_event_async_callback_is_awaited_inline():
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_hook_async",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -875,7 +863,7 @@ async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complet
             faux_assistant_message([faux_text("Hello!")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_hook_boom",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
@@ -916,7 +904,7 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
             faux_assistant_message([faux_text("It's 3.")], finish_reason="stop"),
         ]
     )
-    session = AgentSession(
+    session = make_session(
         id="s_hook_boom_mid",
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
@@ -945,11 +933,5 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
 
     async with runner.run() as resumed:
         events = [event async for event in resumed]
-    assert [event.type for event in events] == [
-        "tool_execution_started",
-        "tool_executed",
-        "text_block",
-        "finish_reason",
-    ]
-    assert events[1].result_text == "3"
+    assert events == RESUMED_TOOL_TURN_EVENTS
     assert runner.idle()

@@ -6,6 +6,11 @@ totals are one artifact, and a change anywhere in it should read as a diff.
 Timestamps render with the local clock, so the expectations interpolate the
 same formatting of the literal `created_at` the precondition carries rather
 than hard-coding a zone-dependent string.
+
+Tool specs are noise here — `pretty_print` reads the call, the approval and the
+outcome, never `tool_spec` — so a resolved execution takes `scenarios.spec()`
+and every session literal carrying one goes through `scenarios.make_session()`,
+which files the spec under its content id and stamps that id on the execution.
 """
 
 from datetime import datetime
@@ -23,7 +28,8 @@ from luca.agent.core.models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
-    LLMConfig,
+    ImageBase64,
+    ImageContent,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -31,7 +37,6 @@ from luca.agent.core.models import (
     ToolCall,
     ToolExecution,
     ToolExecutionError,
-    ToolSpec,
     TurnFinish,
     TurnOutcome,
     TurnStart,
@@ -39,8 +44,8 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.utils import pretty_print
+from tests.agent.scenarios import MODEL, make_session, spec
 
-MODEL = LLMConfig(model="test-model", provider="faux")
 T = 1_700_000_000_000
 STAMP = datetime.fromtimestamp(T / 1000).strftime("%Y-%m-%d %H:%M:%S")
 RULE = "─" * 64
@@ -92,7 +97,7 @@ ANSWERED_SESSION = AgentSession(
 # A turn with two tool calls in one assistant message: one denied at the gate,
 # one allowed by a rule and completed. The second call's signature outgrows the
 # transcript width and breaks into the one-argument-per-line form.
-TOOLS_SESSION = AgentSession(
+TOOLS_SESSION = make_session(
     id="s_tools",
     entries={
         "u1": UserMessage(
@@ -127,7 +132,7 @@ TOOLS_SESSION = AgentSession(
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={"file_path": "/"}),
-            tool_spec=ToolSpec(name="read"),
+            tool_spec=spec("read"),
             status=ExecutionStatus.REJECTED,
             approval_status=ApprovalStatus.REJECTED,
             approval_decisions=[
@@ -158,7 +163,7 @@ TOOLS_SESSION = AgentSession(
                     "limit": 200,
                 },
             ),
-            tool_spec=ToolSpec(name="read"),
+            tool_spec=spec("read"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(
                 content=[TextContent(text="main.py\nluca/\ntests/")],
@@ -210,9 +215,10 @@ TOOLS_SESSION = AgentSession(
     ),
 )
 
-# A tool that raised: the structured ToolExecutionError is the outcome payload,
-# and the call never reached the gate (approval_status stays None).
-FAILED_SESSION = AgentSession(
+# A tool BODY that raised: the structured ToolExecutionError is the outcome
+# payload, the call was dispatched (started_at stamped, so a duration renders)
+# and the error is stamped with the phase the runner observed it in.
+FAILED_SESSION = make_session(
     id="s_failed",
     entries={
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="add")]),
@@ -231,11 +237,14 @@ FAILED_SESSION = AgentSession(
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=spec("add"),
             status=ExecutionStatus.FAILED,
             error=ToolExecutionError(
                 error_type="ValueError",
                 error_message="kaboom",
+                details={"phase": "execution"},
             ),
+            approval_status=ApprovalStatus.ALLOWED,
             started_at=T,
             ended_at=T + 7,
         ),
@@ -261,9 +270,173 @@ FAILED_SESSION = AgentSession(
     session_config=SessionConfig(llm_config=MODEL),
 )
 
+# Two calls that never reached a tool body: one born NOT_FOUND (no policy ever
+# saw it, so no approval line and no spec) and one that cleared the gate and
+# then failed to resolve. Neither was dispatched — `started_at` is None on
+# both, so the outcome renders without a duration.
+UNRESOLVED_SESSION = make_session(
+    id="s_unresolved",
+    entries={
+        "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="chart it")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=T,
+            parts=[
+                ToolCall(id="tc1", name="chart", arguments={"kind": "pie"}),
+                ToolCall(
+                    id="tc2",
+                    name="read",
+                    arguments={"file_path": "/etc/hosts"},
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            parent_id="a1",
+            created_at=T,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="chart", arguments={"kind": "pie"}),
+            status=ExecutionStatus.NOT_FOUND,
+            error=ToolExecutionError(
+                error_type="ToolNotFound",
+                error_message="Unknown tool: 'chart'.",
+                details={"phase": "create_execution"},
+            ),
+            ended_at=T,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            parent_id="te1",
+            created_at=T,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(
+                id="tc2",
+                name="read",
+                arguments={"file_path": "/etc/hosts"},
+            ),
+            tool_spec=spec("read"),
+            status=ExecutionStatus.FAILED,
+            error=ToolExecutionError(
+                error_type="RuntimeError",
+                error_message="the registry blew up",
+                details={"phase": "prepare"},
+            ),
+            approval_status=ApprovalStatus.ALLOWED,
+            approval_decisions=[
+                ApprovalDecision(
+                    decision=ApprovalOption.ALLOW,
+                    metadata={"via": "policy"},
+                    created_at=T,
+                ),
+            ],
+            ended_at=T + 1,
+        ),
+        "a2": AssistantMessage(
+            id="a2",
+            parent_id="te2",
+            created_at=T,
+            parts=[TextContent(text="I could not do that.")],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+        "tf": TurnFinish(id="tf", parent_id="a2", created_at=T),
+    },
+    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+        created_at=T,
+        updated_at=T,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+# A cancelled turn carrying an image: the first call completed with the tool's
+# own error verdict on the result, the second was wound down before it was
+# dispatched, and the consumed CancelRequested carries the reason.
+CANCELLED_SESSION = make_session(
+    id="s_cancelled",
+    entries={
+        "u1": UserMessage(
+            id="u1",
+            created_at=T,
+            parts=[
+                TextContent(text="check the disk"),
+                ImageContent(
+                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    metadata={"name": "screenshot.png"},
+                ),
+            ],
+        ),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=T,
+            parts=[
+                ToolCall(id="tc1", name="report", arguments={"a": 1, "b": 2}),
+                ToolCall(id="tc2", name="add", arguments={"a": 1, "b": 2}),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            parent_id="a1",
+            created_at=T,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="report", arguments={"a": 1, "b": 2}),
+            tool_spec=spec("report"),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(
+                content=[TextContent(text="disk full")],
+                metadata={"code": 28},
+                is_error=True,
+            ),
+            approval_status=ApprovalStatus.ALLOWED,
+            started_at=T,
+            ended_at=T + 3,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            parent_id="te1",
+            created_at=T,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=spec("add"),
+            status=ExecutionStatus.CANCELLED,
+            ended_at=T + 3,
+        ),
+        "cr": CancelRequested(
+            id="cr",
+            parent_id="te2",
+            created_at=T,
+            error="the user pressed esc twice",
+        ),
+        "tf": TurnFinish(
+            id="tf",
+            parent_id="cr",
+            created_at=T,
+            outcome=TurnOutcome.CANCELLED,
+        ),
+    },
+    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["u1", "ts", "a1", "te1", "te2", "cr", "tf"],
+        created_at=T,
+        updated_at=T,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
 # A session stopped mid-flight: the turn is still open, its only call parked at
 # the approval gate, and a cancel request is waiting to be consumed.
-OPEN_SESSION = AgentSession(
+OPEN_SESSION = make_session(
     id="s_open",
     entries={
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="add")]),
@@ -282,6 +455,7 @@ OPEN_SESSION = AgentSession(
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=spec("add"),
             status=ExecutionStatus.PENDING,
             approval_status=ApprovalStatus.PENDING,
             approval_decisions=[
@@ -308,7 +482,7 @@ OPEN_SESSION = AgentSession(
 # Context bookkeeping in the path: a compaction that replaced two entries and a
 # pruned tool output standing in for the original execution, which stays in the
 # store untouched.
-COMPACTED_SESSION = AgentSession(
+COMPACTED_SESSION = make_session(
     id="s_compacted",
     entries={
         "cp": CompactionEntry(
@@ -330,6 +504,7 @@ COMPACTED_SESSION = AgentSession(
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
+            tool_spec=spec("read"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="a very long listing")]),
             started_at=T,
@@ -362,7 +537,7 @@ LISTING = (
     "juliett\nkilo\nlima\nmike\nnovember\noscar"
 )
 
-BIG_OUTPUT_SESSION = AgentSession(
+BIG_OUTPUT_SESSION = make_session(
     id="s_big",
     entries={
         "a1": AssistantMessage(
@@ -378,6 +553,7 @@ BIG_OUTPUT_SESSION = AgentSession(
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="ls", arguments={}),
+            tool_spec=spec("ls"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text=LISTING)]),
             approval_status=ApprovalStatus.ALLOWED,
@@ -389,6 +565,37 @@ BIG_OUTPUT_SESSION = AgentSession(
     active_conversation=Conversation(
         id="c1",
         nodes=["a1", "te1"],
+        created_at=T,
+        updated_at=T,
+    ),
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+# A broken session: the path carries a tool call whose execution is not on it.
+# A debugging view still has to print — and the call's one argument outgrows
+# the display bound, so it clips.
+GHOST_CALL_SESSION = AgentSession(
+    id="s_ghost",
+    entries={
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=T,
+            parts=[
+                ToolCall(
+                    id="tc1",
+                    name="write",
+                    arguments={
+                        "file_path": "/Users/santiagobasulto/code/python-py/luca/agent/core/utils.py",
+                    },
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+    },
+    active_conversation=Conversation(
+        id="c1",
+        nodes=["a1"],
         created_at=T,
         updated_at=T,
     ),
@@ -484,8 +691,10 @@ User
 Assistant · step 1 · faux/test-model
   Tools
   └─ add(a=1, b=2)
+     ├─ ALLOWED
      └─ FAILED · 7 ms
         ValueError: kaboom
+        {{"phase": "execution"}}
 
 ✗ errored · tool_use · 0 tokens · the model gave up
 
@@ -497,6 +706,75 @@ User
 
 {RULE}
 TOTAL · 1 turn · 1 model call · 1 tool call · 0 tokens"""
+    )
+
+
+def test_calls_that_never_resolved_render_their_phase_and_no_duration():
+    assert (
+        pretty_print(UNRESOLVED_SESSION)
+        == f"""\
+LUCA SESSION s_unresolved
+Conversation c1 · idle · 1 turn
+Default: faux/test-model
+{RULE}
+
+TURN 1 · {STAMP}
+User
+  chart it
+
+Assistant · step 1 · faux/test-model
+  Tools
+  ├─ chart(kind="pie")
+  │  └─ NOT FOUND
+  │     ToolNotFound: Unknown tool: 'chart'.
+  │     {{"phase": "create_execution"}}
+  │
+  └─ read(file_path="/etc/hosts")
+     ├─ ALLOWED · permission policy
+     └─ FAILED
+        RuntimeError: the registry blew up
+        {{"phase": "prepare"}}
+
+Assistant · step 2 · faux/test-model
+  I could not do that.
+
+✓ completed · stop · 0 tokens
+
+{RULE}
+TOTAL · 1 turn · 2 model calls · 2 tool calls · 0 tokens"""
+    )
+
+
+def test_a_cancelled_turn_shows_an_error_result_an_undispatched_call_and_an_image():
+    assert (
+        pretty_print(CANCELLED_SESSION)
+        == f"""\
+LUCA SESSION s_cancelled
+Conversation c1 · idle · 1 turn
+Default: faux/test-model
+{RULE}
+
+TURN 1 · {STAMP}
+User
+  check the disk
+  [image: screenshot.png]
+
+Assistant · step 1 · faux/test-model
+  Tools
+  ├─ report(a=1, b=2)
+  │  ├─ ALLOWED
+  │  └─ ERROR · 3 ms
+  │     disk full
+  │
+  └─ add(a=1, b=2)
+     └─ CANCELLED
+
+Cancel requested · cancelled · the user pressed esc twice
+
+⊘ cancelled · tool_use · 0 tokens
+
+{RULE}
+TOTAL · 1 turn · 1 model call · 2 tool calls · 0 tokens"""
     )
 
 
@@ -615,6 +893,28 @@ Assistant · step 1 · faux/test-model
 
 {RULE}
 TOTAL · 0 turns · 1 model call · 1 tool call · 0 tokens"""
+    )
+
+
+def test_a_call_with_no_execution_on_the_path_renders_a_marker():
+    assert (
+        pretty_print(GHOST_CALL_SESSION)
+        == f"""\
+LUCA SESSION s_ghost
+Conversation c1 · idle · 0 turns
+Default: faux/test-model
+{RULE}
+
+NEXT TURN · {STAMP}
+Assistant · step 1 · faux/test-model
+  Tools
+  └─ write(
+       file_path="/Users/santiagobasulto/code/python-py/luca/agent/core/util…
+     )
+     └─ NO EXECUTION RECORDED
+
+{RULE}
+TOTAL · 0 turns · 1 model call · 0 tool calls · 0 tokens"""
     )
 
 

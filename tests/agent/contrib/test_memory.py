@@ -3,6 +3,12 @@ its tool registry + prompt parts, and each tool pair reads/writes its shared
 store — the scratchpad (each write fully replaces the content) and the todo
 list (`update_todos` replaces the whole list in one call).
 
+The memory tools are contrib `Tool`s (`luca.agent.contrib.tools`), so their
+bodies take the live `AgentSession` where they used to take a `ToolContext`.
+The package reads NOTHING from it — the stores live on the plugin — so one
+inert session literal is handed to every entry point and is an invariant
+everywhere.
+
 No runner here — the plugin-to-runner wiring is covered by
 `tests/agent/contrib/test_plugins.py`.
 """
@@ -29,12 +35,10 @@ from luca.agent.core import (
     AgentSession,
     CancellationToken,
     Conversation,
-    LLMConfig,
     SessionConfig,
-    ToolContext,
+    ToolSpec,
 )
-
-MODEL = LLMConfig(model="test-model", provider="faux")
+from tests.agent.scenarios import MODEL
 
 SESSION = AgentSession(
     id="s_memory",
@@ -42,11 +46,100 @@ SESSION = AgentSession(
     session_config=SessionConfig(llm_config=MODEL),
 )
 
-CONTEXT = ToolContext(session_id="s_memory", model=MODEL)
-
 
 def run_kwargs() -> dict:
     return {"cancellation_token": CancellationToken()}
+
+
+# ── the specs the model is shown ──────────────────────────────────────────────
+# Written out whole rather than derived from `Args`: this is the package's
+# public product — the four advertisements a registry hands the provider — and
+# `input_schema` is now a required part of it.
+
+READ_SCRATCHPAD_SPEC = ToolSpec(
+    name="read_scratchpad",
+    description="Read from a in-memory scratchpad",
+    input_schema={
+        "additionalProperties": False,
+        "properties": {},
+        "title": "Args",
+        "type": "object",
+    },
+)
+
+WRITE_SCRATCHPAD_SPEC = ToolSpec(
+    name="write_scratchpad",
+    description="Write some content a in-memory scratchpad",
+    input_schema={
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "description": "The content to write to the scratchpad",
+                "title": "Content",
+                "type": "string",
+            },
+        },
+        "required": ["content"],
+        "title": "Args",
+        "type": "object",
+    },
+)
+
+READ_TODO_SPEC = ToolSpec(
+    name="read_todo",
+    description="Read the current todo list",
+    input_schema={
+        "additionalProperties": False,
+        "properties": {},
+        "title": "Args",
+        "type": "object",
+    },
+)
+
+UPDATE_TODOS_SPEC = ToolSpec(
+    name="update_todos",
+    description=(
+        "Replace the todo list in one operation — send the complete list, including the items that did not change"
+    ),
+    input_schema={
+        "$defs": {
+            "TodoItem": {
+                "additionalProperties": False,
+                "properties": {
+                    "content": {
+                        "description": "What this todo item is about",
+                        "title": "Content",
+                        "type": "string",
+                    },
+                    "status": {
+                        "$ref": "#/$defs/TodoStatus",
+                        "description": "The item's current status",
+                    },
+                },
+                "required": ["content", "status"],
+                "title": "TodoItem",
+                "type": "object",
+            },
+            "TodoStatus": {
+                "enum": ["pending", "in_progress", "completed", "cancelled"],
+                "title": "TodoStatus",
+                "type": "string",
+            },
+        },
+        "additionalProperties": False,
+        "properties": {
+            "todos": {
+                "description": "The complete todo list; replaces the current list entirely",
+                "items": {"$ref": "#/$defs/TodoItem"},
+                "title": "Todos",
+                "type": "array",
+            },
+        },
+        "required": ["todos"],
+        "title": "Args",
+        "type": "object",
+    },
+)
 
 
 # ── the plugin surface ────────────────────────────────────────────────────────
@@ -76,13 +169,26 @@ def test_get_tool_registry_wraps_the_tools_in_an_auto_allowing_registry():
 
     assert type(registry) is SimpleToolRegistry
     assert type(registry.permission_policy) is YoloPermissionPolicy
-    assert [type(tool) for tool in registry.get_tools(SESSION)] == [
+    assert [type(tool) for tool in registry.tools] == [
         ReadScratchPadTool,
         WriteScratchPadTool,
         ReadTodoTool,
         UpdateTodosTool,
     ]
-    assert registry.get_tools(SESSION)[0].store is plugin.scratchpad_store
+    assert registry.tools[0].store is plugin.scratchpad_store
+
+
+async def test_registry_get_tools_advertises_the_four_memory_specs():
+    registry = MemoryPlugin().get_tool_registry(SESSION)
+
+    specs = await registry.get_tools(SESSION)
+
+    assert specs == [
+        READ_SCRATCHPAD_SPEC,
+        WRITE_SCRATCHPAD_SPEC,
+        READ_TODO_SPEC,
+        UPDATE_TODOS_SPEC,
+    ]
 
 
 def test_get_system_prompt_parts_returns_the_scratchpad_and_todo_parts():
@@ -99,7 +205,7 @@ def test_get_system_prompt_parts_returns_the_scratchpad_and_todo_parts():
 async def test_read_empty_scratchpad_returns_empty_string():
     read, _, _, _ = MemoryPlugin().get_tools()
 
-    assert await read._execute({}, CONTEXT, **run_kwargs()) == ""
+    assert await read._execute({}, SESSION, **run_kwargs()) == ""
 
 
 async def test_write_then_read_round_trips():
@@ -107,21 +213,21 @@ async def test_write_then_read_round_trips():
 
     output = await write._execute(
         {"content": "plan: step 1"},
-        CONTEXT,
+        SESSION,
         **run_kwargs(),
     )
 
     assert output == "Scratchpad updated successfully"
-    assert await read._execute({}, CONTEXT, **run_kwargs()) == "plan: step 1"
+    assert await read._execute({}, SESSION, **run_kwargs()) == "plan: step 1"
 
 
 async def test_write_fully_replaces_previous_content():
     read, write, _, _ = MemoryPlugin().get_tools()
-    await write._execute({"content": "first draft"}, CONTEXT, **run_kwargs())
+    await write._execute({"content": "first draft"}, SESSION, **run_kwargs())
 
-    await write._execute({"content": "second draft"}, CONTEXT, **run_kwargs())
+    await write._execute({"content": "second draft"}, SESSION, **run_kwargs())
 
-    assert await read._execute({}, CONTEXT, **run_kwargs()) == "second draft"
+    assert await read._execute({}, SESSION, **run_kwargs()) == "second draft"
 
 
 async def test_each_plugin_instance_owns_its_own_scratchpad():
@@ -130,9 +236,9 @@ async def test_each_plugin_instance_owns_its_own_scratchpad():
     _, write_a, _, _ = plugin_a.get_tools()
     read_b, _, _, _ = plugin_b.get_tools()
 
-    await write_a._execute({"content": "private to a"}, CONTEXT, **run_kwargs())
+    await write_a._execute({"content": "private to a"}, SESSION, **run_kwargs())
 
-    assert await read_b._execute({}, CONTEXT, **run_kwargs()) == ""
+    assert await read_b._execute({}, SESSION, **run_kwargs()) == ""
 
 
 # ── todo-list behavior ────────────────────────────────────────────────────────
@@ -141,7 +247,7 @@ async def test_each_plugin_instance_owns_its_own_scratchpad():
 async def test_read_empty_todo_list_returns_empty_list_repr():
     _, _, read_todo, _ = MemoryPlugin().get_tools()
 
-    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == "[]"
+    assert await read_todo._execute({}, SESSION, **run_kwargs()) == "[]"
 
 
 async def test_update_todos_then_read_round_trips():
@@ -154,12 +260,12 @@ async def test_update_todos_then_read_round_trips():
                 {"content": "T2", "status": "in_progress"},
             ]
         },
-        CONTEXT,
+        SESSION,
         **run_kwargs(),
     )
 
     assert output == "Todo list updated successfully"
-    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == (
+    assert await read_todo._execute({}, SESSION, **run_kwargs()) == (
         "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'in_progress'}]"
     )
 
@@ -174,7 +280,7 @@ async def test_update_todos_replaces_the_whole_list():
                 {"content": "T3", "status": "pending"},
             ]
         },
-        CONTEXT,
+        SESSION,
         **run_kwargs(),
     )
 
@@ -185,25 +291,26 @@ async def test_update_todos_replaces_the_whole_list():
                 {"content": "T2", "status": "completed"},
             ]
         },
-        CONTEXT,
+        SESSION,
         **run_kwargs(),
     )
 
-    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == (
+    assert await read_todo._execute({}, SESSION, **run_kwargs()) == (
         "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'completed'}]"
     )
 
 
 async def test_update_todos_stores_registry_validated_args_as_plain_text():
-    # The registry hands _execute the Args.model_validate(...).model_dump()
-    # dict, whose statuses are TodoStatus members — the store (and the next
-    # read_todo) must still see plain strings.
+    # The registry's prepare() hands _execute the
+    # Args.model_validate(...).model_dump() dict, whose statuses are
+    # TodoStatus members — the store (and the next read_todo) must still see
+    # plain strings.
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
     args = UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "completed"}]}).model_dump()
 
-    await update_todos._execute(args, CONTEXT, **run_kwargs())
+    await update_todos._execute(args, SESSION, **run_kwargs())
 
-    assert await read_todo._execute({}, CONTEXT, **run_kwargs()) == ("[{'content': 'T1', 'status': 'completed'}]")
+    assert await read_todo._execute({}, SESSION, **run_kwargs()) == ("[{'content': 'T1', 'status': 'completed'}]")
 
 
 def test_update_todos_args_reject_an_unknown_status():
