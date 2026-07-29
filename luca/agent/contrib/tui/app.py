@@ -172,9 +172,11 @@ class AgentApp(App):
         self._refresh_status()
         await self._replay_history()
         if self._mcp_servers:
-            # list the MCP servers once at startup (off the turn's critical
-            # path) so tools, any OAuth flow, and the notice happen up front;
-            # the listing is cached, so the first turn does not re-list
+            # list the MCP servers at startup so any OAuth flow and the notice
+            # happen up front rather than inside the first turn; the listing is
+            # shared, so the first turn does not pay for it twice. `get_tools`
+            # waits on the same listing, so the first turn has the tools whether
+            # or not this worker finished first.
             self._mcp_worker = self.run_worker(self._connect_mcp(), group="mcp")
         if self.runner.idle():
             self.query_one("#prompt", Input).focus()
@@ -193,7 +195,7 @@ class AgentApp(App):
         registry = self._find_mcp_registry()
         if registry is None:
             return
-        await registry.wait_listed()  # do the out-of-band listing off the turn's critical path
+        await registry.wait_listed()  # do the listing here, not inside the first turn
         specs = await registry.get_tools(self.runner.session)
         if registry.connected_labels:
             tools = len(specs)

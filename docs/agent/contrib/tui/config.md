@@ -66,7 +66,9 @@ Point your editor at [`luca.schema.json`](../../../luca.schema.json) via the
 
   "mcp": {                       // external MCP servers — see contrib/mcp
     "files": { "type": "stdio", "command": "npx",
-               "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+               "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+               "timeout_in_ms": 60000,        // optional; bounds this server's listing
+               "call_timeout_in_ms": 120000 },// optional; bounds one of its tool calls
     "linear": { "type": "http", "url": "https://mcp.linear.app/mcp", "oauth": true }
   },
 
@@ -88,6 +90,13 @@ Point your editor at [`luca.schema.json`](../../../luca.schema.json) via the
   rule with `permission` (+ optional `resource` glob) matches a
   `(permission, resource)` pair. `resource` is an fnmatch glob (`"*"`,
   `"/etc/*"`).
+- An `mcp` entry's `timeout_in_ms` bounds how long that server's tool listing
+  may take. Leave it out and it resolves to `LUCA_DEFAULT_MCP_TIMEOUT_MS`, or to
+  30s if that is unset — except for an `oauth` server, which gets a much longer
+  ceiling because its browser flow waits on you. `call_timeout_in_ms` bounds one
+  of that server's tool *calls* (`LUCA_DEFAULT_MCP_CALL_TIMEOUT_MS`, otherwise
+  unset, which inherits `runtime.tool_execution_timeout_in_ms`). See
+  [contrib/mcp](../mcp/README.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

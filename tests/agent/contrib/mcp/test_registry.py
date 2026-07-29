@@ -50,7 +50,7 @@ def _execution(name: str, arguments: dict) -> ToolExecution:
 
 async def test_get_tools_lists_namespaced_specs_that_carry_the_server_schema():
     registry = _registry()
-    await registry.wait_listed()  # get_tools is non-blocking; the listing is out of band
+    await registry.wait_listed()  # redundant — get_tools waits too — but states the precondition
     specs = {spec.name: spec for spec in await registry.get_tools(SESSION)}
     assert set(specs) == {"t__echo", "t__add", "t__slow"}
     echo = specs["t__echo"]

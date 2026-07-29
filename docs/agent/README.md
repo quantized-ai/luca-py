@@ -63,10 +63,14 @@ asyncio.run(main())
 
 ## Pages
 
-Read top to bottom; each page starts simple and deepens.
+New here? Read [`QUICKSTART.md`](QUICKSTART.md) first — a step-by-step tutorial
+that builds an agent from nothing to tools, permissions, plugins and compaction,
+showing what to expect at every step. The numbered pages below are the reference:
+read top to bottom; each starts simple and deepens.
 
 | Page | Topic |
 |---|---|
+| [`QUICKSTART.md`](QUICKSTART.md) | **Start here** — the guided, step-by-step tutorial |
 | [`01-quickstart.md`](01-quickstart.md) | A full runnable agent + the drive loop |
 | [`02-data-model.md`](02-data-model.md) | `AgentSession`, entries, turns, serialize / resume / fork |
 | [`03-tools.md`](03-tools.md) | `ToolSpec`, the core's tool contract — and the contrib `Tool` class that mints one |

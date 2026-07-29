@@ -34,7 +34,15 @@ def _port_for(label: str) -> int:
 
 
 class FileTokenStorage(TokenStorage):
-    """One server's slice of `<store_dir>/mcp-auth.json`."""
+    """One server's slice of `<store_dir>/mcp-auth.json`.
+
+    The file holds access AND refresh tokens in plaintext, and a refresh token
+    is long-lived — whoever reads it keeps access to that server until it is
+    revoked. So the file is owner-only (0600) and its directory owner-only
+    (0700), the same treatment ssh gives a private key and the aws/gcloud CLIs
+    give their credential files. `Path.write_text` alone would leave it at the
+    process umask, which is world-readable on a normal system.
+    """
 
     def __init__(self, store_dir: Path, label: str) -> None:
         self._path = Path(store_dir) / "mcp-auth.json"
@@ -52,8 +60,11 @@ class FileTokenStorage(TokenStorage):
         except (OSError, json.JSONDecodeError):
             whole = {}
         whole[self._label] = {**whole.get(self._label, {}), **section}
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._path.write_text(json.dumps(whole, indent=2))
+        # after every write, not just creation: an existing file may predate
+        # this (or have been created by something else) and keep its old mode
+        self._path.chmod(0o600)
 
     async def get_tokens(self) -> OAuthToken | None:
         raw = (await asyncio.to_thread(self._read)).get("tokens")

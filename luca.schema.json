@@ -85,6 +85,32 @@
           "default": true,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "timeout_in_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout In Ms"
+        },
+        "call_timeout_in_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Timeout In Ms"
         }
       },
       "required": [
@@ -455,6 +481,32 @@
           "default": true,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "timeout_in_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout In Ms"
+        },
+        "call_timeout_in_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Timeout In Ms"
         }
       },
       "required": [
