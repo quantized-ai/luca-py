@@ -33,6 +33,15 @@ def _port_for(label: str) -> int:
     return _CALLBACK_PORT_BASE + (zlib.crc32(label.encode()) % 1000)
 
 
+async def _open_in_browser(auth_url: str) -> None:
+    """Open the authorization URL off the event loop. `webbrowser.open` is
+    synchronous and can block for a noticeable time (on macOS it shells out to
+    `open`, on Linux it may spawn and wait on a browser process); running it
+    inline would stall the loop, so the TUI stops repainting and the run's
+    cancellation token can't be observed until it returns."""
+    await asyncio.to_thread(webbrowser.open, auth_url)
+
+
 class FileTokenStorage(TokenStorage):
     """One server's slice of `<store_dir>/mcp-auth.json`.
 
@@ -120,9 +129,6 @@ def make_auth_factory(store_dir: Path):
         port = _port_for(label)
         redirect_uri = f"http://localhost:{port}/callback"
 
-        async def redirect_handler(auth_url: str) -> None:
-            webbrowser.open(auth_url)
-
         async def callback_handler() -> tuple[str, str | None]:
             return await capture_authorization_code(port)
 
@@ -136,7 +142,7 @@ def make_auth_factory(store_dir: Path):
                 token_endpoint_auth_method="none",
             ),
             storage=FileTokenStorage(store_dir, label),
-            redirect_handler=redirect_handler,
+            redirect_handler=_open_in_browser,
             callback_handler=callback_handler,
         )
 

@@ -36,3 +36,29 @@ async def test_the_app_connects_mcp_at_startup_and_exposes_tools(tmp_path):
     assert registry.connected_labels == ["t"]
     assert "t__echo" in wire_tools
     assert "t__add" in wire_tools
+
+
+async def test_new_relists_mcp_on_reset(tmp_path):
+    # `/new` builds a fresh runner with a fresh McpToolRegistry; without re-running
+    # the connect worker that new registry never lists at startup, so the notice
+    # and any OAuth flow are lost and a server pops its browser mid first message.
+    app = AgentApp(
+        AgentSessionRunner.new_session(faux_model()),
+        provider=FauxProvider(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        mode="yolo",
+        mcp_servers={"t": StdioServer(command=sys.executable, args=[str(_FIXTURE)])},
+    )
+
+    async with app.run_test():
+        await app._mcp_worker.wait()
+        first = app._find_mcp_registry()
+        assert first.connected_labels == ["t"]
+
+        await app._reset_session(AgentSessionRunner.new_session(faux_model()))
+        await app._mcp_worker.wait()  # the fresh runner's worker, not the old one
+        second = app._find_mcp_registry()
+
+    assert second is not first  # /new built a fresh registry
+    assert second.connected_labels == ["t"]  # and re-listed it up front

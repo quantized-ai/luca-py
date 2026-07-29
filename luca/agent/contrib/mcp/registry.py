@@ -232,15 +232,25 @@ class McpToolRegistry(ToolRegistry):
         self._specs: dict[str, dict[str, ToolSpec]] = {}
         self.failures: dict[str, str] = {}  # label -> last error, surfaced by the TUI notice
         self._lock = asyncio.Lock()  # one listing pass at a time; holds no state itself
+        # One provider per label, so token and discovery state is shared across
+        # every listing and call. A fresh provider per operation would re-read
+        # mcp-auth.json and re-run OAuth discovery each time, and two built for
+        # the same label would bind the same callback port and could race a
+        # refresh-token rotation.
+        self._auth_cache: dict[str, httpx.Auth] = {}
 
     @property
     def connected_labels(self) -> list[str]:
         return sorted(self._specs)
 
     def _auth_for(self, label: str, server: McpServerDef):
-        if isinstance(server, HttpServer) and server.oauth and self._auth_factory is not None:
-            return self._auth_factory(label, server)
-        return None
+        if not (isinstance(server, HttpServer) and server.oauth and self._auth_factory is not None):
+            return None
+        provider = self._auth_cache.get(label)
+        if provider is None:
+            provider = self._auth_factory(label, server)
+            self._auth_cache[label] = provider
+        return provider
 
     def _unlisted(self) -> list[str]:
         """Servers that have not listed successfully yet — everything on a cold

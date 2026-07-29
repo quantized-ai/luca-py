@@ -114,10 +114,13 @@ as written. Two consequences:
   It must stay a pure function of static server config. A `ToolSpec` that varies per call mints a
   fresh `session.tool_specs` row every time and silently defeats normalization.
 - Results map to `ExecutionResult` content (text → `TextContent`, image → `ImageContent`).
-- The trade-off: each tool call re-spawns the stdio subprocess and re-runs `initialize`, and a server
-  that keeps per-session state is reset between calls. Most tool servers are stateless per call.
-  Startup pays the listing connect (the notice worker), not each turn. Warm persistent connections are
-  a future option if that latency bites.
+- The trade-off: each tool call re-spawns the stdio subprocess and re-runs `initialize`, and any
+  per-session state the server holds is gone between calls — a working directory, an open document, an
+  open transaction or cursor. Most tool servers are stateless per call, so this is invisible; it is not
+  for a stateful one. Startup pays the listing connect (the notice worker), not each turn. The fix, if
+  a stateful server ever needs it, is a redesign rather than a patch: one long-lived task per server
+  owning the connection and its cancel scope, with a request queue. Warm persistent connections are
+  that path, deferred until a stateful server actually shows up.
 
 ## Permissions
 

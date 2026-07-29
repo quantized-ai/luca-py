@@ -144,6 +144,7 @@ class AgentApp(App):
         self._mcp_servers = mcp_servers
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
+        self._mcp_worker = None
         self._live_reasoning: ReasoningCell | None = None
         self._live_text: AssistantCell | None = None
         self._tool_cells: dict[str, ToolCallCell] = {}
@@ -171,17 +172,21 @@ class AgentApp(App):
     async def on_mount(self) -> None:
         self._refresh_status()
         await self._replay_history()
-        if self._mcp_servers:
-            # list the MCP servers at startup so any OAuth flow and the notice
-            # happen up front rather than inside the first turn; the listing is
-            # shared, so the first turn does not pay for it twice. `get_tools`
-            # waits on the same listing, so the first turn has the tools whether
-            # or not this worker finished first.
-            self._mcp_worker = self.run_worker(self._connect_mcp(), group="mcp")
+        self._start_mcp_worker()
         if self.runner.idle():
             self.query_one("#prompt", Input).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
+
+    def _start_mcp_worker(self) -> None:
+        """List the configured MCP servers off the turn's critical path so any
+        OAuth flow and the connect notice happen up front rather than inside the
+        first turn; `get_tools` waits on the same listing, so the first turn has
+        the tools whether or not this worker finished first. Exclusive in its
+        group so `/new` replaces the previous runner's worker instead of leaving
+        one listing a registry that has been thrown away."""
+        if self._mcp_servers:
+            self._mcp_worker = self.run_worker(self._connect_mcp(), group="mcp", exclusive=True)
 
     def _find_mcp_registry(self):
         """The per-call MCP registry among the runner's registries (the proxy's
@@ -506,6 +511,7 @@ class AgentApp(App):
         self._live_text = None
         self._tool_cells.clear()
         self._pending_images.clear()
+        self._start_mcp_worker()  # the fresh runner's registry lists + notices + OAuths up front
         self._refresh_status()
         self.query_one("#prompt", Input).focus()
 
