@@ -30,7 +30,6 @@ class PluginAgentSessionRunner(AgentSessionRunner):
         provider=None,
         conversation_projector=None,
         context_manager=None,
-        compaction_policy=None,
         middleware: list | None = None,
         plugins: list | None = None,
     ) -> None:
@@ -57,7 +56,6 @@ class PluginAgentSessionRunner(AgentSessionRunner):
             provider=provider,
             conversation_projector=conversation_projector,
             context_manager=context_manager,
-            compaction_policy=compaction_policy,
             middleware=middleware,
         )
         self.plugins = plugins

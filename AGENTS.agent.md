@@ -11,7 +11,7 @@ Guidance for the `luca.agent` layer. Read this file whenever you're working in `
 - A resumable async agent loop exposed as `runner.run()` (lazy) and `runner.start()` (eager), both returning an `AgentRun` handle. The engine projects the active conversation to LLM messages, calls the model, records the assistant turn, executes tool calls, and loops — bracketed by `TurnStart` / `TurnFinish(outcome)`. One logical turn can span multiple runs.
 - The whole tool lifecycle delegated to a `ToolRegistry` — the core has no built-in tool resolution or approval engine; permission policies are contrib (`contrib/simple_tool_registry`). The core's only tool type is `ToolSpec`, plain JSON-serializable data: it depends on no Python tool class, so a registry fronting a remote tool server (MCP, an HTTP tool service, another agent) is a first-class implementation, and `luca` stays an implementation-agnostic specification another language could implement against.
 - Durable cancellation via `runner.cancel()` / `run.cancel()`, recorded as a `CancelRequested` entry and wound down at engine step boundaries.
-- Compaction as a step inside a drive: a `CompactionPolicy` decides and summarizes, the runner archives the conversation and installs a new one over the path the policy chose — atomically, losing nothing.
+- Compaction as a step inside a drive: the `ContextManager` decides and summarizes, the runner archives the conversation and installs a new one over the path it chose — atomically, losing nothing.
 - Configurable timeouts and step limits that ride on the persisted `RuntimeConfig`, not the constructor.
 - A purely observational event stream (`luca.agent.core.events`) consumed by iterating the handle or via `on_event`.
 
@@ -42,10 +42,10 @@ luca/agent/
 │   ├── memory/
 │   │   ├── __init__.py  # package surface: MemoryPlugin + the scratchpad / todo tools
 │   │   └── plugin.py    # scratchpad + todo-list tools, MemoryPlugin
-│   ├── compaction/     # a concrete CompactionPolicy (LLM summary + context gauge)
-│   │   ├── __init__.py  # package surface: SummarizingCompactionPolicy, gauge
-│   │   ├── context.py   # the context gauge (used vs the model's window)
-│   │   └── policy.py    # SummarizingCompactionPolicy (should_compact + compact; keep_turns)
+│   ├── simple_context_manager/  # a concrete ContextManager that also compacts
+│   │   ├── __init__.py  # package surface: SummarizingContextManager, gauge
+│   │   └── manager.py   # SummarizingContextManager (should_compact + compact;
+│   │                    #   keep_turns) + the context gauge (used vs the window)
 │   ├── resource_permissions/
 │   │   ├── __init__.py  # package surface: PermissionStrategy, rules, answers, the mixin
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy
@@ -68,13 +68,15 @@ luca/agent/
     │                    #   through (all async, session first) + PreparedTool + the
     │                    #   registry-author rules
     ├── context.py       # CancellationToken (runtime-only; never persisted)
-    ├── context_manager.py # ContextManager — context-accounting strategy: per-entry
+    ├── context_manager.py # ContextManager — the context strategy: per-entry
     │                    #   context_tokens estimation, tool-output processing,
-    │                    #   PrunedEntry templates (concrete class; runner default).
-    │                    #   All three methods take the live session first.
-    ├── compaction.py    # CompactionPolicy contract + CompactionPlan / UsageCounters /
-    │                    #   ConversationSnapshot + validate_plan (pure — no session
-    │                    #   mutation, no ledger, no asyncio)
+    │                    #   PrunedEntry templates, AND the compaction pair
+    │                    #   (should_compact + compact) — concrete class, runner
+    │                    #   default. Every method takes the live session first.
+    ├── compaction.py    # CompactionPlan / UsageCounters / ConversationSnapshot +
+    │                    #   validate_plan — the vocabulary the compaction pair
+    │                    #   exchanges (pure — no session mutation, no ledger,
+    │                    #   no asyncio). The extension point is ContextManager.
     ├── exceptions.py    # AgentError, CancelledError, AlreadyCancellingError,
     │                    #   ToolNotFound, InvalidToolArguments, ProjectionError,
     │                    #   CompactionPlanError
@@ -274,12 +276,14 @@ Two different measurements, never conflated:
 - **`Entry.context_tokens`** — the intrinsic estimated size of that entry's model-facing content, shared with the entry across every conversation that references it. Calculated by the runner's **`ContextManager`** collaborator (`context_manager.py`, passed as `context_manager=`, defaults to the simple built-in: one token per 4 characters) on every NEW entry before `before_entry_written`, and recalculated on a `ToolExecution`'s terminal transition before `after_tool_execution`. Middleware has the final say — nothing is recalculated, validated, or repaired after it. Never derived from provider usage.
 - **`AgentSession.usages[conversation_id][entry_id]` → `Usage`** — the provider-reported consumption for one entry in one conversation (the same assistant entry in two conversations can have different usage: input covers the whole request context). A self-describing association record (`conversation_id` + `entry_id` are required fields), written only through `SessionLedger.record_usage()` when an assistant message is recorded. Entries carry NO usage field; `TurnFinish` carries no rollup; `RunResult` carries no usage — aggregate from the store.
 
-All three `ContextManager` methods take the live session first, so one argument order describes the whole contract and every policy sees the same state — the active model included, which is what makes a real tokenizer implementable at all:
+Every `ContextManager` method takes the live session first, so one argument order describes the whole contract and every policy sees the same state — the active model included, which is what makes a real tokenizer implementable at all:
 
 ```python
 def calculate_context(self, session, entry) -> int
 def prune_entry(self, session, entry) -> PrunedEntry          # NO framework call site
 def process_tool_output(self, session, execution, result) -> ExecutionResult
+def should_compact(self, session) -> bool                     # compaction — see below
+async def compact(self, session, nodes, entry) -> CompactionPlan | None
 ```
 
 `process_tool_output()` transforms a returned `ExecutionResult` before the terminal execution is constructed (identity by default) — the durable session, the `ToolExecuted` event, and the wire all see the processed output. It receives the `ToolExecution` IN TRANSITION (status still RUNNING, `result` not yet attached): read it for identity — `tool_spec`, `raw_tool_call.name`/`arguments` — never for outcome. That is what makes "truncate `bash` output at 30k characters but never truncate `read`" expressible.
@@ -346,16 +350,18 @@ The batteries-included registries live in `luca/agent/contrib/simple_tool_regist
 
 Replacing the older span of a conversation with a summary of it. **Compaction opens a new conversation inside the same session** — it does not create a new session: add one entry, archive the current view, open a new one over the ids that survive. `conversation_history` keeps the exact pre-compaction path, every compacted entry stays in `entries`, and `CompactionEntry.compacted_nodes` records precisely which ids the summary replaced.
 
-The runner is constructed with one `CompactionPolicy` (`luca/agent/core/compaction.py`; `None` = compaction never happens). Two methods, and they own the whole decision:
+Compaction is the `ContextManager`'s other half (`luca/agent/core/context_manager.py`) — the same collaborator that counts context decides when there is too much of it. Two methods, and they own the whole decision:
 
 ```python
-class CompactionPolicy:
+class ContextManager:                                                  # …plus the three per-entry methods
     def should_compact(self, session) -> bool: ...                     # SYNC — start() consults it at call time
     async def compact(self, session, nodes, entry) -> CompactionPlan | None: ...
 ```
 
-- **`nodes`** is the path the policy may rewrite: the active path minus this compaction's own `TurnStart`, ending with `entry`. `plan.nodes` may carry any of those ids in any order with new entries interleaved, and NOTHING else — an id outside the tuple is a plan rejection, so a policy never has to route around framework markers. `plan.nodes = list(nodes)` is a legal full carry.
-- **`entry`** is a DEEP COPY of the committed `CompactionEntry`; the runner applies exactly `parts`, `llm_config` and `metadata` from the returned plan and discards the rest. The copy is load-bearing: a policy that wrote `parts` onto the live entry and then failed would leave a summary projecting onto an unchanged path.
+The shipped default declines and raises, so compaction never happens unless the manager implements it. There is no "no policy configured" state to check — a manager always exists; `schedule_compaction()` therefore always writes its bracket, and a manager that only accounts surfaces `NotImplementedError` on the next drive (ERRORED bracket, raised to the caller like any USER-sourced failure).
+
+- **`nodes`** is the path the manager may rewrite: the active path minus this compaction's own `TurnStart`, ending with `entry`. `plan.nodes` may carry any of those ids in any order with new entries interleaved, and NOTHING else — an id outside the tuple is a plan rejection, so a manager never has to route around framework markers. `plan.nodes = list(nodes)` is a legal full carry.
+- **`entry`** is a DEEP COPY of the committed `CompactionEntry`; the runner applies exactly `parts`, `llm_config` and `metadata` from the returned plan and discards the rest. The copy is load-bearing: a manager that wrote `parts` onto the live entry and then failed would leave a summary projecting onto an unchanged path.
 - **`plan.nodes`** is the new conversation before ids exist: a `str` carries an existing node over, an entry object is created there (the runner stamps `id`/`parent_id`/`created_at`, one timestamp, parents threaded left to right).
 - **`plan.usage`** is a typed `UsageCounters` recorded for the ATTEMPT, against the pre-compaction conversation.
 
@@ -365,7 +371,7 @@ class CompactionPolicy:
 
 **Safety.** Everything fallible happens before the transition; `SessionLedger.transition_conversation` is the atomic region and contains only plain assignments. `validate_plan` refuses a plan that references an unknown or un-offered id, references one twice, is empty, omits the compaction entry, was computed against a conversation that has since moved, or carries no content — STRUCTURE only, never meaning. A `source=USER` failure raises; a `source=POLICY` failure degrades so the user's turn survives; a cancel always stops the drive. An interrupted compaction resumes in place (the test is `entry.parts is None`, not the bracket's shape); a closed bracket is never retried.
 
-Details in `docs/agent/12-compaction.md`. No default policy ships yet — the summarization strategy is planned as contrib.
+Details in `docs/agent/12-compaction.md`. A ready-made implementation ships in `luca/agent/contrib/simple_context_manager/`: `SummarizingContextManager` (the context gauge + an LLM summary, `keep_turns` knob).
 
 ### Tool identity
 
@@ -561,12 +567,12 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_runner_failures.py` | The prepare/dispatch outcome table (every `prepare()` failure mode, the non-callable and non-awaitable guards, `started_at`/`dispatched`/`details["phase"]`), tool deadlines and their scope, crash recovery (orphaned RUNNING), LLM failure closes, `post_message` matrix |
 | `tests/agent/test_runner_projector.py` | The runner ↔ `ConversationProjector` seam: wire history, event/wire agreement, equality |
 | `tests/agent/test_runner_context.py` | The runner ↔ `ContextManager` seam: context stamping, middleware final say, processed tool output (session/event/wire agreement), prune-machinery composition, and `recalculate_context_tokens()` (every entry, archived and off-path included; construction changes nothing) |
-| `tests/agent/test_context_manager.py` | Default `ContextManager`: per-type context ownership, prune templates + refusals, identity tool-output, subclass overrides, model-aware counting, and the non-membership of an entry during an append |
+| `tests/agent/test_context_manager.py` | Default `ContextManager`: per-type context ownership, prune templates + refusals, identity tool-output, subclass overrides, model-aware counting, the non-membership of an entry during an append, and the compaction pair's base behavior (declines / raises) |
 | `tests/agent/test_runner_system_prompt.py` | `system_prompt_parts` forms (str / dict / part / callable) + assembler (callable parts receive `(session_config, runtime_status)`) |
 | `tests/agent/test_runner_limits.py` | Hard/soft `max_steps`, doom-loop flagging, `tool_choice` restriction |
 | `tests/agent/test_models.py` | The data model as pure Pydantic: entry shapes and defaults, `ToolSpec.spec_id()` (stability, key-order independence, distinct ids for distinct content), tool-spec normalization end to end (one row per distinct spec, dump strips / load restores by reference, standalone execution dumps stay inline, both load guards raise) |
 | `tests/agent/test_ledger.py` | Entry-derived query matrix (status × approval subsets), the `record_usage` / `put_entry` / `transition_conversation` / `refresh_entry` doors, tool-spec filing at every door (one row per distinct spec, recompute-always, all three `transition_conversation` lists), `open_compaction_entry`, the derive-status skip matrix |
-| `tests/agent/test_compaction.py` | The compaction CONTRACT as a unit: `validate_plan` (every rejection), `has_content`, `check_snapshot`, the plan value objects — no runner, no ledger, nothing async |
+| `tests/agent/test_compaction.py` | The compaction VOCABULARY as a unit: `validate_plan` (every rejection), `has_content`, `check_snapshot`, the plan value objects — no runner, no ledger, nothing async |
 | `tests/agent/test_runner_compaction.py` | The drive: brackets, events, the transition, failures by source, cancels, resumes (G6), statuses, `RunResult` |
 | `tests/agent/test_projection.py` | `ConversationProjector`: every entry type, every terminal tool status, fail-loud rules, subclass override points |
 | `tests/agent/test_adapter.py` | Inbound message parts + `tool_spec_to_luca_tool` (the `input_schema` → `parameters` pass-through) |
@@ -578,7 +584,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_resource_permissions.py` | Self-scoped contrib tests: `PermissionStrategy` decide / apply_answer / pending_requests / grant + the tool mixin — no runner, no session |
 | `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
-| `tests/agent/contrib/test_compaction_policy.py` | Self-scoped contrib tests: `SummarizingCompactionPolicy` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
+| `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
 | `tests/agent/contrib/tui/` | Self-scoped contrib tests: pure modules (`test_approvals.py`, `test_render.py`, `test_sessions.py`, `test_wiring.py`, `test_cli.py`, `test_config.py`, `test_context_bar.py`) + headless Pilot tests driving `AgentApp` with a scripted `FauxProvider` (`test_app*.py`); the directory skips itself when textual is missing |
 
 ## When in doubt

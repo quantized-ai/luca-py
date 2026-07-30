@@ -19,30 +19,34 @@ The session id does not change. The session file does not change. The next
 request projects only the active path, so the summarized entries stop costing
 context while remaining inspectable.
 
-## 1. Configure a policy
+## 1. Configure a manager
 
-Compaction has exactly one extension point: `CompactionPolicy`. The runner
-triggers, stamps and archives — it never decides *when* a compaction is worth
-doing, *what* the summary says, *which model* writes it, or *which nodes*
-survive.
+Compaction has exactly one extension point, and it is the `ContextManager` you
+already know from [11](11-context-and-usage.md) — the collaborator that counts
+context also decides when there is too much of it. The runner triggers, stamps
+and archives; it never decides *when* a compaction is worth doing, *what* the
+summary says, *which model* writes it, or *which nodes* survive.
 
 ```python
-from luca.agent.core import AgentSessionRunner, CompactionPolicy
+from luca.agent.core import AgentSessionRunner
 
-runner = AgentSessionRunner(session, compaction_policy=MyPolicy())
+runner = AgentSessionRunner(session, context_manager=MyContextManager())
 ```
 
-A ready-made one ships in contrib: `SummarizingCompactionPolicy` (a context
+A ready-made one ships in contrib: `SummarizingContextManager` (a context
 gauge plus an LLM summary, with a keep_turns knob) —
-[contrib/compaction/](contrib/compaction/README.md). Write your own by
-subclassing `CompactionPolicy` (section 4).
+[contrib/simple_context_manager/](contrib/simple_context_manager/README.md).
+Write your own by subclassing `ContextManager` (section 4).
 
-Omit it and compaction never happens: `should_compact` is never consulted and
-`schedule_compaction()` raises.
+The shipped default never compacts: `should_compact` returns `False` and
+`compact` raises `NotImplementedError`. Nothing consults it unless you call
+`schedule_compaction()` by hand — which then fails on the drive, since a
+manager always exists and there is no "unconfigured" state to reject at
+schedule time.
 
 ## 2. Trigger it
 
-**Automatically** — the policy is asked at the top of every drive:
+**Automatically** — the manager is asked at the top of every drive:
 
 ```python
 result = await runner.run()          # may compact first, then drive the turn
@@ -90,22 +94,22 @@ async with runner.run() as run:
 | Event | Fires | Snapshot |
 |---|---|---|
 | `CompactionScheduled` | the bracket + entry are on the path (opened or resumed) | `started_at` is None on a fresh open |
-| `CompactionStarted` | `started_at` stamped, immediately before the LLM call | `llm_config` is still None — the policy picks the model |
+| `CompactionStarted` | `started_at` stamped, immediately before the LLM call | `llm_config` is still None — the manager picks the model |
 | `CompactionFinished` | after the bracket closes or the transition commits, **whatever the outcome** | terminal; `parts` set → summarized, None → nothing done |
 
 `CompactionFinished` fires on failure too. For a policy-initiated failure —
 which degrades silently so the user's turn survives — it is the *only* signal.
 
-## 4. Write a policy
+## 4. Write a manager
 
 ```python
 from luca.agent.core import (
-    CompactionPlan, CompactionPolicy, LLMConfig, TextContent, UsageCounters,
+    CompactionPlan, ContextManager, LLMConfig, TextContent, UsageCounters,
 )
 
 CHEAP = LLMConfig(model="openai/gpt-4o-mini", provider="openrouter")
 
-class KeepLastTurn(CompactionPolicy):
+class KeepLastTurn(ContextManager):
     def should_compact(self, session) -> bool:
         nodes = session.active_conversation.nodes
         total = sum(session.entries[n].context_tokens for n in nodes)
@@ -129,10 +133,14 @@ class KeepLastTurn(CompactionPolicy):
 the whole session. The threshold, the sum and the window size are all yours —
 core has no context-total API, and `luca.client.catalog` carries
 `context_window` per model. Core remembers nothing about past failures either:
-a policy that should stop trying returns `False`.
+a manager that should stop trying returns `False`.
 
 **`compact`** is async — it makes an LLM call, which you own end to end. Return
 `None` for "nothing to do".
+
+Subclassing `ContextManager` means you inherit its per-entry accounting
+(`calculate_context`, `prune_entry`, `process_tool_output`) unchanged — override
+those too if your compaction strategy needs a different measure of size.
 
 ### `nodes` — the path you may rewrite
 
@@ -198,7 +206,7 @@ All raise `CompactionPlanError`. An image-only summary is legitimate content
 and is accepted.
 
 > ⚠️ **"Trim without summarizing" is not expressible.** The no-content rule
-> means a policy that wants to drop history with no summary must emit a marker
+> means a manager that wants to drop history with no summary must emit a marker
 > part (`"[earlier messages dropped]"`) or return `None`.
 
 ## 7. Hazards you own
@@ -218,10 +226,10 @@ what your entries *mean*:
 - **summarizing away a trailing unanswered `UserMessage`** → **the one silent
   failure**: the question disappears with no error anywhere.
 
-That last one is not exotic. A "summarize everything, keep nothing" policy
+That last one is not exotic. A "summarize everything, keep nothing" manager
 produces it by default, because compaction runs at the *top* of a drive, when a
 just-posted message is on the path and unanswered. The framework does not
-prevent it — a policy may legitimately fold that message into the summary text
+prevent it — a manager may legitimately fold that message into the summary text
 — so carrying it is your decision to make deliberately.
 
 Cutting on turn brackets avoids every hazard on this list.
@@ -234,9 +242,9 @@ it, so the leaf before it decides what happens next.
 
 | Ending | Bracket | Raises? | Next drive |
 |---|---|---|---|
-| policy returned `None` | closed `COMPLETED` | no | ordinary |
+| the manager returned `None` | closed `COMPLETED` | no | ordinary |
 | success | closed `COMPLETED`, archived | no | ordinary |
-| plan rejected / policy raised / provider error | closed `ERRORED` | **`source=USER` only** | not retried |
+| plan rejected / `compact` raised / provider error | closed `ERRORED` | **`source=USER` only** | not retried |
 | deadline expired | closed `TIMED_OUT` | **`source=USER` only** | not retried |
 | cancelled | closed `CANCELLED` | no | not retried — the drive stops |
 | crash before or during the summary | **open** | — | resumes in place, same entry |
@@ -245,7 +253,7 @@ it, so the leaf before it decides what happens next.
 policy-initiated failure degrades**: the bracket closes, `CompactionFinished`
 carries the outcome, and the drive goes on to the conversational turn.
 Compaction is an optimization and must not cost the user their turn; the price
-is that a policy bug surfaces only on the event stream.
+is that a manager bug surfaces only on the event stream.
 
 **A cancel always stops the drive**, whatever outcome it carried — the cancel is
 against the drive, not against the compaction alone.

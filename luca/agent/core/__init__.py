@@ -3,8 +3,8 @@
 The conversation data model (`models`) plus the runtime surface: the
 `AgentSessionRunner` loop, the `ToolRegistry` contract, the
 `ConversationProjector` LLM-projection strategy, the `ContextManager`
-accounting strategy, the `CompactionPolicy` contract, the system-prompt
-strategy, and the agent exceptions. Event classes live in
+accounting-and-compaction strategy, the system-prompt strategy, and the agent
+exceptions. Event classes live in
 `luca.agent.core.events`; the inbound response / tool-definition translations
 in `luca.agent.core.adapter`; the read-only `pretty_print` session transcript
 in `luca.agent.core.utils`.
@@ -16,7 +16,6 @@ nothing in the core depends on it.
 
 from .compaction import (
     CompactionPlan,
-    CompactionPolicy,
     UsageCounters,
 )
 from .context import CancellationToken
@@ -107,7 +106,6 @@ __all__ = [
     "CompactionEntry",
     "CompactionPlan",
     "CompactionPlanError",
-    "CompactionPolicy",
     "CompactionSource",
     "ContentPart",
     "ContextManager",

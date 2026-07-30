@@ -1,22 +1,26 @@
-# Compaction policy
+# Simple context manager
 
-Core defines the `CompactionPolicy` contract and owns the transition (archive
-the old conversation, swap in the new one) — see
-[12-compaction.md](../../12-compaction.md). It ships no concrete policy. This
-package is one: `SummarizingCompactionPolicy`, which decides when to compact and
-produces the summary.
+Core's `ContextManager` accounts for context and declares the compaction pair,
+but its default never compacts — see
+[11-context-and-usage.md](../../11-context-and-usage.md) and
+[12-compaction.md](../../12-compaction.md). This package ships one that does:
+`SummarizingContextManager`, which decides when to compact and produces the
+summary. Core still owns the transition (archive the old conversation, swap in
+the new one).
 
 ```python
-from luca.agent.contrib.compaction import SummarizingCompactionPolicy
+from luca.agent.contrib.simple_context_manager import SummarizingContextManager
 
-policy = SummarizingCompactionPolicy(
+manager = SummarizingContextManager(
     keep_turns=2,  # 0 = full summary
     threshold=0.8,
 )
-runner = AgentSessionRunner(session, compaction_policy=policy)
+runner = AgentSessionRunner(session, context_manager=manager)
 ```
 
 ## 1. What it does
+
+Core's per-entry accounting is inherited untouched; two methods are added:
 
 - `should_compact(session)` is the **context gauge**: sum the active path's
   `context_tokens`, divide by the model's window (`luca.client.catalog`, falling
@@ -36,9 +40,9 @@ calls them directly:
 | `calculate_utilization_ratio(session, *, default_window=200_000)` | `used / window`, clamped to `[0, 1]` |
 
 > ⚠️ **The gauge is only as good as the counts.** `context_tokens` is stored per
-> entry by the runner's [`ContextManager`](../../11-context-and-usage.md) — a
-> character estimate by default. Swap in a model-aware tokenizer and the stored
-> counts go stale on a model switch; `runner.recalculate_context_tokens()`
+> entry by [`calculate_context`](../../11-context-and-usage.md) — inherited here
+> as the character estimate. Override it with a model-aware tokenizer and the
+> stored counts go stale on a model switch; `runner.recalculate_context_tokens()`
 > re-derives them, and nothing in the framework calls it for you.
 
 ## 2. `keep_turns` — what survives verbatim
@@ -52,7 +56,7 @@ One knob decides the split:
 
 ## 3. Extending it
 
-Subclass `SummarizingCompactionPolicy` and override one of the public seams:
+Subclass `SummarizingContextManager` and override one of the public seams:
 
 | Override | Changes |
 |---|---|
@@ -66,7 +70,7 @@ default is exported as `DEFAULT_SUMMARY_PROMPT`).
 
 ## 4. In the TUI
 
-`cli.py` builds a policy from `luca.json` and the CLI flags below (a flag wins)
+`cli.py` builds a manager from `luca.json` and the CLI flags below (a flag wins)
 and passes it to the app; the context bar under the transcript shows
 utilization, colored toward red as it nears the threshold.
 

@@ -125,7 +125,7 @@ class AgentApp(App):
         session_dir: str | os.PathLike[str] = ".",
         streaming: bool = True,
         mode: str = "ask",
-        compaction_policy=None,
+        context_manager=None,
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
@@ -136,7 +136,7 @@ class AgentApp(App):
         self._workspace = workspace
         self._provider = provider
         self._mode = mode
-        self._compaction_policy = compaction_policy
+        self._context_manager = context_manager
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
@@ -452,13 +452,13 @@ class AgentApp(App):
     def _build_runner(self, session: AgentSession):
         """One build_runner call site, so `__init__` and the session-swap paths
         carry the same config-derived workspace / mode / rules and the
-        compaction policy."""
+        context manager."""
         return build_runner(
             session,
             workspace=self._workspace,
             provider=self._provider,
             mode=self._mode,
-            compaction_policy=self._compaction_policy,
+            context_manager=self._context_manager,
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
         )
@@ -507,7 +507,7 @@ class AgentApp(App):
             count = len(self._pending_images)
             status += f" · {count} image{'s' if count > 1 else ''} attached"
         self.sub_title = status
-        threshold = getattr(self._compaction_policy, "threshold", 0.8)
+        threshold = getattr(self._context_manager, "threshold", 0.8)
         # the bar is absent during the early __init__-time refresh, before compose()
         with contextlib.suppress(NoMatches):
             self.query_one("#context-bar", ContextBar).update_from(session, threshold=threshold)

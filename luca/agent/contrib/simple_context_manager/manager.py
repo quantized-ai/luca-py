@@ -1,8 +1,14 @@
-"""A concrete `CompactionPolicy`: summarize the older span with the session's
-own model and fold it into a `CompactionEntry`, keeping a trailing tail.
+"""A concrete `ContextManager` that also compacts: the context gauge plus LLM
+summarization of the older span.
+
+Inherits core's per-entry accounting (`calculate_context`, `prune_entry`,
+`process_tool_output`) untouched and implements the compaction pair on top —
+`should_compact` measures the active conversation against the model's window,
+and `compact` summarizes the older span with the session's own model and folds
+it into a `CompactionEntry`, keeping a trailing tail.
 
 Core owns the transition (archive the old conversation, swap in the new one);
-this owns the decision — when to compact (the context gauge) and what the new
+this owns the decision — when to compact (the gauge) and what the new
 conversation looks like (the summary plus the kept nodes). `keep_turns` is the
 one knob: 0 folds everything into the summary, N keeps the last N exchanges
 verbatim.
@@ -10,11 +16,15 @@ verbatim.
 To extend it, subclass and override one of the public seams — `should_compact`
 (when), `select_keep` (what survives verbatim), or `summarize` (how the summary
 is produced). `compact` orchestrates the three and is rarely overridden.
+
+The three gauge functions are module-level and depend on nothing else here: the
+TUI context bar draws the same measurement `should_compact` decides on.
 """
 
 from __future__ import annotations
 
-from luca.agent.core.compaction import CompactionPlan, CompactionPolicy, UsageCounters
+from luca.agent.core.compaction import CompactionPlan, UsageCounters
+from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.models import (
     AgentSession,
     CompactionEntry,
@@ -24,11 +34,10 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
-from luca.client import acompletion
+from luca.client import acompletion, catalog
 from luca.client.types import TextBlock, UserMessage as ClientUserMessage
 
-from .context import DEFAULT_WINDOW, calculate_utilization_ratio
-
+DEFAULT_WINDOW = 200_000
 DEFAULT_THRESHOLD = 0.8
 
 DEFAULT_SUMMARY_PROMPT = (
@@ -48,10 +57,41 @@ DEFAULT_SUMMARY_PROMPT = (
 DEFAULT_SUMMARY_REQUEST = "Summarize the conversation above per your instructions."
 
 
-class SummarizingCompactionPolicy(CompactionPolicy):
+# ── the context gauge ─────────────────────────────────────────────────────────
+
+
+def calculate_context_used(session: AgentSession) -> int:
+    """Sum of intrinsic `context_tokens` over the active conversation path."""
+    entries = session.entries
+    return sum(entries[node_id].context_tokens for node_id in session.active_conversation.nodes)
+
+
+def get_context_window_size(session: AgentSession, default: int = DEFAULT_WINDOW) -> int:
+    """The model's window from the client catalog, or `default` when the model
+    (or the field) is missing."""
+    cfg = session.session_config.llm_config
+    info = catalog.get(cfg.provider, cfg.model)
+    if info is not None and info.context_window:
+        return info.context_window
+    return default
+
+
+def calculate_utilization_ratio(session: AgentSession, *, default_window: int = DEFAULT_WINDOW) -> float:
+    """`used / window`, clamped to `[0, 1]`."""
+    window = get_context_window_size(session, default_window)
+    if window <= 0:
+        return 0.0
+    return min(1.0, calculate_context_used(session) / window)
+
+
+# ── the manager ───────────────────────────────────────────────────────────────
+
+
+class SummarizingContextManager(ContextManager):
     """`should_compact` is the context gauge; `compact` summarizes the folded
     span and returns the new path. `keep_turns` sets how many recent exchanges
-    survive verbatim (0 = summarize everything).
+    survive verbatim (0 = summarize everything). Everything core's
+    `ContextManager` does per entry is inherited unchanged.
 
     The public override seams are `should_compact`, `select_keep`, and
     `summarize`; the `text_of` / `usage_of` static helpers are available for a
@@ -127,10 +167,10 @@ class SummarizingCompactionPolicy(CompactionPolicy):
     ) -> CompactionPlan | None:
         candidates = [node_id for node_id in nodes if node_id != entry.id]
         kept = self.select_keep(candidates, session)
-        # Never fold a trailing unanswered user message: when the policy fires
-        # auto (a message posted, not yet answered), that node is the pending
-        # question, and folding it into the summary would drop it unanswered.
-        # Core leaves this to the policy on purpose.
+        # Never fold a trailing unanswered user message: when compaction fires
+        # automatically (a message posted, not yet answered), that node is the
+        # pending question, and folding it into the summary would drop it
+        # unanswered. Core leaves this to the manager on purpose.
         if candidates and candidates[-1] not in kept and isinstance(session.entries[candidates[-1]], UserMessage):
             kept = [candidates[-1]]
         folded = candidates[: len(candidates) - len(kept)]

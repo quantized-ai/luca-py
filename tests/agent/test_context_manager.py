@@ -2,7 +2,7 @@
 KNOWN context-token count (or PrunedEntry template) out. Pure strategy checks
 — no provider, and no runner except where the append ORDERING is the subject.
 
-All three methods take the live `AgentSession` first. The shipped policy never
+Every method takes the live `AgentSession` first. The shipped policy never
 reads it — it is there so an application's tokenizer can see the active model —
 so every default-policy assertion below passes the same inert `SESSION` and
 the count depends on the entry alone. `PerModelTokenizer` is the counterpart:
@@ -19,13 +19,15 @@ content; markers own nothing. Pruning supports terminal tool executions only
 and returns an identity-less TEMPLATE — stamping ids/clocks belongs to the
 persisting door, never to a strategy. `process_tool_output` is an identity
 pass-through that hands a subclass the IN-TRANSITION execution (still RUNNING,
-no result attached) to select a per-tool policy on.
+no result attached) to select a per-tool policy on. The compaction pair is the
+last section: the default declines and raises, and a subclass owns the plan.
 """
 
 from typing import ClassVar
 
 import pytest
 
+from luca.agent.core.compaction import CompactionPlan, UsageCounters
 from luca.agent.core.context_manager import (
     PRUNED_TOOL_OUTPUT_MARKER,
     ContextManager,
@@ -103,6 +105,17 @@ RUNNING_ADD = ToolExecution(
     approval_status=ApprovalStatus.ALLOWED,
     started_at=500,
     updated_at=500,
+)
+
+SUMMARY = [TextContent(text="the story so far")]
+
+# A compaction exactly as `compact()` receives it: the deep copy the runner
+# hands over, `parts` still None.
+SCHEDULED_COMPACTION = CompactionEntry(
+    id="c1",
+    created_at=500,
+    source=CompactionSource.USER,
+    started_at=500,
 )
 
 RUNNING_MULTIPLY = ToolExecution(
@@ -576,3 +589,43 @@ def test_pruned_entry_images_are_counted():
     )
 
     assert CM.calculate_context(SESSION, entry) == 1_000
+
+
+# ── the compaction pair ───────────────────────────────────────────────────────
+
+
+def test_the_default_manager_never_compacts():
+    assert CM.should_compact(SESSION) is False
+
+
+async def test_the_default_manager_has_no_compact_implementation():
+    with pytest.raises(NotImplementedError):
+        await CM.compact(SESSION, ("u1", "c1"), SCHEDULED_COMPACTION)
+
+
+async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
+    class Folding(ContextManager):
+        def should_compact(self, session):
+            return True
+
+        async def compact(self, session, nodes, entry):
+            return CompactionPlan(
+                entry=entry.model_copy(update={"parts": SUMMARY, "llm_config": CHEAP}),
+                nodes=[entry.id],
+                usage=UsageCounters(input=100, output=20, total_tokens=120),
+            )
+
+    manager = Folding()
+
+    plan = await manager.compact(
+        SESSION,
+        ("u1", "c1"),
+        SCHEDULED_COMPACTION.model_copy(deep=True),
+    )
+
+    assert manager.should_compact(SESSION) is True
+    assert plan == CompactionPlan(
+        entry=SCHEDULED_COMPACTION.model_copy(update={"parts": SUMMARY, "llm_config": CHEAP}),
+        nodes=["c1"],
+        usage=UsageCounters(input=100, output=20, total_tokens=120),
+    )

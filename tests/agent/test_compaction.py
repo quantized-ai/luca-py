@@ -1,5 +1,7 @@
-"""Declarative tests for the compaction CONTRACT: the policy base, the plan
-value objects, and `validate_plan` / `check_snapshot` / `has_content`.
+"""Declarative tests for the compaction CONTRACT: the plan value objects and
+`validate_plan` / `check_snapshot` / `has_content`. The extension point itself
+(`ContextManager.should_compact` / `compact`) is covered in
+`test_context_manager.py`.
 
 Pure and synchronous — no runner, no ledger, no provider, nothing async. One
 session literal, one snapshot, one plan per test. The validator's whole job is
@@ -17,7 +19,6 @@ from pydantic import ValidationError
 
 from luca.agent.core.compaction import (
     CompactionPlan,
-    CompactionPolicy,
     ConversationSnapshot,
     UsageCounters,
     check_snapshot,
@@ -523,51 +524,3 @@ def test_usage_counters_dump_exactly_the_kwargs_record_usage_takes():
 def test_a_snapshot_is_frozen():
     with pytest.raises(ValidationError):
         SNAPSHOT.id = "c9"
-
-
-# ── the policy base ───────────────────────────────────────────────────────────
-
-
-def test_the_base_policy_never_compacts():
-    assert CompactionPolicy().should_compact(SESSION) is False
-
-
-async def test_the_base_policy_has_no_compact_implementation():
-    with pytest.raises(NotImplementedError):
-        await CompactionPolicy().compact(
-            SESSION,
-            SNAPSHOT.offered,
-            SESSION.entries["cmp"],
-        )
-
-
-async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
-    class Folding(CompactionPolicy):
-        def should_compact(self, session):
-            return True
-
-        async def compact(self, session, nodes, entry):
-            return CompactionPlan(
-                entry=entry.model_copy(
-                    update={"parts": SUMMARY, "llm_config": CHEAP},
-                ),
-                nodes=[entry.id],
-                usage=UsageCounters(input=100, output=20, total_tokens=120),
-            )
-
-    policy = Folding()
-
-    plan = await policy.compact(
-        SESSION,
-        SNAPSHOT.offered,
-        SESSION.entries["cmp"].model_copy(deep=True),
-    )
-
-    assert policy.should_compact(SESSION) is True
-    assert plan == CompactionPlan(
-        entry=SESSION.entries["cmp"].model_copy(
-            update={"parts": SUMMARY, "llm_config": CHEAP},
-        ),
-        nodes=["cmp"],
-        usage=UsageCounters(input=100, output=20, total_tokens=120),
-    )

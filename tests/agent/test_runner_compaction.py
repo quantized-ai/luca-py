@@ -11,9 +11,9 @@ House style: precondition (a literal from `scenarios.py`, deep-copied, or a
 cold reload) → one action → full-object postcondition. `DeterministicRunner`
 with a scripted `ids` list and a frozen clock (`now=1000`, so entries written
 by the drive are visually distinct from the literals' `created_at=500`);
-`FakeCompactionPolicy` for the policy; `FauxProvider` for the turn that
-follows. Never race two timed things — a hanging policy waits on an event the
-test releases.
+`FakeContextManager` for the compacting manager; `FauxProvider` for the turn
+that follows. Never race two timed things — a hanging manager waits on an event
+the test releases.
 
 The `ids` scripts are the determinism contract, in draw order:
 `schedule_compaction()` and a drive-top open each draw `TurnStart` then
@@ -27,6 +27,7 @@ import asyncio
 import pytest
 
 from luca.agent.core.compaction import CompactionPlan, UsageCounters
+from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.events import (
     CompactionFinished,
     CompactionScheduled,
@@ -83,7 +84,7 @@ from tests.agent.scenarios import (
     RICH_IDLE_SESSION,
     RICH_SESSION,
     DeterministicRunner,
-    FakeCompactionPolicy,
+    FakeContextManager,
     spec,
 )
 
@@ -103,7 +104,7 @@ RICH_IDLE_NODES = list(RICH_IDLE_SESSION.active_conversation.nodes)
 # ── policy doubles ────────────────────────────────────────────────────────────
 
 
-class CancellingPolicy(FakeCompactionPolicy):
+class CancellingPolicy(FakeContextManager):
     """Stands in for a cancel arriving MID-SUMMARY: it requests the cancel
     itself, then hangs forever — so the token trips while `compact()` is
     genuinely in flight, with no second timer. The test wires `runner` after
@@ -128,7 +129,7 @@ class CancellingPolicy(FakeCompactionPolicy):
 
 # ── plan builders (the policy's judgment, scripted) ───────────────────────────
 #
-# Each is a `plan=` callable for `FakeCompactionPolicy`: it receives the live
+# Each is a `plan=` callable for `FakeContextManager`: it receives the live
 # session, the offered path, and the deep copy of the entry — whose `id` is
 # the only thing a plan cannot know in advance.
 
@@ -355,7 +356,7 @@ async def test_the_transition_archives_the_old_path_and_installs_the_new_one():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -387,7 +388,7 @@ async def test_every_carried_and_compacted_entry_is_unmutated():
     before = {k: v.model_copy(deep=True) for k, v in session.entries.items()}
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -404,7 +405,7 @@ async def test_compacted_nodes_lists_exactly_the_replaced_ids_in_path_order():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -420,7 +421,7 @@ async def test_the_bracket_stays_behind_and_only_the_entry_carries_over():
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             plan=fold_and_keep_the_question,
         ),
@@ -442,7 +443,7 @@ async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable(
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -459,7 +460,7 @@ async def test_the_execution_index_and_the_old_usage_records_survive():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -486,7 +487,7 @@ async def test_the_entry_is_self_describing_on_the_new_path():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -513,7 +514,7 @@ async def test_a_plan_with_created_entries_stamps_and_threads_them_in_order():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=frame_then_summarize),
+        context_manager=FakeContextManager(plan=frame_then_summarize),
         ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"],
         now=1000,
     )
@@ -551,7 +552,7 @@ async def test_a_plan_that_opens_with_a_created_entry_gives_it_no_parent():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=frame_then_summarize),
+        context_manager=FakeContextManager(plan=frame_then_summarize),
         ids=["ts_c", "cmp", "new1", "new2", "tf_c", "c2"],
         now=1000,
     )
@@ -566,7 +567,7 @@ async def test_a_plan_may_reorder_carried_ids():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=reorder_the_path),
+        context_manager=FakeContextManager(plan=reorder_the_path),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -582,7 +583,7 @@ async def test_a_fold_everything_plan_leaves_the_compaction_entry_as_the_leaf():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -602,7 +603,7 @@ async def test_a_keep_last_assistant_plan_leaves_an_assistant_leaf():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=keep_the_last_assistant),
+        context_manager=FakeContextManager(plan=keep_the_last_assistant),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -620,10 +621,10 @@ async def test_a_keep_last_assistant_plan_leaves_an_assistant_leaf():
 
 async def test_a_full_carry_plan_commits_with_an_empty_compacted_span():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=full_carry)
+    policy = FakeContextManager(plan=full_carry)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -644,7 +645,7 @@ async def test_a_span_of_only_a_previous_summary_is_committed():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             plan=summarize_only_the_previous_summary,
         ),
         ids=["ts_c", "cmp", "tf_c", "c2"],
@@ -664,7 +665,7 @@ async def test_the_next_request_projects_only_the_new_path():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             plan=fold_and_keep_the_question,
         ),
@@ -684,7 +685,7 @@ async def test_the_compacted_session_round_trips_through_json():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -705,7 +706,7 @@ async def test_a_created_tool_execution_has_its_spec_filed_and_survives_a_reload
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             plan=fold_and_create_a_tool_execution,
         ),
         ids=["ts_c", "cmp", "te9", "tf_c", "c2"],
@@ -793,7 +794,7 @@ async def test_the_events_are_scheduled_started_finished():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -832,10 +833,10 @@ async def test_the_events_are_scheduled_started_finished():
 
 async def test_the_policy_is_handed_a_deep_copy_and_the_live_session():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=fold_everything)
+    policy = FakeContextManager(plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -850,10 +851,10 @@ async def test_the_policy_is_handed_a_deep_copy_and_the_live_session():
 
 async def test_the_policy_is_offered_the_path_without_the_bracket_turn_start():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=fold_everything)
+    policy = FakeContextManager(plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -871,7 +872,7 @@ async def test_a_policy_that_writes_to_its_copy_and_fails_cannot_inject_a_summar
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             mutate=True,
             raises=ValueError("kaboom"),
         ),
@@ -900,7 +901,7 @@ async def test_a_policy_returning_none_closes_completed_without_transitioning():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=None),
+        context_manager=FakeContextManager(plan=None),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -940,7 +941,7 @@ async def test_scheduling_on_an_empty_session_compacts_nothing():
     )
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=None),
+        context_manager=FakeContextManager(plan=None),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -962,7 +963,7 @@ async def test_a_noop_compaction_does_not_bury_a_queued_message():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=True, plan=None),
+        context_manager=FakeContextManager(should=True, plan=None),
         ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
         now=1000,
     )
@@ -997,7 +998,7 @@ async def test_a_malformed_plan_is_refused_and_the_conversation_is_unchanged(
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=plan),
+        context_manager=FakeContextManager(plan=plan),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1023,7 +1024,7 @@ async def test_a_plan_computed_against_a_replaced_conversation_is_refused():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             plan=replace_the_active_conversation,
         ),
         ids=["ts_c", "cmp", "tf_c"],
@@ -1048,7 +1049,7 @@ async def test_a_plan_computed_against_a_path_that_moved_is_refused():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=append_to_the_active_path),
+        context_manager=FakeContextManager(plan=append_to_the_active_path),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1066,7 +1067,7 @@ async def test_an_image_only_summary_is_committed():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=image_only_summary),
+        context_manager=FakeContextManager(plan=image_only_summary),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -1084,7 +1085,7 @@ async def test_usage_is_recorded_for_a_rejected_plan():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=carry_an_unknown_id),
+        context_manager=FakeContextManager(plan=carry_an_unknown_id),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1108,7 +1109,7 @@ async def test_a_policy_that_replaced_the_conversation_still_gets_g2s_error():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=replace_the_active_conversation),
+        context_manager=FakeContextManager(plan=replace_the_active_conversation),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1125,7 +1126,7 @@ async def test_a_rejected_plan_leaves_the_entry_projecting_nothing():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=empty_plan),
+        context_manager=FakeContextManager(plan=empty_plan),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1150,7 +1151,7 @@ async def test_a_user_policy_raise_closes_errored_and_propagates():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
+        context_manager=FakeContextManager(raises=ValueError("kaboom")),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1173,7 +1174,7 @@ async def test_an_iterated_user_failure_yields_finished_before_raising():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
+        context_manager=FakeContextManager(raises=ValueError("kaboom")),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1203,7 +1204,7 @@ async def test_a_policy_source_failure_degrades_and_the_queued_turn_still_runs()
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             raises=ValueError("kaboom"),
         ),
@@ -1239,7 +1240,7 @@ async def test_a_degraded_failure_is_only_visible_on_the_event_stream():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             raises=ValueError("kaboom"),
         ),
@@ -1260,7 +1261,7 @@ async def test_a_client_timeout_from_the_policy_closes_timed_out():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             raises=ClientTimeoutError("the summarization call timed out"),
         ),
         ids=["ts_c", "cmp", "tf_c"],
@@ -1278,7 +1279,7 @@ async def test_a_provider_error_from_the_policy_closes_errored():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             raises=ProviderAPIError("upstream is down"),
         ),
         ids=["ts_c", "cmp", "tf_c"],
@@ -1297,10 +1298,10 @@ async def test_the_policy_deadline_closes_timed_out_and_a_user_compaction_raises
     session.session_config.runtime_config = RuntimeConfig(
         client_completion_timeout_in_ms=50,
     )
-    policy = FakeCompactionPolicy(hang=True)
+    policy = FakeContextManager(hang=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1322,7 +1323,7 @@ async def test_the_policy_deadline_degrades_for_a_policy_source_compaction():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=True, hang=True),
+        context_manager=FakeContextManager(should=True, hang=True),
         ids=["ts_c", "cmp", "tf_c", "ts4", "a4", "tf4"],
         now=1000,
     )
@@ -1344,7 +1345,7 @@ async def test_middleware_raising_during_preparation_leaves_the_path_unchanged()
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         middleware=[RefusesTheSummary()],
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
@@ -1369,7 +1370,7 @@ async def test_middleware_raising_while_closing_a_failed_bracket_leaves_it_open(
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(raises=ValueError("kaboom")),
+        context_manager=FakeContextManager(raises=ValueError("kaboom")),
         middleware=[RefusesTheClose()],
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
@@ -1395,7 +1396,7 @@ async def test_repeated_policy_failures_burn_one_attempt_per_drive():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             raises=ValueError("kaboom"),
         ),
@@ -1432,10 +1433,10 @@ async def test_repeated_policy_failures_burn_one_attempt_per_drive():
 
 async def test_cancelling_between_scheduled_and_started_closes_cancelled():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=fold_everything)
+    policy = FakeContextManager(plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "cr", "tf_c"],
         now=1000,
     )
@@ -1459,7 +1460,7 @@ async def test_cancelling_mid_summary_closes_cancelled_and_tears_the_policy_down
     policy = CancellingPolicy()
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "cr", "tf_c"],
         now=1000,
     )
@@ -1481,7 +1482,7 @@ async def test_a_cancel_stops_the_drive_and_the_queued_message_is_not_answered()
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
+        context_manager=FakeContextManager(should=True, plan=fold_everything),
         ids=["ts_c", "cmp", "cr", "tf_c"],
         now=1000,
     )
@@ -1501,7 +1502,7 @@ async def test_the_run_after_a_cancelled_compaction_carries_no_interrupted_marke
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=[True, False], plan=fold_everything),
+        context_manager=FakeContextManager(should=[True, False], plan=fold_everything),
         ids=["ts_c", "cmp", "cr", "tf_c", "ts4", "a4", "tf4"],
         now=1000,
     )
@@ -1521,10 +1522,10 @@ async def test_the_run_after_a_cancelled_compaction_carries_no_interrupted_marke
 
 async def test_a_parked_cancel_flushes_without_calling_the_policy():
     session = COMPACTION_CANCEL_PARKED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=fold_everything)
+    policy = FakeContextManager(plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["tf_c"],
         now=1000,
     )
@@ -1542,7 +1543,7 @@ async def test_an_immediate_cancel_on_start_parks_the_compaction_flush():
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
+        context_manager=FakeContextManager(should=True, plan=fold_everything),
         ids=["ts_c", "cmp", "cr", "tf_c"],
         now=1000,
     )
@@ -1564,7 +1565,7 @@ async def test_a_second_cancel_inside_a_compaction_bracket_raises():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=["cr"],
         now=1000,
     )
@@ -1579,7 +1580,7 @@ async def test_run_result_after_a_cancelled_compaction():
     session = COMPACTION_CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=["tf_c"],
         now=1000,
     )
@@ -1606,7 +1607,7 @@ async def test_a_cancel_with_a_non_cancelled_outcome_still_stops_the_drive(outco
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["cr", "tf_c"],
         now=1000,
     )
@@ -1625,7 +1626,7 @@ async def test_a_scheduled_compaction_survives_a_reload_and_resumes_in_place():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_and_keep_the_question),
+        context_manager=FakeContextManager(plan=fold_and_keep_the_question),
         provider=_answering_provider(),
         ids=["tf_c", "c2", "ts4", "a4", "tf4"],
         now=1000,
@@ -1643,7 +1644,7 @@ async def test_an_interrupted_compaction_keeps_its_original_started_at():
     session = COMPACTION_INTERRUPTED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_and_keep_the_question),
+        context_manager=FakeContextManager(plan=fold_and_keep_the_question),
         provider=_answering_provider(),
         ids=["tf_c", "c2", "ts4", "a4", "tf4"],
         now=1000,
@@ -1658,10 +1659,10 @@ async def test_an_interrupted_compaction_keeps_its_original_started_at():
 
 async def test_a_closed_failed_bracket_is_never_retried():
     session = COMPACTION_FAILED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_everything)
+    policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=[],
         now=1000,
     )
@@ -1676,11 +1677,11 @@ async def test_a_closed_failed_bracket_is_never_retried():
 async def test_a_closed_completed_bracket_does_not_bury_a_queued_message():
     faux = _answering_provider()
     session = COMPACTION_BURIED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=False)
+    policy = FakeContextManager(should=False)
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts4", "a4", "tf4"],
         now=1000,
     )
@@ -1699,11 +1700,11 @@ async def test_a_committed_compaction_inside_a_counterfeit_bracket_is_not_re_run
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
     session.active_conversation.nodes = ["ts3", "cmp", "u4"]
     committed = session.entries["cmp"].model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_everything)
+    policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
         session,
         provider=_answering_provider(),
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["a4", "tf4"],
         now=1000,
     )
@@ -1720,7 +1721,7 @@ async def test_schedule_compaction_raises_on_a_counterfeit_bracket():
     session.active_conversation.nodes = ["ts3", "cmp", "u4"]
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=[],
         now=1000,
     )
@@ -1735,7 +1736,7 @@ async def test_suspending_a_lazy_run_mid_compaction_leaves_the_bracket_open():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -1759,7 +1760,7 @@ async def test_an_on_event_raise_during_started_leaves_the_bracket_open():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -1778,7 +1779,7 @@ async def test_a_reloaded_compacted_session_drives_normally():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=False),
+        context_manager=FakeContextManager(should=False),
         ids=["ts4", "a4", "tf4"],
         now=1000,
     )
@@ -1804,7 +1805,7 @@ async def test_a_carried_trailing_user_message_keeps_driving():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             plan=fold_and_keep_the_question,
         ),
@@ -1837,7 +1838,7 @@ async def test_a_folded_trailing_user_message_is_committed_and_the_question_is_l
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(should=True, plan=fold_everything),
+        context_manager=FakeContextManager(should=True, plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -1857,7 +1858,7 @@ async def test_a_trailing_turn_finish_gives_a_compaction_only_drive():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -1879,7 +1880,7 @@ async def test_a_carried_failed_turn_finish_is_retried_in_the_same_drive():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(plan=carry_the_failed_turn_finish),
+        context_manager=FakeContextManager(plan=carry_the_failed_turn_finish),
         ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
         now=1000,
     )
@@ -1906,7 +1907,7 @@ async def test_a_carried_phantom_open_turn_is_committed_as_given():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             plan=carry_a_phantom_open_turn,
         ),
@@ -1934,14 +1935,14 @@ async def test_a_phantom_bracket_around_the_summary_is_driven_as_a_turn():
     # as the phantom turn it is, with the committed record left alone.
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(
+    policy = FakeContextManager(
         should=True,
         plan=bracket_the_summary_with_a_carried_turn_start,
     )
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c", "c2", "a4", "tf4"],
         now=1000,
     )
@@ -1967,7 +1968,7 @@ def test_schedule_compaction_writes_the_bracket_and_the_entry():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=["ts_c", "cmp"],
         now=1000,
     )
@@ -1989,7 +1990,7 @@ def test_schedule_compaction_is_idempotent():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=["ts_c", "cmp"],
         now=1000,
     )
@@ -2004,7 +2005,7 @@ def test_schedule_compaction_rejects_an_open_conversational_turn():
     session = CLEARED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=[],
         now=1000,
     )
@@ -2019,7 +2020,7 @@ def test_schedule_compaction_rejects_an_approval_gate():
     session = GATED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=[],
         now=1000,
     )
@@ -2028,21 +2029,32 @@ def test_schedule_compaction_rejects_an_approval_gate():
         runner.schedule_compaction()
 
 
-def test_schedule_compaction_without_a_policy_raises():
+async def test_schedule_compaction_against_a_manager_that_cannot_compact_fails_on_the_drive():
+    # A `ContextManager` always exists, so scheduling cannot pre-check that one
+    # implements compaction: the bracket is written, and core's base `compact`
+    # raises on the drive — ERRORED and propagating, as any USER failure does.
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(session, ids=[], now=1000)
+    runner = DeterministicRunner(session, ids=["ts_c", "cmp", "tf_c"], now=1000)
+    runner.schedule_compaction()
 
-    with pytest.raises(AgentError, match="requires a compaction_policy"):
-        runner.schedule_compaction()
+    with pytest.raises(NotImplementedError):
+        await runner.run()
 
-    assert runner.session == RICH_IDLE_SESSION
+    assert runner.session.entries["tf_c"] == TurnFinish(
+        id="tf_c",
+        parent_id="cmp",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="",
+    )
+    assert runner.idle()
 
 
 def test_post_message_is_illegal_while_a_compaction_is_scheduled():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=[],
         now=1000,
     )
@@ -2055,7 +2067,7 @@ async def test_post_message_is_legal_once_the_compaction_has_been_driven():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         provider=_answering_provider(),
         ids=["tf_c", "c2", "u5"],
         now=1000,
@@ -2073,7 +2085,7 @@ async def test_start_opens_a_compaction_bracket_when_one_is_due():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=[True, False],
             plan=fold_and_keep_the_question,
         ),
@@ -2101,10 +2113,10 @@ async def test_start_opens_a_compaction_bracket_when_one_is_due():
 
 async def test_start_with_an_already_scheduled_compaction_opens_nothing_extra():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(plan=fold_everything)
+    policy = FakeContextManager(plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["tf_c", "c2"],
         now=1000,
     )
@@ -2118,10 +2130,10 @@ async def test_start_with_an_already_scheduled_compaction_opens_nothing_extra():
 
 async def test_a_scheduled_compaction_wins_over_the_policy():
     session = COMPACTION_SCHEDULED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_everything)
+    policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["tf_c", "c2"],
         now=1000,
     )
@@ -2136,11 +2148,11 @@ async def test_a_scheduled_compaction_wins_over_the_policy():
 async def test_should_compact_is_not_consulted_while_a_turn_is_open():
     faux = _answering_provider()
     session = CLEARED_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_everything)
+    policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=policy,
+        context_manager=policy,
         tool_registry=None,
         ids=["a2", "tf"],
         now=1000,
@@ -2154,10 +2166,10 @@ async def test_should_compact_is_not_consulted_while_a_turn_is_open():
 
 async def test_should_compact_is_not_consulted_on_an_idle_session():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_everything)
+    policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
         session,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=[],
         now=1000,
     )
@@ -2171,11 +2183,11 @@ async def test_should_compact_is_not_consulted_on_an_idle_session():
 async def test_at_most_one_compaction_per_drive():
     faux = _answering_provider()
     session = RICH_SESSION.model_copy(deep=True)
-    policy = FakeCompactionPolicy(should=True, plan=fold_and_keep_the_question)
+    policy = FakeContextManager(should=True, plan=fold_and_keep_the_question)
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=policy,
+        context_manager=policy,
         ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
         now=1000,
     )
@@ -2188,14 +2200,14 @@ async def test_at_most_one_compaction_per_drive():
 
 
 async def test_a_should_compact_that_raises_propagates_from_run():
-    class Exploding(FakeCompactionPolicy):
+    class Exploding(FakeContextManager):
         def should_compact(self, session):
             raise RuntimeError("bad threshold arithmetic")
 
     session = RICH_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=Exploding(),
+        context_manager=Exploding(),
         ids=[],
         now=1000,
     )
@@ -2205,7 +2217,7 @@ async def test_a_should_compact_that_raises_propagates_from_run():
 
 
 async def test_a_should_compact_that_raises_from_start_leaves_the_runner_usable():
-    class Exploding(FakeCompactionPolicy):
+    class Exploding(FakeContextManager):
         def should_compact(self, session):
             raise RuntimeError("bad threshold arithmetic")
 
@@ -2214,7 +2226,7 @@ async def test_a_should_compact_that_raises_from_start_leaves_the_runner_usable(
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=Exploding(),
+        context_manager=Exploding(),
         ids=["ts4", "a4", "tf4"],
         now=1000,
     )
@@ -2223,32 +2235,32 @@ async def test_a_should_compact_that_raises_from_start_leaves_the_runner_usable(
         runner.start()
 
     # the one-run guard was released — the runner is not wedged
-    runner.compaction_policy = None
+    runner.context_manager = ContextManager()  # the default: accounts, never compacts
     await runner.run()
     assert len(faux.requests) == 1
 
 
-def test_two_runners_with_different_policies_are_not_equal():
+def test_two_runners_with_different_context_managers_are_not_equal():
     session = RICH_SESSION.model_copy(deep=True)
 
     assert DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(should=True),
+        context_manager=FakeContextManager(should=True),
     ) != DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(should=False),
+        context_manager=FakeContextManager(should=False),
     )
 
 
-def test_two_runners_with_equivalent_policies_are_equal():
+def test_two_runners_with_equivalent_context_managers_are_equal():
     session = RICH_SESSION.model_copy(deep=True)
 
     assert DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(should=True),
+        context_manager=FakeContextManager(should=True),
     ) == DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(should=True),
+        context_manager=FakeContextManager(should=True),
     )
 
 
@@ -2259,7 +2271,7 @@ async def test_no_usage_is_recorded_when_the_policy_returns_none():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=None),
+        context_manager=FakeContextManager(plan=None),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -2274,7 +2286,7 @@ async def test_no_usage_is_recorded_when_the_policy_raises():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(raises=ValueError("x")),
+        context_manager=FakeContextManager(raises=ValueError("x")),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -2290,7 +2302,7 @@ async def test_the_context_tokens_are_recalculated_when_the_parts_land():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -2312,7 +2324,7 @@ async def test_middleware_has_the_final_say_on_the_summarys_context_tokens():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         middleware=[Overrides()],
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
@@ -2332,7 +2344,7 @@ async def test_run_result_after_a_compaction_then_a_turn_reports_the_turn():
     runner = DeterministicRunner(
         session,
         provider=_answering_provider(),
-        compaction_policy=FakeCompactionPolicy(
+        context_manager=FakeContextManager(
             should=True,
             plan=fold_and_keep_the_question,
         ),
@@ -2358,7 +2370,7 @@ async def test_a_deadline_that_does_not_expire_lets_the_compaction_commit():
     )
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -2374,7 +2386,7 @@ async def test_the_compaction_events_fire_in_streaming_mode_too():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=fold_everything),
+        context_manager=FakeContextManager(plan=fold_everything),
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
@@ -2394,7 +2406,7 @@ def test_schedule_compaction_rejects_a_parked_cancel():
     session = CANCEL_PARKED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(),
+        context_manager=FakeContextManager(),
         ids=[],
         now=1000,
     )

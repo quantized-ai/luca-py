@@ -23,7 +23,7 @@ from luca.agent.contrib.tools import Tool
 | [`resource_permissions/`](resource_permissions/README.md) | Rule-based tool approval — modes, resource globs, answer-decoupled grants, and a typed tool mixin |
 | [`shell/`](shell/README.md) | The seven shell tools (read/glob/grep/edit/write/apply_patch/bash) + `ShellAccessPlugin` — workspace-scoped, two-step directory permissions |
 | [`tui/`](tui/README.md) | The Textual terminal UI — transcript, streaming, modal approvals, cancellation; the runnable demo behind `main.py` |
-| [`compaction/`](compaction/README.md) | `SummarizingCompactionPolicy` — a ready-made `CompactionPolicy` (the context gauge + an LLM summary), with a `keep_turns` knob |
+| [`simple_context_manager/`](simple_context_manager/README.md) | `SummarizingContextManager` — a ready-made compacting `ContextManager` (the context gauge + an LLM summary), with a `keep_turns` knob |
 | `memory` | An in-memory scratchpad + todo list packaged as `MemoryPlugin` — documented in [`09-plugins.md`](../09-plugins.md) |
 
 Next: [`tools/README.md`](tools/README.md).

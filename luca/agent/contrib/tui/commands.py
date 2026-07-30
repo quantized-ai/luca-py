@@ -171,13 +171,11 @@ async def _cmd_new(app: AgentApp, arg: str) -> None:
 async def _cmd_compact(app: AgentApp, arg: str) -> None:
     """Schedule a compaction, then drive it. Scheduling only writes the
     bracket and the entry — the summarization happens on the next drive, and
-    the drive loop already runs until the runner is idle."""
-    if app.runner.compaction_policy is None:
-        await app._notice(
-            "no compaction policy is configured for this runner",
-            error=True,
-        )
-        return
+    the drive loop already runs until the runner is idle.
+
+    Nothing is pre-checked: a `ContextManager` always exists, and one that does
+    not implement `compact()` surfaces its `NotImplementedError` as an ordinary
+    turn error on the drive."""
     app.runner.schedule_compaction()
     await app._notice("compacting the conversation…")
     app._start_drive()

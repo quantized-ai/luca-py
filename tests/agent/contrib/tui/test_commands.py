@@ -19,7 +19,7 @@ from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
-from tests.agent.scenarios import FakeCompactionPolicy
+from tests.agent.scenarios import FakeContextManager
 
 from .helpers import fresh_session, idle_again, submit, wait_until
 
@@ -327,7 +327,7 @@ async def test_compact_schedules_a_compaction_and_drives_it(tmp_path):
         provider=scripted(faux_assistant_message([faux_text("ok")])),
         workspace=tmp_path,
         session_dir=tmp_path,
-        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+        context_manager=FakeContextManager(plan=_fold_everything),
     )
     async with app.run_test() as pilot:
         await submit(pilot, "hello")
@@ -344,13 +344,17 @@ async def test_compact_schedules_a_compaction_and_drives_it(tmp_path):
         assert app.runner.session.active_conversation.nodes == [archived.nodes[-2]]
 
 
-async def test_compact_without_a_policy_reports_it(tmp_path):
+async def test_compact_with_a_manager_that_cannot_compact_reports_a_turn_failure(tmp_path):
+    # No pre-check is possible — a `ContextManager` always exists. /compact
+    # schedules, the bracket is written, and core's base `compact()` raises on
+    # the drive, which the app reports like any other turn failure.
     app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
     async with app.run_test() as pilot:
         await submit(pilot, "/compact")
-        await pilot.pause()
+        await wait_until(pilot, lambda: idle_again(app))
 
         assert _notices(app) == [
-            "no compaction policy is configured for this runner",
+            "compacting the conversation…",
+            "compaction errored",
+            "turn failed: ",
         ]
-        assert app.runner.session.entries == {}

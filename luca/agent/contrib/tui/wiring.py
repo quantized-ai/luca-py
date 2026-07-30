@@ -142,15 +142,16 @@ def build_runner(
     workspace: str | os.PathLike[str] = ".",
     provider=None,
     mode: str = "ask",
-    compaction_policy=None,
+    context_manager=None,
     additional_directories: list | None = None,
     extra_rules: list | None = None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy. `provider=` is the zero-logic passthrough the tests use
-    to inject a `FauxProvider`; `compaction_policy=` is the same for
-    compaction — no policy ships with the demo yet, so `/compact` reports that
-    none is configured until one is passed here."""
+    to inject a `FauxProvider`; `context_manager=` is the same for context
+    accounting and compaction — `None` falls back to core's default, which
+    accounts but never compacts, so `/compact` fails until one that implements
+    `compact()` is passed here."""
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
@@ -168,7 +169,7 @@ def build_runner(
         plugins=[MemoryPlugin(), shell],
         system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
-        compaction_policy=compaction_policy,
+        context_manager=context_manager,
     )
     return runner, strategy
 

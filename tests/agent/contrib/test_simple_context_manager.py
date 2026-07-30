@@ -1,4 +1,4 @@
-"""SummarizingCompactionPolicy: the context gauge, the keep_turns split, and
+"""SummarizingContextManager: the context gauge, the keep_turns split, and
 the plan it hands the core transition. No TUI; the summary call uses a
 FauxProvider. Core owns archiving/swapping and is tested in tests/agent.
 
@@ -8,8 +8,8 @@ path carrying tool executions (whose specs are normalized into
 `session.tool_specs`), a pruned entry, a prior summary and cancel markers.
 """
 
-from luca.agent.contrib.compaction import (
-    SummarizingCompactionPolicy,
+from luca.agent.contrib.simple_context_manager import (
+    SummarizingContextManager,
     calculate_context_used,
     calculate_utilization_ratio,
     get_context_window_size,
@@ -105,7 +105,7 @@ def _faux(summary: str) -> FauxProvider:
     return provider
 
 
-class FixedSummary(SummarizingCompactionPolicy):
+class FixedSummary(SummarizingContextManager):
     """Overrides the `summarize` seam: no provider, no LLM call."""
 
     async def summarize(self, session, folded):
@@ -128,17 +128,17 @@ def test_calculate_utilization_ratio_is_used_over_window():
 
 
 def test_should_compact_is_true_once_utilization_reaches_the_threshold():
-    assert SummarizingCompactionPolicy(default_window=8, threshold=0.4).should_compact(two_turn_session()) is True
+    assert SummarizingContextManager(default_window=8, threshold=0.4).should_compact(two_turn_session()) is True
 
 
 def test_should_compact_is_false_below_the_threshold():
-    assert SummarizingCompactionPolicy(default_window=8, threshold=0.9).should_compact(two_turn_session()) is False
+    assert SummarizingContextManager(default_window=8, threshold=0.9).should_compact(two_turn_session()) is False
 
 
 def test_should_compact_is_false_when_disabled_however_full_the_window_is():
-    policy = SummarizingCompactionPolicy(default_window=8, threshold=0.4, enabled=False)
+    manager = SummarizingContextManager(default_window=8, threshold=0.4, enabled=False)
 
-    assert policy.should_compact(two_turn_session()) is False
+    assert manager.should_compact(two_turn_session()) is False
 
 
 # ── select_keep (the keep_turns split) ───────────────────────────────────────
@@ -146,12 +146,12 @@ def test_should_compact_is_false_when_disabled_however_full_the_window_is():
 
 def test_keep_turns_zero_keeps_nothing():
     session = two_turn_session()
-    assert SummarizingCompactionPolicy(keep_turns=0).select_keep(list(session.active_conversation.nodes), session) == []
+    assert SummarizingContextManager(keep_turns=0).select_keep(list(session.active_conversation.nodes), session) == []
 
 
 def test_keep_turns_one_keeps_the_last_exchange_including_its_user_message():
     session = two_turn_session()
-    assert SummarizingCompactionPolicy(keep_turns=1).select_keep(
+    assert SummarizingContextManager(keep_turns=1).select_keep(
         list(session.active_conversation.nodes),
         session,
     ) == ["u2", "ts2", "a2", "tf2"]
@@ -163,7 +163,7 @@ def test_the_cut_lands_on_an_exchange_boundary_and_never_strands_a_tool_call():
     # exchange keeps its own executions in the folded span
     session = RICH_IDLE_SESSION.model_copy(deep=True)
 
-    assert SummarizingCompactionPolicy(keep_turns=1).select_keep(
+    assert SummarizingContextManager(keep_turns=1).select_keep(
         list(session.active_conversation.nodes),
         session,
     ) == ["u3", "ts3", "a3", "te3", "cr1", "tf3"]
@@ -174,9 +174,9 @@ def test_the_cut_lands_on_an_exchange_boundary_and_never_strands_a_tool_call():
 
 async def test_full_summary_folds_the_whole_span_into_one_node():
     session = two_turn_session()
-    policy = SummarizingCompactionPolicy(provider=_faux("THE SUMMARY"))
+    manager = SummarizingContextManager(provider=_faux("THE SUMMARY"))
 
-    plan = await policy.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -194,9 +194,9 @@ async def test_full_summary_folds_the_whole_span_into_one_node():
 
 async def test_keep_turns_keeps_the_tail_and_folds_the_head():
     session = two_turn_session()
-    policy = SummarizingCompactionPolicy(keep_turns=1, provider=_faux("HEAD SUMMARY"))
+    manager = SummarizingContextManager(keep_turns=1, provider=_faux("HEAD SUMMARY"))
 
-    plan = await policy.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -216,9 +216,9 @@ async def test_a_trailing_unanswered_user_message_is_never_folded():
     # auto-compaction fires with a just-posted, unanswered question on the path;
     # folding it would drop the question. Full summary must still keep it.
     session = pending_question_session()
-    policy = SummarizingCompactionPolicy(provider=_faux("SUMMARY"))  # full summary
+    manager = SummarizingContextManager(provider=_faux("SUMMARY"))  # full summary
 
-    plan = await policy.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -239,9 +239,9 @@ async def test_a_tool_bearing_span_folds_through_the_projected_summary_call():
     # entry and an earlier summary — everything the projector emits for the
     # summarization request
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    policy = SummarizingCompactionPolicy(keep_turns=1, provider=_faux("EARLIER WORK"))
+    manager = SummarizingContextManager(keep_turns=1, provider=_faux("EARLIER WORK"))
 
-    plan = await policy.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -272,9 +272,9 @@ async def test_a_tool_bearing_span_folds_through_the_projected_summary_call():
 
 async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     session = two_turn_session()
-    policy = SummarizingCompactionPolicy(keep_turns=5, provider=_faux("x"))
+    manager = SummarizingContextManager(keep_turns=5, provider=_faux("x"))
 
-    assert await policy.compact(session, _offered(session), _entry()) is None
+    assert await manager.compact(session, _offered(session), _entry()) is None
 
 
 async def test_a_subclass_can_override_the_summarize_seam():

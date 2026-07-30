@@ -47,11 +47,12 @@ than re-opened. Provider usage is recorded per assistant entry in
 conversation-entry data, never embedded in entries or rolled up on markers.
 
 Compaction — replacing the older span of a conversation with a summary of it —
-is delegated the same way, to the `CompactionPolicy` the runner is constructed
-with (`compaction.py`; `None` = compaction never happens). It runs as a step at
+is delegated the same way, to the `ContextManager`'s `should_compact()` /
+`compact()` pair (`context_manager.py`; the shipped default declines, so
+compaction never happens unless the manager implements it). It runs as a step at
 the top of a drive, before the conversational bracket opens, inside a turn
 bracket of its own; a successful one archives the conversation and installs a
-new one over the path the policy chose, in a single atomic swap. See
+new one over the path the manager chose, in a single atomic swap. See
 `schedule_compaction()` and `_compaction_step`.
 
 The whole tool lifecycle is delegated to the `ToolRegistry` the runner is
@@ -121,7 +122,6 @@ from luca.client.types import Tool as LucaTool
 from . import adapter
 from .compaction import (
     CompactionPlan,
-    CompactionPolicy,
     ConversationSnapshot,
     check_snapshot,
     validate_plan,
@@ -518,7 +518,6 @@ class AgentSessionRunner:
         provider=None,
         conversation_projector: ConversationProjector | None = None,
         context_manager: ContextManager | None = None,
-        compaction_policy: CompactionPolicy | None = None,
         middleware: list | None = None,
     ) -> None:
         self.session = session
@@ -527,18 +526,15 @@ class AgentSessionRunner:
         # stacked by plugins): lives on the runner, is never serialized, and
         # is invoked fresh whenever messages are prepared for an LLM call.
         self.conversation_projector = conversation_projector or ConversationProjector()
-        # The context-accounting strategy (context_manager.py): calculates
-        # every new entry's `context_tokens`, processes returned tool output,
-        # and builds pruned replacements. Same collaborator pattern as the
+        # The context strategy (context_manager.py): calculates every new
+        # entry's `context_tokens`, processes returned tool output, builds
+        # pruned replacements, and owns compaction — when, what, with which
+        # model, which nodes survive, and whether to try again; the runner only
+        # triggers, stamps and archives. Same collaborator pattern as the
         # projector — one object, never serialized, defaults to the simple
-        # built-in policy.
+        # built-in. That default declines to compact, so compaction never
+        # happens unless the manager implements it.
         self.context_manager = context_manager or ContextManager()
-        # Compaction's single extension point (compaction.py). `None` means
-        # compaction never happens: `should_compact` is never consulted and
-        # `schedule_compaction()` raises. The policy owns the whole decision —
-        # when, what, with which model, which nodes survive, and whether to
-        # try again; the runner only triggers, stamps and archives.
-        self.compaction_policy = compaction_policy
         # Static parts (str / dict / SystemPromptPart) coerce eagerly — a bad
         # part fails at construction, not mid-turn. Callables resolve per call.
         self.system_prompt_parts = [
@@ -578,7 +574,7 @@ class AgentSessionRunner:
     def __eq__(self, other: object) -> bool:
         """Configuration equivalence: two runners are equal when they would
         drive a session the same way — equal session state and equivalent
-        tool registry, prompt parts, assembler, provider, compaction policy,
+        tool registry, prompt parts, assembler, provider, context manager,
         and middleware.
         Collaborators without their own `__eq__` (registries, assemblers,
         middleware) compare by class + instance state rather than
@@ -598,7 +594,6 @@ class AgentSessionRunner:
                 other.conversation_projector,
             )
             and _equivalent(self.context_manager, other.context_manager)
-            and _equivalent(self.compaction_policy, other.compaction_policy)
             and self.provider == other.provider
             and _all_equivalent(self.middleware, other.middleware)
         )
@@ -694,13 +689,13 @@ class AgentSessionRunner:
         bracket, AWAITING_APPROVAL, CANCELLING) raises `AgentError`: the
         appended `TurnStart` would nest inside it, and `open_turn_index()`
         walks back to the NEAREST one, so the open turn's eventual
-        `TurnFinish` would silently close the wrong bracket. Raises with no
-        `compaction_policy` configured — the runner would open a bracket
-        nothing can close."""
-        if self.compaction_policy is None:
-            raise AgentError(
-                "schedule_compaction requires a compaction_policy; this runner was constructed without one."
-            )
+        `TurnFinish` would silently close the wrong bracket.
+
+        It does NOT check that the `ContextManager` implements compaction —
+        there is nothing to check, since a manager always exists. A manager
+        that only accounts reaches the base `compact()` on the next drive, and
+        its `NotImplementedError` closes the bracket ERRORED and propagates out
+        of `run()` (this is a USER-sourced compaction; see `_run_compaction`)."""
         existing = self.ledger.open_compaction_entry()
         if existing is not None:
             return existing.id  # idempotent — nothing is written
@@ -853,13 +848,9 @@ class AgentSessionRunner:
         `_ensure_open_turn` is already a no-op.
 
         A `should_compact` that raises propagates from `start()` — swallowing
-        it would make a broken policy indistinguishable from one that
+        it would make a broken manager indistinguishable from one that
         declines, and nothing durable exists yet to record the failure on."""
-        if (
-            self.compaction_policy is not None
-            and self.ledger.open_turn_index() is None
-            and self.compaction_policy.should_compact(self.session)
-        ):
+        if self.ledger.open_turn_index() is None and self.context_manager.should_compact(self.session):
             self._open_compaction_bracket(CompactionSource.POLICY)
             return
         self._ensure_open_turn()
@@ -1213,12 +1204,12 @@ class AgentSessionRunner:
 
     def _snapshot_conversation(self) -> ConversationSnapshot:
         """The full active path (G2's input) plus the view handed to the
-        policy: the same path with THIS compaction's `TurnStart` removed.
+        manager: the same path with THIS compaction's `TurnStart` removed.
 
         Exactly one element, positionally — the tail is `[…, ts_c, cmp]` by
         construction (the two appends are consecutive, `post_message` raises
-        while the bracket is open, and a parked cancel flushes before the
-        policy is ever reached), so this is a removal, not a filter over
+        while the bracket is open, and a parked cancel flushes before
+        `compact()` is ever reached), so this is a removal, not a filter over
         types. `cmp` deliberately STAYS in the view: stripping it too would
         make `plan.nodes = list(nodes)` illegal, trading one invisible
         requirement for another."""
@@ -1240,8 +1231,8 @@ class AgentSessionRunner:
 
         Flush a parked cancel first; then resume an interrupted compaction,
         skip entirely (an open conversational turn — an approval pause, a
-        crash mid-turn, a suspended run — is never carved up by a policy), or
-        ask the policy whether one is due; then run it. The bracket never
+        crash mid-turn, a suspended run — is never carved up by a manager), or
+        ask the manager whether one is due; then run it. The bracket never
         stays open past the end of a drive that did not crash.
 
         Everything expensive and failure-prone happens BEFORE the transition,
@@ -1249,13 +1240,10 @@ class AgentSessionRunner:
         recovery logic: a failure here closes the bracket and leaves the
         conversation exactly as it was, and a crash leaves the bracket open —
         the resumable state."""
-        if self.compaction_policy is None:
-            return
-
         entry = self.ledger.open_compaction_entry()
 
         # 1) FLUSH FIRST. A parked cancel inside an open compaction bracket
-        #    ends it now — no Scheduled, no Started, no policy call.
+        #    ends it now — no Scheduled, no Started, no `compact()` call.
         if entry is not None:
             cancel = self.ledger.open_turn_cancel_requested()
             if cancel is not None:
@@ -1270,7 +1258,7 @@ class AgentSessionRunner:
         if entry is None:
             if self.ledger.open_turn_index() is not None:
                 return  # an open conversational turn → not this drive
-            if not self.compaction_policy.should_compact(self.session):
+            if not self.context_manager.should_compact(self.session):
                 return
             entry = self._open_compaction_bracket(CompactionSource.POLICY)
         self._compaction_ran = True  # past every early return
@@ -1285,7 +1273,7 @@ class AgentSessionRunner:
 
         snapshot = self._snapshot_conversation()
         try:
-            plan = await self._invoke_policy(entry, snapshot.offered, token)
+            plan = await self._invoke_compaction(entry, snapshot.offered, token)
         except _CompactionEnded as stop:
             # A cancellation always wins over the deadline that raced it, and
             # always stops the drive: the cancel is against the drive, not
@@ -1311,7 +1299,7 @@ class AgentSessionRunner:
 
         if plan is not None:
             # G2 first, then the usage write, both inside the failure
-            # handling. G2 first because a policy that replaced the active
+            # handling. G2 first because a manager that replaced the active
             # conversation would otherwise make `record_usage` raise its own
             # unrelated error and pre-empt the plan rejection; guarded because
             # an escape here would leave the bracket OPEN — the "resume me"
@@ -1355,31 +1343,31 @@ class AgentSessionRunner:
             conversation_id=conversation.id,
         )
 
-    async def _invoke_policy(
+    async def _invoke_compaction(
         self,
         entry: CompactionEntry,
         offered: tuple[str, ...],
         token: CancellationToken,
     ) -> CompactionPlan | None:
-        """Call `compact()` under the run's cancellation race and the session's
-        wall-clock deadline.
+        """Call `ContextManager.compact()` under the run's cancellation race and
+        the session's wall-clock deadline.
 
         The runner races the call itself: `client_completion_timeout_in_ms` is
         a kwarg the runner passes to the client, and it cannot reach a request
-        the policy makes on its own. The value is converted exactly as the LLM
+        the manager makes on its own. The value is converted exactly as the LLM
         step converts it, so the default (`Inf`) means NO deadline at all —
-        a hung policy hangs the drive until cancelled, identical to the
+        a hung manager hangs the drive until cancelled, identical to the
         conversational call's default.
 
-        The policy is handed a DEEP COPY of the entry and the LIVE session.
-        The copy is load-bearing: a policy that wrote `parts` onto the live
+        The manager is handed a DEEP COPY of the entry and the LIVE session.
+        The copy is load-bearing: a manager that wrote `parts` onto the live
         entry and then failed would leave the bracket closed ERRORED, the path
         unchanged — and the entry projecting a summary of nothing."""
         config = self.session.session_config.runtime_config
         grace_ms = config.llm_completion_cancellation_grace_period
         deadline = _ms_to_seconds(config.client_completion_timeout_in_ms)
         task = asyncio.ensure_future(
-            self.compaction_policy.compact(
+            self.context_manager.compact(
                 self.session,
                 offered,
                 entry.model_copy(deep=True),
@@ -1403,7 +1391,7 @@ class AgentSessionRunner:
                     )
             except TimeoutError:
                 if not scope.expired():
-                    raise  # the policy's OWN TimeoutError — a normal raise
+                    raise  # the manager's OWN TimeoutError — a normal raise
                 await _kill(task, detach=False)  # idempotent backstop
                 raise _CompactionEnded(
                     TurnOutcome.TIMED_OUT,

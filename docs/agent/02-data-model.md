@@ -456,7 +456,7 @@ S  compaction
 it replaced, because those entries are still in the bag and the whole
 pre-compaction path is in `conversation_history`. The model sees `parts` as a
 user message ([10](10-projection.md)); who triggers it and what it says is a
-`CompactionPolicy`'s job ([12](12-compaction.md)).
+`ContextManager`'s job ([12](12-compaction.md)).
 
 `compaction` is the **second mutable entry type**: it is written the moment a
 compaction is intended, mutated as it progresses, and left in its terminal

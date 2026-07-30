@@ -1,8 +1,8 @@
-"""Compaction through the app with a real SummarizingCompactionPolicy: /compact
+"""Compaction through the app with a real SummarizingContextManager: /compact
 schedules and drives, the transition archives the old conversation, and the new
 one leads with the summary. Core owns the mechanics (tested in tests/agent)."""
 
-from luca.agent.contrib.compaction import SummarizingCompactionPolicy
+from luca.agent.contrib.simple_context_manager import SummarizingContextManager
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.cells import CompactionCell, NoticeCell
 from luca.agent.core.models import CompactionEntry, TextContent
@@ -32,7 +32,7 @@ async def test_manual_compact_archives_the_old_conversation_and_leads_with_the_s
         provider=faux,
         workspace=tmp_path,
         session_dir=tmp_path,
-        compaction_policy=SummarizingCompactionPolicy(provider=faux, enabled=False),
+        context_manager=SummarizingContextManager(provider=faux, enabled=False),
     )
 
     async with app.run_test() as pilot:
@@ -54,16 +54,19 @@ async def test_manual_compact_archives_the_old_conversation_and_leads_with_the_s
         assert app.query(CompactionCell)  # the summary rendered a transcript cell
 
 
-async def test_compact_reports_when_no_policy_is_configured(tmp_path):
+async def test_compact_surfaces_a_turn_error_when_the_manager_cannot_compact(tmp_path):
+    # `context_manager=None` falls back to core's default, which accounts but
+    # never compacts: /compact schedules, and the base `compact()` raises on the
+    # drive, which the app renders as an ordinary turn failure.
     app = AgentApp(
         fresh_session(),
         provider=scripted(faux_assistant_message([faux_text("hi")])),
         workspace=tmp_path,
         session_dir=tmp_path,
-        compaction_policy=None,
+        context_manager=None,
     )
 
     async with app.run_test() as pilot:
         await submit(pilot, "/compact")
         await wait_until(pilot, lambda: idle_again(app))
-        assert any("no compaction policy" in cell.text for cell in app.query(NoticeCell))
+        assert any("turn failed" in cell.text for cell in app.query(NoticeCell))

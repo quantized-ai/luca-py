@@ -38,7 +38,7 @@ from .app import AgentApp
 from .config import (
     LucaConfig,
     LucaConfigError,
-    build_compaction_policy,
+    build_context_manager,
     build_permission_rules,
     load_luca_config,
     pick,
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> None:
         streaming=pick(args.streaming, config.streaming, True),
         workspace=pick(args.workspace, config.workspace, "."),
         mode=pick(args.mode, config_mode, "ask"),
-        compaction_policy=build_compaction_policy(
+        context_manager=build_context_manager(
             config,
             provider=provider,
             enabled=args.autocompact,

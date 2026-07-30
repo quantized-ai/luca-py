@@ -17,15 +17,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from luca.agent.contrib.compaction import SummarizingCompactionPolicy
-from luca.agent.contrib.compaction.context import DEFAULT_WINDOW
-from luca.agent.contrib.compaction.policy import DEFAULT_THRESHOLD
 from luca.agent.contrib.resource_permissions import (
     PermissionMatchMode,
     PermissionMode,
     ResourcePermission,
     ToolKindRule,
     ToolRule,
+)
+from luca.agent.contrib.simple_context_manager import (
+    DEFAULT_THRESHOLD,
+    DEFAULT_WINDOW,
+    SummarizingContextManager,
 )
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
 from luca.client.providers import register_provider
@@ -249,19 +251,19 @@ def build_permission_rules(config: LucaConfig) -> list[ToolKindRule | ToolRule]:
     return [rule.to_rule() for rule in config.permissions.rules]
 
 
-def build_compaction_policy(
+def build_context_manager(
     config: LucaConfig,
     *,
     provider=None,
     enabled: bool | None,
     threshold: float | None,
     keep_turns: int | None,
-) -> SummarizingCompactionPolicy:
+) -> SummarizingContextManager:
     enabled = pick(enabled, config.compaction.enabled, True)
     threshold = pick(threshold, config.compaction.threshold, DEFAULT_THRESHOLD)
     keep_turns = pick(keep_turns, config.compaction.keep_turns, 0)
     default_window = pick(None, config.compaction.default_window, DEFAULT_WINDOW)
-    return SummarizingCompactionPolicy(
+    return SummarizingContextManager(
         keep_turns=keep_turns,
         threshold=threshold,
         default_window=default_window,

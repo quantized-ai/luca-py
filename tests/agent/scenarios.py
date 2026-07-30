@@ -15,9 +15,10 @@ Six kinds of building blocks:
   about in `seen` (no script → deterministic allow-all with `created_at`
   frozen to `now`), and a resolve-validate-then-close-over-the-body `prepare`
   that records the names it resolved in `prepared`.
-- **`FakeCompactionPolicy`**: the core-only scripted `CompactionPolicy`
-  double — a scripted `should_compact`, a scripted plan (or `None`, a raise,
-  or a cooperative hang), and `seen` / `should_calls` records.
+- **`FakeContextManager`**: the core-only scripted compaction half of
+  `ContextManager` — a scripted `should_compact`, a scripted plan (or `None`, a
+  raise, or a cooperative hang), and `seen` / `should_calls` records. Core's
+  per-entry accounting is inherited untouched.
 - **Tool doubles**: minimal `FakeTool` subclasses covering each behavior the
   registry/runner must handle (plain success, a duck-typed approval context,
   a captured session, a raised exception, a rich is_error result). `FakeTool`
@@ -50,8 +51,9 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from luca.agent.core.compaction import CompactionPlan, CompactionPolicy
+from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.context import CancellationToken
+from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.exceptions import InvalidToolArguments, ToolNotFound
 from luca.agent.core.models import (
     AgentSession,
@@ -88,7 +90,7 @@ from luca.agent.core.runner import AgentSessionRunner
 from luca.agent.core.tool_registry import PreparedTool, ToolRegistry
 
 MODEL = LLMConfig(model="test-model", provider="faux")
-# What a compaction policy summarizes with — deliberately NOT the session's
+# What a compacting manager summarizes with — deliberately NOT the session's
 # model, so a stamped `llm_config` proves whose choice it was.
 CHEAP = LLMConfig(model="cheap-model", provider="faux")
 
@@ -282,9 +284,9 @@ class FakeToolRegistry(ToolRegistry):
         return run
 
 
-class FakeCompactionPolicy(CompactionPolicy):
-    """Core-only scripted `CompactionPolicy` double (core tests must NOT
-    import contrib).
+class FakeContextManager(ContextManager):
+    """Core-only scripted `ContextManager` double for compaction (core tests
+    must NOT import contrib). Per-entry accounting is core's, unchanged.
 
     `should` scripts `should_compact`: a bool, or a list popped per call whose
     last value repeats once exhausted. `plan` is what `compact()` returns — a
@@ -358,7 +360,6 @@ class DeterministicRunner(AgentSessionRunner):
         provider=None,
         conversation_projector=None,
         context_manager=None,
-        compaction_policy=None,
         ids: Iterable[str] = (),
         now: int = 1000,
         middleware: list | None = None,
@@ -373,7 +374,6 @@ class DeterministicRunner(AgentSessionRunner):
             provider=provider,
             conversation_projector=conversation_projector,
             context_manager=context_manager,
-            compaction_policy=compaction_policy,
             middleware=middleware,
         )
 

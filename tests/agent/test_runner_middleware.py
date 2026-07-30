@@ -69,7 +69,7 @@ from tests.agent.scenarios import (
     RICH_IDLE_SESSION,
     AddTool,
     DeterministicRunner,
-    FakeCompactionPolicy,
+    FakeContextManager,
     FakeToolRegistry,
     MultiplyTool,
     RaisingTool,
@@ -1256,7 +1256,7 @@ async def test_before_entry_written_sees_every_entry_a_compaction_writes():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=_frame_and_fold),
+        context_manager=FakeContextManager(plan=_frame_and_fold),
         middleware=[recorder],
         ids=["ts_c", "cmp", "new1", "tf_c", "c2"],
         now=1000,
@@ -1311,7 +1311,7 @@ async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+        context_manager=FakeContextManager(plan=_fold_everything),
         middleware=[counter],
         ids=["ts_c", "cmp", "tf_c", "c2", "u5", "ts4", "a4", "tf4"],
         now=1000,
@@ -1345,7 +1345,7 @@ async def test_before_entry_written_may_redact_the_summary_before_it_persists():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        compaction_policy=FakeCompactionPolicy(plan=_fold_everything),
+        context_manager=FakeContextManager(plan=_fold_everything),
         middleware=[Redactor()],
         ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,

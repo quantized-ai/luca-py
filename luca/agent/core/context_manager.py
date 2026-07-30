@@ -1,8 +1,10 @@
-"""ContextManager — the runner's context-accounting strategy.
+"""ContextManager — the runner's context strategy: how big an entry is, what a
+tool's output looks like once it is stored, what replaces a pruned entry, and
+when and how the conversation is compacted.
 
 One runtime collaborator (passed as `context_manager=`, never serialized —
-only its durable results persist) owning three policies over the shared
-`Entry` abstraction. All three take the live `AgentSession` first, so one
+only its durable results persist) owning five policies over the shared
+`Entry` abstraction. All five take the live `AgentSession` first, so one
 argument order describes the whole contract and every policy can see the same
 state — the active model included, which is what makes a real tokenizer
 implementable:
@@ -35,6 +37,29 @@ implementable:
   "truncate `bash` output but never `read`" expressible. It is IN TRANSITION:
   `status` is still RUNNING and `result` is not yet attached, so it must not
   be inspected for outcome.
+- `should_compact(session)` — has the active conversation crossed the point
+  where compaction is worth doing? Consulted at the top of every drive (and at
+  `start()` time, which is why this is SYNC). Unlike `calculate_context` this
+  one is MEANT to sum the path: it runs once per drive, not once per entry.
+- `compact(session, nodes, entry)` — the compaction itself: fill in a deep
+  copy of `entry` and return a `CompactionPlan` describing the resulting
+  conversation. The base raises `NotImplementedError` and the base
+  `should_compact` returns False, so the default manager never compacts and
+  only an explicit `schedule_compaction()` can reach `compact` at all.
+
+Compaction: who decides what. The two methods above own everything about the
+*decision* — when compaction is worth doing, what the summary says, which model
+produces it, which nodes survive, and whether to back off after a failure. Core
+triggers, stamps and archives — nothing else. It reads exactly five things off a
+returned plan (`entry.parts`, `entry.llm_config`, `entry.metadata`, `nodes`,
+`usage`) and discards every other field, which is the whole coupling surface
+between the two. The runner opens a turn bracket, appends a `CompactionEntry`,
+stamps its `started_at`, and hands `compact` the live session, the path it may
+rewrite, and a DEEP COPY of that entry; the returned `CompactionPlan` is
+validated for STRUCTURE (never for meaning), its usage recorded, and the
+transition performed — one atomic swap in which the pre-compaction conversation
+is archived intact and a new one becomes active. Nothing is ever deleted. The
+plan's value objects and validator live in `compaction.py`.
 
 Stored counts and the active model. `Entry.context_tokens` is stored on the
 entry, so an implementation that counts against `session.session_config.
@@ -46,8 +71,10 @@ is the one that should.
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
 `CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
-per image, and pruning supports only terminal tool executions, replacing
-their output with a fixed marker.
+per image, pruning supports only terminal tool executions (replacing their
+output with a fixed marker), and compaction is absent — `should_compact`
+declines and `compact` raises, so the shipped default is a pure accountant.
+`luca.agent.contrib.simple_context_manager` ships one that also compacts.
 Instantiate it directly, subclass and override selected methods, or supply
 another object with the same behavior. Luca does not prescribe per-entry-type
 methods — dispatch by type here is an internal choice, not a runner contract.
@@ -62,6 +89,7 @@ from __future__ import annotations
 import json
 from typing import ClassVar
 
+from .compaction import CompactionPlan
 from .exceptions import AgentError
 from .models import (
     AgentSession,
@@ -147,6 +175,47 @@ class ContextManager:
         never snapshotted, so branch on `raw_tool_call.name` or guard the
         `None` rather than chaining through it."""
         return result
+
+    # ── compaction ───────────────────────────────────────────────────────────
+
+    def should_compact(self, session: AgentSession) -> bool:
+        """Has the active conversation crossed the point where compaction is
+        worth doing? Consulted at the top of every drive (and at `start()`
+        time, which is why this is SYNC).
+
+        The threshold, the context sum and the window size are all yours —
+        core has no context-total API, and `luca.client.catalog` carries
+        `context_window` per model. Core remembers nothing about previous
+        failures either: a manager that should stop trying returns False."""
+        return False
+
+    async def compact(
+        self,
+        session: AgentSession,
+        nodes: tuple[str, ...],
+        entry: CompactionEntry,
+    ) -> CompactionPlan | None:
+        """Fill in a DEEP COPY of `entry` and describe the resulting
+        conversation.
+
+        `nodes` is THE PATH YOU MAY REWRITE: the active conversation's path
+        with this compaction's own `TurnStart` removed, ending with `entry`.
+        `plan.nodes` may carry any of these ids, in any order, with new
+        entries interleaved — and nothing else; an id outside this tuple is a
+        plan rejection, so you never have to recognize or route around
+        framework markers. `plan.nodes = list(nodes)` is always a legal full
+        carry.
+
+        Return `None` for "nothing to do": the entry keeps `parts is None` and
+        the bracket closes COMPLETED.
+
+        You own the LLM call end to end — its prompt, its model (record it in
+        `entry.llm_config`), its messages. The turn middleware hooks
+        deliberately do NOT fire for it. Never mutate `session`: the runner
+        refuses to commit if the active path moved under you, and the entry
+        you are handed is a copy precisely so a failed attempt cannot leave a
+        summary projecting onto an unchanged path."""
+        raise NotImplementedError()
 
     # ── derivation helpers ───────────────────────────────────────────────────
 

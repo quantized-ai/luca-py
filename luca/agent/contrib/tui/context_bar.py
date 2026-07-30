@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from luca.agent.contrib.compaction import calculate_context_used, get_context_window_size
+from luca.agent.contrib.simple_context_manager import calculate_context_used, get_context_window_size
 from luca.agent.core.models import AgentSession
 
 _WIDTH = 20

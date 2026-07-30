@@ -20,7 +20,7 @@ from luca.agent.contrib.tui.config import (
     PermissionRule,
     RuntimeSettings,
     _deep_merge,
-    build_compaction_policy,
+    build_context_manager,
     build_permission_rules,
     load_luca_config,
     pick,
@@ -157,13 +157,13 @@ def test_runtime_keeps_falsy_values_and_rejects_out_of_range():
         resolve_runtime_config(base, LucaConfig(runtime=RuntimeSettings(hard_max_steps=-5)))
 
 
-def test_compaction_policy_precedence_cli_over_config_over_default():
+def test_context_manager_precedence_cli_over_config_over_default():
     config = LucaConfig(compaction=CompactionSettings(threshold=0.6, keep_turns=2))
-    from_config = build_compaction_policy(config, enabled=None, threshold=None, keep_turns=None)
+    from_config = build_context_manager(config, enabled=None, threshold=None, keep_turns=None)
     assert from_config.threshold == 0.6
     assert from_config.keep_turns == 2
 
-    cli_wins = build_compaction_policy(config, enabled=False, threshold=0.9, keep_turns=0)
+    cli_wins = build_context_manager(config, enabled=False, threshold=0.9, keep_turns=0)
     assert cli_wins.threshold == 0.9
     assert cli_wins.enabled is False
     assert cli_wins.keep_turns == 0
@@ -292,7 +292,7 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
         provider=FauxProvider(),
         mode=config.permissions.mode.value,
         workspace=config.workspace,
-        compaction_policy=build_compaction_policy(config, enabled=None, threshold=None, keep_turns=None),
+        context_manager=build_context_manager(config, enabled=None, threshold=None, keep_turns=None),
         permission_rules=build_permission_rules(config) or None,
         recommended_models=config.models or None,
         session_dir=tmp_path,
@@ -308,6 +308,6 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
             ),
             runtime_config=RuntimeConfig(hard_max_steps=42),
         )
-        assert app._compaction_policy.threshold == 0.66
+        assert app._context_manager.threshold == 0.66
         assert app.strategy.mode is PermissionMode.YOLO
         assert app.recommended_models == {"anthropic": ["claude-sonnet-5"]}

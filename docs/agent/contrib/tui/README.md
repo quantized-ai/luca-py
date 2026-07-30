@@ -51,7 +51,7 @@ the workspace can all live in a `luca.json` file instead of flags. See
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
-| Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/compaction` |
+| Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/simple_context_manager` |
 | `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
 | Approval modal | One screen per uncovered permission step: Approve once / tool-suggested ALWAYS grants / Deny / Abandon — pick by button or digit key |
 | `Esc` | Cancels the live run (`run.cancel()`); the wind-down renders live and the turn closes `CANCELLED` |
@@ -68,7 +68,7 @@ typo) is sent to the agent as a normal message, so nothing is swallowed.
 | `/help` | List every command (rendered from the registry, so it never drifts) |
 | `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
 | `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
-| `/compact` | Summarize the history and continue on a new conversation ([12](../../12-compaction.md)). Needs a `compaction_policy=` on the app; without one it says so and changes nothing |
+| `/compact` | Summarize the history and continue on a new conversation ([12](../../12-compaction.md)). Needs a `context_manager=` on the app that implements `compact()`; with the accounting-only default the drive reports a turn failure |
 | `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old `<id>.json` stays on disk |
 | `/quit` | Save and exit (same as `Ctrl+D`) |
 
@@ -94,7 +94,7 @@ thin:
 
 | Module | Role |
 |---|---|
-| `wiring.py` | `build_runner(session, workspace=, provider=, mode=, compaction_policy=, additional_directories=, extra_rules=)` — shell + memory plugins, the demo math tools ([`contrib.tools.Tool`](../tools/README.md) subclasses), one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
+| `wiring.py` | `build_runner(session, workspace=, provider=, mode=, context_manager=, additional_directories=, extra_rules=)` — shell + memory plugins, the demo math tools ([`contrib.tools.Tool`](../tools/README.md) subclasses), one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | `build_approval_prompts(execution, strategy)` — pending steps → `ApprovalPrompt`s whose options carry fully-built `ApprovalAnswer`s (the whole gate policy, no UI) |
 | `sessions.py` | `<session-id>.json` load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
 | `render.py` | Pure formatting: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift) |
@@ -102,8 +102,8 @@ thin:
 | `cells.py` / `screens.py` / `app.py` | Transcript widgets, the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `context_bar.py` | The context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
-| `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge) and the precedence resolvers, incl. `build_compaction_policy` — see [`config.md`](config.md) |
-| `cli.py` | argparse entry point; the `--pretty-print` transcript path (never builds an app), and loads `luca.json`, threading it (incl. the `SummarizingCompactionPolicy`) through the seams |
+| `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge) and the precedence resolvers, incl. `build_context_manager` — see [`config.md`](config.md) |
+| `cli.py` | argparse entry point; the `--pretty-print` transcript path (never builds an app), and loads `luca.json`, threading it (incl. the `SummarizingContextManager`) through the seams |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the
 message. The status bar shows how many are attached, and `Esc` clears them
@@ -149,7 +149,7 @@ key, `faux_hang()` + Esc for cancellation, reload-and-replay for resume.
 
 > ⚠️ **The app owns the wiring.** `AgentApp` builds its runner via
 > `build_runner` — inject behavior through `provider=`, `workspace=`,
-> `mode=` ("ask" / "yolo" / "auto") and `compaction_policy=`, not by passing a
+> `mode=` ("ask" / "yolo" / "auto") and `context_manager=`, not by passing a
 > runner.
 
 Next: [`compaction/README.md`](../compaction/README.md).

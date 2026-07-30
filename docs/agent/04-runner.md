@@ -14,8 +14,7 @@ runner = AgentSessionRunner(
     system_prompt_assembler=None,   # optional — see 06
     middleware=None,                # optional — see 07
     conversation_projector=None,    # optional — see 10
-    context_manager=None,           # optional — see 11
-    compaction_policy=None,         # optional — see 12
+    context_manager=None,           # optional — see 11 (context) and 12 (compaction)
     provider=None,                  # optional — a prebuilt luca.client provider instance
 )
 ```
@@ -312,23 +311,23 @@ handle is spent; create a fresh `runner.run()` to continue.
 
 ## 11. Compaction
 
-The `compaction_policy` collaborator runs as a step at the top of a drive —
+The `context_manager`'s compaction pair runs as a step at the top of a drive —
 *before* the conversational bracket opens:
 
 ```python
-runner = AgentSessionRunner(session, compaction_policy=MyPolicy())
+runner = AgentSessionRunner(session, context_manager=MyContextManager())
 
 runner.schedule_compaction()   # optional: arm it explicitly (idempotent, durable)
 await runner.run()             # compacts if due, then drives the turn
 ```
 
-The drive order is: flush a parked cancel → resume, skip, or ask the policy →
+The drive order is: flush a parked cancel → resume, skip, or ask the manager →
 run the compaction → then the ordinary turn. At most one compaction per drive,
 and never while a conversational turn is open — an approval pause or a
 crashed-mid-turn bracket is resumed first. `start()` decides at call time, so an
 eager run opens a compaction bracket instead of a `TurnStart` when one is due.
 
-Everything else — the policy contract, the plan, the events, the guarantees —
+Everything else — the compaction contract, the plan, the events, the guarantees —
 is [`12-compaction.md`](12-compaction.md).
 
 Next: [`05-permissions.md`](05-permissions.md).

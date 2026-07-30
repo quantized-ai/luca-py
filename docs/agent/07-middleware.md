@@ -186,7 +186,7 @@ class AgentMiddlewareMixin:
 > `after_llm_response` are written in terms of the conversational turn, and a
 > hook has no argument telling it which call it is in — a trailing reminder or
 > a turn-count router would silently corrupt summarization requests. The
-> `CompactionPolicy` owns that request end to end ([12](12-compaction.md)).
+> `ContextManager.compact` owns that request end to end ([12](12-compaction.md)).
 > `before_entry_written` *does* fire for everything a compaction writes,
 > including the mutation that lands the summary.
 

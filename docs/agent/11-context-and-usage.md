@@ -47,16 +47,22 @@ runner = AgentSessionRunner(
 )
 ```
 
-Three hooks; the runner calls them at fixed points:
+Five hooks; the runner calls them at fixed points:
 
 | Hook | Called | Default behavior |
 |---|---|---|
 | `calculate_context(session, entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
 | `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
 | `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
+| `should_compact(session) -> bool` | at the top of every drive, and at `start()` (hence sync) | `False` — never compacts |
+| `compact(session, nodes, entry)` | once `should_compact` says yes, or after `schedule_compaction()` | raises `NotImplementedError` |
 
-The live `AgentSession` comes first on all three, so every policy sees the same
-state — the active model included. It is **read-only** to the manager: the
+The last two are compaction, covered on its own page —
+[12](12-compaction.md). They live here because the collaborator that measures
+context is the one with the standing to decide there is too much of it.
+
+The live `AgentSession` comes first on all of them, so every policy sees the
+same state — the active model included. It is **read-only** to the manager: the
 runner owns every write.
 
 > ⚠️ **`calculate_context` runs on every new entry.** Scanning
@@ -67,10 +73,12 @@ runner owns every write.
 
 > ⚠️ **The default is a placeholder, not a policy.** Four-characters-per-token
 > estimation, a flat 1000 tokens per image, no truncation, marker-only
-> pruning — enough to make the seam real and the numbers non-zero. It exists
-> so the *architecture* is in place; if context accounting matters to your
-> application, improving this class is **your** job: bring a real tokenizer,
-> a real truncation budget, a real pruning strategy.
+> pruning, no compaction — enough to make the seam real and the numbers
+> non-zero. It exists so the *architecture* is in place; if context accounting
+> matters to your application, improving this class is **your** job: bring a
+> real tokenizer, a real truncation budget, a real pruning strategy. A
+> compacting one ships in
+> [contrib/simple_context_manager/](contrib/simple_context_manager/README.md).
 
 The image constant is deliberately dimension-blind: a URL source has no local
 bytes to measure, reading real dimensions would need an image decoder, and the
