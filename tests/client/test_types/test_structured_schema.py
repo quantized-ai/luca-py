@@ -79,22 +79,51 @@ def test_strictify_requires_every_property_and_forbids_extras():
 
 
 def test_strictify_reaches_defs_and_nested_objects():
+    # `$ref` is left alone and the referenced `$defs` entry is rewritten in
+    # place, which is what the reference resolves to. `Cast.extras` has a
+    # default, so model_json_schema() leaves it out of `required` and strict
+    # mode puts it back.
     _, schema = response_format_to_json_schema(Film)
 
-    strict = strictify_json_schema(schema)
-
-    assert strict["additionalProperties"] is False
-    assert strict["required"] == ["movie", "cast"]
-    # $ref is left alone; the referenced definition is rewritten in place,
-    # which is what the reference resolves to.
-    assert strict["properties"]["movie"] == {"$ref": "#/$defs/Movie"}
-    assert strict["$defs"]["Cast"]["additionalProperties"] is False
-    # `extras` has a default, so model_json_schema() omits it from required.
-    assert strict["$defs"]["Cast"]["required"] == ["lead", "extras"]
+    assert strictify_json_schema(schema) == {
+        "$defs": {
+            "Cast": {
+                "properties": {
+                    "lead": {"title": "Lead", "type": "string"},
+                    "extras": {
+                        "default": [],
+                        "items": {"type": "string"},
+                        "title": "Extras",
+                        "type": "array",
+                    },
+                },
+                "required": ["lead", "extras"],
+                "title": "Cast",
+                "type": "object",
+                "additionalProperties": False,
+            },
+            "Movie": {
+                "properties": {
+                    "title": {"title": "Title", "type": "string"},
+                    "year": {"title": "Year", "type": "integer"},
+                },
+                "required": ["title", "year"],
+                "title": "Movie",
+                "type": "object",
+                "additionalProperties": False,
+            },
+        },
+        "properties": {"movie": {"$ref": "#/$defs/Movie"}, "cast": {"$ref": "#/$defs/Cast"}},
+        "required": ["movie", "cast"],
+        "title": "Film",
+        "type": "object",
+        "additionalProperties": False,
+    }
 
 
 def test_strictify_reaches_objects_inside_arrays_and_unions():
-    strict = strictify_json_schema(
+    # The `null` branch of the union is not an object and is left untouched.
+    assert strictify_json_schema(
         {
             "type": "object",
             "properties": {
@@ -107,15 +136,33 @@ def test_strictify_reaches_objects_inside_arrays_and_unions():
                 },
             },
         }
-    )
-
-    assert strict["properties"]["rows"]["items"] == {
+    ) == {
         "type": "object",
-        "properties": {"a": {"type": "string"}},
-        "required": ["a"],
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "required": ["a"],
+                    "additionalProperties": False,
+                },
+            },
+            "either": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"b": {"type": "string"}},
+                        "required": ["b"],
+                        "additionalProperties": False,
+                    },
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": ["rows", "either"],
         "additionalProperties": False,
     }
-    assert strict["properties"]["either"]["anyOf"][0]["additionalProperties"] is False
 
 
 def test_strictify_is_idempotent():
