@@ -11,7 +11,7 @@ from luca.client.providers import (
 )
 from luca.client.transports import (
     AnthropicTransport,
-    OpenAITransport,
+    OpenAIResponsesTransport,
     OpenRouterTransport,
 )
 from tests.client._helpers.stub_transports import StubTransport
@@ -34,7 +34,7 @@ CASES = [
         "openai",
         "https://api.openai.com/v1",
         "OPENAI_API_KEY",
-        OpenAITransport,
+        OpenAIResponsesTransport,
     ),
     ProviderCase(
         "anthropic",

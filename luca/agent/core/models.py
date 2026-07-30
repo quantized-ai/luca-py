@@ -63,14 +63,21 @@ class TextContent(BaseModel):
 class ThinkingContent(BaseModel):
     """The model's reasoning. `signature` is the provider's opaque attestation
     over it, durable because some providers reject a replayed thinking block
-    without one; `redacted` marks a block whose reasoning the provider
-    encrypted, leaving `thinking` empty and the payload in `signature`.
+    without one; `id` is the provider's opaque identity FOR it, durable because
+    OpenAI's Responses API replays a reasoning item only when its `rs_…` id
+    comes back alongside the encrypted payload; `redacted` marks a block whose
+    reasoning the provider encrypted, leaving `thinking` empty and the payload
+    in `signature`.
 
-    Both are provider-owned and must round-trip byte for byte: rewriting
-    `thinking` in middleware invalidates the signature."""
+    All three are provider-owned and must round-trip byte for byte: rewriting
+    `thinking` in middleware invalidates the signature. Whether they go back on
+    the wire is the transport's decision, not the projector's — an attestation
+    minted by one (provider, model) pair is refused by every other, and the
+    transport is what knows that."""
 
     type: Literal["thinking"] = "thinking"
     thinking: str
+    id: str | None = None
     signature: str | None = None
     redacted: bool = False
 

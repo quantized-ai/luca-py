@@ -256,3 +256,42 @@ def test_only_this_providers_options_are_merged(openai_transport_factory):
 
     assert payload["mine"] == 1
     assert "theirs" not in payload
+
+
+def test_response_format_nests_a_strictified_schema_under_json_schema(openai_transport_factory):
+    # Chat completions puts the schema one level down, and `strict: true`
+    # alongside a raw model_json_schema() is a 400 on every current model.
+    from pydantic import BaseModel
+
+    class Movie(BaseModel):
+        title: str
+        year: int = 2024
+
+    transport = openai_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-4o",
+            messages=[UserMessage(content="hi")],
+            response_format=Movie,
+        ),
+    )
+
+    assert payload["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "Movie",
+            "schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"title": "Title", "type": "string"},
+                    "year": {"default": 2024, "title": "Year", "type": "integer"},
+                },
+                # `year` has a default, so strict mode requires it anyway.
+                "required": ["title", "year"],
+                "title": "Movie",
+                "type": "object",
+            },
+            "strict": True,
+        },
+    }

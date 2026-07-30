@@ -106,7 +106,7 @@ def test_turn_markers_are_dropped():
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="Hi")]),
-        LucaAssistantMessage(content=[TextBlock(text="Hey there")]),
+        LucaAssistantMessage(content=[TextBlock(text="Hey there")], provider="p", model="m"),
     ]
 
 
@@ -165,10 +165,12 @@ def test_full_tool_call_turn():
             content=[
                 ThinkingBlock(text="Use the add tool."),
                 LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            ]
+            ],
+            provider="p",
+            model="m",
         ),
         ToolMessage(tool_call_id="tc1", content=[TextBlock(text="3")]),
-        LucaAssistantMessage(content=[TextBlock(text="The answer is 3.")]),
+        LucaAssistantMessage(content=[TextBlock(text="The answer is 3.")], provider="p", model="m"),
     ]
 
 
@@ -499,7 +501,7 @@ def test_cancelled_turn_finish_projects_as_interrupted_marker():
 
     assert PROJECTOR.project(conversation, entries) == [
         LucaUserMessage(content=[TextBlock(text="Go")]),
-        LucaAssistantMessage(content=[TextBlock(text="Working on it…")]),
+        LucaAssistantMessage(content=[TextBlock(text="Working on it…")], provider="p", model="m"),
         LucaUserMessage(content=[TextBlock(text=CANCELLED_TURN_MARKER)]),
         LucaUserMessage(content=[TextBlock(text="Try again")]),
     ]
@@ -549,7 +551,9 @@ def test_failed_turn_finish_is_dropped_but_its_content_projects():
         LucaAssistantMessage(
             content=[
                 LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            ]
+            ],
+            provider="p",
+            model="m",
         ),
         ToolMessage(tool_call_id="tc1", content=[TextBlock(text="3")]),
     ]
@@ -918,14 +922,16 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
         LucaAssistantMessage(
             content=[
                 LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            ]
+            ],
+            provider="p",
+            model="m",
         ),
         ToolMessage(
             tool_call_id="tc1",
             content=[TextBlock(text="[tool output has been pruned to reduce context]")],
             is_error=False,
         ),
-        LucaAssistantMessage(content=[TextBlock(text="The answer is 3.")]),
+        LucaAssistantMessage(content=[TextBlock(text="The answer is 3.")], provider="p", model="m"),
     ]
 
 
@@ -970,6 +976,8 @@ def test_pruned_assistant_message_projects_with_the_assistant_role():
 
     assert PROJECTOR.project_pruned(pruned, entries) == LucaAssistantMessage(
         content=[TextBlock(text="[pruned]")],
+        provider="p",
+        model="m",
     )
 
 
@@ -1232,7 +1240,9 @@ def test_assistant_thinking_projects_with_its_signature():
             content=[
                 ThinkingBlock(text="reasoning", signature="sig-abc"),
                 TextBlock(text="the answer"),
-            ]
+            ],
+            provider="p",
+            model="m",
         ),
     ]
 
@@ -1253,6 +1263,67 @@ def test_a_redacted_thinking_part_projects_as_redacted():
         LucaAssistantMessage(
             content=[
                 ThinkingBlock(text="", signature="enc", redacted=True),
-            ]
+            ],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_assistant_thinking_projects_with_its_reasoning_item_id():
+    # `id` is the other half of an OpenAI reasoning item's identity; the
+    # transport needs both to replay it.
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[ThinkingContent(thinking="reasoning", id="rs_1", signature="enc-1")],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaAssistantMessage(
+            content=[ThinkingBlock(text="reasoning", id="rs_1", signature="enc-1")],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_the_producing_model_is_projected_as_provenance():
+    # Load-bearing, not decorative: the transport compares this against the
+    # model being called to decide whether an opaque attestation may be
+    # replayed. Two entries produced by different models keep their own.
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[ThinkingContent(thinking="first", signature="sig-1")],
+            llm_config=LLMConfig(model="gpt-5.4", provider="openai"),
+            stop_reason="stop",
+        ),
+        "a2": AssistantMessage(
+            id="a2",
+            created_at=2,
+            parts=[TextContent(text="second")],
+            llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1", "a2"], created_at=1, updated_at=2)
+
+    assert PROJECTOR.project(conversation, entries) == [
+        LucaAssistantMessage(
+            content=[ThinkingBlock(text="first", signature="sig-1")],
+            provider="openai",
+            model="gpt-5.4",
+        ),
+        LucaAssistantMessage(
+            content=[TextBlock(text="second")],
+            provider="anthropic",
+            model="claude-sonnet-5",
         ),
     ]

@@ -226,15 +226,24 @@ class ConversationProjector:
         entry: AssistantMessage,
         entries: Mapping[str, AnyEntry],
     ) -> ClientAssistantMessage:
-        """Content parts in order. Durable provenance (usage, stop reason, the
-        producing LLMConfig) is not copied into the projected history —
-        projection reconstructs conversation content, not response objects."""
+        """Content parts in order, plus the producing model as provenance.
+        Usage and stop reason are not copied — projection reconstructs
+        conversation content, not response objects.
+
+        `provider` / `model` ARE copied, and they are load-bearing rather than
+        decorative: a `ThinkingContent` carries opaque attestations (an
+        Anthropic signature, an OpenAI `rs_…` id plus encrypted payload) that
+        only the pair which minted them accepts back, and the transport decides
+        replay eligibility by comparing this provenance against the model being
+        called. Without it, switching model mid-session (`/model` in the TUI)
+        would replay a foreign attestation and every later request would 400."""
         blocks: list = []
         for part in entry.parts:
             if isinstance(part, ThinkingContent):
                 blocks.append(
                     ThinkingBlock(
                         text=part.thinking,
+                        id=part.id,
                         signature=part.signature,
                         redacted=part.redacted,
                     ),
@@ -249,7 +258,11 @@ class ConversationProjector:
                 )
             else:
                 blocks.append(self._content_block(part))
-        return ClientAssistantMessage(content=blocks)
+        return ClientAssistantMessage(
+            content=blocks,
+            provider=entry.llm_config.provider,
+            model=entry.llm_config.model,
+        )
 
     def project_tool_execution(
         self,
@@ -341,7 +354,13 @@ class ConversationProjector:
         if isinstance(original, UserMessage):
             return ClientUserMessage(content=content)
         if isinstance(original, AssistantMessage):
-            return ClientAssistantMessage(content=content)
+            # Same provenance rule as project_assistant_message: an assistant
+            # message on the wire says which model produced it, pruned or not.
+            return ClientAssistantMessage(
+                content=content,
+                provider=original.llm_config.provider,
+                model=original.llm_config.model,
+            )
         raise ProjectionError(
             f"PrunedEntry {entry.id!r} references an entry of type {original.type!r}, which has no pruned projection."
         )

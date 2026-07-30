@@ -374,3 +374,42 @@ def test_a_url_image_cannot_be_sent_to_converse(bedrock_transport_factory):
                 )
             ],
         )
+
+
+def test_response_format_is_refused_because_converse_has_no_field_for_it(
+    bedrock_transport_factory,
+):
+    # Accepting it and sending nothing would hand the caller prose and a
+    # StructuredOutputError from parse(), with nothing pointing at the cause.
+    transport = bedrock_transport_factory()
+
+    with pytest.raises(UnsupportedParameterError, match="no structured-output field"):
+        _build(
+            transport,
+            model="anthropic.claude-sonnet-4-5-20250929-v1:0",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object"},
+        )
+
+
+def test_a_signature_minted_by_another_pair_is_dropped(bedrock_transport_factory):
+    transport = bedrock_transport_factory()
+
+    payload = _build(
+        transport,
+        model="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        messages=[
+            AssistantMessage(
+                content=[
+                    ThinkingBlock(text="reasoning", signature="sig-from-openai"),
+                    TextBlock(text="the answer"),
+                ],
+                provider="openai",
+                model="gpt-5.4",
+            ),
+        ],
+    )
+
+    assert payload["messages"] == [
+        {"role": "assistant", "content": [{"text": "the answer"}]},
+    ]

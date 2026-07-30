@@ -9,7 +9,7 @@ of new hosts.
 
 | Name | Class | Default base URL | Env var | Transport |
 |---|---|---|---|---|
-| `openai` | `OpenAIProvider` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OpenAITransport` |
+| `openai` | `OpenAIProvider` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OpenAIResponsesTransport` |
 | `anthropic` | `AnthropicProvider` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `AnthropicTransport` |
 | `openrouter` | `OpenRouterProvider` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OpenRouterTransport` |
 | `bedrock` | `BedrockProvider` | `https://bedrock-runtime.{region}.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` | `BedrockTransport` |
@@ -19,6 +19,27 @@ of new hosts.
 | `faux` | `FauxProvider` | — | (none) | `FauxTransport` |
 
 `PROVIDERS` lives in `luca/client/providers/__init__.py`.
+
+**Two OpenAI wire protocols.** `openai` runs on `/v1/responses`
+(`OpenAIResponsesTransport`) — the protocol OpenAI's own models are developed
+against, and the only one that replays reasoning across a multi-step turn.
+`OpenAITransport` speaks `/chat/completions` and is what every
+OpenAI-*compatible* host uses (`groq`, `deepseek`, `ollama`, and
+`OpenRouterTransport` by subclassing). To put provider `openai` back on chat
+completions:
+
+```python
+from luca.client.transports import OpenAITransport
+
+completion(model="openai:gpt-4o", transport_class=OpenAITransport, messages=[...])
+```
+
+The two differ in more than the URL. Responses has no `stop`, `seed`,
+`presence_penalty`, `frequency_penalty` or `logprobs`; passing any of them
+raises `UnsupportedParameterError` rather than dropping it silently. It sends
+`store: false` and the whole conversation on every turn, so nothing is
+retained server-side; override `store` (or anything else) through
+`provider_options={"openai": {...}}`.
 
 `bedrock` also reads `BEDROCK_AWS_REGION` to fill the `{region}` in its base
 URL. Pass `base_url=` to point at a VPC endpoint or a proxy instead. The token

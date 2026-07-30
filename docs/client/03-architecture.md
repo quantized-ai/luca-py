@@ -25,7 +25,8 @@ canonical and provider-agnostic.
                        ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Transports  (luca/client/transports/)          │  ← advanced
-│  OpenAITransport, AnthropicTransport, OpenRouterTransport│
+│  OpenAIResponsesTransport, OpenAITransport,              │
+│  AnthropicTransport, OpenRouterTransport,                │
 │  BedrockTransport, FauxTransport                         │
 │  • builds wire JSON  • parses SSE/JSON stream            │
 │  • maps errors to typed ClientError subclasses           │
@@ -55,9 +56,15 @@ canonical and provider-agnostic.
 - A **transport** is a wire protocol: it builds payloads, parses the response
   stream (SSE for most transports, a binary `vnd.amazon.eventstream` for
   Bedrock), and maps HTTP errors. The same transport class can serve many
-  providers — `OpenAITransport` is the wire format for OpenAI, Groq,
-  DeepSeek, Together, Cerebras, Fireworks, Ollama, … via `PROVIDERS`
+  providers — `OpenAITransport` is the chat-completions wire format, shared by
+  Groq, DeepSeek, Together, Cerebras, Fireworks, Ollama, … via `PROVIDERS`
   config-dict entries that point at it.
+
+One vendor can also speak more than one protocol. Provider `openai` runs on
+`OpenAIResponsesTransport` (`/v1/responses`), a sibling of `OpenAITransport`
+rather than a subclass: items instead of messages, named SSE events instead of
+delta chunks, `status` instead of `finish_reason`. Only the HTTP error envelope
+is shared, through `OpenAIErrorMappingMixin`.
 
 So adding **Groq** is a one-line `PROVIDERS` entry (it reuses
 `OpenAITransport`); adding **Anthropic** is its own transport class because
@@ -70,7 +77,7 @@ everything.
 |---|---|
 | Add a new OpenAI-compatible host | One line in `PROVIDERS` (`providers/__init__.py`) |
 | Add a host with custom auth/wire shape | New file in `providers/` + new folder in `transports/` |
-| Tweak how OpenAI builds payloads | `transports/openai/transport.py` |
+| Tweak how OpenAI builds payloads | `transports/openai_responses/transport.py` (provider `openai`) or `transports/openai/transport.py` (chat-completions hosts) |
 | Add a new content block type | `types/content.py` + transport projections |
 | Add a new finish-reason mapping | `_classify_finish` on the relevant transport |
 

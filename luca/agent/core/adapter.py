@@ -30,6 +30,7 @@ def message_to_parts(
             parts.append(
                 ThinkingContent(
                     thinking=block.text,
+                    id=block.id,
                     signature=block.signature,
                     redacted=block.redacted,
                 ),

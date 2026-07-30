@@ -57,6 +57,33 @@ class BaseTransport:
             h["Authorization"] = f"Bearer {self._api_key}"
         return h
 
+    # --- replaying provider-owned attestations ---
+
+    def _attestation_is_replayable(
+        self,
+        message: Any,
+        request: ChatCompletionRequest,
+    ) -> bool:
+        """Whether an assistant message's opaque provider data (a thinking
+        signature, an encrypted reasoning item) may go back on THIS request.
+
+        A signature is minted by one (provider, model) pair and is meaningless
+        to any other — Anthropic 400s on a foreign one, and a foreign
+        `rs_…` id is not a reasoning item OpenAI knows. So an attestation
+        replays only when the message that carries it was produced by the pair
+        we are about to call. Reachable in one keystroke: the agent TUI's
+        `/model` rewrites the session's model mid-conversation and the next
+        request replays the whole history.
+
+        Provenance ABSENT (`provider`/`model` are None, as on a hand-built
+        message) means the caller is driving and is trusted — refusing there
+        would silently strip data the caller deliberately supplied."""
+        provider = getattr(message, "provider", None)
+        model = getattr(message, "model", None)
+        if provider is None or model is None:
+            return True
+        return provider == self._provider and model == request.model
+
     def _ensure_aclient(self) -> httpx.AsyncClient:
         if self._aclient is None:
             self._aclient = httpx.AsyncClient(timeout=self._timeout)

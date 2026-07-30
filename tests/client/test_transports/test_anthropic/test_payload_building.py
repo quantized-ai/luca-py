@@ -223,6 +223,7 @@ def test_a_signed_thinking_block_is_replayed_with_its_signature(
                 TextBlock(text="the answer"),
             ]
         ),
+        ChatCompletionRequest(model="claude-sonnet-5", messages=[]),
     )
 
     assert wire["content"] == [
@@ -245,6 +246,7 @@ def test_an_unsigned_thinking_block_is_dropped_not_sent(anthropic_transport_fact
                 TextBlock(text="the answer"),
             ]
         ),
+        ChatCompletionRequest(model="claude-sonnet-5", messages=[]),
     )
 
     assert wire["content"] == [{"type": "text", "text": "the answer"}]
@@ -261,6 +263,7 @@ def test_a_redacted_block_is_replayed_in_its_own_wire_shape(
                 ThinkingBlock(text="", signature="encrypted-payload", redacted=True),
             ]
         ),
+        ChatCompletionRequest(model="claude-sonnet-5", messages=[]),
     )
 
     assert wire["content"] == [
@@ -296,7 +299,127 @@ def test_a_redacted_block_survives_a_full_receive_then_send(
         request,
     ).message
 
-    assert transport._project_assistant_message(message)["content"] == [
+    assert transport._project_assistant_message(message, request)["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},
         {"type": "text", "text": "done"},
     ]
+
+
+# ── structured output ──────────────────────────────────────────────────────────
+
+
+def test_response_format_projects_to_output_config_format(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+
+    assert payload["output_config"] == {
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+                "additionalProperties": False,
+            },
+        }
+    }
+
+
+def test_the_format_merges_with_an_adaptive_thinking_effort(anthropic_transport_factory):
+    # resolve_reasoning already owns `output_config` on adaptive models;
+    # assigning over it would silently drop the reasoning level.
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
+            reasoning="high",
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+
+    assert payload["output_config"] == {
+        "effort": "high",
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def test_raw_provider_options_still_win_over_the_derived_format(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+            provider_options={"anthropic": {"output_config": {"mine": True}}},
+        ),
+    )
+
+    assert payload["output_config"] == {"mine": True}
+
+
+def test_response_format_is_refused_on_a_model_known_to_predate_it(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+
+    with pytest.raises(UnsupportedParameterError, match=r"Claude 4\.5 or newer"):
+        transport._build_chat_completion_payload(
+            ChatCompletionRequest(
+                model="claude-3-5-sonnet-latest",
+                messages=[UserMessage(content="hi")],
+                response_format={"type": "object"},
+            ),
+        )
+
+
+def test_an_unknown_model_is_sent_through_rather_than_refused(anthropic_transport_factory):
+    # The conservative all-false capability record exists to stop us sending
+    # the wrong THINKING shape; refusing here would block every model released
+    # after the table was written.
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-something-new",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object"},
+        ),
+    )
+
+    assert payload["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}
+
+
+def test_a_signature_minted_by_another_pair_is_dropped(anthropic_transport_factory):
+    # Anthropic 400s on a foreign attestation exactly as it does on a missing
+    # one, and `/model` in the TUI makes the switch a keystroke away.
+    transport = anthropic_transport_factory()
+
+    wire = transport._project_assistant_message(
+        AssistantMessage(
+            content=[
+                ThinkingBlock(text="reasoning", signature="sig-from-openai"),
+                TextBlock(text="the answer"),
+            ],
+            provider="openai",
+            model="gpt-5.4",
+        ),
+        ChatCompletionRequest(model="claude-sonnet-5", messages=[]),
+    )
+
+    assert wire["content"] == [{"type": "text", "text": "the answer"}]

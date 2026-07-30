@@ -429,9 +429,11 @@ It is always recomputed via `AgentSession.session_runtime_status` (a `@property`
 
 ### Reasoning durability
 
-`AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload — text, `signature` and `redacted` alike.
+`AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload — text, `id`, `signature` and `redacted` alike. `id` is the provider's identity for the reasoning ITEM (OpenAI's `rs_…`); `signature` its attestation over the content (Anthropic's signature, OpenAI's `encrypted_content`). The Responses API needs both to replay an item.
 
-Whether it goes back on the wire is the transport's call: OpenAI-compatible hosts have no replay surface and drop it, Anthropic requires the signature during tool use and replays the block verbatim. A `ThinkingContent` is therefore immutable once persisted; rewriting `thinking` in middleware invalidates the signature and the provider will reject the turn.
+Whether it goes back on the wire is the transport's call, and it turns on TWO facts. First the protocol: chat-completions hosts have no replay surface and drop reasoning outright, while Anthropic and the OpenAI Responses API replay the block verbatim. Second the producing model: an attestation is minted by one (provider, model) pair and refused by every other, so `ConversationProjector.project_assistant_message` copies `entry.llm_config`'s provider and model onto the projected client message and the transport drops any block whose provenance disagrees with the model being called (`BaseTransport._attestation_is_replayable`). That path is live — the TUI's `/model` switches models mid-session and the whole history is replayed to the new one.
+
+A `ThinkingContent` is therefore immutable once persisted; rewriting `thinking` in middleware invalidates the signature and the provider will reject the turn.
 
 ## Common tasks
 

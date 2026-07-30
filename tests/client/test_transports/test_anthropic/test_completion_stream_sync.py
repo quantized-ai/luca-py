@@ -189,6 +189,9 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
         signature="encrypted-payload",
         redacted=True,
     )
-    assert transport._project_assistant_message(stream.message)["content"] == [
+    assert transport._project_assistant_message(
+        stream.message,
+        ChatCompletionRequest(model="claude-sonnet-5", messages=[]),
+    )["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},
     ]

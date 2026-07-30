@@ -22,9 +22,14 @@ nobody has to grep to find out whether a feature is real.
 - Tools: dict / Pydantic `BaseModel` / `TypeAdapter` parameter forms; tool
   choice; parallel tool calls (where the host supports it).
 - Structured output: `response_format=` + `response.parse()` /
-  `FinishEvent.parse()` with the same three input styles.
-- Reasoning: `ThinkingBlock`, `reasoning=`, signature preservation
-  per-transport.
+  `FinishEvent.parse()` with the same three input styles, projected onto the
+  provider's own field (OpenAI `text.format` / `response_format`, Anthropic
+  `output_config.format`) and strictified on the way out. Bedrock refuses it —
+  Converse has no equivalent. See
+  [07-structured-output.md](07-structured-output.md).
+- Reasoning: `ThinkingBlock`, `reasoning=`, signature and item-id
+  preservation per-transport, including replay across a mid-session model
+  switch (a foreign attestation is dropped rather than sent).
 - Streaming: full `StreamEvent` union, `partial: AssistantMessage` snapshot
   policy, cancellation as `FinishEvent(cancelled=True)`, terminal
   `FinishEvent` / `ErrorEvent` split, `ResourceWarning` safety net.
@@ -37,8 +42,10 @@ nobody has to grep to find out whether a feature is real.
 `BedrockProvider`, `FauxProvider`, plus `GenericProvider`-backed entries for
 `groq`, `deepseek`, `ollama`.
 
-**Transports**: `OpenAITransport`, `AnthropicTransport`,
-`OpenRouterTransport`, `BedrockTransport`, `FauxTransport`.
+**Transports**: `OpenAIResponsesTransport` (provider `openai`),
+`OpenAITransport` (chat completions — every OpenAI-compatible host),
+`AnthropicTransport`, `OpenRouterTransport`, `BedrockTransport`,
+`FauxTransport`.
 
 **Testing**: `luca.client.testing` — `FauxProvider`,
 `FauxTransport`, scripted-response builders.

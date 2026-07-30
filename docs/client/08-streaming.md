@@ -137,3 +137,19 @@ These are not consumed by end users — only by people writing a new
 transport. The block-start/stop pairing, dense indices, and "raw finish
 string passed through unchanged" rules are documented in
 [`architecture.md`](../../architecture.md) §10.
+
+`RawBlockStart.item_id` carries the provider's id for a thinking block's
+underlying item, which arrives when the item opens rather than with its
+deltas; the accumulator writes it to `ThinkingBlock.id`.
+
+The public event list is identical whichever OpenAI protocol you use, but the
+wire is not. Chat completions streams `delta` chunks over one choice; the
+Responses API streams NAMED events over the whole response
+(`response.output_item.added`, `response.output_text.delta`,
+`response.reasoning_summary_text.delta`, `response.completed`, …), and its
+parser ignores event types it does not model — the hosted-tool events, and
+whatever OpenAI adds next. Two Responses-specific details worth knowing when
+reading a transcript: a reasoning item's summary parts are joined into ONE
+thinking block separated by a blank line, and its `encrypted_content` only
+arrives at `response.output_item.done`, so the block's signature is set at the
+end rather than as it streams.

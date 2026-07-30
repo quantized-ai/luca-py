@@ -58,7 +58,7 @@ luca/client/                       # the supporting LLM SDK
 ├── providers/
 │   ├── __init__.py                # PROVIDERS registry + resolve_provider
 │   ├── base.py                    # BaseProvider + ChatCompletionMixin
-│   ├── openai.py                  # OpenAI provider
+│   ├── openai.py                  # OpenAI provider (→ OpenAIResponsesTransport)
 │   ├── anthropic.py               # Anthropic provider
 │   ├── openrouter.py              # OpenRouter provider
 │   ├── bedrock.py                 # Bedrock provider (region → base_url)
@@ -68,7 +68,9 @@ luca/client/                       # the supporting LLM SDK
 ├── transports/
 │   ├── __init__.py                # TRANSPORTS registry
 │   ├── base.py                    # BaseTransport + ChatCompletionTransportMixin
-│   ├── openai/                    # transport.py + stream.py
+│   ├── openai/                    # chat completions: transport.py + stream.py
+│   │                              #   + errors.py (envelope shared with responses)
+│   ├── openai_responses/          # /v1/responses: transport.py + stream.py
 │   ├── anthropic/                 # transport.py + stream.py
 │   ├── openrouter/                # subclass of OpenAITransport (only overrides _headers)
 │   ├── bedrock/                   # Converse translation; binary eventstream decoder
@@ -168,16 +170,72 @@ Each transport implements `_classify_finish(provider_value, message)` to compute
 
 **LLM-side refusals, safety blocks, and content filters are not exceptions.** They arrive as a normal response with `finish_reason="error"` and an `error_message`. `ClientError` subclasses are reserved for transport or network failures.
 
+### Two OpenAI wire protocols
+
+`openai` the PROVIDER runs on `/v1/responses` (`OpenAIResponsesTransport`).
+`openai` the TRANSPORT is chat completions, and serves every OpenAI-compatible
+host (`groq`, `deepseek`, `ollama`, and `openrouter` by subclassing). They are
+siblings, not a base and an override: `input` items vs `messages`, `output`
+items vs `choices`, named SSE events vs `delta` chunks, `status` +
+`incomplete_details` vs `finish_reason`. The only genuinely shared piece is the
+HTTP error envelope, which lives in `transports/openai/errors.py` as
+`OpenAIErrorMappingMixin` and is mixed into both.
+
+`OpenAIErrorMappingMixin` must come BEFORE `ChatCompletionTransportMixin` in
+the bases — the latter defines the same hook raising `NotImplementedError`, and
+MRO order decides which one answers.
+
+Responses specifics: `store: false` always (the whole conversation goes up
+every turn), `reasoning: {effort, context: "all_turns", summary: "auto"}` plus
+`include: ["reasoning.encrypted_content"]` when reasoning is requested, and
+`stop` / `seed` / `presence_penalty` / `frequency_penalty` / `logprobs` raise
+`UnsupportedParameterError` because the endpoint has no equivalent.
+
 ### Reasoning ("thinking") on OpenAI-compatible hosts
 
-`OpenAITransport` parses provider reasoning text into a `ThinkingBlock`, prepended before visible text. The resulting content order is `[thinking, text, refusal?, tool_calls…]`.
+`OpenAITransport` parses provider reasoning text into a `ThinkingBlock`,
+prepended before visible text. The resulting content order is
+`[thinking, text, refusal?, tool_calls…]`.
 
-- **Non-streaming:** `_parse_assistant_message` reads `message.reasoning`, falling back to `message.reasoning_content`.
-- **Streaming:** `_process_chunk` in `stream.py` emits a `thinking` block from `delta.reasoning` / `delta.reasoning_content`. The thinking block claims the earliest index (reasoning streams before text), stays open while text streams, and closes at finish.
-- **Usage:** `reasoning_tokens` flows through `_parse_usage` from `usage.completion_tokens_details.reasoning_tokens`.
-- **Send-back:** `_project_assistant_message` deliberately **drops** `ThinkingBlock` when projecting an assistant message back to the provider wire format.
+- **Non-streaming:** `_parse_assistant_message` reads `message.reasoning`,
+  falling back to `message.reasoning_content`.
+- **Streaming:** `_process_chunk` in `stream.py` emits a `thinking` block from
+  `delta.reasoning` / `delta.reasoning_content`. The thinking block claims the
+  earliest index (reasoning streams before text), stays open while text
+  streams, and closes at finish.
+- **Usage:** `reasoning_tokens` flows through `_parse_usage` from
+  `usage.completion_tokens_details.reasoning_tokens`.
+- **Send-back:** `_project_assistant_message` deliberately **drops**
+  `ThinkingBlock` — chat completions has no replay surface at all.
 
-`OpenRouterTransport` inherits all of this behavior because it subclasses `OpenAITransport` and only overrides `_headers`.
+`OpenRouterTransport` inherits all of this behavior because it subclasses
+`OpenAITransport` and only overrides `_headers`.
+
+### Replaying a provider-owned attestation
+
+A `ThinkingBlock` carries two opaque halves: `signature` (Anthropic's
+signature, OpenAI's `encrypted_content`) and `id` (OpenAI's `rs_…` item id).
+Both are minted by ONE (provider, model) pair and rejected by every other with
+a 400 that makes the conversation permanently unusable.
+
+`BaseTransport._attestation_is_replayable(message, request)` is the single
+rule: replay when `message.provider` / `message.model` match the pair being
+called, or when they are absent (a hand-built message means the caller is
+driving). The Responses, Anthropic and Bedrock transports each consult it
+before projecting a thinking block and DROP the block otherwise — one turn's
+visible reasoning is a cheaper loss than a dead conversation.
+
+This is reachable in one keystroke: the agent TUI's `/model` rewrites the
+session model between turns, and the whole history is replayed to the new one.
+For that to work the projected assistant message has to carry its provenance,
+which is why `ConversationProjector` copies `provider` / `model` (see
+`AGENTS.agent.md`).
+
+Related: every transport sets `AssistantMessage.model` to the model that was
+REQUESTED and `response_model` to whatever the provider reported. Keeping the
+requested string in `model` is what makes the comparison above sound — an
+Anthropic alias resolves to a dated id on the wire, and comparing that against
+`request.model` would drop every attestation.
 
 ## Common tasks
 

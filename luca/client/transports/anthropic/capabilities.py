@@ -49,6 +49,7 @@ class ModelCapabilities(BaseModel):
     supports_thinking: bool = False
     supports_adaptive_thinking: bool = False
     supports_xhigh_effort: bool = False
+    supports_structured_output: bool = False
     rejects_sampling_parameters: bool = False
     is_known_model: bool = False
     extras: dict = Field(default_factory=dict)
@@ -66,6 +67,7 @@ _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
             supports_thinking=True,
             supports_adaptive_thinking=True,
             supports_xhigh_effort=True,
+            supports_structured_output=True,
             rejects_sampling_parameters=True,
             is_known_model=True,
         ),
@@ -76,6 +78,7 @@ _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
             max_output_tokens=128_000,
             supports_thinking=True,
             supports_adaptive_thinking=True,
+            supports_structured_output=True,
             is_known_model=True,
         ),
     ),
@@ -84,6 +87,7 @@ _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
         ModelCapabilities(
             max_output_tokens=64_000,
             supports_thinking=True,
+            supports_structured_output=True,
             is_known_model=True,
         ),
     ),

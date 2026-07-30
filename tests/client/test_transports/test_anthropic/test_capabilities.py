@@ -33,6 +33,7 @@ def test_the_newest_models_are_adaptive_and_refuse_sampling():
             supports_thinking=True,
             supports_adaptive_thinking=True,
             supports_xhigh_effort=True,
+            supports_structured_output=True,
             rejects_sampling_parameters=True,
             is_known_model=True,
         )
@@ -46,6 +47,7 @@ def test_the_4_6_generation_is_adaptive_without_xhigh_or_sampling_refusal():
             max_output_tokens=128_000,
             supports_thinking=True,
             supports_adaptive_thinking=True,
+            supports_structured_output=True,
             is_known_model=True,
         )
         == ADAPTIVE_NO_XHIGH
@@ -57,6 +59,7 @@ def test_the_4_5_generation_thinks_but_only_manually():
         ModelCapabilities(
             max_output_tokens=64_000,
             supports_thinking=True,
+            supports_structured_output=True,
             is_known_model=True,
         )
         == MANUAL

@@ -11,10 +11,14 @@ from .base import BaseTransport, ChatCompletionTransportMixin
 from .bedrock import BedrockTransport
 from .faux import FauxTransport
 from .openai import OpenAITransport
+from .openai_responses import OpenAIResponsesTransport
 from .openrouter import OpenRouterTransport
 
 TRANSPORTS: dict[str, type] = {
+    # "openai" is the CHAT COMPLETIONS protocol: what every OpenAI-compatible
+    # host speaks. Provider `openai` itself runs on "openai-responses".
     "openai": OpenAITransport,
+    "openai-responses": OpenAIResponsesTransport,
     "anthropic": AnthropicTransport,
     "openrouter": OpenRouterTransport,
     "bedrock": BedrockTransport,
@@ -30,6 +34,7 @@ __all__ = [
     "BaseTransport",
     "ChatCompletionTransportMixin",
     "OpenAITransport",
+    "OpenAIResponsesTransport",
     "AnthropicTransport",
     "OpenRouterTransport",
     "BedrockTransport",

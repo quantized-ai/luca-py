@@ -221,6 +221,10 @@ class RawBlockStart:
     # payload, no deltas — so it has to be carried here or it is lost.
     signature: str | None = None
     redacted: bool = False
+    # The provider's opaque id for a thinking block's underlying item, which
+    # arrives when the item opens (OpenAI Responses: `rs_…`) — before any
+    # delta, so RawThinkingDelta is too late to carry it.
+    item_id: str | None = None
 
 
 @dataclass
@@ -566,6 +570,7 @@ class _ChatCompletionAccumulator:
                 self._message.content.append(
                     ThinkingBlock(
                         text="",
+                        id=raw.item_id,
                         signature=raw.signature,
                         redacted=raw.redacted,
                     ),
