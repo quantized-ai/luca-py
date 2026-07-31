@@ -257,7 +257,6 @@ async def test_single_text_response_no_tools():
             ),
             "tf": TurnFinish(id="tf", parent_id="a1", created_at=1000),
         },
-        tool_executions={},
         tool_specs={},  # no execution resolved a tool — nothing to file
         usages={"c1": {"a1": Usage(conversation_id="c1", entry_id="a1")}},
         active_conversation=Conversation(
@@ -460,7 +459,6 @@ async def test_reasoning_plus_tool_call_then_text():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"]},
         tool_specs={ADD_SPEC_ID: ADD_SPEC},
         usages={
             "c1": {
@@ -633,7 +631,6 @@ async def test_multi_turn_two_tool_rounds_then_text():
             ),
             "tf": TurnFinish(id="tf", parent_id="a3", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
         tool_specs={ADD_SPEC_ID: ADD_SPEC, MULTIPLY_SPEC_ID: MULTIPLY_SPEC},
         usages={
             "c1": {
@@ -860,7 +857,6 @@ async def test_streaming_produces_same_session_as_run():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"]},
         usages={
             "c1": {
                 "a1": Usage(conversation_id="c1", entry_id="a1"),

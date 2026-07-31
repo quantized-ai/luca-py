@@ -495,13 +495,6 @@ MATRIX_SESSION = make_session(
             started_at=8,
         ),
     },
-    tool_executions={
-        "tc0": ["te_done"],
-        "tc1": ["te_undecided"],
-        "tc2": ["te_awaiting"],
-        "tc3": ["te_ready"],
-        "tc4": ["te_running"],
-    },
     active_conversation=Conversation(
         id="c1",
         nodes=["ts", "te_done", "te_undecided", "te_awaiting", "te_ready", "te_running"],
@@ -838,29 +831,6 @@ def test_append_links_parent_extends_path_and_stamps_updated_at():
     assert session.active_conversation.updated_at == 1000
 
 
-def test_append_tool_execution_indexes_by_tool_call_id():
-    session = AgentSession(
-        id="s",
-        entries={"ts": TurnStart(id="ts", created_at=0)},
-        active_conversation=Conversation(id="c1", nodes=["ts"], created_at=0, updated_at=0),
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te1")
-
-    ledger.append(
-        lambda entry_id, parent_id, ts: ToolExecution(
-            id=entry_id,
-            parent_id=parent_id,
-            created_at=ts,
-            tool_call_id="tc1",
-            raw_tool_call=ToolCall(id="tc1", name="add"),
-            tool_spec=spec("add"),
-        )
-    )
-
-    assert session.tool_executions == {"tc1": ["te1"]}
-
-
 def test_put_entry_stores_the_replacement_and_touches_conversation():
     session = make_session(
         id="s",
@@ -874,7 +844,6 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
                 status=ExecutionStatus.PENDING,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1072,7 +1041,6 @@ def test_the_same_spec_written_twice_is_stored_once():
                 tool_spec=spec("add"),
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1118,7 +1086,6 @@ def test_put_entry_re_stamps_a_spec_replaced_between_writes():
                 tool_spec=spec("add"),
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1160,7 +1127,6 @@ def test_put_entry_drops_the_reference_when_the_spec_is_removed():
                 tool_spec=spec("add"),
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1191,7 +1157,6 @@ def test_refresh_entry_files_a_spec_that_arrives_late():
                 raw_tool_call=ToolCall(id="tc1", name="add"),
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1243,7 +1208,6 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
                 stop_reason="stop",
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(
             id="c1",
             nodes=["u1", "te1", "a2"],
@@ -1280,9 +1244,8 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
     assert session.entries["p1"] == pruned
     assert session.active_conversation.nodes == ["u1", "p1", "a2"]
     assert session.active_conversation.updated_at == 1000
-    # the original is untouched: still in the store, still indexed
+    # the original is untouched and remains in the store
     assert session.entries["te1"].status == ExecutionStatus.COMPLETED
-    assert session.tool_executions == {"tc1": ["te1"]}
 
 
 def test_prune_is_not_a_tool_spec_door():
@@ -1304,7 +1267,6 @@ def test_prune_is_not_a_tool_spec_door():
                 ended_at=0,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1428,7 +1390,6 @@ def test_prune_rejects_a_nonterminal_execution():
                 started_at=0,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -1817,7 +1778,7 @@ def test_the_same_conversation_is_never_both_active_and_archived():
     assert session.conversation_history[-1] is not session.active_conversation
 
 
-def test_transition_stores_created_entries_and_indexes_a_created_execution():
+def test_transition_stores_created_entries():
     session = TRANSITION_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
     framing = UserMessage(
@@ -1847,7 +1808,6 @@ def test_transition_stores_created_entries_and_indexes_a_created_execution():
 
     assert session.entries["new1"] == framing
     assert session.entries["new2"] == execution
-    assert session.tool_executions == {"tcX": ["new2"]}
 
 
 def test_transition_without_a_closing_marker_archives_the_path_as_it_stands():
@@ -2025,7 +1985,6 @@ TRANSITION_TOOL_SESSION = make_session(
             started_at=600,
         ),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["te1", "ts_c", "cmp"],

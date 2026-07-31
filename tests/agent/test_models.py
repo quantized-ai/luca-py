@@ -100,7 +100,6 @@ REPEATED_CALL_SESSION = make_session(
             updated_at=600,
         ),
     },
-    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["te1", "te2"],
@@ -625,7 +624,6 @@ def test_structured_content_survives_a_session_round_trip():
                 updated_at=500,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         active_conversation=Conversation(id="c1", nodes=["te1"], created_at=500, updated_at=500),
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -668,7 +666,6 @@ def test_a_dangling_tool_spec_id_refuses_to_load():
                     tool_spec_id=ADD_SPEC.spec_id(),
                 ),
             },
-            tool_executions={"tc1": ["te1"]},
             tool_specs={},
             active_conversation=Conversation(
                 id="c1",
@@ -695,7 +692,6 @@ def test_a_pre_normalization_session_refuses_to_load():
                     tool_spec=ADD_SPEC,
                 ),
             },
-            tool_executions={"tc1": ["te1"]},
             active_conversation=Conversation(
                 id="c1",
                 nodes=["te1"],
@@ -736,7 +732,6 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
                 updated_at=600,
             ),
         },
-        tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
         active_conversation=Conversation(
             id="c1",
             nodes=["te1", "te2"],
@@ -950,7 +945,6 @@ def test_pruned_entry_round_trips_inside_a_session():
                 context_tokens=2,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         usages={
             "c1": {
                 "a1": Usage(

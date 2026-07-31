@@ -2,9 +2,8 @@
 
 WRITES. Every entry append goes through `append()`, which stamps the injected
 id/clock, links `parent_id` to the current path leaf, extends
-`Conversation.nodes`, indexes a `ToolExecution` into
-`session.tool_executions`, and touches `Conversation.updated_at` — one code
-path, so the bookkeeping can't drift between call sites.
+`Conversation.nodes`, and touches `Conversation.updated_at` — one code path,
+so the bookkeeping can't drift between call sites.
 `put_entry()` is the only in-place mutation door, serving both mutable entry
 types (`ToolExecution` and `CompactionEntry`): it stores the fully formed
 replacement the runner hands it — the runner owns building the updated copy,
@@ -21,9 +20,8 @@ entry id from an entry it verifies is on the path), so the store's key/record
 agreement and referential invariants cannot drift across call sites.
 `prune()` is the single path-replacement door: it stamps a `PrunedEntry`
 built by the caller's callback and swaps it for the original node id IN
-PLACE — the original entry stays untouched in `session.entries` (and, for a
-tool execution, in the `tool_executions` index); only the path stops
-visiting it.
+PLACE — the original entry stays untouched in `session.entries`; only the
+path stops visiting it.
 `refresh_entry()` is the derived-field door: it replaces an entry in the
 store for a recalculation that changes nothing an application asked for (the
 runner's `recalculate_context_tokens()`), deliberately separate from
@@ -150,11 +148,6 @@ class SessionLedger:
         self.session.entries[entry_id] = entry
         conversation.nodes.append(entry_id)
         conversation.updated_at = ts
-        if isinstance(entry, ToolExecution):
-            self.session.tool_executions.setdefault(
-                entry.tool_call_id,
-                [],
-            ).append(entry_id)
         return entry
 
     def put_entry(self, entry: AnyEntry) -> AnyEntry:
@@ -255,11 +248,6 @@ class SessionLedger:
         for entry in created:
             self._store_tool_spec(entry)
             entries[entry.id] = entry
-            if isinstance(entry, ToolExecution):
-                self.session.tool_executions.setdefault(
-                    entry.tool_call_id,
-                    [],
-                ).append(entry.id)
         if closing is not None:
             self._store_tool_spec(closing)
             entries[closing.id] = closing

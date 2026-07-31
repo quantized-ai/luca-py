@@ -465,7 +465,7 @@ class ToolExecution(Entry):
     execution self-contained; middleware may replace or mutate it (the
     original assistant message stays in the session history). `tool_call_id`
     deliberately duplicates `raw_tool_call.id` — it is the durable correlation
-    key for the execution index and the LLM wire protocol.
+    key for the LLM wire protocol.
 
     `tool_spec_id` is the DURABLE reference into `AgentSession.tool_specs`;
     `tool_spec` is a cache of the same spec, restored from that id whenever a
@@ -854,7 +854,6 @@ class AgentSession(BaseModel):
 
     id: str
     entries: dict[str, AnyEntry] = Field(default_factory=dict)  # append-only store
-    tool_executions: dict[str, list[str]] = Field(default_factory=dict)  # denorm index
     # spec_id → ToolSpec. Append-only (never garbage-collected), written only
     # through `SessionLedger`'s write doors. Holds the specs referenced by an
     # execution — tools that were actually CALLED, not the set advertised on

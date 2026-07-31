@@ -205,7 +205,6 @@ async def test_pending_decision_pauses_runner_and_records_it():
     assert runner.awaiting_approval()
     assert runner.pending_approvals() == [gated]
     assert runner.session.entries["te1"] == gated
-    assert runner.session.tool_executions == {"tc1": ["te1"]}
     # the ledger filed the spec once, under the id stamped on the execution
     assert runner.session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
     # decide() was asked exactly once, with the pre-decision snapshot
@@ -473,7 +472,6 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
     ]
     assert runner.session.entries["te1"] == completed1
     assert runner.session.entries["te2"] == rejected2
-    assert runner.session.tool_executions == {"tc1": ["te1"], "tc2": ["te2"]}
     assert runner.idle()
 
 
@@ -936,7 +934,6 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"]},
         usages={"c1": {"a2": Usage(conversation_id="c1", entry_id="a2")}},
         active_conversation=Conversation(
             id="c1",

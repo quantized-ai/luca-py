@@ -611,7 +611,6 @@ GATED_SESSION = make_session(
             updated_at=500,
         ),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1"],
@@ -660,7 +659,6 @@ CLEARED_SESSION = make_session(
             updated_at=600,
         ),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1"],
@@ -771,7 +769,6 @@ RUNNING_ORPHAN_SESSION = make_session(
             updated_at=500,
         ),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1"],
@@ -998,12 +995,6 @@ RICH_SESSION = make_session(
             created_at=500,
             parts=[TextContent(text="What is X?")],
         ),
-    },
-    tool_executions={
-        "tc0": ["te0"],
-        "tc1": ["te1"],
-        "tc2": ["te2"],
-        "tc3": ["te3"],
     },
     usages={
         "c0": {

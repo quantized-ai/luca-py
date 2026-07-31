@@ -518,7 +518,6 @@ async def test_successful_tool_call_full_session_shape():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"]},
         tool_specs={ADD_SPEC_ID: ADD_SPEC},
         usages={
             "c1": {
@@ -725,7 +724,6 @@ async def test_interrupted_tool_call_full_session_shape():
                 error=None,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         tool_specs={SLEEP_FOREVER_SPEC_ID: SLEEP_FOREVER_SPEC},
         usages={
             "c1": {
@@ -887,7 +885,6 @@ async def test_cooperative_cancellation_returns_a_real_result():
                 error=None,
             ),
         },
-        tool_executions={"tc1": ["te1"]},
         tool_specs={COOPERATIVE_SLEEP_SPEC_ID: COOPERATIVE_SLEEP_SPEC},
         usages={
             "c1": {
@@ -1035,7 +1032,6 @@ async def test_timed_out_tool_call_full_session_shape():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"]},
         tool_specs={SLOW_SPEC_ID: SLOW_SPEC},
         usages={
             "c1": {
@@ -1194,7 +1190,6 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
             ),
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
-        tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
         tool_specs={ADD_SPEC_ID: ADD_SPEC, LOUD_SPEC_ID: LOUD_SPEC},
         usages={
             "c1": {

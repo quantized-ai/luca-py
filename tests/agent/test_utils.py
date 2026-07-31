@@ -189,7 +189,6 @@ TOOLS_SESSION = make_session(
         ),
         "tf": TurnFinish(id="tf", parent_id="a2", created_at=T),
     },
-    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
     usages={
         "c1": {
             "a1": Usage(
@@ -259,7 +258,6 @@ FAILED_SESSION = make_session(
         # bracket with no TurnStart of its own until the next run.
         "u2": UserMessage(id="u2", created_at=T, parts=[TextContent(text="again")]),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1", "tf", "u2"],
@@ -345,7 +343,6 @@ UNRESOLVED_SESSION = make_session(
         ),
         "tf": TurnFinish(id="tf", parent_id="a2", created_at=T),
     },
-    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
@@ -424,7 +421,6 @@ CANCELLED_SESSION = make_session(
             outcome=TurnOutcome.CANCELLED,
         ),
     },
-    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1", "te2", "cr", "tf"],
@@ -468,7 +464,6 @@ OPEN_SESSION = make_session(
         ),
         "cr": CancelRequested(id="cr", parent_id="te1", created_at=T),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1", "cr"],
@@ -520,7 +515,6 @@ COMPACTED_SESSION = make_session(
         ),
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="thanks")]),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["cp", "pr", "u1", "missing"],
@@ -561,7 +555,6 @@ BIG_OUTPUT_SESSION = make_session(
             ended_at=T + 1,
         ),
     },
-    tool_executions={"tc1": ["te1"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["a1", "te1"],

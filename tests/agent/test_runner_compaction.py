@@ -456,7 +456,7 @@ async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable(
     assert runner.session.conversation_history[0] == (RICH_SESSION.conversation_history[0])
 
 
-async def test_the_execution_index_and_the_old_usage_records_survive():
+async def test_the_old_usage_records_survive():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
@@ -468,7 +468,6 @@ async def test_the_execution_index_and_the_old_usage_records_survive():
     runner.schedule_compaction()
     await runner.run()
 
-    assert runner.session.tool_executions == RICH_SESSION.tool_executions
     assert runner.session.usages["c0"] == RICH_SESSION.usages["c0"]
     assert runner.session.usages["c1"] == {
         **RICH_SESSION.usages["c1"],

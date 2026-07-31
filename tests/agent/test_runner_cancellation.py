@@ -433,7 +433,6 @@ TWO_CLEARED_SESSION = make_session(
             updated_at=600,
         ),
     },
-    tool_executions={"tc1": ["te1"], "tc2": ["te2"]},
     active_conversation=Conversation(
         id="c1",
         nodes=["u1", "ts", "a1", "te1", "te2"],
@@ -1395,7 +1394,6 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
         events = [event async for event in run]
 
     # two calls → two executions, whichever births the cancel reached
-    assert runner.session.tool_executions == {"tc1": ["te1"], "tc2": ["te2"]}
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
         parent_id="cr",

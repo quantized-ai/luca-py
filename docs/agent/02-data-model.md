@@ -395,7 +395,6 @@ The full container:
 |---|---|
 | `id` | the session id |
 | `entries` | the append-only bag |
-| `tool_executions` | denormalized index `tool_call_id → [execution ids]` — never scan the bag |
 | `tool_specs` | normalized spec store `spec_id → ToolSpec`, append-only: one row per distinct tool definition ever *called* |
 | `usages` | provider-usage records, `conversation_id → entry_id → Usage` ([11](11-context-and-usage.md)) |
 | `active_conversation` | `Conversation`: `id`, `nodes`, `status`, timestamps |
