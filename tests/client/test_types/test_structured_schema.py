@@ -6,11 +6,13 @@ schema that omits `additionalProperties: false` or leaves a defaulted field out
 of `required`, which is exactly what `model_json_schema()` produces."""
 
 import pytest
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 
 from luca.client.types.structured import (
     response_format_to_json_schema,
+    sanitize_schema_name,
     strictify_json_schema,
+    strip_unsupported_keywords,
 )
 
 
@@ -179,3 +181,121 @@ def test_strictify_does_not_mutate_its_input():
     strictify_json_schema(schema)
 
     assert schema == {"type": "object", "properties": {"a": {"type": "string"}}}
+
+
+class Described(BaseModel):
+    inner: Movie = Field(description="a described submodel")
+
+
+class Node(BaseModel):
+    value: int
+    child: "Node | None" = Field(default=None, description="the child node")
+
+
+Node.model_rebuild()
+
+
+def test_a_ref_with_sibling_keys_is_inlined():
+    # `Field(description=…)` on a nested model produces {"$ref", "description"},
+    # which OpenAI rejects outright: "$ref cannot have keywords".
+    _, schema = response_format_to_json_schema(Described)
+
+    inner = strictify_json_schema(schema)["properties"]["inner"]
+
+    assert inner == {
+        "type": "object",
+        "title": "Movie",
+        "properties": {
+            "title": {"title": "Title", "type": "string"},
+            "year": {"title": "Year", "type": "integer"},
+        },
+        "required": ["title", "year"],
+        "additionalProperties": False,
+        "description": "a described submodel",
+    }
+
+
+def test_a_bare_ref_is_left_alone():
+    _, schema = response_format_to_json_schema(Film)
+
+    assert strictify_json_schema(schema)["properties"]["movie"] == {"$ref": "#/$defs/Movie"}
+
+
+def test_a_recursive_model_terminates_and_stays_idempotent():
+    # Inlining goes one level only, so the self-reference inside the inlined
+    # target stays a ref instead of expanding forever.
+    _, schema = response_format_to_json_schema(Node)
+
+    strict = strictify_json_schema(schema)
+
+    assert strictify_json_schema(strict) == strict
+    assert strict["$defs"]["Node"]["additionalProperties"] is False
+
+
+def test_an_object_with_no_properties_is_still_rewritten():
+    # It used to pass through untouched while `strict: true` went out beside
+    # it, which is the exact 400 the rewrite exists to prevent.
+    assert strictify_json_schema({"type": "object"}) == {
+        "type": "object",
+        "required": [],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Box[int]", "Box_int_"),
+        ("Café", "Caf_"),
+        ("A" * 70, "A" * 64),
+        ("!!!", "___"),
+        ("", "structured_output"),
+    ],
+    ids=["generic", "unicode", "too_long", "all_illegal", "empty"],
+)
+def test_the_schema_name_is_reduced_to_what_the_wire_accepts(raw, expected):
+    assert sanitize_schema_name(raw) == expected
+
+
+def test_anthropic_unsupported_constraints_move_into_the_description():
+    # Anthropic's grammar 400s on these; their own SDKs strip and describe.
+    assert strip_unsupported_keywords(
+        {
+            "type": "object",
+            "properties": {
+                "age": {"type": "integer", "minimum": 0, "maximum": 120},
+                "name": {"type": "string", "minLength": 2, "description": "the name"},
+            },
+        }
+    ) == {
+        "type": "object",
+        "properties": {
+            "age": {"type": "integer", "description": "Constraints: minimum: 0, maximum: 120"},
+            "name": {"type": "string", "description": "the name (minLength: 2)"},
+        },
+    }
+
+
+def test_the_keywords_anthropic_does_support_survive():
+    schema = {
+        "type": "object",
+        "properties": {
+            "when": {"type": "string", "format": "date-time"},
+            "tags": {"type": "array", "minItems": 1},
+            "kind": {"type": "string", "enum": ["a", "b"]},
+        },
+    }
+
+    assert strip_unsupported_keywords(schema) == schema
+
+
+def test_an_unsupported_format_and_an_out_of_range_min_items_are_stripped():
+    assert strip_unsupported_keywords(
+        {"type": "object", "properties": {"p": {"type": "string", "format": "binary"}, "t": {"minItems": 3}}}
+    ) == {
+        "type": "object",
+        "properties": {
+            "p": {"type": "string", "description": "Constraints: format: binary"},
+            "t": {"description": "Constraints: minItems: 3"},
+        },
+    }

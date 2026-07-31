@@ -360,7 +360,9 @@ def test_the_format_merges_with_an_adaptive_thinking_effort(anthropic_transport_
     }
 
 
-def test_raw_provider_options_still_win_over_the_derived_format(anthropic_transport_factory):
+def test_a_raw_output_config_does_not_swallow_the_response_format(anthropic_transport_factory):
+    # `payload.update(options)` replaces the whole key, so applying the format
+    # before the merge lost it silently and the caller got prose back.
     transport = anthropic_transport_factory()
 
     payload = transport._build_chat_completion_payload(
@@ -372,13 +374,39 @@ def test_raw_provider_options_still_win_over_the_derived_format(anthropic_transp
         ),
     )
 
-    assert payload["output_config"] == {"mine": True}
+    assert payload["output_config"] == {
+        "mine": True,
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def test_a_hand_written_format_still_wins(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+            provider_options={"anthropic": {"output_config": {"format": {"type": "text"}}}},
+        ),
+    )
+
+    assert payload["output_config"] == {"format": {"type": "text"}}
 
 
 def test_response_format_is_refused_on_a_model_known_to_predate_it(anthropic_transport_factory):
     transport = anthropic_transport_factory()
 
-    with pytest.raises(UnsupportedParameterError, match=r"Claude 4\.5 or newer"):
+    with pytest.raises(UnsupportedParameterError, match="predates Anthropic structured outputs"):
         transport._build_chat_completion_payload(
             ChatCompletionRequest(
                 model="claude-3-5-sonnet-latest",
@@ -402,7 +430,12 @@ def test_an_unknown_model_is_sent_through_rather_than_refused(anthropic_transpor
         ),
     )
 
-    assert payload["output_config"] == {"format": {"type": "json_schema", "schema": {"type": "object"}}}
+    assert payload["output_config"] == {
+        "format": {
+            "type": "json_schema",
+            "schema": {"type": "object", "required": [], "additionalProperties": False},
+        }
+    }
 
 
 def test_a_signature_minted_by_another_pair_is_dropped(anthropic_transport_factory):
@@ -423,3 +456,54 @@ def test_a_signature_minted_by_another_pair_is_dropped(anthropic_transport_facto
     )
 
     assert wire["content"] == [{"type": "text", "text": "the answer"}]
+
+
+def test_constraints_anthropics_grammar_rejects_move_into_the_description(
+    anthropic_transport_factory,
+):
+    # Field(ge=…)/Field(min_length=…) are everyday Pydantic and 400 here while
+    # working on OpenAI. Anthropic's own SDKs strip and describe them.
+    from pydantic import BaseModel, Field
+
+    class Person(BaseModel):
+        age: int = Field(ge=0, le=120)
+        name: str = Field(min_length=2, description="the name")
+
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-sonnet-5",
+            messages=[UserMessage(content="hi")],
+            response_format=Person,
+        ),
+    )
+
+    assert payload["output_config"]["format"]["schema"]["properties"] == {
+        "age": {
+            "title": "Age",
+            "type": "integer",
+            "description": "Constraints: maximum: 120, minimum: 0",
+        },
+        "name": {
+            "title": "Name",
+            "type": "string",
+            "description": "the name (minLength: 2)",
+        },
+    }
+
+
+def test_structured_output_is_accepted_on_a_4_1_model(anthropic_transport_factory):
+    # Anthropic documents 4.5+, but the API accepts opus-4-1 and returns
+    # conforming JSON. Trust the wire.
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-opus-4-1",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+
+    assert payload["output_config"]["format"]["type"] == "json_schema"

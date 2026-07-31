@@ -54,6 +54,9 @@ _UNSUPPORTED_FIELDS: tuple[str, ...] = (
     "presence_penalty",
     "frequency_penalty",
     "logprobs",
+    # Accepted by the endpoint but inert: logprobs need an `include` we do not
+    # send and could not surface. Refusing matches how `logprobs` is treated.
+    "top_logprobs",
 )
 
 
@@ -99,8 +102,6 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             payload["top_p"] = request.top_p
         if request.max_tokens is not None:
             payload["max_output_tokens"] = request.max_tokens
-        if request.top_logprobs is not None:
-            payload["top_logprobs"] = request.top_logprobs
         if request.parallel_tool_calls is not None:
             payload["parallel_tool_calls"] = request.parallel_tool_calls
         if request.user is not None:
@@ -138,17 +139,15 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
     def _reasoning_config(self, request: ChatCompletionRequest) -> dict:
         """The reasoning-related payload keys, or nothing.
 
-        `context: "all_turns"` is what makes the model read its own earlier
-        reasoning back; `summary: "auto"` is what gives us renderable text
-        instead of an opaque blob. `include` asks for the encrypted payload
-        explicitly — redundant on current API versions, which return it by
-        default under `store: false`, and still accepted."""
+        `context` is deliberately NOT sent: only the newest model family
+        accepts `all_turns` and every earlier one rejects the whole request,
+        while replay under `store: false` runs on the `encrypted_content` we
+        put in `input` and does not depend on it either way."""
         if request.reasoning is None or request.reasoning == "provider-default":
             return {}
         return {
             "reasoning": {
                 "effort": request.reasoning,
-                "context": "all_turns",
                 "summary": "auto",
             },
             "include": ["reasoning.encrypted_content"],
@@ -346,7 +345,10 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         canonical, error_message = self._classify_finish(provider_terminal, message)
         message.finish_reason = canonical
         message.provider_finish_reason = provider_terminal
-        message.error_message = error_message or self._response_error_message(data)
+        # Provider text first: every status that carries an `error` object is
+        # one where `_classify_finish` already returns a generic message, so
+        # the other order can never surface OpenAI's own code and detail.
+        message.error_message = self._response_error_message(data) or error_message
 
         resp = ChatCompletionResponse(message=message, raw=data)
         resp._response_format = request.response_format
@@ -408,10 +410,14 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
 
     @staticmethod
     def _parse_arguments(raw: str | None) -> dict:
+        # `ToolCall.arguments` is a dict, so valid-but-non-object JSON ("null",
+        # "[1]") would escape as a raw pydantic ValidationError, not a
+        # ClientError.
         try:
-            return json.loads(raw or "{}")
+            parsed = json.loads(raw or "{}")
         except (json.JSONDecodeError, TypeError):
             return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _parse_usage(self, usage_json: dict | None, model_info: Any) -> Usage:
         if usage_json is None:
@@ -423,6 +429,7 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             output_tokens=usage_json.get("output_tokens", 0),
             total_tokens=usage_json.get("total_tokens", 0),
             cached_input_tokens=input_details.get("cached_tokens"),
+            cache_write_tokens=input_details.get("cache_write_tokens"),
             reasoning_tokens=output_details.get("reasoning_tokens"),
         )
         if model_info is not None and getattr(model_info, "cost", None) is not None:
@@ -471,7 +478,10 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             return (None, None)
         if provider_value.startswith("incomplete"):
             return ("error", f"OpenAI returned an incomplete response ({provider_value})")
-        return (provider_value, None)
+        # `queued` / `in_progress` / `cancelled` are real statuses (background
+        # mode). None means "unknown" and keeps the canonical field inside its
+        # documented set; the raw value stays on provider_finish_reason.
+        return (None, None)
 
     # --- stream class hooks ---
 

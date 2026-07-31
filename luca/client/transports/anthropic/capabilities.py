@@ -96,6 +96,10 @@ _CAPABILITY_TABLE: tuple[tuple[tuple[str, ...], ModelCapabilities], ...] = (
         ModelCapabilities(
             max_output_tokens=32_000,
             supports_thinking=True,
+            # Anthropic documents structured outputs as 4.5+, but the API is
+            # more permissive than its own docs: claude-opus-4-1 accepts an
+            # output_config.format and returns conforming JSON. Trust the wire.
+            supports_structured_output=True,
             is_known_model=True,
         ),
     ),

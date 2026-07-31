@@ -51,16 +51,27 @@ class _ResponsesParserState:
         self.next_content_index: int = 0
         # (output_index, content_index | slot) -> our content index
         self.content_index: dict[tuple[int, int], int] = {}
+        # Blocks opened and not yet closed, so the terminal can close them.
+        self.open_indices: set[int] = set()
         self.finished: bool = False
 
     def allocate(self, key: tuple[int, int]) -> int:
         index = self.next_content_index
         self.next_content_index += 1
         self.content_index[key] = index
+        self.open_indices.add(index)
         return index
 
     def resolve(self, key: tuple[int, int]) -> int | None:
         return self.content_index.get(key)
+
+    def close(self, index: int) -> bool:
+        """True if the block was open, so a duplicate done-event cannot emit a
+        second RawBlockStop."""
+        if index not in self.open_indices:
+            return False
+        self.open_indices.remove(index)
+        return True
 
 
 def _parse_sse_line(line: str) -> str | None:
@@ -90,14 +101,23 @@ def _usage_from(response: dict) -> Usage | None:
     )
 
 
-def _terminal_reason(response: dict) -> str:
+_TERMINAL_EVENT_STATUS = {
+    "response.completed": "completed",
+    "response.incomplete": "incomplete",
+    "response.failed": "failed",
+}
+
+
+def _terminal_reason(event_type: str, response: dict) -> str:
     """Same composition as the non-streaming transport, so both paths report
-    the identical `provider_finish_reason`."""
-    status = response.get("status")
+    the identical `provider_finish_reason`. A terminal missing `status` falls
+    back to its EVENT NAME, never to "completed", so a failed response is
+    never reported as a successful stop."""
+    status = response.get("status") or _TERMINAL_EVENT_STATUS.get(event_type, "completed")
     if status == "incomplete":
         reason = (response.get("incomplete_details") or {}).get("reason")
         return f"incomplete:{reason}" if reason else "incomplete"
-    return status or "completed"
+    return status
 
 
 def _process_event(state: _ResponsesParserState, event: dict) -> Iterator[RawStreamEvent]:
@@ -120,7 +140,7 @@ def _process_event(state: _ResponsesParserState, event: dict) -> Iterator[RawStr
 
     elif event_type == "response.content_part.done":
         index = state.resolve((event.get("output_index", 0), event.get("content_index", 0)))
-        if index is not None:
+        if index is not None and state.close(index):
             yield RawBlockStop(index=index)
 
     elif event_type == "response.output_text.delta":
@@ -150,8 +170,8 @@ def _process_event(state: _ResponsesParserState, event: dict) -> Iterator[RawStr
         if index is not None and event.get("delta"):
             yield RawToolArgumentsDelta(index=index, arguments_delta=event["delta"])
 
-    elif event_type in ("response.completed", "response.incomplete", "response.failed"):
-        yield from _terminal(state, event)
+    elif event_type in _TERMINAL_EVENT_STATUS:
+        yield from _terminal(state, event, event_type)
 
     elif event_type == "error":
         raise StreamError(
@@ -199,23 +219,38 @@ def _item_done(state: _ResponsesParserState, event: dict) -> Iterator[RawStreamE
         encrypted = item.get("encrypted_content")
         if encrypted is not None:
             yield RawThinkingDelta(index=index, text="", signature=encrypted)
-        yield RawBlockStop(index=index)
+        if state.close(index):
+            yield RawBlockStop(index=index)
     elif item_type == "function_call":
         index = state.resolve((output_index, _FUNCTION_CALL_SLOT))
-        if index is not None:
+        if index is not None and state.close(index):
             yield RawBlockStop(index=index)
     # A `message` item's parts already closed on content_part.done.
 
 
-def _terminal(state: _ResponsesParserState, event: dict) -> Iterator[RawStreamEvent]:
+def _terminal(
+    state: _ResponsesParserState,
+    event: dict,
+    event_type: str,
+) -> Iterator[RawStreamEvent]:
     if state.finished:
         return
     state.finished = True
+
+    # A truncated response can go terminal mid-block. Closing through
+    # RawBlockStop is load-bearing: the accumulator completes a tool call in
+    # that branch, so an unclosed one would reach the caller as
+    # `arguments={}, complete=False` beside a `tool_use` finish and be
+    # dispatched with its arguments erased.
+    for index in sorted(state.open_indices):
+        yield RawBlockStop(index=index)
+    state.open_indices.clear()
+
     response = event.get("response") or {}
     usage = _usage_from(response)
     if usage is not None:
         yield RawUsage(usage=usage)
-    yield RawFinish(reason=_terminal_reason(response))
+    yield RawFinish(reason=_terminal_reason(event_type, response))
 
 
 class OpenAIResponsesStream(ChatCompletionStream):

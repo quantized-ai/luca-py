@@ -42,7 +42,11 @@ from ...types.content import (
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
-from ...types.structured import response_format_to_json_schema, strictify_json_schema
+from ...types.structured import (
+    response_format_to_json_schema,
+    strictify_json_schema,
+    strip_unsupported_keywords,
+)
 from ...types.tools import tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
@@ -121,9 +125,12 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             payload["tool_choice"] = self._project_tool_choice(request.tool_choice)
         if request.metadata is not None:
             payload["metadata"] = request.metadata
+        payload.update(options)
+        # After the options merge, deliberately: `update` replaces the whole
+        # `output_config` key, so applying the format first let a caller who
+        # set `output_config` lose their `response_format` silently.
         if request.response_format is not None:
             self._apply_response_format(payload, request, capabilities)
-        payload.update(options)
         return payload
 
     def _apply_response_format(
@@ -134,28 +141,24 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     ) -> None:
         """Structured output lands on `output_config.format`.
 
-        MERGED, never assigned: `resolve_reasoning` already puts `effort` in
-        `output_config` for adaptive-thinking models, and overwriting the dict
-        would silently drop the reasoning level. Raw provider options still win
-        outright — they are applied after this and replace the whole key.
+        Merged into a COPY: `resolve_reasoning` already puts `effort` there,
+        and after the options merge the dict may be the caller's own object.
+        A hand-written `format` still wins.
 
-        Refused only for models KNOWN to predate structured outputs. An id the
-        capability table has never seen is sent through: the conservative
-        all-false record exists to keep us from sending the wrong THINKING
-        shape (a hard 400 either way), while refusing here would block every
+        Refused only for models KNOWN to predate structured outputs — an
+        unrecognized id goes through, since refusing it would block every
         model released after this table was written."""
         if capabilities.is_known_model and not capabilities.supports_structured_output:
             raise UnsupportedParameterError(
                 f"response_format is not supported on {request.model!r}; "
-                "Anthropic structured outputs need Claude 4.5 or newer.",
+                "the model predates Anthropic structured outputs.",
                 provider=self._provider,
             )
         _, schema = response_format_to_json_schema(request.response_format)
-        output_config = payload.setdefault("output_config", {})
-        output_config["format"] = {
-            "type": "json_schema",
-            "schema": strictify_json_schema(schema),
-        }
+        schema = strip_unsupported_keywords(strictify_json_schema(schema))
+        output_config = dict(payload.get("output_config") or {})
+        output_config.setdefault("format", {"type": "json_schema", "schema": schema})
+        payload["output_config"] = output_config
 
     def _provider_options(self, request: ChatCompletionRequest) -> dict:
         """This provider's raw options, or nothing. Scoped by provider name so

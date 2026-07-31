@@ -98,7 +98,7 @@ CASES = [
         expected_auth="Bearer sk-test",
     ),
     PayloadCase(
-        name="reasoning_asks_for_all_turns_and_the_encrypted_payload",
+        name="reasoning_asks_for_a_summary_and_the_encrypted_payload",
         request=ChatCompletionRequest(
             model="gpt-5.4",
             provider="openai",
@@ -110,7 +110,9 @@ CASES = [
             "model": "gpt-5.4",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
             "store": False,
-            "reasoning": {"effort": "high", "context": "all_turns", "summary": "auto"},
+            # No `context`: only the newest family accepts `all_turns` and
+            # every earlier reasoning model 400s on it.
+            "reasoning": {"effort": "high", "summary": "auto"},
             "include": ["reasoning.encrypted_content"],
         },
         expected_auth="Bearer sk-test",
@@ -328,3 +330,75 @@ def test_an_image_in_a_tool_result_is_refused(responses_transport_factory):
                 ],
             ),
         )
+
+
+def test_structured_output_goes_flat_on_text_format(responses_transport_factory):
+    # Flat, unlike chat completions, which nests it under `json_schema`.
+    from pydantic import BaseModel
+
+    class Movie(BaseModel):
+        title: str
+        year: int = 2024
+
+    transport = responses_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(model="gpt-5.4", messages=[UserMessage(content="hi")], response_format=Movie),
+    )
+
+    assert payload["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "Movie",
+            "schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"title": "Title", "type": "string"},
+                    "year": {"default": 2024, "title": "Year", "type": "integer"},
+                },
+                "required": ["title", "year"],
+                "title": "Movie",
+                "type": "object",
+            },
+            "strict": True,
+        }
+    }
+
+
+def test_a_dict_response_format_is_a_schema_not_a_wire_payload(responses_transport_factory):
+    transport = responses_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-5.4",
+            messages=[UserMessage(content="hi")],
+            response_format={"type": "object", "properties": {"a": {"type": "string"}}},
+        ),
+    )
+
+    assert payload["text"]["format"]["name"] == "structured_output"
+    assert payload["text"]["format"]["schema"]["additionalProperties"] is False
+
+
+def test_a_generic_model_name_is_sanitized_for_the_wire(responses_transport_factory):
+    from typing import Generic, TypeVar
+
+    from pydantic import BaseModel
+
+    T = TypeVar("T")
+
+    class Box(BaseModel, Generic[T]):
+        item: T
+
+    transport = responses_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-5.4",
+            messages=[UserMessage(content="hi")],
+            response_format=Box[int],
+        ),
+    )
+
+    # `Box[int].__name__` is literally "Box[int]", which the wire rejects.
+    assert payload["text"]["format"]["name"] == "Box_int_"

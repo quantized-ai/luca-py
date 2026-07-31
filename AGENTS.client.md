@@ -186,10 +186,17 @@ the bases — the latter defines the same hook raising `NotImplementedError`, an
 MRO order decides which one answers.
 
 Responses specifics: `store: false` always (the whole conversation goes up
-every turn), `reasoning: {effort, context: "all_turns", summary: "auto"}` plus
+every turn), `reasoning: {effort, summary: "auto"}` plus
 `include: ["reasoning.encrypted_content"]` when reasoning is requested, and
-`stop` / `seed` / `presence_penalty` / `frequency_penalty` / `logprobs` raise
-`UnsupportedParameterError` because the endpoint has no equivalent.
+`stop` / `seed` / `presence_penalty` / `frequency_penalty` / `logprobs` /
+`top_logprobs` raise `UnsupportedParameterError` because the endpoint has no
+equivalent.
+
+`reasoning.context` is deliberately NOT sent. Only the newest model family
+accepts `all_turns`; `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`,
+`o3` and `o4-mini` reject the whole request. It buys nothing either, since
+replay under `store: false` runs on the `encrypted_content` in `input`. Do not
+re-add it without a per-model gate.
 
 ### Reasoning ("thinking") on OpenAI-compatible hosts
 

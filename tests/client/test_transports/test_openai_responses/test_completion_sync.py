@@ -268,7 +268,7 @@ CASES = [
                 content=[],
                 finish_reason="error",
                 provider_finish_reason="failed",
-                error_message="OpenAI reported the response as failed",
+                error_message="upstream exploded",
                 provider="openai",
                 model="gpt-5.4",
                 response_model="gpt-5.4",
@@ -320,3 +320,73 @@ def test_responses_transport_completion(case, responses_transport_factory):
 
     expected = case.expected.model_copy(update={"raw": case.mock_response_json})
     assert actual == expected
+
+
+def test_valid_but_non_object_tool_arguments_do_not_crash(responses_transport_factory):
+    # `ToolCall.arguments` is a dict, so "null" would escape as a raw pydantic
+    # ValidationError instead of a ClientError.
+    transport = responses_transport_factory(
+        http_client=make_sync_client(
+            json_response(
+                {
+                    "id": "resp_9",
+                    "model": "gpt-5.4",
+                    "status": "completed",
+                    "output": [
+                        {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "f", "arguments": "null"}
+                    ],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                }
+            )
+        )
+    )
+
+    response = transport.completion(REQUEST)
+
+    assert response.tool_calls == [ToolCall(id="call_1", name="f", arguments={}, complete=True)]
+
+
+def test_cache_write_tokens_are_read_from_the_wire(responses_transport_factory):
+    transport = responses_transport_factory(
+        http_client=make_sync_client(
+            json_response(
+                {
+                    "id": "resp_10",
+                    "model": "gpt-5.4",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 1,
+                        "total_tokens": 11,
+                        "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 6},
+                    },
+                }
+            )
+        )
+    )
+
+    response = transport.completion(REQUEST)
+
+    assert response.usage == Usage(
+        input_tokens=10,
+        output_tokens=1,
+        total_tokens=11,
+        cached_input_tokens=4,
+        cache_write_tokens=6,
+    )
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "cancelled"], ids=["queued", "in_progress", "cancelled"])
+def test_a_non_terminal_status_does_not_leak_into_the_canonical_finish_reason(status, responses_transport_factory):
+    # Reachable through provider_options={"openai": {"background": True}}.
+    # `finish_reason` is pinned to stop | length | tool_use | error | None.
+    transport = responses_transport_factory(
+        http_client=make_sync_client(
+            json_response({"id": "r", "model": "gpt-5.4", "status": status, "output": [], "usage": {}})
+        )
+    )
+
+    response = transport.completion(REQUEST)
+
+    assert (response.finish_reason, response.provider_finish_reason) == (None, status)

@@ -44,6 +44,7 @@ from luca.agent.core.models import (
     ExecutionStatus,
     ImageBase64,
     ImageContent,
+    LLMConfig,
     SessionConfig,
     TextContent,
     ToolCall,
@@ -1233,7 +1234,11 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
         parent_id="te1",
         created_at=1000,
         parts=[TextContent(text="3")],
-        llm_config=MODEL,
+        # The ROUTED model, not the session's: provenance has to name the
+        # model that produced the turn, because the transports compare it
+        # against the model being called to decide whether a thinking
+        # signature may be replayed.
+        llm_config=MODEL.model_copy(update={"model": "test-model-routed"}),
         stop_reason="stop",
     )
 
@@ -1373,3 +1378,34 @@ def _frame_and_fold(session, nodes, entry):
         entry=entry.model_copy(update={"parts": [TextContent(text="the story")]}),
         nodes=[UserMessage(parts=[TextContent(text="[compacted]")]), entry.id],
     )
+
+
+async def test_a_routed_turn_records_the_model_it_actually_ran_on():
+    # Provenance is load-bearing: the transports compare it against the model
+    # being called to decide whether a thinking signature may be replayed, so
+    # recording the session config for a routed turn breaks reasoning replay
+    # in both directions.
+    class RouteElsewhere(AgentMiddlewareMixin):
+        def build_model_string(self, model_string: str, llm_cfg) -> str:
+            return "openai:gpt-5.4-codex"
+
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("done")], finish_reason="stop")])
+    session = make_session(
+        id="s_mw_routed",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")])},
+        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
+        middleware=[RouteElsewhere()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    assert runner.session.entries["a1"].llm_config == LLMConfig(provider="openai", model="gpt-5.4-codex")
