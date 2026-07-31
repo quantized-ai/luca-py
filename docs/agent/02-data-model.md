@@ -182,7 +182,7 @@ request:
 | `tool_call_id` | the correlation key back to the `tool_call` part |
 | `raw_tool_call` | the request being executed — starts as the model's, middleware may swap it ([07](07-middleware.md)) |
 | `tool_spec_id` | the durable reference to the resolved tool — a key into `session.tool_specs` (§7); `None` if it never resolved |
-| `tool_spec` | the resolved tool itself (`name`, `description`, `input_schema`, kind, version, declared `timeout_in_ms`) — a cache restored from `tool_spec_id`, never the durable truth (§7) |
+| `tool_spec` | the resolved tool itself (`name`, `description`, `input_schema`, optional `output_schema`, kind, version, declared `timeout_in_ms`) — a cache restored from `tool_spec_id`, never the durable truth (§7) |
 | `status` | the lifecycle state (table below) |
 | `result` | what the tool returned — set iff `status=completed` |
 | `error` | structured failure (`error_type`, `error_message`, `details`) for `failed` / `not_found` / `invalid`; the runner records the failing `phase` under `details` |
@@ -269,6 +269,26 @@ Three facts about one execution are deliberately orthogonal:
 | Did the framework run it, and how did that end? | `status` |
 | Was it allowed to run? | `approval_status` |
 | Does the tool consider its own result an error? | `result.is_error` |
+
+An `ExecutionResult` carries two output channels, and only one is model-facing:
+
+| Field | Who reads it |
+|---|---|
+| `content` | the **model** — projected as the tool output ([`10`](10-projection.md)) |
+| `structured_content` | your **application** — a machine-readable payload, shaped by the tool's `output_schema` ([`03`](03-tools.md)) |
+| `metadata` | your application — free-form bookkeeping no schema describes |
+
+```python
+ExecutionResult(
+    content=[TextContent(text="25°C, wind from the south.")],
+    structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
+)
+```
+
+> ⚠️ **`structured_content` never reaches the model** and never counts toward
+> context ([`11`](11-context-and-usage.md)). A tool that wants the model to see
+> the payload serializes it into `content` itself. Nothing validates it against
+> `output_schema`.
 
 ## 5. Turns
 
@@ -402,6 +422,9 @@ session.tool_specs[execution.tool_spec_id] is execution.tool_spec   # True
 `description` and `input_schema` are required: a tool that takes no arguments
 declares the empty object schema `{"type": "object", "properties": {}}`, never
 `None` — an absent schema and an empty one mean different things to a provider.
+`output_schema` is optional and, like every other field, part of the hash: a
+tool that gains one becomes a second row, and the executions that ran before it
+keep resolving to the first.
 `spec_id()` is SHA-256 over the spec's JSON with recursively sorted keys and no
 whitespace, hex-encoded in full, so the same definition yields the same 64
 characters in every process and every language: two calls to one tool write one

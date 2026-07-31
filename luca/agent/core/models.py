@@ -200,9 +200,19 @@ class ExecutionResult(BaseModel):
     value (`status=COMPLETED` under framework-produced state). `is_error` is
     the tool's own verdict about its result — a file-reading tool may return a
     useful "file does not exist" result with `is_error=True` and still be
-    COMPLETED. Execution timing lives on `ToolExecution`, not here."""
+    COMPLETED. Execution timing lives on `ToolExecution`, not here.
+
+    Two output channels, and only one of them is model-facing: `content` is
+    what the LLM sees, `structured_content` is what the APPLICATION reads."""
 
     content: list[ContentPart]  # what the LLM sees
+    # The tool's machine-readable payload, ideally conforming to the
+    # `output_schema` its `ToolSpec` declares. BEST EFFORT: nothing validates
+    # it against that schema, `ConversationProjector` never puts it on the
+    # wire, and `ContextManager` never counts it. A tool that wants the model
+    # to see this serializes it into `content` itself. Distinct from
+    # `metadata`, which stays free-form bookkeeping no schema describes.
+    structured_content: dict | None = None
     metadata: dict = Field(default_factory=dict)  # e.g. {"exit_code": 0}
     is_error: bool = False  # the tool's verdict about the returned result
 
@@ -262,6 +272,10 @@ class ToolSpec(BaseModel):
       conversation still describes the tool selected at the time even if the
       registry later changes or drops it.
 
+    `output_schema` is neither: it is a declaration to the APPLICATION — no
+    provider accepts an output schema on a function tool, so it never reaches
+    the model.
+
     Nothing here references a Python class: a session whose tools were deleted
     from the codebase years ago still renders its name, description, schema and
     kind. Carries no invocation arguments — those belong to
@@ -282,6 +296,15 @@ class ToolSpec(BaseModel):
     # `{"type": "object", "properties": {}}`. An absent schema and an empty
     # schema mean different things to a model provider.
     input_schema: dict
+    # The shape of the machine-readable result this tool CAN produce, as a
+    # JSON Schema dict — the declaration `ExecutionResult.structured_content`
+    # is the payload for. Optional and ADVISORY in both directions: nothing in
+    # the framework validates a payload against it, and no provider luca talks
+    # to accepts an output schema on a function tool, so it is never sent on
+    # the wire. It advertises to the APPLICATION (a registry, a UI, an MCP
+    # bridge mapping `outputSchema`), not to the model. None = the tool
+    # declares nothing, which is not the same as declaring an empty shape.
+    output_schema: dict | None = None
     metadata: dict | None = None  # free-form, registry-owned; never interpreted
     tool_kind: ToolKind = ToolKind.OTHER  # permission/classification kind
     namespace: str | None = None  # owning tool group, e.g. "builtin.shell_tools"

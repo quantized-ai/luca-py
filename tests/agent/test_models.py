@@ -139,12 +139,28 @@ def test_tool_spec_defaults_to_other_kind_and_null_namespace_version():
         name="bash",
         description="Run a shell command.",
         input_schema=EMPTY_SCHEMA,
+        output_schema=None,
         metadata=None,
         tool_kind=ToolKind.OTHER,
         namespace=None,
         version=None,
         timeout_in_ms=None,
     )
+
+
+def test_a_spec_declaring_an_output_schema_round_trips():
+    declared = ToolSpec(
+        name="get_weather",
+        description="Get the current weather for a city.",
+        input_schema=EMPTY_SCHEMA,
+        output_schema={
+            "type": "object",
+            "properties": {"degrees_in_celsius": {"type": "integer"}},
+            "required": ["degrees_in_celsius"],
+        },
+    )
+
+    assert ToolSpec.model_validate_json(declared.model_dump_json()) == declared
 
 
 def test_tool_spec_requires_a_description_and_an_input_schema():
@@ -212,7 +228,8 @@ def test_spec_id_is_the_sha256_hex_of_the_canonical_json():
         '{"description":"Run a shell command.",'
         '"input_schema":{"properties":{},"type":"object"},'
         '"metadata":null,"name":"bash","namespace":null,'
-        '"timeout_in_ms":null,"tool_kind":"execute","version":null}'
+        '"output_schema":null,"timeout_in_ms":null,'
+        '"tool_kind":"execute","version":null}'
     )
 
     assert executable.spec_id() == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -258,6 +275,12 @@ def test_input_schema_key_order_does_not_affect_the_spec_id():
 
 def test_a_reworded_description_mints_a_new_spec_id():
     assert ADD_SPEC.spec_id() != REPHRASED_ADD_SPEC.spec_id()
+
+
+def test_declaring_an_output_schema_mints_a_new_spec_id():
+    # the declaration is part of the tool definition, so a tool that gains one
+    # is a different spec — one extra stored row, old executions unaffected
+    assert ADD_SPEC.spec_id() != ADD_SPEC.model_copy(update={"output_schema": EMPTY_SCHEMA}).spec_id()
 
 
 def test_tool_kind_members():
@@ -314,10 +337,21 @@ def test_approval_decision_forbids_unknown_fields():
 
 
 def test_execution_result_defaults():
-    result = ExecutionResult(content=[TextContent(text="3")])
+    assert ExecutionResult(content=[TextContent(text="3")]) == ExecutionResult(
+        content=[TextContent(text="3")],
+        structured_content=None,
+        metadata={},
+        is_error=False,
+    )
 
-    assert result.metadata == {}
-    assert result.is_error is False
+
+def test_an_execution_result_carrying_structured_content_round_trips():
+    result = ExecutionResult(
+        content=[TextContent(text="25°C, wind from the south.")],
+        structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
+    )
+
+    assert ExecutionResult.model_validate_json(result.model_dump_json()) == result
 
 
 def test_execution_result_carries_no_timing():
@@ -547,6 +581,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
         "status": "completed",
         "result": {
             "content": [{"type": "text", "text": "3"}],
+            "structured_content": None,
             "metadata": {},
             "is_error": False,
         },
@@ -566,6 +601,36 @@ def test_a_session_round_trip_restores_every_tool_spec_by_reference():
     # both executions hold the ONE stored instance, not a copy each
     assert reloaded.entries["te1"].tool_spec is reloaded.tool_specs[ADD_SPEC.spec_id()]
     assert reloaded.entries["te2"].tool_spec is reloaded.tool_specs[ADD_SPEC.spec_id()]
+
+
+def test_structured_content_survives_a_session_round_trip():
+    # the session serializer rewrites every execution dict to strip its inline
+    # spec — the payload rides through that untouched
+    session = make_session(
+        id="s_structured",
+        entries={
+            "te1": ToolExecution(
+                id="te1",
+                created_at=500,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="get_weather", arguments={"city": "Berlin"}),
+                tool_spec=ADD_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(
+                    content=[TextContent(text="25°C, wind from the south.")],
+                    structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
+                ),
+                started_at=500,
+                ended_at=500,
+                updated_at=500,
+            ),
+        },
+        tool_executions={"tc1": ["te1"]},
+        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=500, updated_at=500),
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert AgentSession.model_validate_json(session.model_dump_json()) == session
 
 
 def test_a_standalone_tool_execution_still_serializes_its_spec_inline():

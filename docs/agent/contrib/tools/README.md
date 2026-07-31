@@ -56,7 +56,7 @@ the core never does that for anyone.
 |---|---|
 | `args` | the **validated** arguments, dumped from `Args` to a plain dict |
 | `session` | the live `AgentSession` — read `session.id`, `session.session_config.llm_config` |
-| `cancellation_token` | keyword-only, always passed — see §6 |
+| `cancellation_token` | keyword-only, always passed — see §7 |
 
 > ⚠️ **The session is read-only.** The runner owns every write to session
 > state; a tool that mutates what it was handed corrupts the ledger. Per-run
@@ -161,14 +161,116 @@ class ReadFileTool(Tool):
     tool_kind = ToolKind.READ           # read | search | web_fetch | edit | move | delete | execute | switch_mode | other
     namespace = "builtin.fs"            # optional owning group
     version = "1.0.0"                   # optional
-    timeout_in_ms = 30_000              # optional per-tool deadline — see §6
+    timeout_in_ms = 30_000              # optional per-tool deadline — see §7
+    output_schema = ReadFileResult      # optional output model — see §6
 ```
 
 A spec must stay a pure function of the tool *definition*: it is stored once
 per session under a content hash ([`03-tools.md`](../../03-tools.md) §4), so
 anything call-scoped in it mints a new stored row on every call.
 
-## 6. Cancellation and timeouts
+## 6. Structured output
+
+A tool can return a machine-readable payload next to its text. That is two
+separate acts: **declaring** the shape, and **producing** the payload.
+
+Declare it by binding a model to the `output_schema` ClassVar. Define the model
+at module level — then it stays importable, and a consumer can validate a
+payload back through it instead of indexing raw keys:
+
+```python
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+from luca.agent.core import AgentSession, CancellationToken, ExecutionResult, TextContent, ToolKind
+from luca.agent.contrib.tools import Tool
+
+
+class WeatherReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    degrees_in_celsius: int
+    wind_direction: Literal["north", "south", "east", "west"]
+    conditions: str
+
+
+class GetWeatherTool(Tool):
+    name = "get_weather"
+    description = "Get the current weather for a city."
+    Args = CityArgs
+    output_schema = WeatherReport          # declares the shape
+    tool_kind = ToolKind.WEB_FETCH
+
+    async def execute(                     # produces the payload
+        self, args: dict, session: AgentSession,
+        *, cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        reading: WeatherReport = await fetch_weather(args["city"])
+        return ExecutionResult(
+            content=[TextContent(text=f"{reading.degrees_in_celsius}°C, {reading.conditions}.")],
+            structured_content=reading.model_dump(),
+        )
+```
+
+Note `execute`, not `_execute` — the text path has nowhere to put a payload.
+
+`get_tool_spec()` derives `output_schema` from the ClassVar exactly as
+`input_schema` comes from `Args`:
+
+```python
+ToolSpec(
+    name="get_weather",
+    description="Get the current weather for a city.",
+    input_schema={...},                    # from Args
+    output_schema={                        # from WeatherReport
+        "additionalProperties": False,
+        "properties": {
+            "degrees_in_celsius": {"title": "Degrees In Celsius", "type": "integer"},
+            "wind_direction": {
+                "enum": ["north", "south", "east", "west"],
+                "title": "Wind Direction",
+                "type": "string",
+            },
+            "conditions": {"title": "Conditions", "type": "string"},
+        },
+        "required": ["degrees_in_celsius", "wind_direction", "conditions"],
+        "title": "WeatherReport",
+        "type": "object",
+    },
+    tool_kind=ToolKind.WEB_FETCH,
+)
+```
+
+One call, two channels, two readers:
+
+| Reader | Gets | How |
+|---|---|---|
+| the **model** | `content` only — `ToolMessage(content=[TextBlock(text="25°C, clear.")])`, identical to the same tool without any of this | `ConversationProjector` ([`10-projection.md`](../../10-projection.md)) |
+| your **app** | `execution.result.structured_content` | off the session, or straight off `ToolExecuted` — no session needed |
+
+```python
+from luca.agent.core.events import ToolExecuted
+
+match event:
+    case ToolExecuted(execution=ex) if ex.result and ex.result.structured_content:
+        report = WeatherReport.model_validate(ex.result.structured_content)
+        widget.render(report.degrees_in_celsius, report.wind_direction)
+```
+
+Importing the model works in-process. Across a boundary — a serialized session,
+an MCP server, a web UI — `ex.tool_spec.output_schema` is the contract.
+
+> ⚠️ **Nothing is validated.** A tool returning `{"degrees": "warm"}` still
+> records `COMPLETED` and the payload is stored verbatim. Declaring a schema is
+> an advertisement, not an enforcement, and `output_schema` never reaches the
+> model — no provider has a field for it.
+
+> ⚠️ **Same name, two types.** `Tool.output_schema` is a Pydantic model
+> *class*; `ToolSpec.output_schema` is the JSON Schema *dict* derived from it.
+> (`Args → input_schema` differ in name because they differ in type; these
+> don't.)
+
+## 7. Cancellation and timeouts
 
 The runner races the body against the run's cancellation token and an optional
 deadline — `timeout_in_ms`, else `RuntimeConfig.tool_execution_timeout_in_ms`
@@ -197,7 +299,7 @@ Tools that spawn processes **must** kill their process group on
 cancel is identical for cancellation and timeout; blocking sync work belongs in
 `asyncio.to_thread`.
 
-## 7. `tool()` / `tool_class()` — tools built at runtime
+## 8. `tool()` / `tool_class()` — tools built at runtime
 
 Build a `Tool` from plain callables when the tool is assembled at runtime.
 `tool()` returns an instance ready for a registry, `tool_class()` the class:
@@ -220,6 +322,7 @@ ls = tool(
 |---|---|
 | `arguments` | a `BaseModel` subclass used as `Args` as-is, or a `create_model` field spec compiled into an `extra="forbid"` model |
 | `execute` | becomes `_execute`, the simple text path: async `(args, session) -> str`; per-instance configuration goes in the closure |
+| `output` | optional — becomes `output_schema` (§6). Same two forms as `arguments`; a dict is a field spec here too, never a raw JSON Schema |
 | `get_approval_context` | optional async `(args, session) -> dict`; overrides an inherited one — passing both is almost certainly a mistake |
 | `bases` | must contain a `Tool` subclass; MRO order is yours (mixins before `Tool`) |
 | `class_attrs` | extra class attributes — mixin requirements, or the remaining ClassVars (`namespace`, `version`, `timeout_in_ms`); colliding with a factory-managed name raises |
@@ -229,5 +332,10 @@ ls = tool(
 > class if you need either — subclassing stays the recommended mechanism, and
 > is the escape hatch for rich `ExecutionResult` output, validators, and
 > per-instance `__init__` state.
+
+> ⚠️ **The factories only wire the text path.** So `output=` lets a
+> factory-built tool *declare* an output schema but never populate
+> `structured_content` — that needs an `execute` override. Hand-write the class,
+> or pass a `bases=` mixin that overrides `execute`, when you need both.
 
 Next: [`simple_tool_registry/README.md`](../simple_tool_registry/README.md).

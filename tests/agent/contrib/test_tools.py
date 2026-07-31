@@ -12,6 +12,8 @@ same surface from plain callables and must run end to end through it.
 Declarative — hardcoded invariant in, full expected out. No logic, no helpers.
 """
 
+from typing import Literal
+
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -59,6 +61,34 @@ LIST_FILES_ARGS_SCHEMA = {
 }
 
 
+# The preferred way to declare an output model: a module-level model bound to
+# the `output_schema` ClassVar, so a consumer can import it and validate a
+# payload back through it.
+class WeatherReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    degrees_in_celsius: int
+    wind_direction: Literal["north", "south", "east", "west"]
+
+
+# `WeatherReport.model_json_schema()` verbatim — what `get_tool_spec()` stamps
+# as `output_schema`. Note the type flip: the ClassVar is the model CLASS, the
+# spec field is this DICT.
+WEATHER_REPORT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {
+        "degrees_in_celsius": {"title": "Degrees In Celsius", "type": "integer"},
+        "wind_direction": {
+            "enum": ["north", "south", "east", "west"],
+            "title": "Wind Direction",
+            "type": "string",
+        },
+    },
+    "required": ["degrees_in_celsius", "wind_direction"],
+    "title": "WeatherReport",
+    "type": "object",
+}
+
+
 async def list_files(args: dict, session: AgentSession) -> str:
     return f"listed {args['path']}"
 
@@ -97,6 +127,30 @@ class DeadlineTool(EchoTool):
     timeout_in_ms = 5000
 
 
+class WeatherTool(Tool):
+    """Declares an output model AND produces the payload — the two are separate
+    acts, which is why this overrides `execute` rather than `_execute`."""
+
+    name = "get_weather"
+    description = "Get the current weather for a city."
+    Args = PathArgs
+    output_schema = WeatherReport
+    tool_kind = ToolKind.WEB_FETCH
+
+    async def execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        reading = WeatherReport(degrees_in_celsius=25, wind_direction="south")
+        return ExecutionResult(
+            content=[TextContent(text="25°C, wind from the south.")],
+            structured_content=reading.model_dump(),
+        )
+
+
 class CapturingTool(Tool):
     name = "capture"
     description = "Records everything the body was handed."
@@ -117,10 +171,12 @@ class CapturingTool(Tool):
 
 
 def test_get_tool_spec_stamps_the_identity_classvars_and_the_args_schema():
+    # a tool declaring no output model stamps output_schema=None
     assert EchoTool().get_tool_spec() == ToolSpec(
         name="echo",
         description="Echo the path back.",
         input_schema=PATH_ARGS_SCHEMA,
+        output_schema=None,
         metadata=None,
         tool_kind=ToolKind.READ,
         namespace=None,
@@ -134,11 +190,41 @@ def test_get_tool_spec_stamps_the_declared_timeout():
         name="deadline",
         description="Echo, with a declared deadline.",
         input_schema=PATH_ARGS_SCHEMA,
+        output_schema=None,
         metadata=None,
         tool_kind=ToolKind.READ,
         namespace=None,
         version=None,
         timeout_in_ms=5000,
+    )
+
+
+def test_get_tool_spec_stamps_the_declared_output_schema():
+    assert WeatherTool().get_tool_spec() == ToolSpec(
+        name="get_weather",
+        description="Get the current weather for a city.",
+        input_schema=PATH_ARGS_SCHEMA,
+        output_schema=WEATHER_REPORT_SCHEMA,
+        metadata=None,
+        tool_kind=ToolKind.WEB_FETCH,
+        namespace=None,
+        version=None,
+        timeout_in_ms=None,
+    )
+
+
+async def test_a_tool_may_return_structured_content_alongside_its_text():
+    result = await WeatherTool().execute(
+        {"path": "Berlin"},
+        SESSION,
+        cancellation_token=CancellationToken(),
+    )
+
+    assert result == ExecutionResult(
+        content=[TextContent(text="25°C, wind from the south.")],
+        structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
+        metadata={},
+        is_error=False,
     )
 
 
@@ -151,6 +237,7 @@ async def test_execute_wraps_the_simple_text_path():
 
     assert result == ExecutionResult(
         content=[TextContent(text="echo src")],
+        structured_content=None,
         metadata={},
         is_error=False,
     )
@@ -183,6 +270,7 @@ def test_tool_class_matches_hand_written_surface():
         name="list_files",
         description="List the files in a directory.",
         input_schema=LIST_FILES_ARGS_SCHEMA,
+        output_schema=None,
         metadata=None,
         tool_kind=ToolKind.READ,
         namespace=None,
@@ -235,6 +323,69 @@ def test_arguments_accepts_existing_model_as_is():
     )
 
     assert cls.Args is PathArgs
+
+
+def test_output_accepts_an_existing_model_as_is():
+    cls = tool_class(
+        name="get_weather",
+        description="Get the current weather for a city.",
+        arguments=PathArgs,
+        execute=list_files,
+        output=WeatherReport,
+    )
+
+    assert cls.output_schema is WeatherReport
+
+
+def test_omitting_output_leaves_the_spec_output_schema_null():
+    cls = tool_class(
+        name="list_files",
+        description="List the files in a directory.",
+        arguments=PathArgs,
+        execute=list_files,
+    )
+
+    assert cls.output_schema is None
+    assert cls().get_tool_spec().output_schema is None
+
+
+def test_generated_output_schema():
+    # a dict is a create_model field spec here too, never a raw JSON Schema;
+    # `create_model` titles the generated model `<name>_output`
+    cls = tool_class(
+        name="get_weather",
+        description="Get the current weather for a city.",
+        arguments=PathArgs,
+        execute=list_files,
+        output={"degrees_in_celsius": (int, Field(description="Current temperature."))},
+    )
+
+    assert cls().get_tool_spec().output_schema == {
+        "additionalProperties": False,
+        "properties": {
+            "degrees_in_celsius": {
+                "description": "Current temperature.",
+                "title": "Degrees In Celsius",
+                "type": "integer",
+            },
+        },
+        "required": ["degrees_in_celsius"],
+        "title": "get_weather_output",
+        "type": "object",
+    }
+
+
+def test_generated_output_forbids_extra():
+    cls = tool_class(
+        name="get_weather",
+        description="Get the current weather for a city.",
+        arguments=PathArgs,
+        execute=list_files,
+        output={"degrees_in_celsius": (int, ...)},
+    )
+
+    with pytest.raises(ValidationError):
+        cls.output_schema.model_validate({"degrees_in_celsius": 25, "humidity": 40})
 
 
 def test_tool_returns_instance_with_expected_spec():
@@ -384,6 +535,7 @@ def test_class_attrs_land_on_the_class():
         name="list_files",
         description="List the files in a directory.",
         input_schema=LIST_FILES_ARGS_SCHEMA,
+        output_schema=None,
         metadata=None,
         tool_kind=ToolKind.OTHER,
         namespace="fs",
@@ -400,6 +552,20 @@ def test_class_attrs_collision_raises():
             arguments={"path": (str, Field(default="."))},
             execute=list_files,
             class_attrs={"name": "other_name"},
+        )
+
+
+def test_output_schema_via_class_attrs_collides_with_the_managed_name():
+    # `output_schema` is factory-managed whether or not `output=` was passed,
+    # so class_attrs can never be the back door around it
+    with pytest.raises(ValueError, match="class_attrs collide with factory-managed attributes"):
+        tool_class(
+            name="get_weather",
+            description="Get the current weather for a city.",
+            arguments={"path": (str, Field(default="."))},
+            execute=list_files,
+            output=WeatherReport,
+            class_attrs={"output_schema": WeatherReport},
         )
 
 

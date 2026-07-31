@@ -166,10 +166,16 @@ class TruncatingContext(ContextManager):
             return result
         return ExecutionResult(
             content=[TextContent(text=text[:limit] + " …[truncated]")],
+            structured_content=result.structured_content,   # carry it over
             metadata={**result.metadata, "original_chars": len(text)},
             is_error=result.is_error,
         )
 ```
+
+> ⚠️ **Rebuilding the result drops what you don't copy.** `structured_content`
+> ([`02-data-model.md`](02-data-model.md) §4) is the easy one to lose — it is
+> not model-facing, so truncating text is never a reason to discard it. Copy
+> every field you are not deliberately changing.
 
 > ⚠️ **The execution is mid-transition.** `status` is still `RUNNING` and
 > `result` is not attached yet — read it for *identity* (`raw_tool_call.name`,

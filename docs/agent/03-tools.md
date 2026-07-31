@@ -23,6 +23,7 @@ from luca.agent.core import ToolKind, ToolSpec
 | `name` | the name the model calls |
 | `description` | required — the client's wire tool type rejects null |
 | `input_schema` | required — the arguments as a JSON Schema dict |
+| `output_schema` | optional — the shape of the result the tool can produce, as a JSON Schema dict. Read by the application, never sent to the model |
 | `metadata` | free-form, registry-owned; never interpreted by the core |
 | `tool_kind` / `namespace` / `version` / `timeout_in_ms` | identity and deadline — §2 |
 
@@ -50,6 +51,30 @@ ago still renders what it called. It carries no arguments — those live on
 > arguments advertises the empty object schema —
 > `{"type": "object", "properties": {}}`. An absent schema and an empty schema
 > mean different things to a provider.
+
+`output_schema` declares the shape of `ExecutionResult.structured_content`
+([`02-data-model.md`](02-data-model.md)) — the machine-readable payload a tool
+may return next to its text:
+
+```python
+GET_WEATHER = ToolSpec(
+    name="get_weather",
+    description="Get the current weather for a city.",
+    input_schema={"type": "object", "properties": {"city": {"type": "string"}}},
+    output_schema={
+        "type": "object",
+        "properties": {"degrees_in_celsius": {"type": "integer"}},
+        "required": ["degrees_in_celsius"],
+    },
+    tool_kind=ToolKind.WEB_FETCH,
+)
+```
+
+> ⚠️ **`output_schema` never reaches the model.** No provider accepts an output
+> schema on a function tool, so the adapter drops it like every other non-wire
+> field. It advertises to your application — a UI, another registry, an MCP
+> bridge mapping `outputSchema`. Declaring one is optional and changes no
+> framework behavior.
 
 ## 2. Kind, namespace, version — and the deadline
 
@@ -119,6 +144,11 @@ are [`05-permissions.md`](05-permissions.md). One of them belongs here:
 schema but will never check a call against it, because a registry may delegate
 to a remote server that validates on its own side and double validation would
 break it. Validation is the registry's.
+
+The same holds on the way out: the core never checks
+`ExecutionResult.structured_content` against `output_schema` either. A tool
+returning a payload that contradicts its own declaration still records
+`COMPLETED`, and the payload is stored verbatim.
 
 ## 4. Where specs live: `session.tool_specs`
 

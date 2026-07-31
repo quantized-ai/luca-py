@@ -624,6 +624,26 @@ def test_completed_projects_result_content_and_preserves_is_error():
     )
 
 
+def test_structured_content_never_reaches_the_tool_message():
+    # `content` is the sole model-facing channel: a payload the app reads must
+    # not change one byte of what the model is told
+    execution = _execution(
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(
+            content=[TextContent(text="25°C, wind from the south.")],
+            structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
+        ),
+        started_at=1000,
+        ended_at=1001,
+    )
+
+    assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="25°C, wind from the south.")],
+        is_error=False,
+    )
+
+
 def test_not_found_projects_the_structured_error_message():
     execution = _execution(
         tool_spec=None,

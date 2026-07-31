@@ -50,7 +50,7 @@ with zero grace, and the runner awaits the killed task's unwinding so a
 returns; push blocking work into `asyncio.to_thread`.
 
 A model call that times out closes the turn `TIMED_OUT` and re-raises (status →
-`PENDING`, retry-ready). See [`contrib/tools/`](contrib/tools/README.md) §6 for
+`PENDING`, retry-ready). See [`contrib/tools/`](contrib/tools/README.md) §7 for
 the cooperative side of tool cancellation.
 
 ## Step limits

@@ -180,6 +180,27 @@ def test_completed_execution_counts_only_its_result_content():
     assert CM.calculate_context(SESSION, entry) == 4
 
 
+def test_structured_content_is_not_counted_toward_context():
+    # same 16 chars of model-facing content as the test above, so the same 4
+    # tokens: the payload never goes on the wire and must never inflate the
+    # estimate
+    entry = ToolExecution(
+        id="te1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(
+            content=[TextContent(text="the answer is 3.")],  # 16 chars
+            structured_content={"answer": 3, "operands": [1, 2], "note": "a" * 500},
+        ),
+        started_at=1000,
+        ended_at=1000,
+    )
+
+    assert CM.calculate_context(SESSION, entry) == 4
+
+
 def test_failed_execution_counts_its_structured_error_message():
     entry = ToolExecution(
         id="te1",

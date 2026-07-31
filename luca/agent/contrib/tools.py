@@ -34,6 +34,13 @@ every write to session state. Per-run application state is not the framework's
 concern; a tool is application code and can hold its own references or read a
 `contextvars.ContextVar`.
 
+WHAT A TOOL RETURNS. `_execute` is the simple text path. `execute` is the rich
+one, and the only place a tool can set `structured_content` — the
+machine-readable payload an application reads, which never reaches the model
+(`content` is the sole model-facing channel). Declaring an `output_schema`
+model advertises the SHAPE of that payload; it does not produce one, and
+nothing validates the payload against it.
+
 Cancellation & deadline contract. The runner races every execution against
 the run's `CancellationToken` (passed explicitly as the keyword-only
 `cancellation_token`) and an optional outside deadline (the birth
@@ -85,6 +92,17 @@ class Tool:
     name: ClassVar[str]
     description: ClassVar[str]
     Args: ClassVar[type[BaseModel]]
+    # Optional: the Pydantic MODEL CLASS describing the machine-readable result
+    # this tool can produce — usually a module-level model bound here
+    # (`output_schema = WeatherReport`), which keeps it importable so a
+    # consumer can validate a payload back through it. `get_tool_spec()` turns
+    # it into `ToolSpec.output_schema`, the JSON Schema DICT derived from it:
+    # same name, different type, one level apart.
+    #
+    # Declaring it populates NOTHING. A tool that produces a payload overrides
+    # `execute()` and sets `structured_content=` on the returned
+    # `ExecutionResult`; nothing validates one against the other.
+    output_schema: ClassVar[type[BaseModel] | None] = None
 
     tool_kind: ClassVar[ToolKind] = ToolKind.OTHER
     namespace: ClassVar[str | None] = None
@@ -105,6 +123,11 @@ class Tool:
         wire payload is unchanged; the schema is simply computed at snapshot
         time instead.
 
+        `output_schema` is derived from the ClassVar of the same name exactly
+        as `input_schema` is derived from `Args`, and is None when the tool
+        declares no output model. Mind the types: the ClassVar is a Pydantic
+        model CLASS, the spec field is a JSON Schema DICT.
+
         It must stay a pure function of the tool DEFINITION: specs are stored
         once per session under a content hash, so anything call-scoped here
         would mint a new stored row on every call."""
@@ -112,6 +135,7 @@ class Tool:
             name=self.name,
             description=self.description,
             input_schema=self.Args.model_json_schema(),
+            output_schema=(self.output_schema.model_json_schema() if self.output_schema is not None else None),
             tool_kind=self.tool_kind,
             namespace=self.namespace,
             version=self.version,
@@ -154,6 +178,7 @@ def tool_class(
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
     execute: Callable[[dict, AgentSession], Awaitable[str]],
+    output: type[BaseModel] | dict[str, Any] | None = None,
     tool_kind: ToolKind = ToolKind.OTHER,
     get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
@@ -172,6 +197,15 @@ def tool_class(
     - `execute` becomes `_execute`, the simple text path: an async
       `(args, session) -> str`. Per-instance configuration belongs in the
       callable's closure, not on the class.
+    - `output`, when given, becomes `output_schema` and takes the same two
+      forms as `arguments` — a ready `BaseModel` class used as-is, or a
+      `create_model` field spec compiled into an `extra="forbid"` model. A
+      dict is ALWAYS a field spec here too, never a raw JSON Schema.
+
+      ⚠️ The factories wire only the text path, so a factory-built tool can
+      DECLARE an output schema but cannot populate `structured_content` —
+      that needs an `execute` override. Hand-write the class, or pass a
+      `bases=` mixin that overrides `execute`, when you need both.
     - `get_approval_context`, when given, overrides any inherited one —
       including a `bases` mixin's (class dict beats MRO); passing both is
       almost certainly a mistake.
@@ -200,6 +234,17 @@ def tool_class(
             **arguments,
         )
 
+    output_model: type[BaseModel] | None = None
+    if output is not None:
+        if isinstance(output, type) and issubclass(output, BaseModel):
+            output_model = output
+        else:
+            output_model = create_model(
+                f"{name}_output",
+                __config__=ConfigDict(extra="forbid"),
+                **output,
+            )
+
     # Matches `Tool.execute`'s call exactly — including the keyword-only
     # `cancellation_token` it always passes. The wrapped callable keeps the
     # two-argument shape the factory advertises.
@@ -212,10 +257,15 @@ def tool_class(
     ) -> str:
         return await execute(args, session)
 
+    # `output_schema` goes in UNCONDITIONALLY (None when not given, which is
+    # what the base class declares anyway) so it takes part in the collision
+    # check below — passing `output=` and `class_attrs={"output_schema": …}`
+    # together has to raise, not silently pick one.
     ns: dict[str, Any] = {
         "name": name,
         "description": description,
         "Args": args_model,
+        "output_schema": output_model,
         "tool_kind": tool_kind,
         "_execute": _execute,
     }
@@ -246,6 +296,7 @@ def tool(
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
     execute: Callable[[dict, AgentSession], Awaitable[str]],
+    output: type[BaseModel] | dict[str, Any] | None = None,
     tool_kind: ToolKind = ToolKind.OTHER,
     get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
@@ -258,6 +309,7 @@ def tool(
         description=description,
         arguments=arguments,
         execute=execute,
+        output=output,
         tool_kind=tool_kind,
         get_approval_context=get_approval_context,
         bases=bases,
