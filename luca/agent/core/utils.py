@@ -1,9 +1,10 @@
 """Read-only helpers over a durable `AgentSession`.
 
-`pretty_print` renders the active conversation as a plain-text transcript for
-reading and debugging a saved session: one block per turn, the messages in
-path order, and every tool call with its approval verdict and outcome drawn as
-a tree under the assistant message that requested it.
+`pretty_print` renders ONE conversation as a plain-text transcript for reading
+and debugging a saved session — the main conversation by default, or any other
+row in `session.conversations` by id: one block per turn, the messages in path
+order, and every tool call with its approval verdict and outcome drawn as a
+tree under the assistant message that requested it.
 
 It reads the DURABLE session — never the wire projection. A tool result is the
 `ExecutionResult` the framework stored, a failure is the structured
@@ -31,6 +32,7 @@ from .models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    ChildConversation,
     CompactionEntry,
     ContentPart,
     ExecutionStatus,
@@ -96,17 +98,25 @@ VIA_PHRASES: dict[str, str] = {
 }
 
 
-def pretty_print(session: AgentSession) -> str:
-    """The session's active conversation as a readable text transcript."""
-    conversation = session.active_conversation
+def pretty_print(session: AgentSession, conversation_id: str | None = None) -> str:
+    """One conversation as a readable text transcript (`None` = the main one).
+
+    The status line is DERIVED here, like everywhere else — nothing on the
+    session stores one. `depth` appears only for a subagent conversation, so
+    the ordinary transcript is unchanged."""
+    conversation = session.conversations[conversation_id or session.main_conversation_id]
     entries = [_resolve(node_id, session.entries) for node_id in conversation.nodes]
     executions = {entry.tool_call_id: entry for entry in entries if isinstance(entry, ToolExecution)}
     usages = session.usages.get(conversation.id, {})
     blocks = _split_turns(entries)
 
+    status = session.get_conversation_status(conversation.id).status
+    header = f"Conversation {conversation.id} · {status.value} · {_plural(_count(entries, TurnStart), 'turn')}"
+    if conversation.depth:
+        header += f" · depth {conversation.depth}"
     lines = [
         f"LUCA SESSION {session.id}",
-        f"Conversation {conversation.id} · {conversation.status.value} · {_plural(_count(entries, TurnStart), 'turn')}",
+        header,
         f"Default: {_model_label(session)}",
         RULE,
     ]
@@ -244,6 +254,12 @@ def _entry_lines(
         header = f"Compaction · replaced {replaced}"
         text = _content_text(entry.parts or [])
         return [header, *_wrap(text)] if text else [header]
+    if isinstance(entry, ChildConversation):
+        header = f"Subagent · {entry.conversation_id}"
+        if entry.execution_result is None:
+            return [f"{header} · unresolved"]
+        text = _content_text(entry.execution_result.content)
+        return [header, *[INDENT + line for line in _clip(text)]]
     if isinstance(entry, PrunedEntry):
         return [
             f"Pruned {entry.pruned_entry_type} {entry.pruned_entry_id}",

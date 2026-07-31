@@ -52,6 +52,8 @@ class ApprovalScreen(ModalScreen[PromptOption]):
     def compose(self) -> ComposeResult:
         prompt = self.prompt
         title = f"Approval needed: {prompt.tool_name}"
+        if prompt.conversation_id is not None:
+            title += f"  [subagent {prompt.conversation_id}]"
         if prompt.total_steps > 1:
             title += f"  (step {prompt.step}/{prompt.total_steps})"
         with Container(id="approval-dialog"):

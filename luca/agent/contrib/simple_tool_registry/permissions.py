@@ -18,10 +18,20 @@ The contract:
   exists to remove. The registry-supplied `extras["approval_context"]` dict on
   the execution is the strategy's input vocabulary; the core stores `extras`
   verbatim and never interprets it.
+- It does NOT take a separate `conversation_id`, even though
+  `ToolRegistry.decide` does. The execution already carries it —
+  `tool_execution.conversation_id` — which is precisely why that field exists
+  on the one entry type a consumer ever receives DETACHED from a path. A
+  policy that wants to answer differently inside a subagent reads it there.
+  This is also what lets an interactive application label which conversation
+  is asking without any new vocabulary.
 - Return ALLOW or DENY to resolve the call (it executes / is REJECTED), or
-  PENDING to punt: the run pauses (status AWAITING_APPROVAL, the generator
-  ends) and the application resolves out-of-band — asks its user, records the
-  answer on the strategy — then calls `run()` again.
+  PENDING to punt: the call parks and the application resolves out-of-band —
+  asks its user, records the answer on the strategy — then calls `run()` again
+  (or `run.notify(execution)` to re-ask without waiting for the run to end).
+  The conversation derives BLOCKED once nothing else in its subtree can
+  advance; until then it is still BUSY and the gate is already visible through
+  `pending_approvals()`.
 - `decide()` is re-invoked, once per `run()` entry, for a call that stays
   unresolved — implementations must be idempotent queries of their own state,
   not one-shot notifications. Sibling calls in one batch are decided

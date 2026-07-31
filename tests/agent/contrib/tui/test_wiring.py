@@ -11,9 +11,13 @@ from luca.agent.contrib.tui.wiring import (
     build_faux_provider,
     build_runner,
 )
+from luca.agent.core import AgentSessionRunner as _Runner  # noqa: F401
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import ExecutionResult, TextContent
 from luca.client.types import Tool as LucaTool
+from tests.agent.scenarios import (
+    main_conversation,
+)
 
 from .helpers import fresh_session
 
@@ -39,6 +43,13 @@ MULTIPLY_WIRE_TOOL = LucaTool(
 )
 
 
+async def _wire_tools(runner):
+    """What the model is actually shown: resolve the specs, then project them
+    onto the wire (which drops any private tool)."""
+    specs = await runner.resolve_tool_specs(runner.main_conversation_id)
+    return runner.build_tool_list(runner.main_conversation_id, specs)
+
+
 async def test_build_runner_composes_all_tool_families(tmp_path):
     session = fresh_session()
 
@@ -46,7 +57,7 @@ async def test_build_runner_composes_all_tool_families(tmp_path):
 
     assert isinstance(runner, PluginAgentSessionRunner)
     assert runner.session is session
-    names = {tool.name for tool in await runner.build_tool_list()}
+    names = {tool.name for tool in await _wire_tools(runner)}
     assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS
     assert strategy.mode is PermissionMode.ASK
 
@@ -54,7 +65,7 @@ async def test_build_runner_composes_all_tool_families(tmp_path):
 async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):
     runner, _ = build_runner(fresh_session(), workspace=tmp_path)
 
-    tools = await runner.build_tool_list()
+    tools = await _wire_tools(runner)
 
     # Membership, not equality: the same list carries the shell and memory
     # families, whose schemas this test does not own.
@@ -79,6 +90,7 @@ async def test_math_tools_execute_against_the_live_session(math_tool, expected):
     result = await math_tool.execute(
         {"a": 7.0, "b": 2.0},
         session,
+        main_conversation(session).id,
         cancellation_token=CancellationToken(),
     )
 

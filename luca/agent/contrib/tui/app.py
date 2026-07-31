@@ -47,6 +47,7 @@ from luca.agent.core.events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    SubagentsSpawned,
     TextBlock,
     TextDelta,
     TextStart,
@@ -129,6 +130,7 @@ class AgentApp(App):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
+        subagents: bool = False,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -140,10 +142,14 @@ class AgentApp(App):
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
+        self._subagents = subagents
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
-        self._live_reasoning: ReasoningCell | None = None
-        self._live_text: AssistantCell | None = None
+        # KEYED BY CONVERSATION. With subagents, the main agent and several
+        # children stream at once on ONE event stream; a single live-cell slot
+        # would splice two conversations' text into the same cell.
+        self._live_reasoning: dict[str, ReasoningCell | None] = {}
+        self._live_text: dict[str, AssistantCell | None] = {}
         self._tool_cells: dict[str, ToolCallCell] = {}
         self._pending_images: list[ImageContent] = []
 
@@ -201,11 +207,20 @@ class AgentApp(App):
         self.run_worker(self._drive(), group="drive", exclusive=True)
 
     async def _drive(self) -> None:
+        """THE DRIVE COMES BEFORE THE PROMPT.
+
+        Answering writes to the permission strategy, not to the execution, so
+        `approval_status` stays PENDING until a drive re-asks `decide()` — the
+        engine's single decide call site. Prompting first would therefore
+        re-ask the user for whatever was just answered; driving first means
+        "still `BLOCKED` after a drive" is a genuinely unanswered gate.
+
+        Abandoning at the modal cancels instead of answering, which leaves the
+        conversation CANCELLING — not idle — so the next pass drives the flush
+        and the loop still terminates."""
         runner = self.runner
         try:
             while True:
-                if runner.awaiting_approval():
-                    await self._resolve_approvals()
                 if runner.idle():
                     break
                 run = runner.run(streaming=self._streaming)
@@ -218,8 +233,8 @@ class AgentApp(App):
                     self._current_run = None
                     save_session(runner.session, self._session_dir)
                     self._refresh_status()
-                if runner.idle():
-                    break
+                if runner.blocked():
+                    await self._resolve_approvals()
         except Exception as exc:
             await self._notice(f"turn failed: {exc}", error=True)
             save_session(runner.session, self._session_dir)
@@ -231,11 +246,20 @@ class AgentApp(App):
         """Collect verdicts for every pending execution through the modal,
         then record them all — same policy as the REPL: abandoning discards
         everything collected so far and cancels instead of answering; a DENY
-        skips the execution's remaining steps (the call is dead anyway)."""
+        skips the execution's remaining steps (the call is dead anyway).
+
+        `pending_approvals()` is SUBTREE-SCOPED, so this list can hold gates
+        from several conversations at once. Each modal names the subagent that
+        raised it; the main agent's are unlabelled, which is the ordinary
+        case."""
         collected: list[tuple[ToolExecution, list]] = []
         for execution in self.runner.pending_approvals():
             answers = []
-            for prompt in build_approval_prompts(execution, self.strategy):
+            for prompt in build_approval_prompts(
+                execution,
+                self.strategy,
+                main_conversation_id=self.runner.main_conversation_id,
+            ):
                 option = await self.push_screen_wait(ApprovalScreen(prompt))
                 if option.is_abandon:
                     self.runner.cancel(error="abandoned at the approval prompt")
@@ -253,34 +277,39 @@ class AgentApp(App):
     async def _on_agent_event(self, event) -> None:
         """One handler for both tiers: deltas stream into the live cell,
         the block event finalizes it (or mounts it whole when not
-        streaming)."""
+        streaming).
+
+        Every event names its conversation, and the live-cell state is keyed by
+        it — with subagents the stream is the whole tree's, so two
+        conversations can be mid-block at the same time."""
+        source = event.conversation_id
         match event:
             case ReasoningStart():
-                self._live_reasoning = None
+                self._live_reasoning[source] = None
             case ReasoningDelta(text=text):
-                self._live_reasoning = await self._stream_into(
-                    self._live_reasoning,
+                self._live_reasoning[source] = await self._stream_into(
+                    self._live_reasoning.get(source),
                     ReasoningCell,
                     text,
                 )
             case ReasoningBlock(text=text, redacted=redacted):
                 await self._settle_cell(
-                    self._live_reasoning,
+                    self._live_reasoning.get(source),
                     ReasoningCell,
                     REDACTED_REASONING_MARKER if redacted else text,
                 )
-                self._live_reasoning = None
+                self._live_reasoning[source] = None
             case TextStart():
-                self._live_text = None
+                self._live_text[source] = None
             case TextDelta(text=text):
-                self._live_text = await self._stream_into(
-                    self._live_text,
+                self._live_text[source] = await self._stream_into(
+                    self._live_text.get(source),
                     AssistantCell,
                     text,
                 )
             case TextBlock(text=text):
-                await self._settle_cell(self._live_text, AssistantCell, text)
-                self._live_text = None
+                await self._settle_cell(self._live_text.get(source), AssistantCell, text)
+                self._live_text[source] = None
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
                 cell = ToolCallCell(execution)
                 self._tool_cells[tool_call_id] = cell
@@ -315,6 +344,9 @@ class AgentApp(App):
                         error=outcome is not TurnOutcome.CANCELLED,
                     ),
                 )
+            case SubagentsSpawned(conversation_ids=conversation_ids):
+                count = len(conversation_ids)
+                await self._notice(f"spawned {count} subagent{'s' if count > 1 else ''}")
             case ToolCallStart() | FinishReason() | ApprovalRequired() | CompactionScheduled() | CompactionStarted():
                 pass
 
@@ -358,7 +390,7 @@ class AgentApp(App):
     async def _replay_history(self) -> None:
         session = self.runner.session
         entries = session.entries
-        for node_id in session.active_conversation.nodes:
+        for node_id in session.conversations[session.main_conversation_id].nodes:
             entry = entries.get(node_id)
             if isinstance(entry, UserMessage):
                 await self._mount_cell(
@@ -461,6 +493,7 @@ class AgentApp(App):
             context_manager=self._context_manager,
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
+            subagents=self._subagents,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:
@@ -470,8 +503,8 @@ class AgentApp(App):
         edge (real runs pass provider=None and build fresh clients per turn)."""
         self.runner, self.strategy = self._build_runner(session)
         await self.query_one("#transcript", VerticalScroll).remove_children()
-        self._live_reasoning = None
-        self._live_text = None
+        self._live_reasoning.clear()
+        self._live_text.clear()
         self._tool_cells.clear()
         self._pending_images.clear()
         self._refresh_status()

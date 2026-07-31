@@ -20,7 +20,9 @@ exceptions: each tool raises `ShellToolError` internally and the shared
 every file it returns, and the mutating tools refuse to touch an existing
 file that was never read (the LLM-facing read-first contract). One tracker
 instance must be shared across the three tools for the contract to hold; the
-shell plugin owns that wiring.
+shell plugin owns that wiring. The tracker itself is keyed by conversation, so
+the contract holds WITHIN a conversation and never leaks across two — a
+subagent that read a file has not satisfied the guard for its sibling.
 """
 
 from __future__ import annotations
@@ -124,17 +126,26 @@ class ShellToolError(Exception):
 
 
 class FileReadTracker:
-    """Which resolved paths have been read (or written) this session — the
-    state behind the mutating tools' read-first contract."""
+    """Which resolved paths have been read (or written) — the state behind the
+    mutating tools' read-first contract.
+
+    Keyed BY CONVERSATION, and that is load-bearing rather than tidy. One
+    tracker instance is shared by `read` / `edit` / `write` (the guard only
+    holds when the three see the same state), and a session can hold several
+    conversations at once. Unkeyed, subagent A reading `main.py` would satisfy
+    the guard for subagent B, which never read it — a safety check that
+    silently weakens the moment a second conversation exists. Within one
+    conversation tool dispatch is sequential, so a per-conversation slot needs
+    no lock."""
 
     def __init__(self) -> None:
-        self._paths: set[str] = set()
+        self._paths: dict[str, set[str]] = {}
 
-    def record(self, path: str | os.PathLike[str]) -> None:
-        self._paths.add(str(path))
+    def record(self, conversation_id: str, path: str | os.PathLike[str]) -> None:
+        self._paths.setdefault(conversation_id, set()).add(str(path))
 
-    def was_read(self, path: str | os.PathLike[str]) -> bool:
-        return str(path) in self._paths
+    def was_read(self, conversation_id: str, path: str | os.PathLike[str]) -> bool:
+        return str(path) in self._paths.get(conversation_id, ())
 
 
 _FILE_LOCKS: dict[str, asyncio.Lock] = {}
@@ -222,6 +233,7 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -231,11 +243,17 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
-            return await self._run(args, session, cancellation_token=cancellation_token)
+            return await self._run(
+                args,
+                session,
+                conversation_id,
+                cancellation_token=cancellation_token,
+            )
         except ShellToolError as error:
             return ExecutionResult(
                 content=[TextContent(text=str(error))],
@@ -342,6 +360,7 @@ class ReadTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -367,13 +386,20 @@ class ReadTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
-        return await asyncio.to_thread(self._read, path, args["offset"], args["limit"])
+        return await asyncio.to_thread(
+            self._read,
+            conversation_id,
+            path,
+            args["offset"],
+            args["limit"],
+        )
 
-    def _read(self, path: Path, offset: int, limit: int) -> ExecutionResult:
+    def _read(self, conversation_id: str, path: Path, offset: int, limit: int) -> ExecutionResult:
         if not path.exists():
             raise ShellToolError(self._not_found_message(path))
         if path.is_dir():
@@ -390,7 +416,7 @@ class ReadTool(ShellTool):
         if _looks_binary(sample):
             raise ShellToolError(f"Cannot read binary file: {path}")
         result = self._read_text(path, offset, limit)
-        self.tracker.record(path)
+        self.tracker.record(conversation_id, path)
         return result
 
     def _not_found_message(self, path: Path) -> str:
@@ -568,6 +594,7 @@ class GlobTool(RipgrepTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         root = self._resolve(args["path"]) if args.get("path") else self.workdir
         return [
@@ -593,6 +620,7 @@ class GlobTool(RipgrepTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -672,6 +700,7 @@ class GrepTool(RipgrepTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         target = self._resolve(args["path"]) if args.get("path") else self.workdir
         scope = self._access_scope(target)
@@ -698,6 +727,7 @@ class GrepTool(RipgrepTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -808,6 +838,7 @@ class EditTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -833,6 +864,7 @@ class EditTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -850,31 +882,32 @@ class EditTool(ShellTool):
                     " intentional full-file replacement.",
                 )
             async with _file_lock(path):
-                return await asyncio.to_thread(self._create, path, new_string)
+                return await asyncio.to_thread(self._create, conversation_id, path, new_string)
         if not path.exists():
             raise ShellToolError(f"File not found: {path}")
         if path.is_dir():
             raise ShellToolError(f"Path is a directory, not a file: {path}")
-        if not self.tracker.was_read(path):
+        if not self.tracker.was_read(conversation_id, path):
             raise ShellToolError(
                 f"File has not been read yet: read {path} before editing it.",
             )
         async with _file_lock(path):
             return await asyncio.to_thread(
                 self._edit,
+                conversation_id,
                 path,
                 old_string,
                 new_string,
                 args["replace_all"],
             )
 
-    def _create(self, path: Path, content: str) -> ExecutionResult:
+    def _create(self, conversation_id: str, path: Path, content: str) -> ExecutionResult:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content.encode("utf-8"))
         except OSError as error:
             raise ShellToolError(f"Failed to create file: {error}") from error
-        self.tracker.record(path)
+        self.tracker.record(conversation_id, path)
         diff = _unified_diff("", content, str(path), str(path))
         return ExecutionResult(
             content=[TextContent(text=f"Created file: {path}")],
@@ -883,6 +916,7 @@ class EditTool(ShellTool):
 
     def _edit(
         self,
+        conversation_id: str,
         path: Path,
         old_string: str,
         new_string: str,
@@ -923,7 +957,7 @@ class EditTool(ShellTool):
             path.write_bytes(data)
         except OSError as error:
             raise ShellToolError(f"Failed to write file: {error}") from error
-        self.tracker.record(path)
+        self.tracker.record(conversation_id, path)
         return ExecutionResult(
             content=[TextContent(text=f"Edited file: {path}")],
             metadata={"diff": diff, "created": False, "replacements": count},
@@ -968,6 +1002,7 @@ class WriteTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         path = self._resolve(args["file_path"])
         return [
@@ -993,6 +1028,7 @@ class WriteTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -1001,13 +1037,13 @@ class WriteTool(ShellTool):
         if existed:
             if path.is_dir():
                 raise ShellToolError(f"Path is a directory, not a file: {path}")
-            if not self.tracker.was_read(path):
+            if not self.tracker.was_read(conversation_id, path):
                 raise ShellToolError(
                     f"File has not been read yet: read {path} before overwriting it.",
                 )
         async with _file_lock(path):
             await asyncio.to_thread(self._write, path, args["content"], existed)
-        self.tracker.record(path)
+        self.tracker.record(conversation_id, path)
         verb = "updated" if existed else "created"
         return ExecutionResult(
             content=[TextContent(text=f"File {verb} successfully at: {path}")],
@@ -1082,6 +1118,7 @@ class ApplyPatchTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         try:
             ops = parse_patch(args["patch_text"])
@@ -1127,6 +1164,7 @@ class ApplyPatchTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -1359,6 +1397,7 @@ class BashTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         command = args["command"].strip()
         head = command.split()[0]
@@ -1386,6 +1425,7 @@ class BashTool(ShellTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:

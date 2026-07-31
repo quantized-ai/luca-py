@@ -43,7 +43,7 @@ class ContextBar(Static):
 
     def update_from(self, session: AgentSession, *, threshold: float = 0.8) -> None:
         self.text = render_context_bar(
-            calculate_context_used(session),
+            calculate_context_used(session, session.main_conversation_id),
             get_context_window_size(session),
             threshold,
         )

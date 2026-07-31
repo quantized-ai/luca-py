@@ -39,7 +39,6 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CompactionEntry,
-    Conversation,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -74,6 +73,8 @@ from tests.agent.scenarios import (
     FakeToolRegistry,
     MultiplyTool,
     RaisingTool,
+    conversation,
+    main_conversation,
     make_session,
 )
 
@@ -101,7 +102,8 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
     session = make_session(
         id="s_mw_ms",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -145,7 +147,8 @@ async def test_middleware_build_tool_list_sees_wire_tools_and_its_return_is_sent
     session = make_session(
         id="s_mw_tl",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Go")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -202,7 +205,8 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
     session = make_session(
         id="s_mw_llm",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -236,7 +240,8 @@ async def test_middleware_after_llm_response_return_stored_in_session():
     session = make_session(
         id="s_mw_llm_resp",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -273,7 +278,8 @@ async def test_middleware_before_post_message_return_stored_in_entry():
 
     session = make_session(
         id="s_mw_pm",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -300,7 +306,8 @@ async def test_before_post_message_sees_every_part_including_images():
     middleware = RecordingMiddleware()
     session = make_session(
         id="s_mw_pm_seen",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -323,7 +330,8 @@ async def test_before_post_message_can_drop_a_part():
 
     session = make_session(
         id="s_mw_pm_drop",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -346,7 +354,8 @@ async def test_before_post_message_can_add_a_part():
 
     session = make_session(
         id="s_mw_pm_add",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -384,7 +393,8 @@ async def test_middleware_before_entry_written_return_stored_in_session():
     session = make_session(
         id="s_mw_bew",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -440,7 +450,8 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
     session = make_session(
         id="s_mw_bew_exec",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -487,7 +498,8 @@ async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_
     session = make_session(
         id="s_mw_bew_spec",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -504,6 +516,7 @@ async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_
 
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -588,7 +601,8 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
     session = make_session(
         id="s_mw_bpc",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry([AddTool()], decisions=[ALLOW_1000])
@@ -608,6 +622,7 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
     assert registry.seen == [
         ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=1000,
             tool_call_id="tc1",
@@ -622,6 +637,7 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
     # modified execution, not the original — its changes stick.
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -665,7 +681,8 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
     session = make_session(
         id="s_mw_apd",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry([AddTool()], decisions=[DENY_1000])
@@ -685,6 +702,7 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
     # one the runner acted on: ALLOWED and dispatched, never REJECTED.
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -733,7 +751,8 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
     session = make_session(
         id="s_mw_bte",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -752,6 +771,7 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
     # what the durable record shows.
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -800,7 +820,8 @@ async def test_middleware_before_tool_execution_effective_call_is_what_prepare_r
     session = make_session(
         id="s_mw_bte_prepare",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry([AddTool()])
@@ -818,6 +839,7 @@ async def test_middleware_before_tool_execution_effective_call_is_what_prepare_r
 
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         context_tokens=5,
@@ -869,7 +891,8 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
     session = make_session(
         id="s_mw_bte_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
@@ -928,7 +951,8 @@ async def test_middleware_after_tool_execution_return_persisted():
     session = make_session(
         id="s_mw_ate",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -947,6 +971,7 @@ async def test_middleware_after_tool_execution_return_persisted():
     # settles BEFORE the hook and is never recalculated behind it.
     persisted = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -964,6 +989,7 @@ async def test_middleware_after_tool_execution_return_persisted():
     assert runner.session.entries["te1"] == persisted
     # the ToolExecuted event projects that same transformed execution
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=persisted,
         result_text="RESULT_MODIFIED",
@@ -1013,7 +1039,8 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
     session = make_session(
         id="s_mw_ate_all",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
@@ -1065,7 +1092,8 @@ async def test_middlewares_applied_in_order_second_receives_first_output():
     session = make_session(
         id="s_mw_order",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1103,7 +1131,8 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
     session = make_session(
         id="s_mw_order2",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1160,7 +1189,8 @@ async def test_mixin_subclass_partial_override_does_not_clobber_post_message():
 
     session = make_session(
         id="s_mw_sub",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1194,7 +1224,8 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
     session = make_session(
         id="s_mw_mixin_run",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1215,6 +1246,7 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
     # ran with the original args, the result and final answer were stored.
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1361,7 +1393,7 @@ async def test_before_entry_written_may_redact_the_summary_before_it_persists():
 
     assert runner.session.entries["cmp"].parts == [TextContent(text="[redacted]")]
     assert ConversationProjector().project(
-        runner.session.active_conversation,
+        main_conversation(runner.session).nodes,
         runner.session.entries,
     ) == [LucaUserMessage(content=[TextBlock(text="[redacted]")])]
 
@@ -1394,7 +1426,8 @@ async def test_a_routed_turn_records_the_model_it_actually_ran_on():
     session = make_session(
         id="s_mw_routed",
         entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="hi")])},
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(

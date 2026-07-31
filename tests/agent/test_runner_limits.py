@@ -18,7 +18,7 @@ Invariants tested:
   execution exists in the open turn, or never when the flag is off
 - the soft == hard misconfiguration warning
 
-`SessionRuntimeStatus` derivation (what step_count counts) belongs to the
+`ConversationRuntimeStatus` derivation (what step_count counts) belongs to the
 ledger and is covered in `test_ledger.py`; here it is only an input.
 """
 
@@ -31,7 +31,6 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
-    Conversation,
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
@@ -60,6 +59,7 @@ from tests.agent.scenarios import (
     DeterministicRunner,
     FakeToolRegistry,
     MultiplyTool,
+    conversation,
     make_session,
 )
 
@@ -76,7 +76,8 @@ def session_with(runtime_config: RuntimeConfig) -> AgentSession:
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL, runtime_config=runtime_config),
     )
 
@@ -97,6 +98,7 @@ def completed(
         parent_id=parent_id,
         created_at=1000,
         tool_call_id=call.id,
+        conversation_id="c1",
         raw_tool_call=call,
         tool_spec=SPECS[call.name],
         tool_spec_id=SPECS[call.name].spec_id(),
@@ -139,7 +141,7 @@ async def test_hard_max_steps_closes_the_turn_with_errored():
 
     # the turn is closed but the conversation stays retry-ready PENDING
     assert result == RunResult(
-        status=ConversationStatus.PENDING,
+        status=ConversationStatus.IDLE,
         outcome=TurnOutcome.ERRORED,
         pending_approvals=[],
     )
@@ -179,7 +181,7 @@ async def test_hard_max_steps_allows_exactly_n_steps_before_closing():
     result = await runner.run()
 
     assert result == RunResult(
-        status=ConversationStatus.PENDING,
+        status=ConversationStatus.IDLE,
         outcome=TurnOutcome.ERRORED,
         pending_approvals=[],
     )

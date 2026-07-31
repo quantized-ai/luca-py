@@ -73,7 +73,7 @@ class CompactionPlan(BaseModel):
 
 
 class ConversationSnapshot(BaseModel):
-    """The active conversation as it stood when `compact()` was called.
+    """The compacting conversation as it stood when `compact()` was called.
 
     Two paths, because the two questions are different. `nodes` is the FULL
     live path, markers included — it answers "did the session move under the
@@ -105,19 +105,29 @@ def has_content(parts: list[ContentPart] | None) -> bool:
 def check_snapshot(
     *,
     session: AgentSession,
+    conversation_id: str,
     snapshot: ConversationSnapshot,
 ) -> None:
     """G2: the plan must be validated against the path it was computed from.
 
+    `conversation_id` is re-resolved by the caller from whatever NAMES the
+    conversation (for the main conversation, `session.main_conversation_id`),
+    so a manager that installed a successor under the runner is caught here
+    rather than committing onto a conversation nobody is driving.
+
     Factored out of `validate_plan` because the runner runs it EARLY — before
     recording usage, which itself verifies the compaction entry is still on
-    the active path and would otherwise raise its own unrelated error for a
-    manager that replaced the active conversation."""
-    active = session.active_conversation
-    if snapshot.id != active.id:
-        raise CompactionPlanError(f"the active conversation changed under the plan ({snapshot.id!r} → {active.id!r})")
-    if snapshot.nodes != tuple(active.nodes):
-        raise CompactionPlanError("the active conversation's path changed under the plan")
+    that conversation's path and would otherwise raise its own unrelated error
+    for a manager that replaced it."""
+    if snapshot.id != conversation_id:
+        raise CompactionPlanError(
+            f"the compacting conversation changed under the plan ({snapshot.id!r} → {conversation_id!r})"
+        )
+    conversation = session.conversations.get(conversation_id)
+    if conversation is None:
+        raise CompactionPlanError(f"conversation {conversation_id!r} is absent from the session")
+    if snapshot.nodes != tuple(conversation.nodes):
+        raise CompactionPlanError("the compacting conversation's path changed under the plan")
 
 
 def validate_plan(
@@ -125,6 +135,7 @@ def validate_plan(
     *,
     entry_id: str,
     session: AgentSession,
+    conversation_id: str,
     snapshot: ConversationSnapshot,
 ) -> None:
     """Refuse a plan that is structurally impossible. STRUCTURE ONLY — the
@@ -137,7 +148,7 @@ def validate_plan(
     carried over, a summary larger than the span it replaced, whether a
     trailing unanswered user message survives. Those are the manager's
     judgment and the manager's hazards."""
-    check_snapshot(session=session, snapshot=snapshot)
+    check_snapshot(session=session, conversation_id=conversation_id, snapshot=snapshot)
     if not plan.nodes:
         raise CompactionPlanError("an empty plan is not a compaction")
     carried: list[str] = []

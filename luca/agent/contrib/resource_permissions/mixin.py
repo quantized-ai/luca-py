@@ -18,7 +18,7 @@ there) returns one request per action, in the order it wants them presented:
 
     class ReadFileTool(ResourcePermissionToolMixin, Tool):
         ...
-        def build_permission_requests(self, args, session):
+        def build_permission_requests(self, args, session, conversation_id):
             return [PermissionRequest(
                 resources=[
                     ResourcePermission(permission="read", resource=args["path"]),
@@ -94,12 +94,22 @@ class ResourcePermissionToolMixin:
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         """Declare the approval steps this call needs. Synchronous and run in
-        a worker thread, so blocking filesystem work here is safe."""
+        a worker thread, so blocking filesystem work here is safe.
+
+        `conversation_id` is the conversation the call belongs to: "a subagent
+        is asking for this" belongs in the approval prompt, and describing a
+        call is exactly where it belongs."""
         raise NotImplementedError
 
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> dict:
         # Off the event loop: this is awaited inside the registry's
         # `create_execution`, and building the requests stats the filesystem.
         # A blocking syscall is not interruptible by cancellation, so keeping
@@ -108,5 +118,6 @@ class ResourcePermissionToolMixin:
             self.build_permission_requests,
             args,
             session,
+            conversation_id,
         )
         return {"requests": [request.model_dump() for request in requests]}

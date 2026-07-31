@@ -30,7 +30,7 @@ then arm it with a message:
 ```python
 session = AgentSessionRunner.new_session(LLMConfig(model="openai/gpt-4o-mini", provider="openrouter"))
 runner = AgentSessionRunner(session, tool_registry=registry)
-runner.post_message("Summarize the repo.")     # appends a UserMessage, status → PENDING
+runner.post_message("Summarize the repo.")     # appends a UserMessage, status → BUSY
 ```
 
 `post_message` takes a string, or an ordered list of parts to mix text and
@@ -67,22 +67,22 @@ the agent. Stop iterating and the agent stops.
 ```python
 result.status              # the DERIVED status where the run stopped
 result.outcome             # how the last bracket this run closed ended, else None
-result.pending_approvals   # list[ToolExecution] — non-empty iff AWAITING_APPROVAL
+result.pending_approvals   # list[ToolExecution] — non-empty iff BLOCKED
 ```
 
-`status` is derived, not assumed: a turn that finished is `IDLE`, a gate is
-`AWAITING_APPROVAL`, and a retry-ready close (a failed turn, a hard step limit)
-is `PENDING`. `outcome` is carried from the close rather than read off the path,
-because after a compaction the closing marker is on the archived conversation
-([12](12-compaction.md)).
+`status` is derived, not assumed: a turn that finished is `IDLE`, a gate nothing
+can get past is `BLOCKED`. `outcome` is carried from the close rather than read
+off the path, because after a compaction the closing marker is on the archived
+conversation ([12](12-compaction.md)).
 
 No usage on the result — provider usage is recorded per assistant entry in
 `session.usages` ([11](11-context-and-usage.md)).
 
 A timeout or model failure does **not** produce a result: the turn closes
-`TIMED_OUT` / `ERRORED` and the exception re-raises through `await`/iteration
-(status becomes `PENDING`, retry-ready). A pending cancel is the exception — it
-consumes the failure and returns normally.
+`TIMED_OUT` / `ERRORED` and the exception re-raises through `await`/iteration.
+The conversation is then `IDLE` — a failed turn is a closed turn, so recovering
+means posting a new message, not re-driving the same request. A pending cancel
+is the exception — it consumes the failure and returns normally.
 
 ## 3. Eager: `start()`
 
@@ -101,7 +101,10 @@ Use `run()` when the consumer paces the agent (a UI reading events); use
 ## 4. Events
 
 Both forms deliver the same `AgentEvent` union (`luca.agent.core.events`). Every
-text-bearing event exposes `.text`, so one `match` serves every case.
+text-bearing event exposes `.text`, so one `match` serves every case, and
+**every event carries `.conversation_id`** — the stream is the whole subtree's,
+so with subagents running two conversations can be mid-block at once and a
+renderer keys its live state by that field.
 
 **Block events** — fire in *both* modes, once each block is complete:
 
@@ -113,7 +116,8 @@ text-bearing event exposes `.text`, so one `match` serves every case.
 | `ToolExecutionStarted` | `.tool_call_id`, `.execution` — RUNNING, emitted iff the tool body dispatches |
 | `ToolExecuted` | `.tool_call_id`, `.execution` (terminal), `.result_text`, `.is_error` — what the model is told |
 | `FinishReason` | `.finish_reason` |
-| `ApprovalRequired` | `.executions` — emitted as the **last** event before an approval gate |
+| `ApprovalRequired` | `.executions` — emitted when a call parks at a gate (not necessarily last: a sibling subagent may keep going) |
+| `SubagentsSpawned` | `.conversation_ids` — one batch of children, announced before they start ([13](13-subagents.md)) |
 | `CompactionScheduled` / `CompactionStarted` / `CompactionFinished` | `.entry` (a deep snapshot) — one compaction's lifecycle ([12](12-compaction.md)) |
 
 The three tool events carry a **deep snapshot** of the durable `ToolExecution`
@@ -190,15 +194,15 @@ asyncio.run(drive(runner))            # one async fn that owns the run loop
 ## 8. Tool dispatch — prepare, then run
 
 The runner touches tools through exactly four `ToolRegistry` methods
-([05](05-permissions.md)): all async, all taking the live session, none
-receiving the cancellation token.
+([05](05-permissions.md)): all async, all taking the live session **and the
+conversation being answered for**, none receiving the cancellation token.
 
 | Call | When | What the runner does with it |
 |---|---|---|
-| `get_tools(session)` | per LLM call, through the runner's `async build_tool_list()` | converts each `ToolSpec` to the wire list, then runs the (still synchronous) `build_tool_list` middleware over that list ([07](07-middleware.md)) |
-| `create_execution(session, call)` | once per tool call in the assistant response | stamps identity, appends, emits `ToolCallReceived` |
-| `decide(session, execution)` | for every undecided execution | applies the decision; a `DENY` is `REJECTED` on the spot |
-| `prepare(session, execution)` | once per dispatch attempt of an ALLOWED call | invokes the callable it returns |
+| `get_tools(session, conversation_id)` | per LLM call, through the runner's `async resolve_tool_specs()` | drops private specs (§[03](03-tools.md)), converts the rest to the wire list, then runs the (still synchronous) `build_tool_list` middleware over that list ([07](07-middleware.md)) |
+| `create_execution(session, conversation_id, call)` | once per tool call in the assistant response | stamps identity (including `conversation_id`), appends, emits `ToolCallReceived` |
+| `decide(session, conversation_id, execution)` | for every undecided execution | applies the decision; a `DENY` is `REJECTED` on the spot |
+| `prepare(session, conversation_id, execution)` | once per dispatch attempt of an ALLOWED call | invokes the callable it returns |
 
 Dispatch is split in two. `prepare()` resolves the tool and validates the
 arguments and hands back a callable; only once it has returned does the runner
@@ -252,8 +256,15 @@ turn-scoped, not handle-scoped):
 run.cancel()                          # or: run.cancel(TurnOutcome.CANCELLED, error="user hit stop")
 ```
 
-It appends a durable `CancelRequested`, trips the live cancellation token, sets
-status `CANCELLING`, and returns immediately. The wind-down happens at the
+It appends a durable `CancelRequested`, trips the live cancellation token
+(which makes the conversation derive `CANCELLING`), and returns immediately.
+Cancellation **cascades**: every live subagent beneath the cancelled
+conversation gets its own `CancelRequested` and winds down too, and each
+unresolved link is resolved with a result that says so — a closed turn with an
+unresolved child would be unprojectable. Cancelling one subagent leaves its
+siblings and its parent running.
+
+The wind-down happens at the
 engine's next step boundary: unrun calls are stamped `cancel_signalled_at` and
 become `CANCELLED`; an in-flight call is persisted with `cancel_signalled_at`
 first, then gets a grace window — a within-grace return is `COMPLETED` with its
@@ -285,23 +296,40 @@ a dispatch.
 
 ## 10. The status machine
 
-Poll these predicates to decide what to do next:
+Four statuses, **derived from the entries on every read** — nothing is stored,
+so a reloaded or crashed session lands in the right state on its own. The
+runner's predicates answer for the main conversation; ask the session for any
+other ([02](02-data-model.md) §10).
 
 | Status | Predicate | Meaning → your move |
 |---|---|---|
 | `IDLE` | `runner.idle()` | Nothing queued → `post_message()` |
-| `PENDING` | `runner.pending()` | Work queued (message / resolved approval / retry) → `run()` |
-| `AWAITING_APPROVAL` | `runner.awaiting_approval()` | Paused at a gate → resolve, then `run()` ([05](05-permissions.md)) |
+| `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent) → `run()` |
+| `BLOCKED` | `runner.blocked()` | Nothing can advance until you act — a gate → resolve, then `run()` ([05](05-permissions.md)) |
 | `CANCELLING` | `runner.cancelling()` | Unconsumed cancel → `run()` flushes it |
-| `RUNNING` | `runner.running()` | A run is actively driving (internal; self-heals on load) |
 
-The runner **re-derives status from the entries** when it takes ownership of a
-session, so a reloaded or crashed session lands in the right state on its own.
+```python
+while not runner.idle():
+    async with runner.run() as run:
+        async for event in run:
+            render(event)
+    if runner.blocked():
+        resolve(runner.pending_approvals())      # then loop: the next run re-asks
+```
+
+That loop is the whole protocol, subagents included: `pending_approvals()` is
+**subtree-scoped**, so a subagent's gate surfaces on the main runner and each
+execution names the conversation it came from.
+
+Two consequences of the derivation, both deliberate: a **failed** turn is a
+closed turn and therefore `IDLE` (retry by posting, not by re-driving), and a
+trailing user message is `BUSY`, so a second message cannot be queued behind a
+first.
 
 A **closed compaction bracket is transparent** to that derivation: it is
 skipped, and the leaf before it decides. That is what keeps a failed compaction
 from looking retry-ready (a spin) and a completed one from burying a queued
-question. An *open* compaction bracket derives `PENDING` like any open turn —
+question. An *open* compaction bracket derives `BUSY` like any open turn —
 which is how a scheduled compaction survives a reload.
 
 **Suspend vs. advance.** Exiting a lazy run's `async with` block *suspends* — it
@@ -329,5 +357,50 @@ eager run opens a compaction bracket instead of a `TurnStart` when one is due.
 
 Everything else — the compaction contract, the plan, the events, the guarantees —
 is [`12-compaction.md`](12-compaction.md).
+
+## 12. The run is a tree
+
+When a turn spawns subagents ([13](13-subagents.md)), the handle you are holding
+is the root of a tree of runs — one per live conversation:
+
+```python
+run.children                 # dict[str, AgentRun] — by conversation id, grows as spawns land
+run.child(conversation_id)   # one handle anywhere in this run's subtree, or None
+run.notify(execution)        # "something changed out of band for that execution's
+                             #  conversation — look again NOW"
+async for execution in run.approvals:     # gates raised during this run, as they are raised
+    ...
+```
+
+`autostart_subagents=` (default `True`) decides who drives them:
+
+| | `True` — the framework drives | `False` — you drive |
+|---|---|---|
+| when a child starts | immediately, on its own task | when you iterate the handle |
+| where its events arrive | on this run's stream, tagged with its conversation | on the child handle only (no double delivery) |
+| your obligation | none | drive or cancel every spawn, or the parent's turn never ends |
+
+```python
+from luca.agent.core.events import SubagentsSpawned
+
+async with runner.run(autostart_subagents=False) as run:
+    async for event in run:
+        if isinstance(event, SubagentsSpawned):
+            for cid in event.conversation_ids:      # handles exist by announcement time
+                async with run.child(cid) as child:
+                    async for child_event in child:
+                        render(child_event)
+```
+
+Two rules explain the rest of the behavior:
+
+- **A drive returns only when nothing in its SUBTREE can advance.** So a gated
+  child returns (its drive is gone; answering restarts it) while a gated parent
+  whose children are still working waits — which is why `ApprovalRequired` is
+  not terminal on a parent's stream.
+- **A run handle is single-use.** Resuming a subagent parked at a gate means a
+  fresh handle: under `autostart_subagents=True` the framework makes one for you
+  (on `notify()`, and on the next `run()`); under `False`, `run.child(cid)`
+  hands you a new one.
 
 Next: [`05-permissions.md`](05-permissions.md).

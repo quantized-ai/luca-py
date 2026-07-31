@@ -26,7 +26,7 @@ class WeatherTool(Tool):
     description = "Return the current weather for a city."
     Args = WeatherArgs
     async def _execute(
-        self, args: dict, session: AgentSession,
+        self, args: dict, session: AgentSession, conversation_id: str,
         *, cancellation_token: CancellationToken,
     ) -> str:
         return f"It's 22°C and sunny in {args['city']}."
@@ -81,20 +81,20 @@ it handles new input, approval gates, and cancellation resumption uniformly:
 ```python
 while True:
     if runner.idle():
-        runner.post_message(input("> "))         # nothing running → take input
-    elif runner.awaiting_approval():
-        resolve(runner.pending_approvals())       # a gate → answer it (see 05-permissions)
-    # PENDING / CANCELLING (and the fall-through from the branches above) → make progress
-    async with runner.run() as run:
+        runner.post_message(input("> "))          # nothing running → take input
+    async with runner.run() as run:               # BUSY / BLOCKED / CANCELLING → advance
         async for event in run:
             render(event)
+    if runner.blocked():
+        resolve(runner.pending_approvals())       # a gate → answer it (see 05-permissions)
     save(runner.session)                          # persist after every turn
 ```
 
 Each `run()` advances as far as it can, then stops at the next point that needs
-you: the turn finished (`IDLE`) or a tool call needs approval
-(`AWAITING_APPROVAL`). See [`04-runner.md`](04-runner.md) for the full status
-machine and [`../../main.py`](../../main.py) for a complete REPL.
+you: the turn finished (`IDLE`) or nothing can advance until you answer a gate
+(`BLOCKED`). Drive first, prompt second — answering writes to your policy, and
+only a drive re-asks it. See [`04-runner.md`](04-runner.md) for the full status
+machine and [`../../main.py`](../../main.py) for a complete TUI.
 
 ## 3. Persist and resume
 
@@ -104,7 +104,7 @@ The session *is* the state — save it as JSON, reload it later, keep going:
 # save
 open(f"{session.id}.json", "w").write(session.model_dump_json(indent=2))
 
-# resume — reload into a fresh runner; it self-heals the status from the entries
+# resume — reload into a fresh runner; status is derived from the entries
 session = AgentSession.model_validate_json(open("abc123.json").read())
 runner = AgentSessionRunner(
     session,

@@ -44,9 +44,10 @@ plugin's registry.
 
 > ⚠️ **Construction-time only.** Hooks run once, inside
 > `PluginAgentSessionRunner.__init__` — never again. Per-call behavior (varying
-> the tool list by turn, injecting context per LLM call) belongs in your
-> registry's dynamic `get_tools(session)` ([03](03-tools.md)),
-> [middleware](07-middleware.md), or a callable prompt part.
+> the tool list by turn or by conversation, injecting context per LLM call)
+> belongs in your registry's dynamic `get_tools(session, conversation_id)`
+> ([03](03-tools.md)), [middleware](07-middleware.md), or a callable prompt
+> part.
 
 ## 2. Example: the memory plugin
 
@@ -57,9 +58,9 @@ parts that teach the model to use them:
 
 | Tool | Args | Does |
 |---|---|---|
-| `read_scratchpad` | — | returns the current content (empty string at first) |
+| `read_scratchpad` | — | returns this conversation's content (empty string at first) |
 | `write_scratchpad` | `content: str` | replaces the whole content |
-| `read_todo` | — | returns the todo list, a `repr()` of `{"content", "status"}` dicts (`[]` at first) |
+| `read_todo` | — | returns this conversation's todo list, a `repr()` of `{"content", "status"}` dicts (`[]` at first) |
 | `update_todos` | `todos: list[TodoItem]` | replaces the whole list — the model re-sends every item, including unchanged ones |
 
 A `TodoItem` is `{"content": str, "status": "pending" | "in_progress" |
@@ -95,12 +96,24 @@ class MemoryPlugin:
 > ⚠️ **Two different `get_tools`.** The plugin's takes no arguments and returns
 > contrib `Tool` objects (`from luca.agent.contrib.tools import Tool`) — a
 > convenience for anyone dropping these tools into their own registry. The
-> `ToolRegistry` contract's is `async get_tools(session) -> list[ToolSpec]`
+> `ToolRegistry` contract's is
+> `async get_tools(session, conversation_id) -> list[ToolSpec]`
 > ([03](03-tools.md)); a plugin never implements it, its registry does.
 
 The plugin owns the shared state (one store handed to each tool pair) — the
 piece you couldn't express by passing loose tools — and its Yolo registry means
 memory tools auto-run regardless of how the app gates its own tools.
+
+Each store is keyed **by conversation**:
+
+```python
+self.store.setdefault(conversation_id, {})["content"] = args["content"]
+```
+
+One plugin instance is shared by the main agent and every subagent
+([13](13-subagents.md)), so a flat dict would mean the parent and its children
+overwriting each other's private working memory — silently, the moment a second
+conversation exists. Anything a plugin holds needs the same treatment.
 
 > ⚠️ **Not persisted.** The stores live on the plugin instance, not the
 > session: one `MemoryPlugin()` = one scratchpad + one todo list, and a new

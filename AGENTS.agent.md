@@ -7,11 +7,11 @@ Guidance for the `luca.agent` layer. Read this file whenever you're working in `
 ## Goals
 
 - One canonical, JSON-serializable `AgentSession` that round-trips through `model_dump_json` / `model_validate_json` losslessly.
-- A flat, append-only entry store (`AgentSession.entries`) addressed by id, with `Conversation.nodes` (an ordered list of ids) as the traversal path. Forking is cheap and explicit.
+- A flat, append-only entry store (`AgentSession.entries`) addressed by id, with `Conversation.nodes` (an ordered list of ids) as the traversal path. Forking is cheap and explicit. Conversations are a STORE too — `AgentSession.conversations`, keyed by id, holding the main conversation and its archived predecessors — with `main_conversation_id` as the pointer into it. There is no "active" conversation.
 - A resumable async agent loop exposed as `runner.run()` (lazy) and `runner.start()` (eager), both returning an `AgentRun` handle. The engine projects the active conversation to LLM messages, calls the model, records the assistant turn, executes tool calls, and loops — bracketed by `TurnStart` / `TurnFinish(outcome)`. One logical turn can span multiple runs.
 - The whole tool lifecycle delegated to a `ToolRegistry` — the core has no built-in tool resolution or approval engine; permission policies are contrib (`contrib/simple_tool_registry`). The core's only tool type is `ToolSpec`, plain JSON-serializable data: it depends on no Python tool class, so a registry fronting a remote tool server (MCP, an HTTP tool service, another agent) is a first-class implementation, and `luca` stays an implementation-agnostic specification another language could implement against.
 - Durable cancellation via `runner.cancel()` / `run.cancel()`, recorded as a `CancelRequested` entry and wound down at engine step boundaries.
-- Compaction as a step inside a drive: the `ContextManager` decides and summarizes, the runner archives the conversation and installs a new one over the path it chose — atomically, losing nothing.
+- Compaction as a step inside a drive: the `ContextManager` decides and summarizes, the runner archives the conversation and installs a new one over the path it chose — atomically, losing nothing. The archived conversation stays in `conversations`; only the NAME moves (`main_conversation_id`), and the successor points back through `previous_conversation_id`.
 - Configurable timeouts and step limits that ride on the persisted `RuntimeConfig`, not the constructor.
 - A purely observational event stream (`luca.agent.core.events`) consumed by iterating the handle or via `on_event`.
 
@@ -50,6 +50,12 @@ luca/agent/
 │   │   ├── __init__.py  # package surface: PermissionStrategy, rules, answers, the mixin
 │   │   ├── strategy.py  # PermissionMode, ToolRule/ToolKindRule, ApprovalAnswer, PermissionStrategy
 │   │   └── mixin.py     # ResourcePermission, AnswerOption, PermissionRequest, ResourcePermissionToolMixin
+│   ├── subagents/       # parallel subagents: the two tools + the plugin
+│   │   ├── __init__.py  # package surface: SubagentsPlugin, the tools, spawn_gate_open
+│   │   ├── tools.py     # SpawnSubagent (declares is_subagent_spawn) +
+│   │   │                #   CreateConversationResult (PRIVATE, runtime-invoked)
+│   │   └── plugin.py    # spawn_gate_open, spawning_prompt_part (callable),
+│   │                    #   SubagentToolRegistry (the depth gate), SubagentsPlugin
 │   ├── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
 │   └── tui/             # the Textual terminal UI (AgentApp + wiring + approval modal);
 │       │                #   Textual-free logic in approvals.py / render.py / sessions.py / wiring.py
@@ -63,10 +69,11 @@ luca/agent/
     │                    #   ToolSpec (+ spec_id()),
     │                    #   ExecutionStatus/ApprovalStatus/ToolExecutionError,
     │                    #   TurnOutcome, RuntimeConfig, SessionConfig, Usage,
-    │                    #   SessionRuntimeStatus, ConversationStatus — pure Pydantic v2
+    │                    #   ConversationRuntimeStatus, ConversationStatus, and the
+    │                    #   pure (nodes, entries) path derivations — pure Pydantic v2
     ├── tool_registry.py # ToolRegistry — the 4-method contract the runner drives tools
-    │                    #   through (all async, session first) + PreparedTool + the
-    │                    #   registry-author rules
+    │                    #   through (all async, session + conversation_id first) +
+    │                    #   PreparedTool + the registry-author rules
     ├── context.py       # CancellationToken (runtime-only; never persisted)
     ├── context_manager.py # ContextManager — the context strategy: per-entry
     │                    #   context_tokens estimation, tool-output processing,
@@ -88,7 +95,8 @@ luca/agent/
     ├── adapter.py       # message_to_parts() (inbound response conversion) +
     │                    #   tool_spec_to_luca_tool() (tool-definition conversion)
     ├── middleware.py    # AgentMiddlewareMixin — the 10 duck-typed middleware hooks
-    ├── ledger.py        # SessionLedger — the single append/read door onto the entry log
+    ├── ledger.py        # SessionLedger — the single append/read door onto the entry
+    │                    #   log; every door takes a conversation_id
     ├── system_prompt.py # coerce_system_prompt_part, SystemPromptAssembler,
     │                    #   DefaultSystemPromptAssembler, part-input type aliases
     ├── runner.py        # AgentSessionRunner, AgentRun handle, RunResult
@@ -117,12 +125,13 @@ Internalize all of these before touching `luca.agent`.
 
 `AgentSession` and everything it holds is pure Pydantic v2 with `extra="forbid"`. It must round-trip losslessly. Runtime collaborators — the tool registry, the system-prompt strategy — live on the **runner**, never in the session. Nothing on the session is transient.
 
-Two loudly-documented exceptions, and only two:
+One loudly-documented exception, and only one:
 
-- `AgentSession.session_runtime_status` is a plain `@property` (not a Pydantic field) that recomputes `SessionRuntimeStatus` from the live entries on every access. It is never serialized and never trusted from disk.
 - `ToolExecution.tool_spec` is a restorable CACHE of the spec its `tool_spec_id` names. The id is authoritative; `tool_spec` is stripped from a serialized session and restored on construction, and must never be the source of truth for anything durable.
 
-Both are exceptions because a consumer reads them like ordinary state and a writer must not treat them as such.
+It is an exception because a consumer reads it like ordinary state and a writer must not treat it as such.
+
+**Status is not stored at all.** `Conversation` has no `status` field: `AgentSession.get_conversation_status(conversation_id)` recomputes a `ConversationRuntimeStatus` from the nodes on every call, and it is the only door. A field nobody trusts is a rendering, not state — and with several conversations a persisted one would need a rule for which get refreshed and when, while archived conversations must stay frozen.
 
 ### 2. Storage and traversal are separate
 
@@ -139,9 +148,9 @@ Both are exceptions because a consumer reads them like ordinary state and a writ
 - The request block: a `ToolCall` object inside `AssistantMessage.parts`.
 - A separate, mutable `ToolExecution` entry — the durable source of truth about that call's whole lifecycle — correlated by `tool_call_id`.
 
-`ToolExecution` is one of the **two** mutable entry types (`CompactionEntry` is the other — see below).
+`ToolExecution` is one of the **three** mutable entry types (`CompactionEntry` and `ChildConversation` are the others — see below).
 
-Each `ToolExecution` carries three orthogonal facts plus its provenance:
+Each `ToolExecution` carries three orthogonal facts plus its provenance (`conversation_id` — the conversation it was BORN in, stamped by the runner; it is on this entry and no other because a `ToolExecution` is the only entry a consumer ever receives DETACHED from a path, and it is never traversed):
 - `status: ExecutionStatus` — the framework's execution lifecycle and ONLY that: `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `NOT_FOUND`, `INVALID`, `REJECTED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT`. `COMPLETED` means "the framework received a result", not "the tool succeeded".
 - `approval_status: ApprovalStatus | None` — the CURRENT approval state (`None` = the policy never processed it; `PENDING`/`ALLOWED`/`REJECTED`). Always read approval from this field; `approval_decisions` is the append-only audit log of policy responses (only PENDING may repeat), never the source of current state.
 - The outcome payload: exactly one of `result: ExecutionResult` (the body returned; `result.is_error` is the tool's OWN verdict — an `is_error=True` result is still `COMPLETED`) or `error: ToolExecutionError` (structured `error_type`/`error_message`/`details`, populated for `FAILED`/`NOT_FOUND`/`INVALID`) — or neither, for the status-only terminals.
@@ -156,7 +165,7 @@ These combinations are framework conventions, not Pydantic validators — middle
 
 ### 5. The wire payload is derived, never stored
 
-The **`ConversationProjector`** (`projection.py`) is the public strategy that recomputes the LLM message list from the path on every call: it drops `TurnStart`/`CancelRequested`, projects a CANCELLED `TurnFinish` as the synthetic `[Request interrupted by user]` marker, unwraps messages into client content blocks, projects each terminal `ToolExecution` to its correlated `ToolMessage` (COMPLETED → its result verbatim; every other terminal → derived error text with `is_error=True`), and renders a `CompactionEntry` as a synthetic user message — with one POSITIONAL rule that lives on `project()` itself: a whole compaction bracket (`ts_c cmp [cr] tf_c`) projects as nothing, whatever its outcome, while a `CompactionEntry` outside a bracket projects its `parts`. It is a concrete class — pass a subclass as `conversation_projector=` to change any policy (history shaping, redaction, tool-output wording); ALL default derived wording lives on the class. The same `project_tool_execution` output feeds the `ToolExecuted` event's `result_text`/`is_error`, so event and wire never disagree. There is no projection middleware; `before_llm_call` stays as the downstream last-mile hook.
+The **`ConversationProjector`** (`projection.py`) is the public strategy that recomputes the LLM message list from a path — `project(nodes, entries)`, taking the ordered id list rather than a `Conversation` object — on every call: it drops `TurnStart`/`CancelRequested`, projects a CANCELLED `TurnFinish` as the synthetic `[Request interrupted by user]` marker, unwraps messages into client content blocks, projects each terminal `ToolExecution` to its correlated `ToolMessage` (COMPLETED → its result verbatim; every other terminal → derived error text with `is_error=True`), and renders a `CompactionEntry` as a synthetic user message — with one POSITIONAL rule that lives on `project()` itself: a whole compaction bracket (`ts_c cmp [cr] tf_c`) projects as nothing, whatever its outcome, while a `CompactionEntry` outside a bracket projects its `parts`. It is a concrete class — pass a subclass as `conversation_projector=` to change any policy (history shaping, redaction, tool-output wording); ALL default derived wording lives on the class. The same `project_tool_execution` output feeds the `ToolExecuted` event's `result_text`/`is_error`, so event and wire never disagree. There is no projection middleware; `before_llm_call` stays as the downstream last-mile hook.
 
 ### 6. Fail loud on a mid-execution projection
 
@@ -192,6 +201,8 @@ Additional semantics:
 - TIMED_OUT or ERRORED closes the turn and re-raises (`run.result` stays None), unless a cancel is pending — then the wind-down consumes the failure and the run returns normally.
 - `on_event` (sync or async) receives every event even when the run is only awaited (not iterated).
 
+A handle is also the root of a TREE once a turn spawns subagents: `run.children` / `run.child(cid)` reach the subtree, `run.approvals` streams the gates raised during the run, and `run.notify(execution)` says "look again NOW" for that execution's conversation. `autostart_subagents=` (default True, and implied by `start()`) decides whether the FRAMEWORK drives the children (their events arrive on this stream) or the application does (`False` — the handles are lazy and unstarted, forwarding is suppressed so nothing is delivered twice, and driving or cancelling every spawn becomes the caller's obligation). A run handle is single-use, so `child()` MINTS a fresh one under `False` — that is the only door back to a subagent parked at a gate.
+
 ### 10. Two-tier events
 
 The engine yields `AgentEvent` union members in two tiers:
@@ -206,21 +217,30 @@ Every text-bearing event exposes its content on `text`, so one `match` statement
 
 There is no `TurnFinished` event — `RunResult` is the completion signal. A flush run may emit zero events.
 
-### 11. Resumable status machine
+### 11. Derived status machine
 
-`Conversation.status` (`ConversationStatus`: IDLE / PENDING / RUNNING / AWAITING_APPROVAL / CANCELLING) is set by the runner and persisted, but treated as a denormalized cache. When `AgentSessionRunner.__init__` takes a session, status is re-derived from the entries (so a stale RUNNING self-heals).
+`ConversationStatus` has FOUR values and answers exactly one question — **what will the next `run()` do?** It is derived from the entries on every read (`session.get_conversation_status(id)`) and never stored.
 
-Status derivation rules:
-- `AWAITING_APPROVAL` — an open-turn execution has `approval_status=PENDING`; resolve out-of-band, then call `run()`.
-- An execution with `approval_status=None` (crash mid-decide) → plain PENDING — `run()` self-heals by asking the registry again.
-- An orphaned `RUNNING` execution (crash mid-body) → plain PENDING — the next drive recovers it to `INTERRUPTED` (no re-dispatch) before doing anything else.
-- Open turn with an unconsumed `CancelRequested` → `CANCELLING` — the next drive is the flush.
-- Closed turn whose trailing `TurnFinish` is TIMED_OUT or ERRORED → PENDING (retry-ready).
-- A closed COMPACTION bracket (`ts_c cmp tf_c`) is transparent — skipped, repeatedly if several stack, and the leaf before it derives. Without it a failed compaction reads as retry-ready (a spin) and a completed one buries a queued user message. An *open* compaction bracket derives PENDING like any open turn.
+| | the next `run()` | post a message? |
+|---|---|---|
+| `IDLE` | nothing — there is no work | yes |
+| `BUSY` | work — the run can still be exhausted | no |
+| `BLOCKED` | stop again immediately; you must act first | no |
+| `CANCELLING` | flush the turn, not answer it | no |
+
+Derivation, in precedence order:
+- open turn with an unconsumed `CancelRequested` → `CANCELLING` — the next drive is the flush.
+- open turn with something runnable → `BUSY`. Runnable means: an orphaned `RUNNING` execution (the next drive recovers it to `INTERRUPTED`, no re-dispatch), or a `PENDING` execution whose `approval_status` is `None` (crash mid-decide — `run()` self-heals by asking again) or `ALLOWED` (dispatchable), or no nonterminal execution at all (the model can be called).
+- open turn with nothing runnable → `BLOCKED`. That is: only gated executions remain.
+- trailing `UserMessage` → `BUSY` (queued work).
+- anything else, INCLUDING a closed `TurnFinish` whatever its outcome → `IDLE`.
+- A closed COMPACTION bracket (`ts_c cmp tf_c`) is transparent — skipped, repeatedly if several stack, and the leaf before it derives; otherwise a completed one buries a queued user message. An *open* compaction bracket derives `BUSY` like any open turn.
+
+**The status says nothing about approvals.** A gate can belong to a subagent whose siblings are still working, so the conversation stays `BUSY` while `pending_approvals()` already returns that gate; only when nothing else can advance does it become `BLOCKED`. `BUSY` is also still true after a crash — "can be advanced" survives the process dying, so unlike the old `RUNNING` it needs no self-healing rule.
 
 A logical turn spans one `TurnStart`/`TurnFinish` bracket even across an approval pause. A `TurnStart` with no later `TurnFinish` means resume, not re-open.
 
-`post_message` requires a closed bracket and IDLE or PENDING status. It always rejects CANCELLING and AWAITING_APPROVAL — and an open compaction bracket, durably, until the compaction has been driven.
+`post_message` requires **IDLE**, and nothing else — the bracket check is implied. Two behaviors are deliberately gone with it: **a failed turn no longer auto-retries** (a closed bracket is IDLE whatever its outcome, so recovery means posting a new message rather than silently re-sending the identical request), and **message queueing is gone** (a trailing `UserMessage` derives BUSY, and BUSY rejects input — "let the user type while the agent works" is an application-level buffer that posts on the next IDLE).
 
 ### 12. Cancel is a pure signal
 
@@ -280,9 +300,11 @@ Every `ContextManager` method takes the live session first, so one argument orde
 def calculate_context(self, session, entry) -> int
 def prune_entry(self, session, entry) -> PrunedEntry          # NO framework call site
 def process_tool_output(self, session, execution, result) -> ExecutionResult
-def should_compact(self, session) -> bool                     # compaction — see below
-async def compact(self, session, nodes, entry) -> CompactionPlan | None
+def should_compact(self, session, conversation_id) -> bool    # compaction — see below
+async def compact(self, session, conversation_id, nodes, entry) -> CompactionPlan | None
 ```
+
+Only the compaction pair takes a `conversation_id`, and the split is a decision: `context_tokens` is intrinsic to the ENTRY and shared by every conversation referencing it, so the first two do not need one; `process_tool_output` does not either, because the execution it already receives carries `conversation_id`.
 
 `process_tool_output()` transforms a returned `ExecutionResult` before the terminal execution is constructed (identity by default) — the durable session, the `ToolExecuted` event, and the wire all see the processed output. It receives the `ToolExecution` IN TRANSITION (status still RUNNING, `result` not yet attached): read it for identity — `tool_spec`, `raw_tool_call.name`/`arguments` — never for outcome. That is what makes "truncate `bash` output at 30k characters but never truncate `read`" expressible.
 
@@ -298,14 +320,16 @@ The runner is constructed with one `ToolRegistry` (`luca/agent/core/tool_registr
 
 ```python
 class ToolRegistry:
-    async def get_tools(self, session) -> list[ToolSpec]: ...
-    async def create_execution(self, session, call) -> ToolExecution: ...
-    async def decide(self, session, tool_execution) -> ApprovalDecision: ...
-    async def prepare(self, session, tool_execution) -> PreparedTool: ...
+    async def get_tools(self, session, conversation_id) -> list[ToolSpec]: ...
+    async def create_execution(self, session, conversation_id, call) -> ToolExecution: ...
+    async def decide(self, session, conversation_id, tool_execution) -> ApprovalDecision: ...
+    async def prepare(self, session, conversation_id, tool_execution) -> PreparedTool: ...
 
 PreparedTool = Callable[..., Awaitable[ExecutionResult]]
 async def run(*, cancellation_token: CancellationToken) -> ExecutionResult: ...
 ```
+
+**Every seam takes the conversation as an ID, never the `Conversation` object.** A session holds several conversations advancing concurrently, so there is no "active" one to read behind the caller's back. The id is passed because `Conversation` is live and mutable (the runner appends to its `nodes` while application code holds it) and because every other cross-reference in the data model is already an id; resolve it with `session.conversations[conversation_id]` when the object is needed. This is what lets a registry answer differently per conversation — withholding a tool from a subagent, or keying its own state.
 
 - **`get_tools` is dynamic** — queried fresh per LLM call (the result may vary with session state); never a lifecycle hook. It returns `ToolSpec`s, so a registry backed by JSON Schema needs no Python class. An exception propagates and aborts the run; the runner never substitutes an empty tool list, because calling the model with no tools when the registry meant to offer some silently changes the answer.
 - **`create_execution` returns a birth DRAFT** with no identity (`id`/`created_at` are `None`). The registry owns the call-scoped facts: `raw_tool_call`, `tool_spec` (incl. `timeout_in_ms`; `None` if unresolved), the birth `status` (PENDING, or terminal-at-birth NOT_FOUND/INVALID/FAILED), the `error` for a terminal birth (the registry authors it), and `extras`. The RUNNER stamps `id`/`parent_id`/`created_at`/`ended_at`-if-terminal/`context_tokens`/`is_doom_loop_flagged`, so determinism principle 8 holds, and the LEDGER files the spec and stamps `tool_spec_id` — registries stay unaware of the storage scheme. If `create_execution` raises (or the registry is `None`), the runner synthesizes the draft itself (FAILED / NOT_FOUND) — failures stay isolated per call.
@@ -314,13 +338,13 @@ async def run(*, cancellation_token: CancellationToken) -> ExecutionResult: ...
 
 The arguments are easy to misuse in opposite directions. The **`AgentSession` is the LIVE object** — the same instance the runner and ledger write through — so a registry may hold it and re-read current state later, including from inside a prepared callable. The **`ToolExecution` is a SNAPSHOT**, detached as of the moment the call was made; the runner persists RUNNING and `started_at` AFTER `prepare()` returns, so a reference captured during `prepare()` is already stale. Capture what the callable needs during `prepare()`. And the session is **read-only to every implementation** — the runner owns every write, `session.tool_specs` included.
 
-The registry-author rules (`prepare()` must be re-callable and non-blocking, must not return holding a lock/lease/slot, must never swallow `asyncio.CancelledError`, blocking sync work belongs in `asyncio.to_thread`, and **the core never validates arguments** even though it now knows every schema) live in full in `tool_registry.py`'s module docstring. Every one of them fails silently when violated; read them before writing a registry.
+The registry-author rules (`prepare()` must be re-callable and non-blocking, must not return holding a lock/lease/slot, must never swallow `asyncio.CancelledError`, blocking sync work belongs in `asyncio.to_thread`, **the core never validates arguments** even though it now knows every schema, and **rule 13: be concurrency-safe** — one registry instance serves every conversation and the framework does NOT serialize these calls, so no per-call state on `self`, state keyed by `conversation_id` needs no lock, deliberately-shared state needs an `asyncio.Lock` around the mutation and never around the I/O) live in full in `tool_registry.py`'s module docstring. Every one of them fails silently when violated; read them before writing a registry.
 
 There is **no global permission gate anywhere**: each registry answers `decide()` for its own tools. Cross-cutting approval is an application composition pattern (share one strategy across registries), never a framework or plugin API concern.
 
 The engine has exactly **one** `decide()` call site — the top of its loop. Any open-turn execution that is undecided (`approval_status` is `None` or `PENDING`) is handed to the registry. Sibling undecided executions are decided concurrently via `asyncio.gather`. Each response both updates `approval_status` directly and appends to the `approval_decisions` audit log; a DENY is terminal on the spot (`status=REJECTED`, `ended_at` stamped, outcome middleware runs, `ToolExecuted(REJECTED)` emitted).
 
-A PENDING decision defers only THAT execution: every ALLOWED sibling proceeds to dispatch, and the runner parks (status → `AWAITING_APPROVAL`, `ApprovalRequired` as the final event) only after all currently runnable work has advanced. The model is never called again until every tool call in the assistant response has a terminal execution and a correlated tool output. Re-entering `run()` does not raise — it simply asks the registry again. `runner.pending_approvals()` returns the awaiting `ToolExecution` objects.
+A PENDING decision defers only THAT execution: every ALLOWED sibling proceeds to dispatch, and the runner parks (`ApprovalRequired` as the final event; the conversation then derives `BLOCKED`) only after all currently runnable work has advanced. The model is never called again until every tool call in the assistant response has a terminal execution and a correlated tool output. Re-entering `run()` does not raise — it simply asks the registry again. `runner.pending_approvals()` returns the awaiting `ToolExecution` objects.
 
 **Dispatch is PREPARE, then run** (per ready `PENDING`+`ALLOWED` execution, in order):
 
@@ -342,18 +366,18 @@ Three consequences worth stating separately:
 
 A call that is terminal at birth is persisted with a structured `error` and never reaches `decide()` (`approval_status` stays `None`); it still passes through the tool middleware pair.
 
-The batteries-included registries live in `luca/agent/contrib/simple_tool_registry/`: `SimpleToolRegistry(tools, permission_policy)` reproduces the classic preflight (resolve → validate → duck-typed `get_approval_context`, stored under `extras["approval_context"]`), delegates `decide()` to a `PermissionPolicy` (async `decide(session, tool_execution)`; `YoloPermissionPolicy` allows everything), and returns from `prepare()` a closure binding the validated arguments and the session; `ProxyToolRegistry(*registries)` composes registries (`get_tools` recomputes and caches a `{name → child}` route, duplicate names raise). The proxy's `decide` and `prepare` resolve INDEPENDENTLY of that cache, warming it once from the children on a miss — a call left pending approval by a previous process now resolves on a fresh one, is gated by its owning child, and dispatches. That is a correctness requirement, not a convenience: once `prepare()` can resolve without the cache, the old blanket ALLOW-on-cache-miss becomes a permission bypass on a cold resume. ALLOW on a genuinely unresolvable name STAYS — `prepare()` then raises `ToolNotFound` and the call records the honest NOT_FOUND, where DENY would record REJECTED for a tool that never existed. Everything richer — modes, rules, resource globs, answer-decoupled interactive approval, the `ResourcePermissionToolMixin` — lives in `luca/agent/contrib/resource_permissions/` and is driven interactively by `main.py`.
+The batteries-included registries live in `luca/agent/contrib/simple_tool_registry/`: `SimpleToolRegistry(tools, permission_policy)` reproduces the classic preflight (resolve → validate → duck-typed `get_approval_context`, stored under `extras["approval_context"]`), delegates `decide()` to a `PermissionPolicy` (async `decide(session, tool_execution)`; `YoloPermissionPolicy` allows everything), and returns from `prepare()` a closure binding the validated arguments and the session; `ProxyToolRegistry(*registries)` composes registries (`get_tools` recomputes and caches a `{name → child}` route PER CONVERSATION — a child may withhold a tool from a subagent, so one shared route would be wrong routing in both directions; duplicate names raise). The proxy's `decide` and `prepare` resolve INDEPENDENTLY of that cache, warming it once from the children on a miss — a call left pending approval by a previous process now resolves on a fresh one, is gated by its owning child, and dispatches. That is a correctness requirement, not a convenience: once `prepare()` can resolve without the cache, the old blanket ALLOW-on-cache-miss becomes a permission bypass on a cold resume. ALLOW on a genuinely unresolvable name STAYS — `prepare()` then raises `ToolNotFound` and the call records the honest NOT_FOUND, where DENY would record REJECTED for a tool that never existed. Everything richer — modes, rules, resource globs, answer-decoupled interactive approval, the `ResourcePermissionToolMixin` — lives in `luca/agent/contrib/resource_permissions/` and is driven interactively by `main.py`.
 
 ### Compaction
 
-Replacing the older span of a conversation with a summary of it. **Compaction opens a new conversation inside the same session** — it does not create a new session: add one entry, archive the current view, open a new one over the ids that survive. `conversation_history` keeps the exact pre-compaction path, every compacted entry stays in `entries`, and `CompactionEntry.compacted_nodes` records precisely which ids the summary replaced.
+Replacing the older span of a conversation with a summary of it. **Compaction opens a new conversation inside the same session** — it does not create a new session: add one entry, archive the current view, open a new one over the ids that survive. The archived conversation keeps the exact pre-compaction path as its own row in `conversations`, every compacted entry stays in `entries`, and `CompactionEntry.compacted_nodes` records precisely which ids the summary replaced.
 
 Compaction is the `ContextManager`'s other half (`luca/agent/core/context_manager.py`) — the same collaborator that counts context decides when there is too much of it. Two methods, and they own the whole decision:
 
 ```python
 class ContextManager:                                                  # …plus the three per-entry methods
-    def should_compact(self, session) -> bool: ...                     # SYNC — start() consults it at call time
-    async def compact(self, session, nodes, entry) -> CompactionPlan | None: ...
+    def should_compact(self, session, conversation_id) -> bool: ...    # SYNC — start() consults it at call time
+    async def compact(self, session, conversation_id, nodes, entry) -> CompactionPlan | None: ...
 ```
 
 The shipped default declines and raises, so compaction never happens unless the manager implements it. There is no "no policy configured" state to check — a manager always exists; `schedule_compaction()` therefore always writes its bracket, and a manager that only accounts surfaces `NotImplementedError` on the next drive (ERRORED bracket, raised to the caller like any USER-sourced failure).
@@ -371,17 +395,41 @@ The shipped default declines and raises, so compaction never happens unless the 
 
 Details in `docs/agent/12-compaction.md`. A ready-made implementation ships in `luca/agent/contrib/simple_context_manager/`: `SummarizingContextManager` (the context gauge + an LLM summary, `keep_turns` knob).
 
+### Subagents
+
+A subagent is a SECOND CONVERSATION in the same session, advancing at the same time as the main one and linked into its parent's path by a `ChildConversation` entry (the third mutable entry type: appended unresolved, gaining `execution_result` when the child's turn closes). The catalog is flat and holds no parent pointer — parent → child is the only direction anything traverses, which is exactly why `Conversation.depth` is stored.
+
+**The contract is a DECLARATION, never a tool name.** A tool whose `ToolSpec.output_schema` declares `is_subagent_spawn` is a spawn tool; a completed execution whose `structured_content["is_subagent_spawn"]` is True created one. The gate reads the declaration (before the model call, from the spec alone) and the handshake reads the value (after the call), which is what lets a spawn tool decide at runtime NOT to spawn while staying gated. A name match would have let a `delegate_work` tool spawn through the handshake and never be filtered — the depth cap would quietly stop existing.
+
+Three violations are refused loudly at child-creation time, all `AgentError`: a payload from a spec that never declared one, a spawn from a conversation at or past `subagents_max_depth`, and a payload missing a required field. The registry's `get_tools` gate is the first line and the runner's check is the second, because a registry resolves by NAME at dispatch: the cap has to mean something at the moment a child would appear, not only where tools are advertised.
+
+**Approvals are subtree-scoped.** `runner.pending_approvals(conversation_id=None)` returns every gated execution BENEATH that conversation, as a flat `list[ToolExecution]` — attribution is `execution.conversation_id`, and there is deliberately no wrapper type. Two ways to make a drive re-ask `decide()`: the next `run()` (which also restarts any framework-owned child parked at a gate) or `run.notify(execution)` from inside a live run. `run.approvals` is the stream that makes the second usable — a subagent can gate while its siblings keep working, so there is no between-drives moment to poll in. It is AT-LEAST-ONCE; consumers dedup.
+
+**Cancellation cascades downward and resolves upward.** `cancel()` on a conversation writes a `CancelRequested` for it and for every unresolved descendant, waits for the live drives to settle, and then resolves each still-unresolved link with a cancellation result WITHOUT running the result tool — an unresolved child on a CLOSED turn is unprojectable, so the parent would wedge otherwise. Cancelling one subagent leaves its siblings and its parent running.
+
+Two rules keep that from stranding anything, and both exist because `cancel()` is a SIGNAL that a DRIVE has to consume. **Cancelling a conversation always ends it**: an unresolved subagent with no bracket (spawned, never driven) gets one opened so the cancellation has something to close — otherwise the call is a silent no-op and the parent waits forever on a conversation nobody will drive. And **the parent's drive flushes a cancelled child whose own drive is gone** (`_flush_cancelled_children`, before `_resolve_children` and inside `_wind_down_async`) — it is the only conversation that knows the child exists. That flush is skipped while the parent itself has a pending cancel, because its own wind-down owns every link and resolves them without a result tool at all.
+
+**A child's failure never propagates.** Its turn closing is the whole signal, whatever the outcome: a child that errored, timed out or ran out of steps is a FINISHED child whose result says so.
+
+**What is shared is keyed, not locked.** One registry, one plugin, one permission strategy serve the whole tree. State keyed by `conversation_id` needs no lock (dispatch within one conversation is sequential); deliberately-shared state locks the mutation and never the I/O. `MemoryPlugin`'s stores and `shell`'s `FileReadTracker` are both keyed — for the tracker that is a safety property, since unkeyed, one subagent's read would satisfy another's read-before-write guard.
+
+**Middleware stays conversation-blind** (§12 of the PRD, accepted): no hook receives a `conversation_id`, so an application middleware written for a single conversation gets wrong behavior with no error. Nothing in `luca/` implements a hook, so this is a missing capability rather than a broken one.
+
+V0 limits, and the implementation may rely on them: `subagents_max_depth=1`, a subagent is never compaction-checked (bound it with `subagent_hard_max_steps` instead), and `post_message` is main-conversation only — the spawn prompt is the one and only user message a child ever receives.
+
 ### Tool identity
 
 `ToolSpec` (in `models.py`) is the core's ONLY tool type, and it serves two roles at once: the **advertisement** sent to the model (`name`, `description`, `input_schema`) and the **historical identity snapshot** attached to a past execution (`tool_kind`, `namespace`, `version`, `timeout_in_ms`). That conflation is a deliberate, accepted trade-off — normalization removed the storage cost that made it expensive, and having the exact schema the model was shown attached to the execution is what makes an old session auditable and replayable at all. The alternative (a thin history type and a fat wire type) was rejected: it reintroduces the split this design exists to remove and forces every registry to produce both.
 
 Nothing in a restored spec references a live class, an `Args` model, or anything importable — it is plain data, so a session whose tools were deleted from the codebase years ago still renders its `name`, `description`, `input_schema` and `tool_kind`. `input_schema` is required and never `None`, including for a tool that takes no arguments (that case is the empty object schema `{"type": "object", "properties": {}}` — an absent schema and an empty schema mean different things to a provider). `tool_kind` defaults to `OTHER`; the network-egress kind is `WEB_FETCH`. Invocation arguments are never here — they live on `ToolExecution.raw_tool_call`.
 
-`output_schema: dict | None` is a THIRD role, and neither of the two above: an optional declaration of the shape the tool can return in `ExecutionResult.structured_content`. It is application-facing — no provider accepts an output schema on a function tool, so `tool_spec_to_luca_tool` drops it like every other non-wire field, and nothing in the framework validates a payload against it. `structured_content` is likewise never projected (`content` stays the sole model-facing channel) and never counted by `calculate_context`. Both fields exist so an MCP-backed registry has somewhere to map `outputSchema` / `structuredContent`; the core reads neither. Note that `output_schema` participates in `spec_id()` like every other field — a tool that gains one is a new row.
+`is_private: bool` is the ONE exception to "the advertisement sent to the model": a private spec is returned by `get_tools()` and resolved, prepared and dispatched exactly like any other, but the runner omits it from the wire list and a model tool call naming it records `NOT_FOUND` rather than resolving. Its execution never projects as a `ToolMessage` (forced — no `ToolCall` for it exists on the path), and V0's projector renders it as nothing at all. It participates in `spec_id()` like every other field.
 
-`Tool` (in `luca/agent/contrib/tools.py`) is contrib: the ergonomic way to write a tool in Python, and the EXECUTION contract only. It declares `tool_kind`, `namespace`, `version` and `timeout_in_ms` as `ClassVar`s, and `get_tool_spec()` stamps them plus `input_schema=Args.model_json_schema()` into the snapshot. The optional `output_schema` ClassVar is derived the same way (`output_schema.model_json_schema()`, `None` when undeclared) — mind that the ClassVar is a model CLASS while `ToolSpec.output_schema` is the DICT, deliberately unlike `Args → input_schema`, which differ in name because they differ in type. Declaring it produces nothing: a tool that returns a payload overrides `execute()` and sets `structured_content` itself, since `_execute` is the `-> str` path. `tool()` / `tool_class()` take `output=` with the same two forms as `arguments=`, but only wire the text path — a factory-built tool can declare a schema and cannot populate a payload. `execute` / `_execute` receive the live `AgentSession` (read-only) and the keyword-only `CancellationToken`.
+`output_schema: dict | None` is a THIRD role, and neither of the two above: an optional declaration of the shape the tool can return in `ExecutionResult.structured_content`. It is application-facing — and, for a spawn tool, read by the runner's depth gate — but no provider accepts an output schema on a function tool, so `tool_spec_to_luca_tool` drops it like every other non-wire field, and nothing in the framework validates a payload against it. `structured_content` is likewise never projected (`content` stays the sole model-facing channel) and never counted by `calculate_context`. Both fields exist so an MCP-backed registry has somewhere to map `outputSchema` / `structuredContent`; the core reads neither. Note that `output_schema` participates in `spec_id()` like every other field — a tool that gains one is a new row.
 
-There is no `get_approval_context` on the base class — it is a duck-typed convention read by `SimpleToolRegistry` (`async get_approval_context(args, session) -> dict`, receiving the **validated** args; `resource_permissions.ResourcePermissionToolMixin` provides it). The core never mentions it. It is awaited inside `create_execution`, on the event loop and under no deadline, so blocking work belongs in `asyncio.to_thread` — which is exactly what the mixin does with its synchronous `build_permission_requests` override point, whose path stats would otherwise stall the run on a hung mount.
+`Tool` (in `luca/agent/contrib/tools.py`) is contrib: the ergonomic way to write a tool in Python, and the EXECUTION contract only. It declares `tool_kind`, `namespace`, `version`, `timeout_in_ms` and `is_private` as `ClassVar`s, and `get_tool_spec()` stamps them plus `input_schema=Args.model_json_schema()` into the snapshot. The optional `output_schema` ClassVar is derived the same way (`output_schema.model_json_schema()`, `None` when undeclared) — mind that the ClassVar is a model CLASS while `ToolSpec.output_schema` is the DICT, deliberately unlike `Args → input_schema`, which differ in name because they differ in type. Declaring it produces nothing: a tool that returns a payload overrides `execute()` and sets `structured_content` itself, since `_execute` is the `-> str` path. `tool()` / `tool_class()` take `output=` with the same two forms as `arguments=`, but only wire the text path — a factory-built tool can declare a schema and cannot populate a payload. `execute` / `_execute` receive the live `AgentSession` (read-only), the `conversation_id`, and the keyword-only `CancellationToken`.
+
+There is no `get_approval_context` on the base class — it is a duck-typed convention read by `SimpleToolRegistry` (`async get_approval_context(args, session, conversation_id) -> dict`, receiving the **validated** args; `resource_permissions.ResourcePermissionToolMixin` provides it). The core never mentions it. It is awaited inside `create_execution`, on the event loop and under no deadline, so blocking work belongs in `asyncio.to_thread` — which is exactly what the mixin does with its synchronous `build_permission_requests` override point, whose path stats would otherwise stall the run on a hung mount.
 
 ### Timeouts and step limits
 
@@ -402,6 +450,9 @@ All config rides on `SessionConfig.runtime_config` (a `RuntimeConfig`), which pe
 
 | Field | Effect |
 |-------|--------|
+| `subagents_enabled` | Master switch, default **False**. When off the registry withholds the spawn tool and the runner raises if one is returned anyway. |
+| `subagents_max_depth` | The depth cap, default **1** — a subagent cannot spawn subagents. The data model nests arbitrarily; this is the runtime limit, and the implementation may rely on it. |
+| `subagent_soft_max_steps` / `subagent_hard_max_steps` | Step limits for subagent conversations. `None` (the default) falls back to the main fields below — a different fact from `Inf` ("no limit"). These are what make an uncompacted subagent safe, since a child is never compaction-checked in V0. |
 | `hard_max_steps` | If `AssistantMessage` count in the open turn reaches this limit, the engine closes the turn `TurnOutcome.ERRORED` and returns (status → PENDING, retry-ready; no raise). |
 | `soft_max_steps` | When reached and `limit_tool_choice_on_soft_max_steps_reached` is True, the next LLM call gets `tool_choice="none"`, forcing a text-only response. |
 | `doom_loop_threshold` | When the same tool call (name + parameters) appears consecutively this many times in the current turn, `ToolExecution.is_doom_loop_flagged` is set True on the Nth occurrence. If `limit_tool_choice_on_doom_loop_flagged` is True, subsequent LLM calls in the same turn get `tool_choice="none"`. |
@@ -415,23 +466,23 @@ The runner takes no `system_prompt` string. Instead it takes `system_prompt_part
 - a `SystemPromptPart` (fields: `text`, `source`, `priority`);
 - a `str` → `SystemPromptPart(text=...)`;
 - a dict with `text` + optional `priority` / `source` → validated strictly;
-- a callable `(session_config, runtime_status) -> ` any of the above, invoked fresh before every LLM call.
+- a callable `(session, conversation_id) -> ` any of the above **or `None`** (meaning "contribute nothing"), invoked fresh before every LLM call.
 
 Static parts are coerced eagerly at construction (`coerce_system_prompt_part` — a bad part raises `TypeError`/`ValidationError` at `__init__`); callables resolve per call and their return value is coerced the same way.
 
 Before every LLM call, `build_system_message()`:
-1. Resolves the parts (callables get the live `SessionConfig` and the freshly computed `SessionRuntimeStatus`).
+1. Resolves the parts (callables get the live `AgentSession` and the id of the conversation the prompt is for; a `None` return is dropped).
 2. Sorts parts by `priority` (ascending).
 3. Assembles via `SystemPromptAssembler.assemble_system_prompt(parts) -> str`; if blank, sends no system message.
 
 The assembler is optional and duck-typed (concrete base, no ABC — override the one hook); `DefaultSystemPromptAssembler` newline-joins the part texts. A runner with no parts sends no system message.
 
-`SessionRuntimeStatus` (in `models.py`) carries:
+`ConversationRuntimeStatus` (in `models.py`) carries:
 - `step_count` — `AssistantMessage` count in the open turn.
-- `turn_count` — total `TurnStart` entry count.
-- `status` — current `ConversationStatus`.
+- `turn_count` — conversational `TurnStart` count on that path (compaction brackets excluded).
+- `status` — the derived `ConversationStatus`.
 
-It is always recomputed via `AgentSession.session_runtime_status` (a `@property`, not a serialized field).
+It is always recomputed via `AgentSession.get_conversation_status(conversation_id)` — the only door, and never a stored field.
 
 ### Reasoning durability
 
@@ -459,11 +510,11 @@ Subclass `Tool` from `luca.agent.contrib.tools` (in your application, or a contr
 
 - Set `name`, `description`, and `Args` (a Pydantic model — `get_tool_spec()` turns it into the `input_schema` the model is shown) as class vars.
 - Set `tool_kind` (a `ToolKind`; carried on the `ToolSpec` snapshot), and optionally `namespace` / `version` / `timeout_in_ms` (also snapshotted).
-- Override `async _execute(args, session, *, cancellation_token) -> str` for simple tools, or `async execute(args, session, *, cancellation_token) -> ExecutionResult` for rich output (`is_error`, `metadata`, multi-block). An `is_error=True` result still records `COMPLETED` — `is_error` is the tool's own verdict, not a lifecycle fact.
-- Both receive the LIVE `AgentSession` (read `session.id` / `session.session_config.llm_config`; treat it as READ-ONLY — the runner owns every write) plus the keyword-only `CancellationToken`. Per-run application state is not the framework's concern: a tool is application code and can close over its own references or read a `contextvars.ContextVar`.
+- Override `async _execute(args, session, conversation_id, *, cancellation_token) -> str` for simple tools, or `async execute(args, session, conversation_id, *, cancellation_token) -> ExecutionResult` for rich output (`is_error`, `metadata`, multi-block). An `is_error=True` result still records `COMPLETED` — `is_error` is the tool's own verdict, not a lifecycle fact.
+- Both receive the LIVE `AgentSession` (read `session.id` / `session.session_config.llm_config`; treat it as READ-ONLY — the runner owns every write), the `conversation_id` the call belongs to (key any per-conversation state by it — a tool instance is shared by every conversation), and the keyword-only `CancellationToken`. Per-run application state is not the framework's concern: a tool is application code and can close over its own references or read a `contextvars.ContextVar`.
 - `SimpleToolRegistry` validates LLM-produced arguments through `Args` at birth (for the birth status) and again in `prepare()` (for dispatch). Malformed args become a terminal `INVALID` execution with a structured `ToolExecutionError` and never reach `decide()`.
 - Timing is recorded by the runner on the execution (`started_at`/`ended_at`), never on the result. `timeout_in_ms` bounds the BODY only.
-- Define `async get_approval_context(args, session) -> dict` (the duck-typed convention) to describe the call for `SimpleToolRegistry`'s permission strategy.
+- Define `async get_approval_context(args, session, conversation_id) -> dict` (the duck-typed convention) to describe the call for `SimpleToolRegistry`'s permission strategy — "a subagent is asking for this" belongs here.
 - `tool()` / `tool_class()` build one from plain callables for runtime-constructed tools; subclassing stays the recommended mechanism.
 
 Wrap **instances** in a registry and pass that to the runner:
@@ -506,7 +557,10 @@ The handle owns lifecycle plumbing: `_begin_run`'s one-engine-at-a-time guard, t
 0. Unconsumed `CancelRequested` → `_wind_down` (also handles the parked flush).
 1. Undecided executions (`approval_status` None/PENDING) → `asyncio.gather` `_decide_one` over them; each races the WHOLE `_decide_with_middleware` step (hook → `tool_registry.decide()` → hook) against the token, and a lost race records nothing for that execution. Each surviving response updates `approval_status` + appends to the audit log; DENY → terminal `REJECTED` now (outcome pipeline + `ToolExecuted`).
 2. Ready executions (`PENDING`+`ALLOWED`) → `_dispatch_batch` (sequential by choice — the state model is parallel-ready; a token already tripped when an execution's turn comes up stops the batch, leaving it and its successors untouched for the wind-down).
-3. Any execution still `approval_status=PENDING` → cancel check, then park (`ApprovalRequired` last).
+2b. `_spawn_children`: a completed execution whose `structured_content` says `is_subagent_spawn` becomes a child conversation (seeded with the prompt) plus a `ChildConversation` link. Idempotent across a reload for free — the link IS the record that the spawn was handled. `_start_children` runs BEFORE the `SubagentsSpawned` yield, because a yield suspends the generator and `run.child(cid)` must resolve inside that event's branch.
+2c. `_resolve_children`: every child whose turn bracket has CLOSED — whatever the outcome — is turned into a result by the private result tool named in the payload, which lands on its link.
+3. Any execution still `approval_status=PENDING` → cancel check, then park (`ApprovalRequired` once), then `_await_subtree`.
+3c. Otherwise, if the open turn still has an unresolved child → `_await_subtree`. Both park sites obey ONE rule: **a drive returns only when nothing in its SUBTREE can advance**. A gated child with no subtree returns (its drive is gone; `notify()` or the next `run()` restarts it); a gated parent whose children still work waits — which is why `ApprovalRequired` is not terminal on a parent's stream.
 4. Step-limit / doom-loop checks → `build_tool_list()` (raced; a lost race skips the LLM call and returns to the loop top) → model call (reached only when every execution is terminal).
    - `hard_max_steps` reached → `_close_turn(ERRORED)` and return (no raise).
    - `soft_max_steps` reached, or a doom-loop-flagged execution exists → `tool_choice="none"`.
@@ -518,7 +572,9 @@ The handle owns lifecycle plumbing: `_begin_run`'s one-engine-at-a-time guard, t
 
 | Method | Responsibility |
 |--------|---------------|
-| `build_system_message` | Resolve `system_prompt_parts` (callables get `(session_config, runtime_status)`) → sort by priority → assemble; blank → no system message |
+| `resolve_tool_specs` | `get_tools()` for one conversation — the RUNTIME's view, private specs included |
+| `build_tool_list` | Those specs projected onto the WIRE: private ones dropped, the rest adapted, then the `build_tool_list` middleware hook. Synchronous |
+| `build_system_message` | Resolve `system_prompt_parts` (callables get `(session, conversation_id)`; `None` returns are dropped) → sort by priority → assemble; blank → no system message |
 | `build_messages` | Delegates to `conversation_projector.project()` — no middleware stage |
 | `_record_assistant` | Converts message to parts via `adapter.message_to_parts` |
 | `_create_executions` / `_birth_draft` | Set-oriented birth: gather `tool_registry.create_execution(session, deep-copied call)` per call (concurrent, each raced against the token INDIVIDUALLY — never the gather), then eager appends in call order — the runner re-stamps identity (`id`/`parent_id`/`created_at`/`ended_at`-if-terminal/`context_tokens`/`is_doom_loop_flagged`); a raising `create_execution` (or `None` registry) synthesizes the draft (`FAILED`/`NOT_FOUND`), a lost race synthesizes a PENDING one, isolated per call; terminal births run the outcome middleware pair |
@@ -570,8 +626,14 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_runner_projector.py` | The runner ↔ `ConversationProjector` seam: wire history, event/wire agreement, equality |
 | `tests/agent/test_runner_context.py` | The runner ↔ `ContextManager` seam: context stamping, middleware final say, processed tool output (session/event/wire agreement), prune-machinery composition, and `recalculate_context_tokens()` (every entry, archived and off-path included; construction changes nothing) |
 | `tests/agent/test_context_manager.py` | Default `ContextManager`: per-type context ownership, prune templates + refusals, identity tool-output, subclass overrides, model-aware counting, the non-membership of an entry during an append, and the compaction pair's base behavior (declines / raises) |
-| `tests/agent/test_runner_system_prompt.py` | `system_prompt_parts` forms (str / dict / part / callable) + assembler (callable parts receive `(session_config, runtime_status)`) |
+| `tests/agent/test_runner_system_prompt.py` | `system_prompt_parts` forms (str / dict / part / callable) + assembler (callable parts receive `(session, conversation_id)`) |
 | `tests/agent/test_runner_limits.py` | Hard/soft `max_steps`, doom-loop flagging, `tool_choice` restriction |
+| `tests/agent/test_private_tools.py` | `ToolSpec.is_private` end to end: the spec, the wire filter, the NOT_FOUND refusal of a guessed name, and the projection rules |
+| `tests/agent/test_runner_tree.py` | The `AgentRun` TREE as machinery: `children`/`child()`, event fan-in, the approvals stream, `notify()`, suspend cascading — no subagent tools |
+| `tests/agent/subagents/` | The end-to-end subagent stories (`test_spawn_handshake.py`, `test_parallel_and_control.py`): spawn, gate, parallelism, approvals, cancellation, resume — core + `contrib.subagents` only |
+| `tests/agent/contrib/test_subagents.py` | Self-scoped contrib tests: the two tools' specs and payloads, the gate predicate, the prompt part, the plugin surface — no runner |
+| `tests/agent/test_integration_full_stack.py` | ONE composed application (shell + memory + subagents + permissions, real tools, scripted transport) driven through every consumption form, ending in a declarative assertion over the whole catalog. A smoke test — it proves the pieces compose, not that any one is correct |
+| `tests/agent/test_child_conversation.py` | `ChildConversation` as pure DATA: projection (tagged synthetic user message; unresolved fails loud), context accounting, `pretty_print`, round-trip |
 | `tests/agent/test_models.py` | The data model as pure Pydantic: entry shapes and defaults, `ToolSpec.spec_id()` (stability, key-order independence, distinct ids for distinct content), tool-spec normalization end to end (one row per distinct spec, dump strips / load restores by reference, standalone execution dumps stay inline, both load guards raise) |
 | `tests/agent/test_ledger.py` | Entry-derived query matrix (status × approval subsets), the `record_usage` / `put_entry` / `transition_conversation` / `refresh_entry` doors, tool-spec filing at every door (one row per distinct spec, recompute-always, all three `transition_conversation` lists), `open_compaction_entry`, the derive-status skip matrix |
 | `tests/agent/test_compaction.py` | The compaction VOCABULARY as a unit: `validate_plan` (every rejection), `has_content`, `check_snapshot`, the plan value objects — no runner, no ledger, nothing async |
@@ -601,4 +663,5 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | Tool-spec storage (`spec_id`, the write doors, the load guards) | `luca/agent/core/models.py` + `luca/agent/core/ledger.py` + the "Tool identity" section above |
 | Run lifecycle (run/start, AgentRun, cancel, timeouts, outcomes) | `luca/agent/core/runner.py` + design principles 9, 11, and 12 above |
 | Compaction (policy contract, the plan, the transition, the guarantees) | `luca/agent/core/compaction.py` + the Compaction section above + `docs/agent/12-compaction.md` |
+| Subagents (the spawn contract, the tree of runs, the two loops) | `luca/agent/contrib/subagents/` + the Subagents section above + `docs/agent/13-subagents.md` |
 | Where does this responsibility belong | `runner.py`, `projection.py`, `adapter.py`, and their tests under `tests/agent/` |

@@ -7,12 +7,12 @@ drives it by polling its status and supplying input:
     while True:
         if runner.idle():
             runner.post_message(input("> "))
-        elif runner.awaiting_approval():
-            ...                                        # resolve on the registry
-        else:                                          # PENDING / CANCELLING
+        else:                                          # BUSY / BLOCKED / CANCELLING
             async with runner.run() as run:
                 async for event in run:                # render the event
                     ...
+            if runner.blocked():
+                ...                                    # resolve on the registry
 
 A run is created by one of two methods, both returning an `AgentRun` handle:
 
@@ -36,7 +36,14 @@ Each run advances the agent from its current status as far as it can, then
 stops at the next point that needs the user:
 
 - the turn completed (no more tool calls)            → status IDLE;
-- the registry left a call's approval PENDING        → status AWAITING_APPROVAL.
+- the registry left a call's approval PENDING        → status BLOCKED.
+
+Status is DERIVED from the entries on every read (`AgentSession.
+get_conversation_status`), never stored, and it is per CONVERSATION: a session
+holds a catalog of them (`AgentSession.conversations`), one of which the user is
+talking to (`main_conversation_id`) and the rest of which are subagents running
+in parallel beneath it. Everything below that names a conversation means that
+one; the runner's own predicates are about the main one.
 
 One logical *turn* (the agent's full response to a user message) is bracketed
 by a single `TurnStart` / `TurnFinish` (the finish carries the `TurnOutcome`),
@@ -61,7 +68,8 @@ touches tools through exactly four registry methods: `get_tools` (queried
 fresh per LLM call), `create_execution` (the birth draft — the runner stamps
 identity and appends), `decide` (approval), and `prepare` (resolution +
 validation, returning the callable that runs the body). All four are async,
-all four take the live session, and all four are raced against the run's
+all four take the live session and the conversation they are answering for, and
+all four are raced against the run's
 cancellation token, so no registry or tool-owned code can make `cancel()` a
 no-op. Because preparation is separate from the body, the durable `RUNNING`
 row is written only once `prepare()` has returned: `started_at` /
@@ -82,7 +90,7 @@ independent outcome: a decision updates `approval_status` and appends to the
 `approval_decisions` audit log (only PENDING may repeat; a resolved call is
 never re-asked), a DENY turns the execution `REJECTED` on the spot, and
 every ALLOWED sibling proceeds to dispatch even while another call sits
-deferred — the runner parks (`AWAITING_APPROVAL`) only after all currently
+deferred — the runner parks (`BLOCKED`) only after all currently
 runnable work has advanced, and it never calls the model again until every
 tool call in the preceding assistant response has a terminal execution and a
 correlated tool output.
@@ -111,6 +119,7 @@ import json
 import time
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -138,6 +147,7 @@ from .events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    SubagentsSpawned,
     TextBlock,
     TextDelta,
     TextStart,
@@ -161,11 +171,13 @@ from .models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    ChildConversation,
     CompactionEntry,
     CompactionSource,
     ContentPart,
     Conversation,
     ConversationStatus,
+    ExecutionResult,
     ExecutionStatus,
     Inf,
     LLMConfig,
@@ -176,10 +188,12 @@ from .models import (
     ToolCall,
     ToolExecution,
     ToolExecutionError,
+    ToolSpec,
     TurnFinish,
     TurnOutcome,
     TurnStart,
     UserMessage,
+    open_turn_unresolved_children,
 )
 from .projection import ConversationProjector, tool_message_text
 from .system_prompt import (
@@ -199,8 +213,9 @@ class RunResult(BaseModel):
 
     - Turn completed → `status=IDLE`, `outcome` COMPLETED (or CANCELLED for a
       wind-down).
-    - Approval pause → `status=AWAITING_APPROVAL`, `outcome=None`,
-      `pending_approvals` non-empty.
+    - Approval pause → `status=BLOCKED`, `outcome=None`, `pending_approvals`
+      non-empty. Subtree-scoped: a run whose SUBAGENT gated stops here too, and
+      `pending_approvals` names the conversation each gate came from.
     - Compaction-only drive → `status` from the new (or unchanged) path,
       `outcome` COMPLETED or CANCELLED. A caller that needs to tell "the agent
       answered" from "a compaction ran" reads `CompactionFinished`.
@@ -219,7 +234,7 @@ class RunResult(BaseModel):
 
     status: ConversationStatus  # derived where the run stopped
     outcome: TurnOutcome | None  # set iff a bracket closed during this run
-    pending_approvals: list[ToolExecution]  # non-empty iff AWAITING_APPROVAL
+    pending_approvals: list[ToolExecution]  # non-empty iff BLOCKED
 
 
 class AgentRun:
@@ -242,14 +257,44 @@ class AgentRun:
         self,
         runner: AgentSessionRunner,
         *,
+        conversation_id: str,
         streaming: bool,
         on_event: EventCallback | None,
         eager: bool,
+        autostart_subagents: bool = True,
+        parent: AgentRun | None = None,
     ) -> None:
         self._runner = runner
+        # Which conversation this handle drives. A run is per conversation, not
+        # per session: the engine, the cancellation token and the one-run guard
+        # are all scoped to it.
+        self.conversation_id = conversation_id
         self._streaming = streaming
         self._on_event = on_event
         self._eager = eager
+        # Who drives the subagents this run spawns. `True` (the default) hands
+        # the framework their lifecycle: each starts immediately, advances on
+        # its own, and forwards its events here. `False` hands the application
+        # a lazy handle per child and the obligation to drive or cancel every
+        # one — the parent's turn is blocked on them, so a child that is never
+        # driven blocks it forever.
+        self.autostart_subagents = autostart_subagents
+        self._parent = parent
+        self._children: dict[str, AgentRun] = {}
+        # Events forwarded from framework-driven children. Only populated when
+        # this run OWNS them: under `autostart_subagents=False` the application
+        # consumes each child handle directly, and forwarding here too would
+        # render every child event twice.
+        self._inbox: asyncio.Queue[AgentEvent] = asyncio.Queue()
+        self._own_step: asyncio.Task | None = None  # a held, not-yet-consumed pull
+        # Gates raised anywhere in this run's subtree, for `run.approvals`.
+        self._approvals: asyncio.Queue[ToolExecution | None] = asyncio.Queue()
+        self._approvals_closed = False
+        # Set whenever a child of this run ENDS. Distinct from `_wake` (the
+        # eager buffer's signal) because they answer different questions: this
+        # one says "the subtree changed shape", and without it a fan-in wait
+        # could block forever on an inbox nothing will fill again.
+        self._subtree_wake = asyncio.Event()
         self.result: RunResult | None = None
         self._exception: BaseException | None = None
         self._engine: AsyncIterator[AgentEvent] | None = None  # lazy engine
@@ -272,7 +317,7 @@ class AgentRun:
             loop = asyncio.get_running_loop()
             self._runner._begin_run(self)
             try:
-                self._runner._open_bracket_for_start()
+                self._runner._open_bracket_for_start(conversation_id)
             except BaseException:
                 # `_begin_run` has already taken the one-run guard, and the
                 # three sites that release it are all downstream of
@@ -283,6 +328,88 @@ class AgentRun:
                 raise
             self._task = loop.create_task(self._consume())
 
+    # ── the subtree ─────────────────────────────────────────────────────────
+
+    @property
+    def _framework_owned(self) -> bool:
+        """True when the FRAMEWORK, not the application, owns this run's
+        lifecycle — a child spawned under `autostart_subagents=True`. Only such
+        a run may be restarted out of band by `notify()`."""
+        return self._parent is not None and self._parent.autostart_subagents
+
+    @property
+    def children(self) -> dict[str, AgentRun]:
+        """The subagents this run spawned, by conversation id. Grows as spawns
+        land; a copy, so mutating it changes nothing."""
+        return dict(self._children)
+
+    def child(self, conversation_id: str) -> AgentRun | None:
+        """The handle for one conversation anywhere in this run's subtree, or
+        None. Handles come from the parent run — never from an event, which is
+        a serializable snapshot meant to be forwarded.
+
+        Under `autostart_subagents=False` this also MINTS: a run handle is
+        single-use, and a subagent's drive ends the moment its gate defers (see
+        `_await_subtree`), so a handle that already ran is replaced by a fresh
+        one, and an unresolved child of this conversation that this run never
+        spawned itself gets one too. Without that there is no door back to a
+        parked subagent — and the parent's turn stays open until every child
+        resolves, so the conversation would wedge. Under `True` the framework
+        owns those restarts (`notify()`, and the next `run()`), and this stays a
+        pure lookup."""
+        found = self._lookup(conversation_id)
+        if found is not None and not (found._exited or found._finished):
+            return found
+        if not self.autostart_subagents and conversation_id in self._runner._unresolved_child_ids(
+            self.conversation_id,
+        ):
+            fresh = AgentRun(
+                self._runner,
+                conversation_id=conversation_id,
+                streaming=self._streaming,
+                on_event=None,  # the application consumes this handle directly
+                eager=False,
+                autostart_subagents=False,
+                parent=self,
+            )
+            self._adopt(fresh)
+            return fresh
+        return found
+
+    def _lookup(self, conversation_id: str) -> AgentRun | None:
+        """Pure subtree lookup, finalized handles included. `child()` is the
+        door that may replace one."""
+        found = self._children.get(conversation_id)
+        if found is not None:
+            return found
+        for child in self._children.values():
+            found = child._lookup(conversation_id)
+            if found is not None:
+                return found
+        return None
+
+    def _adopt(self, child: AgentRun) -> None:
+        self._children[child.conversation_id] = child
+
+    def _redrive(self) -> None:
+        """Start a NEW drive on a handle whose previous one already ended.
+
+        For a parked child this is a restart, not a wake: that drive is gone,
+        so there is nothing to signal. It is legitimate precisely because
+        `autostart_subagents=True` handed the framework this child's lifecycle
+        — and it is why `False` needs no equivalent, since there the
+        application's own `drive(child)` returned and it already has control.
+        The buffer is cumulative across drives, so a consumer reading this
+        handle sees one continuous stream."""
+        if self._task is not None and not self._task.done():
+            return
+        self._finished = False
+        self._exception = None
+        # The previous drive closed this handle's approvals stream; a new drive
+        # can raise new gates, so it reopens.
+        self._approvals_closed = False
+        self._task = asyncio.get_running_loop().create_task(self._consume())
+
     # ── the three consumption forms ─────────────────────────────────────────
 
     def cancel(
@@ -290,9 +417,91 @@ class AgentRun:
         outcome: TurnOutcome = TurnOutcome.CANCELLED,
         error: str | None = None,
     ) -> None:
-        """Delegates verbatim to `runner.cancel()` — session-scoped: it
-        cancels the live TURN, whichever handle is driving it."""
-        self._runner.cancel(outcome, error)
+        """Cancel THIS run's conversation and cascade to every live subagent
+        beneath it. Cancelling one subagent leaves its siblings and its parent
+        running: the parent's `ChildConversation` still resolves, with a result
+        that reflects the cancellation."""
+        self._runner.cancel(outcome, error, conversation_id=self.conversation_id)
+
+    def cancel_drive(self) -> None:
+        """Park this run's background drive at its next step boundary WITHOUT
+        writing a `CancelRequested`.
+
+        This is suspension, not cancellation: nothing durable is recorded and
+        the bracket stays open and resumable. `cancel()` is the other thing —
+        it writes the durable request and closes the turn."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    def notify(self, execution: ToolExecution) -> None:
+        """Something changed out of band for this execution's conversation —
+        look again NOW.
+
+        NO DECISION TRAVELS THROUGH THIS. The answer still reaches the runner
+        through `decide()`, the engine's single call site; this says only
+        "something changed, re-ask". It is SYNC for the same reason `cancel()`
+        is: it is a signal, not work. Making it async would put the re-decision
+        on the CALLER's task, which would escape the cancellation race, race
+        the engine's own decide step for the same execution, and have nowhere
+        to emit the `ToolExecuted` a DENY produces.
+
+        `execution` is an ADDRESS: it resolves to `execution.conversation_id`,
+        which is exactly why that field exists and why this needs no
+        conversation argument. Ids, not object identity — events carry deep
+        snapshots, so the runner re-reads the live entry.
+
+        There is deliberately no `runner.notify()`: outside a run, the next
+        `run()` already re-asks every undecided execution."""
+        conversation_id = execution.conversation_id
+        if conversation_id is None:
+            raise AgentError(
+                "notify() needs an execution that carries a conversation_id; "
+                "the runner stamps one on every execution it creates."
+            )
+        self._runner._recheck.add(conversation_id)
+        self._runner._ensure_driven(conversation_id)
+
+    @property
+    def approvals(self) -> AsyncIterator[ToolExecution]:
+        """Gates raised DURING this run, as they are raised — subtree-scoped,
+        closing when the run ends.
+
+        It exists for one situation the polling loop cannot reach on its own: a
+        subagent gates while its siblings keep working, so the run does not
+        return and there is no between-drives moment to check
+        `pending_approvals()` in. The top-level run notifies its own gates plus
+        every subagent's; `run.child(cid).approvals` narrows to that subtree.
+
+        The element type is `ToolExecution` — the same objects
+        `pending_approvals()` returns, attributed by `execution.conversation_id`.
+        There is no request wrapper.
+
+        AT-LEAST-ONCE. `strategy.apply_answer` writes to the strategy, not to
+        the execution, so `approval_status` stays PENDING until a drive re-asks
+        `decide()` — and `notify()` deliberately causes another pass. Consumers
+        must dedup."""
+        return self._drain_approvals()
+
+    async def _drain_approvals(self) -> AsyncIterator[ToolExecution]:
+        while True:
+            execution = await self._approvals.get()
+            if execution is None:  # the run ended
+                return
+            yield execution
+
+    def _publish_approval(self, execution: ToolExecution) -> None:
+        """Put a gate on this run's stream and on every ancestor's, so a root
+        handle sees its whole subtree's gates."""
+        run: AgentRun | None = self
+        while run is not None:
+            if not run._approvals_closed:
+                run._approvals.put_nowait(execution)
+            run = run._parent
+
+    def _close_approvals(self) -> None:
+        if not self._approvals_closed:
+            self._approvals_closed = True
+            self._approvals.put_nowait(None)
 
     def __await__(self):
         return self._wait().__await__()
@@ -309,12 +518,17 @@ class AgentRun:
             await self._finalize_eager(swallow_failure=exc_type is not None)
             return False
         # Lazy: suspend — close the engine exactly where it is (never advance
-        # it), re-derive the status, finalize the handle. No entry is written.
+        # it) and finalize the handle. No entry is written, and there is no
+        # status to re-derive: status is a pure function of the entries.
         if self._engine is not None and not self._finished:
             self._finished = True
-            await self._engine.aclose()
-            self._runner._refresh_status()
+            await self._close_engine()
             self._runner._end_run(self)
+            self._close_approvals()
+        # Suspension cascades: a parked parent parks its subagents too, each at
+        # its own next step boundary.
+        for child in self._children.values():
+            child.cancel_drive()
         return False
 
     def __aiter__(self) -> AgentRun:
@@ -332,8 +546,18 @@ class AgentRun:
     # ── lazy: the iterator IS the engine ────────────────────────────────────
 
     async def _pump(self) -> AgentEvent:
-        """Advance the lazy engine one event (first drive creates it),
-        delivering the event to `on_event`."""
+        """Advance the lazy run one event, delivering it to `on_event`.
+
+        THE STREAM IS THE TREE'S. This run's own drive and its framework-driven
+        subagents produce events concurrently, so a pull races the two: one
+        step of the own engine against whatever a child has already forwarded.
+        Whichever lands first is yielded, and a pending own-step is HELD for
+        the next pull rather than discarded — an engine step is a whole LLM
+        call, and dropping one would lose its event.
+
+        Iteration still gates this run's own drive, exactly as before. What it
+        no longer gates is the subagents: they are background tasks and advance
+        whether or not anyone pulls."""
         if self._exception is not None:
             raise self._exception
         if self._exited and self.result is None:
@@ -345,21 +569,23 @@ class AgentRun:
         if self._engine is None:
             self._runner._begin_run(self)  # raises on IDLE / concurrent run
             self._engine = self._runner._drive(
+                self.conversation_id,
                 streaming=self._streaming,
                 token=self._token,
             )
         try:
-            event = await self._engine.__anext__()
+            event = await self._next_own_or_forwarded()
         except StopAsyncIteration:
             self._finished = True
-            self.result = self._runner._build_run_result()
+            self.result = self._runner._build_run_result(self.conversation_id)
             self._runner._end_run(self)
+            self._close_approvals()
             raise
         except BaseException as exc:  # engine raised (incl. external cancel)
             self._finished = True
             self._exception = exc
-            self._runner._refresh_status()
             self._runner._end_run(self)
+            self._close_approvals()
             raise
         try:
             await self._deliver(event)
@@ -368,11 +594,84 @@ class AgentRun:
             # leave the bracket open (resumable), propagate.
             self._finished = True
             self._exception = exc
-            await self._engine.aclose()
-            self._runner._refresh_status()
+            await self._close_engine()
             self._runner._end_run(self)
+            self._close_approvals()
             raise
         return event
+
+    async def _next_own_or_forwarded(self) -> AgentEvent:
+        """One event from this run's own engine or from a child, whichever is
+        ready first.
+
+        Terminates only when the whole SUBTREE is settled: the own engine
+        exhausted AND no child still running AND the inbox drained. That is
+        what makes `ApprovalRequired` non-terminal on a parent's stream — a
+        subagent gating cannot end a run while a sibling is still working.
+
+        A pending own-step is HELD, never discarded: an engine step is a whole
+        LLM call, and cancelling one to take a child's event would lose it.
+        `asyncio.Queue.get()` is the opposite — cancelling a pending get
+        consumes nothing — so the inbox getter is the one that is torn down."""
+        while True:
+            if not self._inbox.empty():
+                return self._inbox.get_nowait()
+            if self._own_step is None and self._engine is not None:
+                self._own_step = asyncio.ensure_future(self._engine.__anext__())
+
+            waiters: set[asyncio.Future] = set()
+            if self._own_step is not None:
+                waiters.add(self._own_step)
+            forwarded: asyncio.Future | None = None
+            settled: asyncio.Future | None = None
+            if self._live_children():
+                self._subtree_wake.clear()
+                if not self._inbox.empty():
+                    return self._inbox.get_nowait()
+                forwarded = asyncio.ensure_future(self._inbox.get())
+                # A child ENDING is also progress: without this the wait could
+                # block forever on an inbox nothing will ever fill again.
+                settled = asyncio.ensure_future(self._subtree_wake.wait())
+                waiters |= {forwarded, settled}
+            if not waiters:
+                raise StopAsyncIteration
+
+            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            for helper in (forwarded, settled):
+                if helper is not None and helper not in done:
+                    await _cancel_quietly(helper)
+
+            if forwarded is not None and forwarded in done:
+                if settled is not None and settled in done:
+                    await _cancel_quietly(settled)
+                return forwarded.result()
+            if self._own_step is not None and self._own_step in done:
+                step, self._own_step = self._own_step, None
+                try:
+                    return step.result()
+                except StopAsyncIteration:
+                    self._engine = None
+                    if self._live_children() or not self._inbox.empty():
+                        continue  # the subtree is still going
+                    raise
+            # only `settled` fired: a child ended. Loop and re-evaluate.
+
+    def _live_children(self) -> bool:
+        return any(child._task is not None and not child._task.done() for child in self._children.values())
+
+    async def _close_engine(self) -> None:
+        """Tear the engine down, held step first.
+
+        The fan-in may be holding a started-but-unconsumed `__anext__`, and
+        `aclose()` on a generator with a pending step raises. Killing the step
+        is also what unwinds the drive: the generator's `finally` blocks run,
+        so nothing is left half-open."""
+        if self._own_step is not None:
+            step, self._own_step = self._own_step, None
+            await _cancel_quietly(step)
+        if self._engine is not None:
+            engine, self._engine = self._engine, None
+            await engine.aclose()
 
     async def _wait(self) -> RunResult:
         if self._eager:
@@ -393,32 +692,51 @@ class AgentRun:
         `on_event` per event. Runs to the stopping point regardless of
         observation; a slow iterator never stalls the agent (a slow *callback*
         does — it is the app's own hook, awaited inline)."""
-        engine = self._runner._drive(
+        self._engine = self._runner._drive(
+            self.conversation_id,
             streaming=self._streaming,
             token=self._token,
         )
         try:
             while True:
                 try:
-                    event = await engine.__anext__()
+                    event = await self._next_own_or_forwarded()
                 except StopAsyncIteration:
                     break
                 self._buffer.append(event)
                 self._wake.set()
+                self._forward(event)
                 await self._deliver(event)
-            self.result = self._runner._build_run_result()
+            self.result = self._runner._build_run_result(self.conversation_id)
             return self.result
         except BaseException as exc:
             self._exception = exc
-            self._runner._refresh_status()
             raise
         finally:
             self._finished = True
             self._wake.set()
             try:
-                await engine.aclose()  # no-op unless on_event/cancel left it open
+                await self._close_engine()  # no-op unless on_event/cancel left it open
             finally:
                 self._runner._end_run(self)  # guard released after teardown
+                self._close_approvals()
+                if self._parent is not None:
+                    # Two different sleepers, and both have to be woken. The
+                    # parent's FAN-IN may be waiting for another event; the
+                    # parent's DRIVE may be blocked on this very child.
+                    self._parent._subtree_wake.set()
+                    self._parent._wake.set()
+                    self._runner._ensure_driven(self._parent.conversation_id)
+
+    def _forward(self, event: AgentEvent) -> None:
+        """Push one of THIS run's events onto its parent's inbox.
+
+        Forwarding follows OWNERSHIP: only a framework-driven child forwards.
+        Under `autostart_subagents=False` the application consumes each child
+        handle itself, and forwarding here as well would deliver every child
+        event twice — once on the parent's stream and once on the child's."""
+        if self._framework_owned:
+            self._parent._inbox.put_nowait(event)
 
     async def _next_buffered(self) -> AgentEvent:
         while True:
@@ -481,6 +799,10 @@ class AgentSessionRunner:
     parts + assembler (see `system_prompt.py`), and the id/clock hooks;
     mutates the session in place (through its `SessionLedger`)."""
 
+    #: What an unresolved subagent's result says when its parent was cancelled.
+    #: Class-level so an application can change it without touching the runner.
+    CANCELLED_SUBAGENT_TEXT: ClassVar[str] = "[subagent cancelled]"
+
     @classmethod
     def new_session(
         cls,
@@ -492,16 +814,20 @@ class AgentSessionRunner:
         """Build a fresh, empty `IDLE` session. The first user message is added
         later via `post_message`."""
         session_id = session_id or uuid4().hex[:8]
+        conversation_id = conversation_id or uuid4().hex[:8]
         ts = _now_ms()
         return AgentSession(
             id=session_id,
-            active_conversation=Conversation(
-                id=conversation_id or uuid4().hex[:8],
-                nodes=[],
-                created_at=ts,
-                updated_at=ts,
-                status=ConversationStatus.IDLE,
-            ),
+            conversations={
+                conversation_id: Conversation(
+                    id=conversation_id,
+                    nodes=[],
+                    created_at=ts,
+                    updated_at=ts,
+                    depth=0,
+                ),
+            },
+            main_conversation_id=conversation_id,
             session_config=SessionConfig(
                 llm_config=llm_config,
                 runtime_config=runtime_config or RuntimeConfig(),
@@ -544,23 +870,42 @@ class AgentSessionRunner:
         self.provider = provider
         self.middleware = list(middleware or [])
         self.ledger = SessionLedger(session, self.now_ms, self.generate_id)
-        self._active_run: AgentRun | None = None  # first-drive → finalization
-        # Per-run state, reset in `_begin_run`. `_closed_outcome` is how the
-        # LAST bracket this run closed ended — carried rather than re-read
-        # from the path, because after a compaction the closing marker is on
-        # the archived conversation. The two flags belong to the compaction
-        # step: whether it consumed a cancellation (the drive must then stop
-        # without answering the queued turn) and whether it did anything at
-        # all (only then may a re-derived IDLE end the drive).
-        self._closed_outcome: TurnOutcome | None = None
-        self._compaction_consumed_cancel = False
-        self._compaction_ran = False
+        # ── runtime-only, never serialized (the same class of state as a
+        # `CancellationToken`) ────────────────────────────────────────────────
+        # One live run per CONVERSATION, not one per session: the main
+        # conversation and every subagent advance at the same time.
+        self._runs: dict[str, AgentRun] = {}
+        # A live drive's wake, per conversation. Present iff a drive is
+        # currently inside its loop and able to be woken.
+        self._wakes: dict[str, asyncio.Event] = {}
+        # Conversations with an unconsumed "look again" from `run.notify()`.
+        # CONVERSATION ids, not execution ids: once a drive is woken its decide
+        # step re-asks every undecided execution in the open turn anyway, and
+        # `decide()` is contractually an idempotent query, so gated siblings are
+        # re-asked for free. A per-execution dirty set would be a second,
+        # narrower decide path alongside the one the loop already has.
+        # Never serialized: on a cold load the next `run()` re-asks everything
+        # undecided, so there is nothing to persist, and a stale id left behind
+        # is harmless — waking a conversation with nothing undecided is a no-op.
+        self._recheck: set[str] = set()
+        # Per-DRIVE state, keyed by conversation and reset in `_begin_run`.
+        # Keyed rather than plain attributes because several drives run at
+        # once: a plain attribute would belong to whichever conversation wrote
+        # it last, which is the silent failure §3.4's rule 1 is about.
+        #
+        # `_closed_outcomes` is how the LAST bracket a run closed ended —
+        # carried rather than re-read from the path, because after a compaction
+        # the closing marker is on the archived conversation. The two flag sets
+        # belong to the compaction step: whether it consumed a cancellation
+        # (the drive must then stop without answering the queued turn) and
+        # whether it did anything at all (only then may a re-derived IDLE end
+        # the drive).
+        self._closed_outcomes: dict[str, TurnOutcome | None] = {}
+        self._compaction_cancelled: set[str] = set()
+        self._compaction_did_run: set[str] = set()
 
-        # Status is a denormalized cache of the entry state — re-derive it from
-        # the entries when taking ownership of a (possibly loaded) session so a
-        # stale RUNNING / drifted status self-heals.
-        self.session.active_conversation.status = self.ledger.derive_status()
-
+        # Nothing to normalize on load: status is derived from the entries on
+        # every read, so a reloaded session cannot carry a stale one.
         rc = session.session_config.runtime_config
         if rc.soft_max_steps > 0 and rc.hard_max_steps > 0 and rc.soft_max_steps == rc.hard_max_steps:
             warnings.warn(
@@ -610,62 +955,80 @@ class AgentSessionRunner:
         comes from here; override (subclass or mock) to freeze time."""
         return _now_ms()
 
-    # ── status predicates ──────────────────────────────────────────────────
+    # ── status predicates (the MAIN conversation) ──────────────────────────
+    #
+    # All four answer for the main conversation, which is what a caller driving
+    # the session asks about. A subagent's status is
+    # `session.get_conversation_status(conversation_id)` — the one door — and
+    # the runner deliberately offers no second way to reach it.
+
+    @property
+    def main_conversation_id(self) -> str:
+        return self.session.main_conversation_id
 
     @property
     def status(self) -> ConversationStatus:
-        return self.session.active_conversation.status
+        """The main conversation's DERIVED status. Recomputed on every read;
+        nothing caches it."""
+        return self.session.get_conversation_status(self.main_conversation_id).status
 
     def idle(self) -> bool:
+        """Nothing to do — the only state `post_message` accepts."""
         return self.status == ConversationStatus.IDLE
 
-    def pending(self) -> bool:
-        return self.status == ConversationStatus.PENDING
+    def busy(self) -> bool:
+        """There is work; a run can still be exhausted."""
+        return self.status == ConversationStatus.BUSY
 
-    def running(self) -> bool:
-        return self.status == ConversationStatus.RUNNING
-
-    def awaiting_approval(self) -> bool:
-        return self.status == ConversationStatus.AWAITING_APPROVAL
+    def blocked(self) -> bool:
+        """Nothing can advance — you must act first (usually: answer a gate)."""
+        return self.status == ConversationStatus.BLOCKED
 
     def cancelling(self) -> bool:
+        """An unconsumed cancel; the next drive is the flush."""
         return self.status == ConversationStatus.CANCELLING
 
     # ── caller-facing mutations / queries ────────────────────────────────────
 
     def post_message(self, content: str | list[ContentPart]) -> str:
-        """Append a user message and arm the runner. Legal when the bracket is
-        CLOSED and the status is IDLE or PENDING: a fresh/finished session,
-        after a failed turn (add or clarify before the retry), or behind an
-        already-queued message (queueing — consecutive user messages are an
-        established shape). An open turn — CANCELLING, AWAITING_APPROVAL, or a
-        resumable bracket — always rejects, and so does an open COMPACTION
-        bracket: a scheduled or in-flight compaction must be driven before the
-        session takes new input, durably, across a reload.
+        """Append a user message to the MAIN conversation. Legal when it is
+        IDLE, and in no other state.
+
+        `IDLE` is exactly "there is no work", so the one status answers the
+        whole question — no separate bracket check. An open turn derives
+        `BUSY` / `BLOCKED` / `CANCELLING` and rejects; so does an open
+        COMPACTION bracket, durably and across a reload, since a scheduled or
+        in-flight compaction must be driven before the session takes new input.
+
+        Two things this deliberately no longer allows. A trailing user message
+        derives `BUSY`, so a second one cannot be QUEUED behind it — "let the
+        user type while the agent works" is an application-level input buffer
+        that posts on the next `IDLE`, not a fact the session represents. And a
+        failed turn derives `IDLE` rather than retry-ready, so recovering from
+        one means posting a new message rather than silently re-sending the
+        identical request.
+
+        Only the main conversation ever takes input: a subagent's seed prompt
+        is written by the spawn handshake and nothing else appends to it.
 
         `content` is a bare string (the common case) or an ordered list of
         parts mixing text and images; `before_post_message` sees that list and
         returns the one that is persisted."""
-        if (
-            self.status not in (ConversationStatus.IDLE, ConversationStatus.PENDING)
-            or self.ledger.open_turn_index() is not None
-        ):
-            raise AgentError(
-                f"post_message requires a closed turn and IDLE/PENDING status (status={self.status.value})."
-            )
+        if not self.idle():
+            raise AgentError(f"post_message requires an IDLE conversation (status={self.status.value}).")
         parts = self._run_middlewares(
             "before_post_message",
             _normalize_post_parts(content),
         )
         message = self._append(
+            self.main_conversation_id,
             lambda entry_id, parent_id, ts: UserMessage(
                 id=entry_id,
                 parent_id=parent_id,
                 created_at=ts,
                 parts=parts,
-            )
+            ),
         )
-        self._set_status(ConversationStatus.PENDING)
         return message.id
 
     def schedule_compaction(self) -> str:
@@ -680,13 +1043,13 @@ class AgentSessionRunner:
 
         The intent is therefore DURABLE: a process that dies before the drive
         leaves a session that still knows a compaction was asked for, and an
-        open bracket already derives PENDING ("work is queued, call run()").
+        open bracket already derives BUSY ("work is queued, call run()").
         The price is that `post_message` — which requires a closed bracket —
         raises until that drive has run, across a reload; this is exactly the
         treatment every other open bracket already gets.
 
         Requires a CLOSED bracket. An open conversational turn (a resumable
-        bracket, AWAITING_APPROVAL, CANCELLING) raises `AgentError`: the
+        bracket, BLOCKED, CANCELLING) raises `AgentError`: the
         appended `TurnStart` would nest inside it, and `open_turn_index()`
         walks back to the NEAREST one, so the open turn's eventual
         `TurnFinish` would silently close the wrong bracket.
@@ -696,29 +1059,47 @@ class AgentSessionRunner:
         that only accounts reaches the base `compact()` on the next drive, and
         its `NotImplementedError` closes the bracket ERRORED and propagates out
         of `run()` (this is a USER-sourced compaction; see `_run_compaction`)."""
-        existing = self.ledger.open_compaction_entry()
+        main = self.main_conversation_id
+        existing = self.ledger.open_compaction_entry(main)
         if existing is not None:
             return existing.id  # idempotent — nothing is written
-        if self.ledger.open_turn_index() is not None:
+        if self.ledger.open_turn_index(main) is not None:
             raise AgentError(f"schedule_compaction requires a closed turn (status={self.status.value}).")
-        entry = self._open_compaction_bracket(CompactionSource.USER)
-        self._set_status(ConversationStatus.PENDING)
+        entry = self._open_compaction_bracket(main, CompactionSource.USER)
         return entry.id
 
-    def pending_approvals(self) -> list[ToolExecution]:
+    def pending_approvals(self, conversation_id: str | None = None) -> list[ToolExecution]:
         """The open turn's executions awaiting an out-of-band approval — those
         whose `approval_status` is PENDING. Each is self-contained
         (`raw_tool_call` + whatever the registry recorded in `extras`);
         resolve them on the registry's own state, then call `run()` again (it
-        asks the registry again — no posting back through the runner)."""
-        return self.ledger.open_turn_awaiting_executions()
+        asks the registry again — no posting back through the runner).
+
+        SUBTREE-SCOPED: asking a conversation returns every gated execution
+        BENEATH it, which is how a subagent's request reaches the main
+        conversation's caller while the parent is still BUSY and the subagent's
+        siblings keep working. Everything you ask a conversation is about its
+        subtree.
+
+        The element type does not change — a flat `list[ToolExecution]`
+        spanning several conversations is still attributable, because each
+        carries its own `conversation_id`. That is what lets an interactive
+        application say "subagent B is asking" without any wrapper type."""
+        root = conversation_id or self.main_conversation_id
+        awaiting = list(self.ledger.open_turn_awaiting_executions(root))
+        for child_id in self._unresolved_child_ids(root):
+            if child_id in self.session.conversations:
+                awaiting.extend(self.pending_approvals(child_id))
+        return awaiting
 
     def cancel(
         self,
         outcome: TurnOutcome = TurnOutcome.CANCELLED,
         error: str | None = None,
+        *,
+        conversation_id: str | None = None,
     ) -> None:
-        """The universal cancellation door — synchronous, session-scoped
+        """The universal cancellation door — synchronous, conversation-scoped
         ("cancel the turn, not the handle"), works in every state. Exactly
         three behaviors:
 
@@ -738,26 +1119,81 @@ class AgentSessionRunner:
            outcome/error stand).
         3. No open turn → no-op (nothing to cancel; `start()` opens the
            bracket at call time, so a started run is always cancellable —
-           this branch is an undriven lazy handle, or no run at all)."""
-        if self.ledger.open_turn_index() is None:
-            return
-        if self.ledger.open_turn_cancel_requested() is not None:
+           this branch is an undriven lazy handle, or no run at all).
+
+        ONE EXCEPTION to 3, and it is what makes "cancel a subagent" mean
+        something: an unresolved SUBAGENT with no bracket (spawned, never
+        driven) gets one opened here, so the cancellation has something to
+        close. Without it the call would be a silent no-op and the parent —
+        whose turn cannot end until that child resolves — would wait forever
+        for a conversation nobody is ever going to drive."""
+        target = conversation_id or self.main_conversation_id
+        if self.ledger.open_turn_index(target) is None:
+            if self._link_for(target) is None:
+                return
+            self._ensure_open_turn(target)
+        if self.ledger.open_turn_cancel_requested(target) is not None:
             raise AlreadyCancellingError(
                 "a cancellation is already pending for the open turn; the first request's outcome/error stand"
             )
         self._append(
+            target,
             lambda entry_id, parent_id, ts: CancelRequested(
                 id=entry_id,
                 parent_id=parent_id,
                 created_at=ts,
                 outcome=outcome,
                 error=error,
-            )
+            ),
         )
-        run = self._active_run
+        run = self._runs.get(target)
         if run is not None and run._token is not None:
             run._token.cancel()
-        self._set_status(ConversationStatus.CANCELLING)
+        self._cascade_cancel(target, outcome, error)
+
+    def _cascade_cancel(
+        self,
+        conversation_id: str,
+        outcome: TurnOutcome,
+        error: str | None,
+    ) -> None:
+        """Cancel every live descendant of `conversation_id`.
+
+        Cancelling a conversation cancels the WORK it is waiting on, and a
+        parent blocked on its children is waiting on them. The cascade must
+        tolerate a child that is already cancelling — cancelling one subagent
+        and then the whole tree is a normal sequence, not an error — so
+        `AlreadyCancellingError` is swallowed here, and only the caller's own
+        direct request can raise it."""
+        for child_id in self._unresolved_child_ids(conversation_id):
+            with contextlib.suppress(AlreadyCancellingError):
+                self.cancel(outcome, error, conversation_id=child_id)
+
+    def _link_for(self, child_id: str) -> ChildConversation | None:
+        """The unresolved `ChildConversation` naming this conversation, if it is
+        somebody's subagent. Child → parent is not a link the data model
+        carries (parent → child is the only direction anything traverses), so
+        this scans; it is only ever called on a cancellation."""
+        for conversation in self.session.conversations.values():
+            for node_id in conversation.nodes:
+                entry = self.session.entries.get(node_id)
+                if (
+                    isinstance(entry, ChildConversation)
+                    and entry.conversation_id == child_id
+                    and entry.execution_result is None
+                ):
+                    return entry
+        return None
+
+    def _unresolved_child_ids(self, conversation_id: str) -> list[str]:
+        """The conversations spawned by `conversation_id`'s open turn that have
+        not yet produced a result."""
+        entries = self.session.entries
+        return [
+            entry.conversation_id
+            for node_id in self.ledger.conversation(conversation_id).nodes
+            if isinstance(entry := entries.get(node_id), ChildConversation) and entry.execution_result is None
+        ]
 
     # ── the two run methods ──────────────────────────────────────────────────
 
@@ -766,16 +1202,38 @@ class AgentSessionRunner:
         *,
         streaming: bool = False,
         on_event: EventCallback | None = None,
+        autostart_subagents: bool = True,
     ) -> AgentRun:
         """Lazy: nothing happens until awaited or iterated; stopping iteration
         stops the agent.
+
+        `autostart_subagents=True` (the default) has the FRAMEWORK drive every
+        subagent this run spawns: each begins immediately, advances on its own
+        whatever mode the parent is in, and its events arrive on this stream
+        tagged with their conversation. Iteration therefore stops gating all
+        work — your pull rate controls this conversation's drive and the
+        delivery of events, but the subagents progress regardless. Suspension
+        still cascades: leaving the context manager parks every child at its
+        next step boundary.
+
+        `False` hands you a lazy, unstarted handle per child (`run.child(cid)`,
+        announced by `SubagentsSpawned`) and the obligation that comes with it:
+        the turn is blocked on its children, so every spawn must be driven or
+        cancelled or it blocks forever.
 
         Creating (and discarding) the handle is harmless — no work, no
         validation; the IDLE/concurrent-run guards fire at first drive.
         `streaming` selects the event vocabulary only (block events vs block +
         delta events). Events reach `on_event` even when the run is only
         awaited; without it, an awaited run discards them."""
-        return AgentRun(self, streaming=streaming, on_event=on_event, eager=False)
+        return AgentRun(
+            self,
+            conversation_id=self.session.main_conversation_id,
+            streaming=streaming,
+            on_event=on_event,
+            eager=False,
+            autostart_subagents=autostart_subagents,
+        )
 
     def start(
         self,
@@ -792,52 +1250,153 @@ class AgentSessionRunner:
         spawns one background `asyncio.Task` (requires a running loop,
         resolved before any state is taken). Events are buffered
         regardless of observation — a late first consumer sees the full
-        history from event 0 — and also delivered to `on_event`."""
-        return AgentRun(self, streaming=streaming, on_event=on_event, eager=True)
+        history from event 0 — and also delivered to `on_event`.
+
+        Implies `autostart_subagents=True`: an eager run completes regardless
+        of observation, and a subagent nobody drives would stop it doing so."""
+        return AgentRun(
+            self,
+            conversation_id=self.session.main_conversation_id,
+            streaming=streaming,
+            on_event=on_event,
+            eager=True,
+            autostart_subagents=True,
+        )
 
     # ── run lifecycle plumbing (used by AgentRun) ────────────────────────────
 
     def _begin_run(self, run: AgentRun) -> None:
-        """First-drive gate: one engine at a time, runnable status, and the
-        run's own CancellationToken. There is no per-run context object:
-        registries and tools receive the live session (`context.py`)."""
-        if self._active_run is not None:
-            raise AgentError("another run is already active on this runner; finish or finalize it first")
-        if self.idle():
+        """First-drive gate: one engine per CONVERSATION, runnable status, and
+        the run's own CancellationToken. There is no per-run context object:
+        registries and tools receive the live session (`context.py`).
+
+        The guard is per conversation rather than per session because that is
+        what parallel subagents are: several conversations advancing at once,
+        each with exactly one engine driving it."""
+        if self._runs.get(run.conversation_id) is not None:
+            raise AgentError(
+                f"another run is already active on conversation {run.conversation_id!r}; finish or finalize it first"
+            )
+        if self.session.get_conversation_status(run.conversation_id).status == ConversationStatus.IDLE:
             raise AgentError("Nothing to run; call post_message() first.")
         run._token = CancellationToken()
         # Per-run, so a handle re-driven after an approval pause (or a
         # suspended lazy run resumed by a fresh `run()`) never reports the
         # previous bracket's outcome. `None` is correct for a run that closed
         # nothing.
-        self._closed_outcome = None
-        self._compaction_consumed_cancel = False
-        self._compaction_ran = False
-        self._active_run = run
+        self._closed_outcomes[run.conversation_id] = None
+        self._compaction_cancelled.discard(run.conversation_id)
+        self._compaction_did_run.discard(run.conversation_id)
+        self._runs[run.conversation_id] = run
+        if run.autostart_subagents:
+            self._restart_unresolved_children(run)
+
+    def _restart_unresolved_children(self, run: AgentRun) -> None:
+        """Re-drive the subtree a previous run left parked.
+
+        A subagent's drive ENDS as soon as its gate defers — nothing in its own
+        subtree can advance — so answering that gate has to restart it. Inside a
+        live run `notify()` does that; once every drive has ended there is
+        nothing left to signal, and this is what makes the documented recovery
+        ("answer, then run again") mean the same thing for a subagent as for the
+        main conversation. Without it a parent blocked on a gated child could
+        never be unblocked, since the parent's own drive returns immediately
+        while its only child is BLOCKED.
+
+        Skipped under `autostart_subagents=False`: there the application owns
+        these lifecycles and `run.child()` hands the handles back."""
+        for child_id in self._unresolved_child_ids(run.conversation_id):
+            if child_id not in self.session.conversations or self._runs.get(child_id) is not None:
+                continue
+            if self.session.get_conversation_status(child_id).status is ConversationStatus.IDLE:
+                continue  # finished — this run resolves it; there is nothing to drive
+            run._adopt(
+                AgentRun(
+                    self,
+                    conversation_id=child_id,
+                    streaming=run._streaming,
+                    on_event=None,  # the parent's callback sees it through the fan-in
+                    eager=True,
+                    autostart_subagents=True,
+                    parent=run,
+                )
+            )
+
+    def _compaction_ran(self, conversation_id: str) -> bool:
+        return conversation_id in self._compaction_did_run
+
+    def _rebind_run(self, previous: str, conversation_id: str) -> None:
+        """Follow a conversation that a transition replaced: the live run, its
+        wake and its recorded outcome all move to the successor's id."""
+        run = self._runs.pop(previous, None)
+        if run is not None:
+            run.conversation_id = conversation_id
+            self._runs[conversation_id] = run
+        wake = self._wakes.pop(previous, None)
+        if wake is not None:
+            self._wakes[conversation_id] = wake
+        self._closed_outcomes[conversation_id] = self._closed_outcomes.pop(previous, None)
+        if previous in self._compaction_did_run:
+            self._compaction_did_run.add(conversation_id)
+        if previous in self._compaction_cancelled:
+            self._compaction_cancelled.add(conversation_id)
 
     def _end_run(self, run: AgentRun) -> None:
-        if self._active_run is run:
-            self._active_run = None
+        if self._runs.get(run.conversation_id) is run:
+            del self._runs[run.conversation_id]
 
-    def _refresh_status(self) -> None:
-        self._set_status(self.ledger.derive_status())
+    # ── waking a conversation out of band ───────────────────────────────────
 
-    def _ensure_open_turn(self) -> None:
+    def _ensure_driven(self, conversation_id: str) -> None:
+        """Something changed out of band for `conversation_id`; make sure a
+        drive looks again.
+
+        A live drive is WOKEN. A conversation whose drive already ended needs a
+        RESTART rather than a signal — see `AgentRun._redrive`, which applies
+        only where the FRAMEWORK owns that conversation's lifecycle. Where the
+        application owns it, the recheck flag alone is enough: the app's next
+        pull re-enters the loop and the flag is waiting there.
+
+        `_runs` holds only DRIVING runs, so a subagent parked at its gate is
+        reachable nowhere but its parent's subtree — which is exactly the handle
+        this has to restart."""
+        wake = self._wakes.get(conversation_id)
+        if wake is not None:
+            wake.set()
+            return
+        run = self._runs.get(conversation_id) or self._parked_handle(conversation_id)
+        if run is not None and run._framework_owned:
+            run._redrive()
+
+    def _parked_handle(self, conversation_id: str) -> AgentRun | None:
+        """A finished handle for `conversation_id`, found through the live
+        runs' subtrees."""
+        for run in list(self._runs.values()):
+            found = run._lookup(conversation_id)
+            if found is not None:
+                return found
+        return None
+
+    def _ensure_open_turn(self, conversation_id: str) -> None:
         """Open a new bracket unless one is already open (resume). Called at
         the engine's top for lazy runs and synchronously at `start()` time for
         eager runs — a started run is cancellable before its first tick."""
-        if self.ledger.open_turn_index() is None:
+        if self.ledger.open_turn_index(conversation_id) is None:
             self._append(
+                conversation_id,
                 lambda entry_id, parent_id, ts: TurnStart(
                     id=entry_id,
                     parent_id=parent_id,
                     created_at=ts,
-                )
+                ),
             )
 
-    def _open_bracket_for_start(self) -> None:
+    def _open_bracket_for_start(self, conversation_id: str) -> None:
         """`start()`'s call-time bracket decision: a COMPACTION bracket when
         one is due, otherwise the ordinary `TurnStart`.
+
+        Only the MAIN conversation is ever compaction-checked (a subagent's is
+        not, in V0), so a child's eager start just opens its turn.
 
         This is why `should_compact` is sync. `AgentRun.__init__` opens a
         bracket synchronously, so without this an eager run would always
@@ -850,30 +1409,32 @@ class AgentSessionRunner:
         A `should_compact` that raises propagates from `start()` — swallowing
         it would make a broken manager indistinguishable from one that
         declines, and nothing durable exists yet to record the failure on."""
-        if self.ledger.open_turn_index() is None and self.context_manager.should_compact(self.session):
-            self._open_compaction_bracket(CompactionSource.POLICY)
+        due = (
+            conversation_id == self.main_conversation_id
+            and self.ledger.open_turn_index(conversation_id) is None
+            and self.context_manager.should_compact(self.session, conversation_id)
+        )
+        if due:
+            self._open_compaction_bracket(conversation_id, CompactionSource.POLICY)
             return
-        self._ensure_open_turn()
+        self._ensure_open_turn(conversation_id)
 
-    def _build_run_result(self) -> RunResult:
+    def _build_run_result(self, conversation_id: str) -> RunResult:
         """Snapshot where the engine stopped: the DERIVED status, plus how the
         last bracket this run closed ended (None if it closed none).
 
-        Neither can be read off the path any more. After a successful
+        The outcome cannot be read off the path any more. After a successful
         compaction the closing `TurnFinish` is on the ARCHIVED conversation,
-        and after a compaction-only drive the active leaf may be the
-        `CompactionEntry` itself or a carried assistant message — neither has
-        an outcome to read."""
-        if self.status == ConversationStatus.AWAITING_APPROVAL:
-            return RunResult(
-                status=ConversationStatus.AWAITING_APPROVAL,
-                outcome=None,
-                pending_approvals=self.pending_approvals(),
-            )
+        and after a compaction-only drive the leaf may be the `CompactionEntry`
+        itself or a carried assistant message — neither has an outcome to read.
+
+        `pending_approvals` is reported whenever it is non-empty, rather than
+        only in one status: a gate no longer implies a status of its own, so
+        the list IS the signal."""
         return RunResult(
-            status=self.status,
-            outcome=self._closed_outcome,
-            pending_approvals=[],
+            status=self.session.get_conversation_status(conversation_id).status,
+            outcome=self._closed_outcomes.get(conversation_id),
+            pending_approvals=self.pending_approvals(conversation_id),
         )
 
     # ── middleware machinery ─────────────────────────────────────────────────
@@ -910,12 +1471,13 @@ class AgentSessionRunner:
         )
         return self._run_middlewares("before_entry_written", entry)
 
-    def _append(self, build_fn) -> AnyEntry:
+    def _append(self, conversation_id: str, build_fn) -> AnyEntry:
         """Append one entry: build it, complete it, commit it to the ledger."""
         return self.ledger.append(
+            conversation_id,
             lambda entry_id, parent_id, ts: self._complete_entry(
                 build_fn(entry_id, parent_id, ts),
-            )
+            ),
         )
 
     def _complete_uncommitted(
@@ -963,6 +1525,7 @@ class AgentSessionRunner:
 
     def _persist_entry(
         self,
+        conversation_id: str,
         entry: AnyEntry,
         *,
         recalculate: bool = True,
@@ -977,10 +1540,11 @@ class AgentSessionRunner:
         updated = (
             self._complete_entry(updated) if recalculate else self._run_middlewares("before_entry_written", updated)
         )
-        return self.ledger.put_entry(updated)
+        return self.ledger.put_entry(conversation_id, updated)
 
     def _persist_execution(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         *,
         recalculate: bool = True,
@@ -990,6 +1554,7 @@ class AgentSessionRunner:
         Every execution persistence — approval updates, the RUNNING
         transition, cancellation stamps, terminal outcomes — lands here."""
         return self._persist_entry(
+            conversation_id,
             execution,
             recalculate=recalculate,
             **changes,
@@ -1031,7 +1596,7 @@ class AgentSessionRunner:
             details=details,
         )
 
-    def _tool_executed_event(self, execution: ToolExecution) -> ToolExecuted:
+    def _tool_executed_event(self, conversation_id: str, execution: ToolExecution) -> ToolExecuted:
         """Project the terminal execution once and derive the event's
         presentation fields from it. The next LLM request re-projects the same
         durable execution (projection is deterministic), so event and wire
@@ -1041,6 +1606,7 @@ class AgentSessionRunner:
             self.session.entries,
         )
         return ToolExecuted(
+            conversation_id=conversation_id,
             tool_call_id=execution.tool_call_id,
             execution=execution.model_copy(deep=True),
             result_text=tool_message_text(message),
@@ -1049,6 +1615,7 @@ class AgentSessionRunner:
 
     def _finalize_outcome(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         exception: Exception | None = None,
     ) -> tuple[ToolExecution, ToolExecuted]:
@@ -1071,11 +1638,12 @@ class AgentSessionRunner:
             execution,
             exception,
         )
-        execution = self._persist_execution(execution, recalculate=False)
-        return execution, self._tool_executed_event(execution)
+        execution = self._persist_execution(conversation_id, execution, recalculate=False)
+        return execution, self._tool_executed_event(conversation_id, execution)
 
     def _finalize_undispatched(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         exception: Exception | None = None,
     ) -> tuple[ToolExecution, ToolExecuted]:
@@ -1084,9 +1652,9 @@ class AgentSessionRunner:
         pass through `before_tool_execution` (which sees the terminal status
         already set) before the shared outcome tail."""
         execution = self._run_middlewares("before_tool_execution", execution)
-        return self._finalize_outcome(execution, exception)
+        return self._finalize_outcome(conversation_id, execution, exception)
 
-    def _recover_orphans(self) -> list[AgentEvent]:
+    def _recover_orphans(self, conversation_id: str) -> list[AgentEvent]:
         """A persisted RUNNING execution without its live runtime task is an
         orphan (a crash, or a drive suspended mid-body). Transition it to
         INTERRUPTED: `after_tool_execution` runs with no exception,
@@ -1094,14 +1662,14 @@ class AgentSessionRunner:
         automatically re-dispatched. Durable state records nothing
         crash-specific — an orphan is exactly another INTERRUPTED execution."""
         events: list[AgentEvent] = []
-        for execution in self.ledger.open_turn_running_executions():
+        for execution in self.ledger.open_turn_running_executions(conversation_id):
             terminal = execution.model_copy(
                 update={
                     "status": ExecutionStatus.INTERRUPTED,
                     "ended_at": self.now_ms(),
                 },
             )
-            _, event = self._finalize_outcome(terminal)
+            _, event = self._finalize_outcome(conversation_id, terminal)
             events.append(event)
         return events
 
@@ -1129,63 +1697,118 @@ class AgentSessionRunner:
             return llm_cfg.model_copy(update={"model": model_string})
         return llm_cfg.model_copy(update={"provider": provider, "model": model})
 
-    async def build_tool_list(self) -> list[LucaTool]:
-        """Return the wire tool list for this LLM call: query the registry
-        fresh (`get_tools` is dynamic — the result may vary with session
-        state; a toolless runner contributes none), convert each `ToolSpec`
-        via the adapter, and thread the list through any `build_tool_list`
-        middleware. Called per LLM invocation.
+    async def resolve_tool_specs(self, conversation_id: str) -> list[ToolSpec]:
+        """The registry's answer for this conversation — the RUNTIME's view of
+        what tools exist, private ones included.
 
-        Async because `get_tools` is — a registry that needs I/O to list its
-        tools (a remote tool server, a plugin host, a permissions service)
-        must not block the event loop. The `build_tool_list` MIDDLEWARE hook
-        stays synchronous and unchanged: it runs on the converted WIRE list,
-        after the await. The drive races this whole method against the
-        cancellation token rather than the inner `get_tools`, so a subclass
-        that overrides it is covered for free and the token never has to
-        appear in this public signature."""
-        specs = await self.tool_registry.get_tools(self.session) if self.tool_registry is not None else []
-        tool_list = [adapter.tool_spec_to_luca_tool(spec) for spec in specs]
+        `get_tools` is dynamic: the runner calls it fresh per LLM call, the
+        result may vary with session state, and it may legitimately vary BY
+        CONVERSATION (a registry withholding a tool from a subagent). A
+        toolless runner contributes none.
+
+        Split from `build_tool_list` because the two answer different
+        questions. This is what the runtime may resolve and dispatch; that is
+        what the model is shown. A private spec appears here and not there, and
+        the runner needs BOTH lists in the same iteration — the private names
+        to refuse a model call that guesses one."""
+        if self.tool_registry is None:
+            return []
+        return await self.tool_registry.get_tools(self.session, conversation_id)
+
+    def build_tool_list(
+        self,
+        conversation_id: str,
+        specs: list[ToolSpec],
+    ) -> list[LucaTool]:
+        """The specs projected onto the WIRE: private ones dropped, the rest
+        converted by the adapter, the list threaded through any
+        `build_tool_list` middleware. Called per LLM invocation.
+
+        This is the ONE place `is_private` is enforced on the way out. The hook
+        still receives the post-adapter wire list, unchanged — a middleware
+        never sees a private tool, which is the point.
+
+        Synchronous: the awaiting moved to `resolve_tool_specs`. The drive
+        races the pair together rather than either alone, so a subclass
+        overriding either is covered for free and the cancellation token never
+        has to appear in these public signatures."""
+        tool_list = [adapter.tool_spec_to_luca_tool(spec) for spec in specs if not spec.is_private]
         return self._run_middlewares("build_tool_list", tool_list)
 
-    def build_messages(self) -> list:
-        """Project the active conversation to canonical client messages via
-        the configured `ConversationProjector` — derived per call, never
+    def _spawn_gate_open(self, conversation_id: str) -> bool:
+        """May THIS conversation spawn subagents?
+
+        The predicate the gate and the system prompt must both derive from —
+        a static prompt telling a subagent at the depth cap that it can spawn,
+        while the tool list withholds the tool, would have the model try."""
+        config = self.session.session_config.runtime_config
+        if not config.subagents_enabled:
+            return False
+        return self.session.conversations[conversation_id].depth < config.subagents_max_depth
+
+    def _verify_gate(self, conversation_id: str, specs: list[ToolSpec]) -> None:
+        """A registry that returned a spawn-declaring spec for a conversation
+        at or past the cap has violated the contract. RAISE rather than quietly
+        filter it out: that keeps `subagents_max_depth` a hard guarantee the
+        implementation may rely on, and it surfaces here — before the model
+        call — naming the spec. The alternative failure is invisible: the spec
+        is offered, the model calls it, the handshake fires, and a grandchild
+        appears with nothing in the log explaining why."""
+        if self._spawn_gate_open(conversation_id):
+            return
+        leaked = [spec.name for spec in specs if _declares_spawn(spec)]
+        if leaked:
+            raise AgentError(
+                f"tool registry offered spawn-declaring tool(s) {leaked} to conversation "
+                f"{conversation_id!r}, which may not spawn subagents "
+                f"(subagents_enabled="
+                f"{self.session.session_config.runtime_config.subagents_enabled}, "
+                f"depth={self.session.conversations[conversation_id].depth}, "
+                f"max_depth={self.session.session_config.runtime_config.subagents_max_depth})."
+            )
+
+    async def _collect_tools(
+        self,
+        conversation_id: str,
+    ) -> tuple[list[ToolSpec], list[LucaTool]]:
+        """Both lists, resolved once. The result stays a LOCAL in the drive and
+        is never stashed on `self`: per-call state on a runner driving several
+        conversations belongs to whichever one wrote it last."""
+        specs = await self.resolve_tool_specs(conversation_id)
+        self._verify_gate(conversation_id, specs)
+        return specs, self.build_tool_list(conversation_id, specs)
+
+    def build_messages(self, conversation_id: str) -> list:
+        """Project the driven conversation's path to canonical client messages
+        via the configured `ConversationProjector` — derived per call, never
         stored. History-shaping policy belongs on the projector itself (there
         is no projection middleware); `before_llm_call` remains downstream for
         last-mile request changes."""
         return self.conversation_projector.project(
-            self.session.active_conversation,
+            self.session.conversations[conversation_id].nodes,
             self.session.entries,
         )
 
-    def build_system_message(self) -> str | None:
+    def build_system_message(self, conversation_id: str) -> str | None:
         """Assemble the system prompt for one LLM call: resolve the parts
-        (a callable part is invoked with the live session config and runtime
-        status, its return value coerced like a static part), sort them by
-        priority, assemble. A blank result means no system message is sent
-        at all."""
-        parts = [
-            coerce_system_prompt_part(
-                part(
-                    self.session.session_config,
-                    self.session.session_runtime_status,
-                )
-            )
-            if callable(part)
-            else part
+        (a callable part is invoked with the live session and the id of the
+        conversation the prompt is for, its return value coerced like a static
+        part), drop the ones that contributed nothing, sort by priority,
+        assemble. A blank result means no system message is sent at all."""
+        resolved = [
+            coerce_system_prompt_part(part(self.session, conversation_id)) if callable(part) else part
             for part in self.system_prompt_parts
         ]
-        parts = sorted(parts, key=lambda part: part.priority)
+        parts = sorted((part for part in resolved if part is not None), key=lambda part: part.priority)
         prompt = self.system_prompt_assembler.assemble_system_prompt(parts)
         return prompt if prompt.strip() else None
 
-    def prepare_llm_call(self) -> tuple[list, str | None]:
+    def prepare_llm_call(self, conversation_id: str) -> tuple[list, str | None]:
         """Build the (messages, system_message) pair for the next LLM call.
         Calls `build_messages()` and `build_system_message()`, then threads
         the pair through any `before_llm_call` middleware."""
-        messages = self.build_messages()
-        system_message = self.build_system_message()
+        messages = self.build_messages(conversation_id)
+        system_message = self.build_system_message(conversation_id)
         return self._run_middlewares(
             "before_llm_call",
             (messages, system_message),
@@ -1196,6 +1819,7 @@ class AgentSessionRunner:
 
     def _open_compaction_bracket(
         self,
+        conversation_id: str,
         source: CompactionSource,
     ) -> CompactionEntry:
         """`TurnStart` then `CompactionEntry` — two plain appends, exactly as
@@ -1203,22 +1827,24 @@ class AgentSessionRunner:
         is what makes the compaction-bracket predicate exact). Emits nothing;
         the drive emits `CompactionScheduled`."""
         self._append(
+            conversation_id,
             lambda entry_id, parent_id, ts: TurnStart(
                 id=entry_id,
                 parent_id=parent_id,
                 created_at=ts,
-            )
+            ),
         )
         return self._append(
+            conversation_id,
             lambda entry_id, parent_id, ts: CompactionEntry(
                 id=entry_id,
                 parent_id=parent_id,
                 created_at=ts,
                 source=source,
-            )
+            ),
         )
 
-    def _snapshot_conversation(self) -> ConversationSnapshot:
+    def _snapshot_conversation(self, conversation_id: str) -> ConversationSnapshot:
         """The full active path (G2's input) plus the view handed to the
         manager: the same path with THIS compaction's `TurnStart` removed.
 
@@ -1229,9 +1855,9 @@ class AgentSessionRunner:
         types. `cmp` deliberately STAYS in the view: stripping it too would
         make `plan.nodes = list(nodes)` illegal, trading one invisible
         requirement for another."""
-        conversation = self.session.active_conversation
+        conversation = self.session.conversations[conversation_id]
         nodes = tuple(conversation.nodes)
-        bracket = self.ledger.open_turn_index()
+        bracket = self.ledger.open_turn_index(conversation_id)
         return ConversationSnapshot(
             id=conversation.id,
             nodes=nodes,
@@ -1240,6 +1866,7 @@ class AgentSessionRunner:
 
     async def _compaction_step(
         self,
+        conversation_id: str,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """The whole compaction operation, run once at the top of a drive,
@@ -1256,15 +1883,15 @@ class AgentSessionRunner:
         recovery logic: a failure here closes the bracket and leaves the
         conversation exactly as it was, and a crash leaves the bracket open —
         the resumable state."""
-        entry = self.ledger.open_compaction_entry()
+        entry = self.ledger.open_compaction_entry(conversation_id)
 
         # 1) FLUSH FIRST. A parked cancel inside an open compaction bracket
         #    ends it now — no Scheduled, no Started, no `compact()` call.
         if entry is not None:
-            cancel = self.ledger.open_turn_cancel_requested()
+            cancel = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel is not None:
-                self._compaction_consumed_cancel = True
-                yield self._close_compaction(entry, cancel.outcome, cancel.error)
+                self._compaction_cancelled.add(conversation_id)
+                yield self._close_compaction(conversation_id, entry, cancel.outcome, cancel.error)
                 return
 
         # 2) RESUME, SKIP, or DECIDE. An open bracket around an entry that
@@ -1272,24 +1899,30 @@ class AgentSessionRunner:
         #    answers None for it, so it lands in the skip branch below and the
         #    drive treats it as the phantom conversational turn it is.
         if entry is None:
-            if self.ledger.open_turn_index() is not None:
+            if self.ledger.open_turn_index(conversation_id) is not None:
                 return  # an open conversational turn → not this drive
-            if not self.context_manager.should_compact(self.session):
+            if not self.context_manager.should_compact(self.session, conversation_id):
                 return
-            entry = self._open_compaction_bracket(CompactionSource.POLICY)
-        self._compaction_ran = True  # past every early return
-        yield CompactionScheduled(entry=entry.model_copy(deep=True))
+            entry = self._open_compaction_bracket(conversation_id, CompactionSource.POLICY)
+        self._compaction_did_run.add(conversation_id)  # past every early return
+        yield CompactionScheduled(
+            conversation_id=conversation_id,
+            entry=entry.model_copy(deep=True),
+        )
 
         # 3) RUN IT. `started_at` is stamped once, on the first attempt, so a
         #    resumed compaction keeps the original stamp and the previous
         #    attempt stays visible in the log.
         if entry.started_at is None:
-            entry = self._persist_entry(entry, started_at=self.now_ms())
-        yield CompactionStarted(entry=entry.model_copy(deep=True))
+            entry = self._persist_entry(conversation_id, entry, started_at=self.now_ms())
+        yield CompactionStarted(
+            conversation_id=conversation_id,
+            entry=entry.model_copy(deep=True),
+        )
 
-        snapshot = self._snapshot_conversation()
+        snapshot = self._snapshot_conversation(conversation_id)
         try:
-            plan = await self._invoke_compaction(entry, snapshot.offered, token)
+            plan = await self._invoke_compaction(conversation_id, entry, snapshot.offered, token)
         except _CompactionEnded as stop:
             # A cancellation always wins over the deadline that raced it, and
             # always stops the drive: the cancel is against the drive, not
@@ -1298,17 +1931,17 @@ class AgentSessionRunner:
             # always finds one here and only a deadline reaches the lines
             # below — which is why they raise the same timeout the
             # conversational LLM call raises.
-            cancel = self.ledger.open_turn_cancel_requested()
+            cancel = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel is not None:
-                self._compaction_consumed_cancel = True
-                yield self._close_compaction(entry, cancel.outcome, cancel.error)
+                self._compaction_cancelled.add(conversation_id)
+                yield self._close_compaction(conversation_id, entry, cancel.outcome, cancel.error)
                 return
-            yield self._close_compaction(entry, stop.outcome, stop.error)
+            yield self._close_compaction(conversation_id, entry, stop.outcome, stop.error)
             if entry.source == CompactionSource.USER:
                 raise ClientTimeoutError(stop.error) from None
             return
         except Exception as exc:
-            yield self._close_compaction(entry, _outcome_for(exc), str(exc))
+            yield self._close_compaction(conversation_id, entry, _outcome_for(exc), str(exc))
             if entry.source == CompactionSource.USER:
                 raise
             return  # a POLICY failure DEGRADES — the user's turn survives
@@ -1322,10 +1955,18 @@ class AgentSessionRunner:
             # state — and the next drive would replay the same failing call
             # with `should_compact` never consulted.
             try:
-                check_snapshot(session=self.session, snapshot=snapshot)
-                self.ledger.record_usage(entry.id, **plan.usage.model_dump())
+                # Re-resolve the NAME rather than trusting the id this drive
+                # started with: G2 asks "is the conversation I compacted still
+                # the one that is named?", and a manager that installed a
+                # successor under us has to be caught here.
+                check_snapshot(
+                    session=self.session,
+                    conversation_id=self.main_conversation_id,
+                    snapshot=snapshot,
+                )
+                self.ledger.record_usage(conversation_id, entry.id, **plan.usage.model_dump())
             except Exception as exc:
-                yield self._close_compaction(entry, TurnOutcome.ERRORED, str(exc))
+                yield self._close_compaction(conversation_id, entry, TurnOutcome.ERRORED, str(exc))
                 if entry.source == CompactionSource.USER:
                     raise
                 return
@@ -1333,34 +1974,36 @@ class AgentSessionRunner:
         # A cancel that arrived within the grace window DISCARDS the plan.
         # Unlike the LLM path, which records a within-grace answer: adding a
         # node is not rewriting what the conversation is.
-        cancel = self.ledger.open_turn_cancel_requested()
+        cancel = self.ledger.open_turn_cancel_requested(conversation_id)
         if cancel is not None:
-            self._compaction_consumed_cancel = True
-            yield self._close_compaction(entry, cancel.outcome, cancel.error)
+            self._compaction_cancelled.add(conversation_id)
+            yield self._close_compaction(conversation_id, entry, cancel.outcome, cancel.error)
             return
 
         if plan is None:  # the ONE "nothing to do" signal
-            yield self._close_compaction(entry, TurnOutcome.COMPLETED)
+            yield self._close_compaction(conversation_id, entry, TurnOutcome.COMPLETED)
             return
 
         try:
-            conversation, final, created = self._commit(entry, plan, snapshot)
+            conversation, final, created = self._commit(conversation_id, entry, plan, snapshot)
         except Exception as exc:
-            yield self._close_compaction(entry, TurnOutcome.ERRORED, str(exc))
+            yield self._close_compaction(conversation_id, entry, TurnOutcome.ERRORED, str(exc))
             if entry.source == CompactionSource.USER:
                 raise
             return
 
-        self._closed_outcome = TurnOutcome.COMPLETED  # _close_turn never ran
+        self._closed_outcomes[conversation_id] = TurnOutcome.COMPLETED  # _close_turn never ran
         yield CompactionFinished(
+            conversation_id=conversation_id,
             entry=final.model_copy(deep=True),
             outcome=TurnOutcome.COMPLETED,
             created=[e.model_copy(deep=True) for e in created],
-            conversation_id=conversation.id,
+            new_conversation_id=conversation.id,
         )
 
     async def _invoke_compaction(
         self,
+        conversation_id: str,
         entry: CompactionEntry,
         offered: tuple[str, ...],
         token: CancellationToken,
@@ -1385,6 +2028,7 @@ class AgentSessionRunner:
         task = asyncio.ensure_future(
             self.context_manager.compact(
                 self.session,
+                conversation_id,
                 offered,
                 entry.model_copy(deep=True),
             )
@@ -1419,6 +2063,7 @@ class AgentSessionRunner:
 
     def _close_compaction(
         self,
+        conversation_id: str,
         entry: CompactionEntry,
         outcome: TurnOutcome,
         error: str | None = None,
@@ -1430,18 +2075,20 @@ class AgentSessionRunner:
         nothing may project. Both writes run `before_entry_written` and are
         therefore fallible; a middleware raise here leaves the bracket open,
         which is the recoverable state, and propagates."""
-        final = self._persist_entry(entry, ended_at=self.now_ms())
-        self._close_turn(outcome, error)
+        final = self._persist_entry(conversation_id, entry, ended_at=self.now_ms())
+        self._close_turn(conversation_id, outcome, error)
         return CompactionFinished(
+            conversation_id=conversation_id,
             entry=final.model_copy(deep=True),
             outcome=outcome,
             error=error,
             created=[],
-            conversation_id=None,
+            new_conversation_id=None,
         )
 
     def _commit(
         self,
+        conversation_id: str,
         entry: CompactionEntry,
         plan: CompactionPlan,
         snapshot: ConversationSnapshot,
@@ -1459,6 +2106,7 @@ class AgentSessionRunner:
             plan,
             entry_id=entry.id,
             session=self.session,
+            conversation_id=self.main_conversation_id,
             snapshot=snapshot,
         )
         ts = self.now_ms()  # ONE timestamp for the whole transition
@@ -1466,7 +2114,7 @@ class AgentSessionRunner:
         # and G2 has just proven this is the same index `_snapshot_conversation`
         # stripped at, so the offered view and the compacted span can never
         # disagree about where the bracket is.
-        bracket = self.ledger.open_turn_index()
+        bracket = self.ledger.open_turn_index(conversation_id)
         carried = {node for node in plan.nodes if isinstance(node, str)}
         # Over the path BEFORE the bracket, so the compaction's own `ts_c`
         # never lands in the list of ids this entry replaced.
@@ -1511,11 +2159,12 @@ class AgentSessionRunner:
                 created_at=stamp,
                 outcome=TurnOutcome.COMPLETED,
             ),
-            self.session.active_conversation.nodes[-1],
+            self.session.conversations[conversation_id].nodes[-1],
             ts,
         )
         # ─────────────────────────── THE TRANSITION ──────────────────────────
         conversation = self.ledger.transition_conversation(
+            conversation_id,
             updates=[final],
             created=created,
             closing=closing,
@@ -1528,54 +2177,85 @@ class AgentSessionRunner:
 
     async def _drive(
         self,
+        conversation_id: str,
         streaming: bool,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
-        """The single engine behind both methods; `AgentRun` is its only
-        consumer (lazy pulls it directly, eager drains it from the background
-        task)."""
-        self._set_status(ConversationStatus.RUNNING)
-
+        """The single engine behind both methods, driving ONE conversation;
+        `AgentRun` is its only consumer (lazy pulls it directly, eager drains
+        it from the background task)."""
         # Compaction runs BEFORE the conversational bracket, at most once per
         # drive (structural: the step sits outside the loop below).
-        async for event in self._compaction_step(token):
+        async for event in self._compaction_step(conversation_id, token):
             yield event
-        if self._compaction_consumed_cancel:
+        if conversation_id in self._compaction_cancelled:
             # The cancel was against the DRIVE. Consuming it and then going on
             # to answer the queued turn would defy the instruction.
             return
-        if self._compaction_ran and self.ledger.derive_status() == ConversationStatus.IDLE:
+        compacted = self._compaction_ran(conversation_id)
+        if compacted:
+            # A committed transition installed a NEW conversation and
+            # re-pointed whatever named the old one, so re-resolve — and move
+            # the HANDLE with it, since a run drives a role ("the main
+            # conversation") and a transition is precisely the moment that role
+            # changes rows. ONLY here: a compaction is the one thing that
+            # replaces a conversation, and only the main conversation is ever
+            # compacted, so re-resolving unconditionally would silently switch
+            # a subagent's drive onto the main conversation.
+            previous, conversation_id = conversation_id, self.main_conversation_id
+            if previous != conversation_id:
+                self._rebind_run(previous, conversation_id)
+        if compacted and self.status == ConversationStatus.IDLE:
             # A compaction-only drive: a user-scheduled compaction on an
-            # otherwise-finished session was PENDING only because its bracket
+            # otherwise-finished session was drivable only because its bracket
             # was open. With it closed there is nothing to drive, and opening
             # a turn would call the model with no user input. Gated on the
             # step having done something, so every other drive is provably
             # unchanged.
             return
 
-        # A committed transition installed a NEW conversation whose status
-        # came from derivation, so RUNNING has to be set again — an
-        # application polling status mid-drive would otherwise see PENDING.
-        self._set_status(ConversationStatus.RUNNING)
         # Resume the open turn if one exists; otherwise open a new bracket
         # (an eager run already opened it at start() time).
-        self._ensure_open_turn()
+        self._ensure_open_turn(conversation_id)
 
         # Crash recovery: any persisted RUNNING execution has no live task on
         # a fresh drive — terminalize it as INTERRUPTED before anything else
         # (before the flush too, so a parked cancel never CANCELLs a call
         # whose body actually started).
-        for event in self._recover_orphans():
+        for event in self._recover_orphans(conversation_id):
             yield event
 
+        # A live drive can be woken out of band — by `run.notify()`, or by a
+        # subagent of this conversation finishing. Registered for the whole
+        # loop and removed in the `finally` below, so `_ensure_driven` can tell
+        # "wake it" from "restart it".
+        wake = self._wakes.setdefault(conversation_id, asyncio.Event())
+        try:
+            async for event in self._drive_loop(conversation_id, streaming, token, wake):
+                yield event
+        finally:
+            for cid, registered in list(self._wakes.items()):
+                if registered is wake:
+                    del self._wakes[cid]
+
+    async def _drive_loop(
+        self,
+        conversation_id: str,
+        streaming: bool,
+        token: CancellationToken,
+        wake: asyncio.Event,
+    ) -> AsyncIterator[AgentEvent]:
+        """The conversational loop itself. Split from `_drive` only so the
+        wake registration has a `finally` to be removed in."""
+        announced_gate = False
         while True:
             # 0) Cancel check — every step boundary funnels back here. An
             # unconsumed CancelRequested ends the turn NOW; the same path is
             # the parked-cancel FLUSH (run()/start() on a CANCELLING session),
             # which may legitimately emit zero events.
-            cancel_entry = self.ledger.open_turn_cancel_requested()
+            cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
-                for event in self._wind_down(cancel_entry):
+                for event in await self._wind_down_async(conversation_id, cancel_entry):
                     yield event
                 return
 
@@ -1585,9 +2265,16 @@ class AgentSessionRunner:
             # response updates approval_status directly and lands in the
             # audit log; a DENY is terminal on the spot. All decision writes
             # land before any denial event is yielded.
-            undecided = self.ledger.open_turn_undecided_executions()
+            # CLEAR FIRST, THEN READ. A `notify()` landing while `decide()` is
+            # in flight has to survive it and cause another pass; consuming the
+            # flag after the fact would swallow exactly that signal and leave
+            # an answered gate sitting inert.
+            self._recheck.discard(conversation_id)
+            wake.clear()
+
+            undecided = self.ledger.open_turn_undecided_executions(conversation_id)
             if undecided:
-                pairs = await asyncio.gather(*(self._decide_one(ex, token) for ex in undecided))
+                pairs = await asyncio.gather(*(self._decide_one(conversation_id, ex, token) for ex in undecided))
                 denial_events: list[AgentEvent] = []
                 for pair in pairs:
                     if pair is None:
@@ -1604,9 +2291,11 @@ class AgentSessionRunner:
                     if denied:
                         changes["status"] = ExecutionStatus.REJECTED
                         changes["ended_at"] = self.now_ms()
-                    persisted = self._persist_execution(modified, **changes)
+                    persisted = self._persist_execution(conversation_id, modified, **changes)
+                    if decision.decision == ApprovalOption.PENDING:
+                        self._publish_approval(conversation_id, persisted)
                     if denied:
-                        _, event = self._finalize_undispatched(persisted)
+                        _, event = self._finalize_undispatched(conversation_id, persisted)
                         denial_events.append(event)
                 for event in denial_events:
                     yield event
@@ -1614,29 +2303,85 @@ class AgentSessionRunner:
             # 2) Dispatch every ALLOWED-and-unrun execution. An allowed
             # sibling proceeds even while another call sits deferred — the
             # runner parks only after all currently runnable work advanced.
-            ready = self.ledger.open_turn_ready_executions()
+            ready = self.ledger.open_turn_ready_executions(conversation_id)
             if ready:
-                async for event in self._dispatch_batch(ready, token):
+                async for event in self._dispatch_batch(conversation_id, ready, token):
                     yield event
+
+            # 2b) THE SPAWN HANDSHAKE. A completed execution whose structured
+            # payload says it spawned becomes a child conversation. The
+            # `ChildConversation` entry is the durable record that the spawn was
+            # handled, so this is idempotent across a reload for free.
+            spawned = list(self._spawn_children(conversation_id))
+            if spawned:
+                # BEFORE the announcement: a `yield` suspends this generator,
+                # so a consumer reacting to the event runs while the drive is
+                # parked here. The handles have to exist by then, or
+                # `run.child(cid)` inside that branch — the whole point of the
+                # `autostart_subagents=False` shape — returns None.
+                self._start_children(conversation_id, spawned)
+                yield SubagentsSpawned(
+                    conversation_id=conversation_id,
+                    conversation_ids=[entry.conversation_id for entry in spawned],
+                )
+
+            # 2c) RESOLVE FINISHED CHILDREN. A child is finished when its turn
+            # bracket closes, whatever the outcome — a child that failed is a
+            # finished child whose result says so, never an exception
+            # travelling upward. A child that was CANCELLED with no drive left
+            # is closed here first, since nothing else ever will — unless THIS
+            # conversation is winding down too, in which case its own wind-down
+            # owns every link and resolves them without a result tool at all.
+            if self.ledger.open_turn_cancel_requested(conversation_id) is None:
+                for event in self._flush_cancelled_children(conversation_id):
+                    yield event
+            resolved = False
+            async for event in self._resolve_children(conversation_id, token):
+                resolved = True
+                yield event
 
             # 3) Park while any approval remains explicitly deferred (a
             # cancel that landed mid-decide or mid-dispatch wins instead:
             # wind down rather than pausing at the gate).
-            awaiting = self.ledger.open_turn_awaiting_executions()
+            awaiting = self.ledger.open_turn_awaiting_executions(conversation_id)
             if awaiting:
-                cancel_entry = self.ledger.open_turn_cancel_requested()
+                cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
                 if cancel_entry is not None:
-                    for event in self._wind_down(cancel_entry):
+                    for event in await self._wind_down_async(conversation_id, cancel_entry):
                         yield event
                     return
-                self._set_status(ConversationStatus.AWAITING_APPROVAL)
-                yield ApprovalRequired(
-                    executions=[ex.model_copy(deep=True) for ex in self.pending_approvals()],
-                )
-                return
+                if not announced_gate:
+                    announced_gate = True
+                    yield ApprovalRequired(
+                        conversation_id=conversation_id,
+                        executions=[ex.model_copy(deep=True) for ex in awaiting],
+                    )
+                # A DRIVE RETURNS ONLY WHEN NOTHING IN ITS SUBTREE CAN ADVANCE.
+                # One rule, and the whole asymmetry falls out of it: a gated
+                # child with no subtree of its own returns (its drive is gone,
+                # and `notify()` restarts it), while a gated PARENT whose
+                # children are still working waits — which is exactly why
+                # `ApprovalRequired` is not terminal on a parent's stream. The
+                # degenerate case (a gate with nothing else running) returns
+                # exactly as it always did.
+                if not await self._await_subtree(conversation_id, token, wake):
+                    return
+                continue
+            announced_gate = False
 
-            if undecided or ready:
+            if undecided or ready or spawned or resolved:
                 continue  # re-run the cancel check before calling the model
+
+            # 3c) BLOCKED ON CHILDREN. The parent's turn stays open until every
+            # subagent it spawned has resolved: calling the model with an
+            # unresolved child on the path is exactly the fail-loud projection
+            # error, and would be wrong anyway — the answer is not in yet.
+            if self.ledger.open_turn_index(conversation_id) is not None and _unresolved_children(
+                self.session, conversation_id
+            ):
+                if not await self._await_subtree(conversation_id, token, wake):
+                    return
+                continue
 
             # 4) Step-limit and doom-loop checks, then call the model — only
             # reached when every execution in the open turn is terminal.
@@ -1646,9 +2391,11 @@ class AgentSessionRunner:
             # Soft max / doom loop: restrict tool_choice to "none" so the LLM
             # can only reply with text, ending the turn gracefully.
             config = self.session.session_config.runtime_config
-            step_count = self.session.session_runtime_status.step_count
-            if config.hard_max_steps > 0 and step_count >= config.hard_max_steps:
+            step_count = self.session.get_conversation_status(conversation_id).step_count
+            soft_max_steps, hard_max_steps = self._step_limits(conversation_id)
+            if hard_max_steps > 0 and step_count >= hard_max_steps:
                 self._close_turn(
+                    conversation_id,
                     TurnOutcome.ERRORED,
                     error=f"Hard max steps limit reached: {step_count}",
                 )
@@ -1656,12 +2403,14 @@ class AgentSessionRunner:
 
             tool_choice: str | None = None
             if (
-                config.soft_max_steps > 0
-                and step_count >= config.soft_max_steps
+                soft_max_steps > 0
+                and step_count >= soft_max_steps
                 and config.limit_tool_choice_on_soft_max_steps_reached
             ):
                 tool_choice = "none"
-            if config.limit_tool_choice_on_doom_loop_flagged and self.ledger.open_turn_has_doom_loop_flagged():
+            if config.limit_tool_choice_on_doom_loop_flagged and self.ledger.open_turn_has_doom_loop_flagged(
+                conversation_id
+            ):
                 tool_choice = "none"
 
             # Call the model, racing the run's token (§R4): on cancel the
@@ -1680,7 +2429,7 @@ class AgentSessionRunner:
             # Recorded instead of `llm_cfg`, so provenance names the model
             # that actually produced the turn.
             effective_cfg = self.effective_llm_config(llm_cfg, model_string)
-            messages, system_message = self.prepare_llm_call()
+            messages, system_message = self.prepare_llm_call(conversation_id)
             # `get_tools` is application code and may block indefinitely, so
             # the whole step is raced. A lost race produces no tool list and
             # makes no LLM call: control returns to the loop top, which winds
@@ -1689,8 +2438,8 @@ class AgentSessionRunner:
             # with the turn left open and resumable, and the next run() asks
             # again. Substituting an empty tool list would silently change the
             # model's answer.
-            tools_task = asyncio.ensure_future(self.build_tool_list())
-            tools_done, tool_list, _ = await _race_cancellation(
+            tools_task = asyncio.ensure_future(self._collect_tools(conversation_id))
+            tools_done, collected, _ = await _race_cancellation(
                 tools_task,
                 token,
                 0,
@@ -1698,6 +2447,10 @@ class AgentSessionRunner:
             )
             if not tools_done:
                 continue
+            specs, tool_list = collected
+            # The names the model was NOT shown. A call naming one is refused
+            # rather than dispatched — see `_birth_draft`.
+            private_names = {spec.name for spec in specs if spec.is_private}
             grace_ms = config.llm_completion_cancellation_grace_period
             request_timeout = _ms_to_seconds(
                 config.builtin_client_completion_timeout_in_ms,
@@ -1743,7 +2496,7 @@ class AgentSessionRunner:
                                     finish_reason = stream_event.finish_reason
                                 elif stream_event.type == "error":
                                     raise stream_event.error
-                                elif (delta := _to_delta_event(stream_event)) is not None:
+                                elif (delta := _to_delta_event(conversation_id, stream_event)) is not None:
                                     yield delta
                         finally:
                             await iterator.aclose()
@@ -1781,13 +2534,13 @@ class AgentSessionRunner:
                 # unconsumed cancel controls this close too: the call was
                 # being torn down anyway, so the requested outcome stands and
                 # the run returns normally (the failure is discarded).
-                cancel_entry = self.ledger.open_turn_cancel_requested()
+                cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
                 if cancel_entry is not None:
-                    for event in self._wind_down(cancel_entry):
+                    for event in await self._wind_down_async(conversation_id, cancel_entry):
                         yield event
                     return
                 outcome = TurnOutcome.TIMED_OUT if isinstance(exc, ClientTimeoutError) else TurnOutcome.ERRORED
-                self._close_turn(outcome, error=str(exc))
+                self._close_turn(conversation_id, outcome, error=str(exc))
                 raise
 
             # Run after_llm_response middleware before recording: the message
@@ -1803,27 +2556,426 @@ class AgentSessionRunner:
             # The round keys off the tool_calls themselves, not finish_reason:
             # a misclassifying provider can neither wedge the conversation
             # ("stop" + calls) nor loop it ("tool_use" + none).
-            events = self._record_assistant(message, finish_reason, effective_cfg)
+            events = self._record_assistant(conversation_id, message, finish_reason, effective_cfg)
             if message.tool_calls:
-                events.extend(await self._create_executions(message, token))
+                events.extend(
+                    await self._create_executions(
+                        conversation_id,
+                        message,
+                        private_names,
+                        token,
+                    )
+                )
                 for event in events:
                     yield event
                 continue  # → step 1 hands the fresh executions to decide()
 
             # Final answer: an unconsumed cancel controls the close — the
             # within-grace message stays recorded, the requested outcome wins.
-            cancel_entry = self.ledger.open_turn_cancel_requested()
+            cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
-                events.extend(self._wind_down(cancel_entry))
+                events.extend(await self._wind_down_async(conversation_id, cancel_entry))
             else:
-                self._close_turn(TurnOutcome.COMPLETED)
+                self._close_turn(conversation_id, TurnOutcome.COMPLETED)
             for event in events:
                 yield event
             return
 
+    # ── subagents ───────────────────────────────────────────────────────────
+
+    def _spawn_children(self, conversation_id: str) -> list[ChildConversation]:
+        """Create one child conversation per unhandled spawn in the open turn.
+
+        Handled-ness is DURABLE: a spawn has been handled iff a
+        `ChildConversation` in the open turn names its execution. Nothing is
+        remembered in memory, so a reload mid-tree re-enters here and skips
+        exactly the spawns that already have children."""
+        handled = {entry.tool_execution_id for entry in self._child_entries(conversation_id)}
+        created: list[ChildConversation] = []
+        for execution in self.ledger.open_turn_executions(conversation_id):
+            if execution.id in handled:
+                continue
+            payload = _spawn_payload(execution)
+            if payload is None:
+                continue
+            created.append(self._spawn_one(conversation_id, execution, payload))
+        return created
+
+    def _spawn_one(
+        self,
+        conversation_id: str,
+        execution: ToolExecution,
+        payload: dict,
+    ) -> ChildConversation:
+        """One child: validated, created, seeded, and linked into the parent."""
+        # VIOLATION 2 — a spawn that was never declared. This payload went
+        # around the gate entirely: the child would be spawned at any depth and
+        # the cap would silently not exist. Same invisible failure a name match
+        # would have had, closed from the other side.
+        if execution.tool_spec is None or not _declares_spawn(execution.tool_spec):
+            raise AgentError(
+                f"execution {execution.id!r} returned a {SPAWN_MARKER!r} payload but its "
+                f"tool spec never declared one; a spawn that bypasses the gate is a "
+                f"contract violation, not a subagent."
+            )
+        # VIOLATION 3 — a spawn from a conversation at or past the cap. The
+        # gate lives in `get_tools`, but a registry resolves by NAME at
+        # dispatch, so anything reaching dispatch with that name runs. This
+        # check puts the cap where it actually means something: child creation.
+        if not self._spawn_gate_open(conversation_id):
+            raise AgentError(
+                f"conversation {conversation_id!r} may not spawn subagents "
+                f"(depth={self.session.conversations[conversation_id].depth}, "
+                f"max_depth={self.session.session_config.runtime_config.subagents_max_depth})."
+            )
+        # The runner validates the keys it is about to ACT on, at the moment it
+        # acts on them, because nothing else does: the core never checks
+        # `structured_content` against `output_schema`, so a tool that
+        # contradicts its own declaration still records COMPLETED.
+        missing = [key for key in SPAWN_REQUIRED_KEYS if not payload.get(key)]
+        if missing:
+            raise AgentError(
+                f"spawn payload from execution {execution.id!r} is missing required "
+                f"field(s) {missing}; that is a contract violation, not a subagent "
+                f"with empty fields."
+            )
+
+        parent = self.session.conversations[conversation_id]
+        ts = self.now_ms()
+        child_id = self.generate_id()
+        self.session.conversations[child_id] = Conversation(
+            id=child_id,
+            nodes=[],
+            created_at=ts,
+            updated_at=ts,
+            depth=parent.depth + 1,
+        )
+        # The seed. A child conversation never receives user messages after
+        # this: `post_message` is main-only, so the spawn handshake is the one
+        # and only thing that ever appends one here. The `TurnStart` is opened
+        # by the child's own drive, exactly like any other conversation's.
+        self._append(
+            child_id,
+            lambda entry_id, parent_id, stamp: UserMessage(
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=stamp,
+                parts=[TextContent(text=payload["prompt"])],
+            ),
+        )
+        return self._append(
+            conversation_id,
+            lambda entry_id, parent_id, stamp: ChildConversation(
+                id=entry_id,
+                parent_id=parent_id,
+                created_at=stamp,
+                conversation_id=child_id,
+                tool_execution_id=execution.id,
+            ),
+        )
+
+    def _start_children(
+        self,
+        conversation_id: str,
+        spawned: list[ChildConversation],
+    ) -> None:
+        """Give every fresh child a handle on the run that spawned it, started
+        or not according to who owns them."""
+        run = self._runs.get(conversation_id)
+        if run is None:
+            return
+        for entry in spawned:
+            child = AgentRun(
+                self,
+                conversation_id=entry.conversation_id,
+                streaming=run._streaming,
+                on_event=None,  # the parent's callback sees it through the fan-in
+                eager=run.autostart_subagents,
+                autostart_subagents=run.autostart_subagents,
+                parent=run,
+            )
+            run._adopt(child)
+
+    def _child_entries(self, conversation_id: str) -> list[ChildConversation]:
+        entries = self.session.entries
+        index = self.ledger.open_turn_index(conversation_id)
+        if index is None:
+            return []
+        return [
+            entry
+            for node_id in self.ledger.conversation(conversation_id).nodes[index:]
+            if isinstance(entry := entries.get(node_id), ChildConversation)
+        ]
+
+    async def _resolve_children(
+        self,
+        conversation_id: str,
+        token: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """Derive a result for every subagent of this conversation whose turn
+        bracket has closed.
+
+        "Its turn bracket closes" is the WHOLE signal — a child conversation
+        never receives user messages, so a closed bracket means finished, and a
+        child that failed or timed out is a finished child, not an exception
+        travelling upward. Whichever way it ended, the `ChildConversation`
+        resolves and the parent continues.
+
+        The result is derived by a TOOL — the one the spawn payload named — run
+        in the PARENT conversation through the ordinary lifecycle: birth,
+        approvals, middleware, timeouts, cancellation, events, usage. It is a
+        private tool, so it never projects as a `ToolMessage`; its output
+        reaches the model through `ChildConversation.execution_result`, which
+        is what the parent's projection renders."""
+        for entry in self._child_entries(conversation_id):
+            if entry.execution_result is not None:
+                continue
+            child_id = entry.conversation_id
+            if child_id not in self.session.conversations:
+                continue
+            if self.session.get_conversation_status(child_id).status != ConversationStatus.IDLE:
+                continue  # still working, blocked, or winding down
+            async for event in self._derive_child_result(conversation_id, entry, token):
+                yield event
+
+    async def _derive_child_result(
+        self,
+        conversation_id: str,
+        entry: ChildConversation,
+        token: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        payload = _spawn_payload(self.session.entries[entry.tool_execution_id])
+        if payload is None:  # unreachable: the child only exists because it spawned
+            raise AgentError(f"ChildConversation {entry.id!r} has no spawn payload to derive a result from.")
+        # A runtime-minted call. The tool_call_id is the RUNNER's, not a
+        # provider's — no `ToolCall` for it exists in any assistant message,
+        # which is precisely why the execution never projects as a ToolMessage.
+        call = ToolCall(
+            id=self.generate_id(),
+            name=payload["process_subagent_result_tool_name"],
+            arguments={
+                "task_id": payload["task_id"],
+                "prompt": payload["prompt"],
+                "description": payload["description"],
+                # NOTE the two ids. The tool's `conversation_id` PARAMETER is
+                # the parent — where it runs. This ARGUMENT is the child being
+                # summarized. They are never the same conversation.
+                "conversation_id": entry.conversation_id,
+            },
+        )
+        async for event in self._invoke_runtime_tool(conversation_id, call, token):
+            yield event
+            if isinstance(event, ToolExecuted):
+                self._persist_entry(
+                    conversation_id,
+                    entry,
+                    execution_result=self._child_result_from(event),
+                )
+
+    def _child_result_from(self, event: ToolExecuted) -> ExecutionResult:
+        """The `ExecutionResult` that becomes `ChildConversation.execution_result`.
+
+        A COMPLETED result tool gives its own. Anything else — FAILED,
+        NOT_FOUND, TIMED_OUT, REJECTED, CANCELLED — still has to resolve the
+        child, or the parent blocks forever on a subagent that already
+        finished. The derived text comes from the projector, the same
+        derivation the wire and the `ToolExecuted` event already share, so the
+        three never disagree."""
+        execution = event.execution
+        if execution.status == ExecutionStatus.COMPLETED and execution.result is not None:
+            return execution.result
+        return ExecutionResult(
+            content=[TextContent(text=event.result_text)],
+            is_error=True,
+        )
+
+    async def _invoke_runtime_tool(
+        self,
+        conversation_id: str,
+        call: ToolCall,
+        token: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """Run ONE runner-originated tool call through the ordinary lifecycle.
+
+        Two rules do not apply to a call the runtime minted. The private-name
+        refusal is about a MODEL naming a tool it was never shown, and the
+        doom-loop check is a heuristic about model behavior; neither means
+        anything here. Everything else is identical to a model's call."""
+        draft, exception = await self._birth_draft(conversation_id, call, set(), token)
+        execution = self._append(
+            conversation_id,
+            lambda entry_id, parent_id, ts: draft.model_copy(
+                update={
+                    "id": entry_id,
+                    "parent_id": parent_id,
+                    "created_at": ts,
+                    "conversation_id": conversation_id,
+                    "ended_at": (ts if draft.status != ExecutionStatus.PENDING else None),
+                },
+            ),
+        )
+        yield ToolCallReceived(
+            conversation_id=conversation_id,
+            tool_call_id=execution.tool_call_id,
+            execution=execution.model_copy(deep=True),
+        )
+        if execution.status != ExecutionStatus.PENDING:  # terminal at birth
+            _, event = self._finalize_undispatched(conversation_id, execution, exception)
+            yield event
+            return
+        pair = await self._decide_one(conversation_id, execution, token)
+        if pair is None:  # the token won; the wind-down records CANCELLED
+            return
+        modified, decision = pair
+        changes: dict = {
+            "approval_decisions": [*modified.approval_decisions, decision],
+            "approval_status": _APPROVAL_STATUS[decision.decision],
+        }
+        denied = decision.decision == ApprovalOption.DENY
+        if denied:
+            changes["status"] = ExecutionStatus.REJECTED
+            changes["ended_at"] = self.now_ms()
+        persisted = self._persist_execution(conversation_id, modified, **changes)
+        if denied:
+            _, event = self._finalize_undispatched(conversation_id, persisted)
+            yield event
+            return
+        if decision.decision == ApprovalOption.PENDING:
+            # A policy that gates the result tool parks the parent exactly like
+            # any other gate. The child stays unresolved until it is answered.
+            self._publish_approval(conversation_id, persisted)
+            return
+        async for event in self._dispatch_one(conversation_id, persisted, token):
+            yield event
+
+    # ── waiting on the subtree ──────────────────────────────────────────────
+
+    async def _await_subtree(
+        self,
+        conversation_id: str,
+        token: CancellationToken,
+        wake: asyncio.Event,
+    ) -> bool:
+        """Wait for something in this conversation's subtree to change. True if
+        the drive should loop again; False if it should return.
+
+        THE TEARDOWN WINDOW. A `notify()` can land on a drive that is already
+        returning, where a wake would go to something that will never loop
+        again. That is why the recheck SET is the source of truth and the event
+        is only a wake: this re-checks the set immediately before deciding to
+        return, and loops instead if the id is back in it."""
+        if conversation_id in self._recheck:
+            return True
+        if not self._can_subtree_advance(conversation_id):
+            return False
+        if token.cancelled:
+            return True  # loop; the cancel check at the top winds down
+        waiter = asyncio.ensure_future(wake.wait())
+        cancelled = asyncio.ensure_future(token.wait_cancelled())
+        try:
+            await asyncio.wait({waiter, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            await _cancel_quietly(waiter)
+            await _cancel_quietly(cancelled)
+        return True
+
+    def _can_subtree_advance(self, conversation_id: str) -> bool:
+        """Is any unresolved subagent of this conversation still able to make
+        progress? A BUSY child is working; an IDLE one has finished and this
+        conversation can resolve it; a CANCELLING one is winding down. A
+        BLOCKED child contributes nothing — it is waiting on the application
+        exactly as this conversation is.
+
+        A child with a LIVE DRIVE can advance whatever its entries currently
+        say. That term is what makes a restart safe: a drive that has just been
+        handed back a child (`_restart_unresolved_children`, `notify()`) has not
+        re-asked `decide()` yet, so the child still derives BLOCKED — and
+        without this the parent would give up in the window before its own
+        subagent's first step."""
+        return any(
+            self._runs.get(child_id) is not None
+            or self.session.get_conversation_status(child_id).status
+            in (
+                ConversationStatus.BUSY,
+                ConversationStatus.IDLE,
+                ConversationStatus.CANCELLING,
+            )
+            for child_id in self._unresolved_child_ids(conversation_id)
+        )
+
+    def _publish_approval(self, conversation_id: str, execution: ToolExecution) -> None:
+        """Hand a freshly-deferred gate to the run watching this conversation,
+        which forwards it to every ancestor's `approvals` stream."""
+        run = self._runs.get(conversation_id)
+        if run is not None:
+            run._publish_approval(execution.model_copy(deep=True))
+
     # ── per-step machinery ─────────────────────────────────────────────────
 
-    def _wind_down(self, cancel_entry: CancelRequested) -> list[AgentEvent]:
+    async def _wind_down_async(
+        self,
+        conversation_id: str,
+        cancel_entry: CancelRequested,
+    ) -> list[AgentEvent]:
+        """`_wind_down` plus the subagent half.
+
+        A cancel cascades, so every live child already has its own
+        `CancelRequested` and is winding down. Wait for those drives to settle,
+        then resolve each still-unresolved `ChildConversation` with a
+        cancellation result — WITHOUT running the result tool, exactly as a
+        PENDING execution is terminalized without being dispatched.
+
+        Resolving them is not tidiness: an unresolved child on a CLOSED turn is
+        unprojectable (the same fail-loud rule a nonterminal execution gets), so
+        leaving one would wedge the conversation permanently. This also covers
+        the `autostart_subagents=False` child that was never driven at all."""
+        for child_id in self._unresolved_child_ids(conversation_id):
+            run = self._runs.get(child_id)
+            if run is not None and run._task is not None:
+                with contextlib.suppress(BaseException):
+                    await run._task
+        # A child cancelled with no drive left has nobody else to close its
+        # bracket, and a conversation stuck CANCELLING forever is exactly what
+        # the resolution below exists to prevent one level up.
+        events = list(self._flush_cancelled_children(conversation_id))
+        for entry in self._child_entries(conversation_id):
+            if entry.execution_result is None:
+                self._persist_entry(
+                    conversation_id,
+                    entry,
+                    execution_result=ExecutionResult(
+                        content=[TextContent(text=self.CANCELLED_SUBAGENT_TEXT)],
+                        is_error=True,
+                    ),
+                )
+        return [*events, *self._wind_down(conversation_id, cancel_entry)]
+
+    def _flush_cancelled_children(self, conversation_id: str) -> list[AgentEvent]:
+        """Wind down every unresolved subagent that was cancelled and has no
+        drive left to do it itself.
+
+        `cancel()` is a signal: it writes the `CancelRequested` and stops,
+        because consuming one is a DRIVE's job. A subagent's drive is often
+        already gone by then — it parked at a gate, or the application never
+        started it — and nothing else will ever look at that conversation. The
+        parent is the only conversation that knows the child exists, and it is
+        the one that would otherwise wait forever, so the parent's drive does
+        the flush.
+
+        The child's events surface on the parent's stream. They cannot arrive
+        twice: the only handle that could have delivered them is the one whose
+        drive already ended."""
+        events: list[AgentEvent] = []
+        for child_id in self._unresolved_child_ids(conversation_id):
+            if self._runs.get(child_id) is not None:
+                continue  # a live drive winds itself down
+            cancel_entry = self.ledger.open_turn_cancel_requested(child_id)
+            if cancel_entry is None:
+                continue
+            events.extend(self._wind_down(child_id, cancel_entry))
+        return events
+
+    def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
         """Consume a `CancelRequested`: every still-PENDING execution in the
         open turn is stamped `cancel_signalled_at` and becomes CANCELLED —
         resultless, errorless, approval state untouched. (A denied call was
@@ -1834,7 +2986,7 @@ class AgentSessionRunner:
         `ToolExecuted` events return to the caller. All session writes happen
         before any event is yielded."""
         events: list[AgentEvent] = []
-        for execution in self.ledger.open_turn_pending_executions():
+        for execution in self.ledger.open_turn_pending_executions(conversation_id):
             ts = self.now_ms()
             stamped = execution.model_copy(
                 update={
@@ -1845,13 +2997,14 @@ class AgentSessionRunner:
                     "ended_at": ts,
                 },
             )
-            _, event = self._finalize_undispatched(stamped)
+            _, event = self._finalize_undispatched(conversation_id, stamped)
             events.append(event)
-        self._close_turn(cancel_entry.outcome, cancel_entry.error)
+        self._close_turn(conversation_id, cancel_entry.outcome, cancel_entry.error)
         return events
 
     def _record_assistant(
         self,
+        conversation_id: str,
         message,
         finish_reason,
         llm_cfg: LLMConfig,
@@ -1863,6 +3016,7 @@ class AgentSessionRunner:
         both modes)."""
         parts = adapter.message_to_parts(message)
         entry = self._append(
+            conversation_id,
             lambda entry_id, parent_id, ts: AssistantMessage(
                 id=entry_id,
                 parent_id=parent_id,
@@ -1870,26 +3024,29 @@ class AgentSessionRunner:
                 parts=parts,
                 llm_config=llm_cfg.model_copy(),
                 stop_reason=finish_reason or "stop",
-            )
+            ),
         )
-        self.ledger.record_usage(entry.id, **_to_usage_counters(message.usage))
+        self.ledger.record_usage(conversation_id, entry.id, **_to_usage_counters(message.usage))
         events: list[AgentEvent] = []
         for part in parts:
             if isinstance(part, ThinkingContent):
                 events.append(
                     ReasoningBlock(
+                        conversation_id=conversation_id,
                         text=part.thinking,
                         redacted=part.redacted,
                     ),
                 )
             elif isinstance(part, TextContent):
-                events.append(TextBlock(text=part.text))
-        events.append(FinishReason(finish_reason=finish_reason))
+                events.append(TextBlock(conversation_id=conversation_id, text=part.text))
+        events.append(FinishReason(conversation_id=conversation_id, finish_reason=finish_reason))
         return events
 
     async def _create_executions(
         self,
+        conversation_id: str,
         message,
+        private_names: set[str],
         token: CancellationToken,
     ) -> list[AgentEvent]:
         """Set-oriented birth: ask the registry for one draft per call in the
@@ -1912,13 +3069,15 @@ class AgentSessionRunner:
         this gather: killing the gather would lose every draft and break
         one-output-per-call. A response with N tool calls yields N tool
         executions even when a cancellation lands mid-batch."""
-        drafts = await asyncio.gather(*(self._birth_draft(tc, token) for tc in message.tool_calls))
+        drafts = await asyncio.gather(
+            *(self._birth_draft(conversation_id, tc, private_names, token) for tc in message.tool_calls)
+        )
         events: list[AgentEvent] = []
         for tc, (draft, exception) in zip(message.tool_calls, drafts, strict=False):
             # Doom-loop check runs before the append so it only sees
             # previously-appended executions; parallel tool calls are
             # evaluated in append order.
-            doom_flagged = self._is_doom_loop(tc)
+            doom_flagged = self._is_doom_loop(conversation_id, tc)
 
             def build(
                 entry_id,
@@ -1932,26 +3091,32 @@ class AgentSessionRunner:
                         "id": entry_id,
                         "parent_id": parent_id,
                         "created_at": ts,
+                        # Provenance, stamped here with the rest of the identity
+                        # set the runner owns. A registry must not set it.
+                        "conversation_id": conversation_id,
                         "ended_at": (ts if _draft.status != ExecutionStatus.PENDING else None),
                         "is_doom_loop_flagged": _d,
                     },
                 )
 
-            execution = self._append(build)
+            execution = self._append(conversation_id, build)
             events.append(
                 ToolCallReceived(
+                    conversation_id=conversation_id,
                     tool_call_id=execution.tool_call_id,
                     execution=execution.model_copy(deep=True),
                 )
             )
             if execution.status != ExecutionStatus.PENDING:  # terminal birth
-                _, event = self._finalize_undispatched(execution, exception)
+                _, event = self._finalize_undispatched(conversation_id, execution, exception)
                 events.append(event)
         return events
 
     async def _birth_draft(
         self,
+        conversation_id: str,
         tc,
+        private_names: set[str],
         token: CancellationToken,
     ) -> tuple[ToolExecution, Exception | None]:
         """One call's guarded birth: delegate to
@@ -1975,7 +3140,14 @@ class AgentSessionRunner:
             name=tc.name,
             arguments=copy.deepcopy(tc.arguments),
         )
-        if self.tool_registry is None:
+        # A PRIVATE tool was never offered, but a model can still emit a name it
+        # was never given. Refuse it exactly as if it did not exist —
+        # deliberately indistinguishable from the toolless case, because from
+        # the model's point of view that tool does not exist. Without this
+        # "private" would be advisory and any model that guesses the name gets
+        # to call it. (A runtime-originated invocation does not come through
+        # here at all.)
+        if self.tool_registry is None or tc.name in private_names:
             exc: Exception = ToolNotFound(f"Unknown tool: {tc.name!r}.")
             draft = ToolExecution(
                 tool_call_id=raw.id,
@@ -1989,7 +3161,7 @@ class AgentSessionRunner:
             )
             return draft, exc
         task = asyncio.ensure_future(
-            self.tool_registry.create_execution(self.session, raw),
+            self.tool_registry.create_execution(self.session, conversation_id, raw),
         )
         try:
             completed, draft, _ = await _race_cancellation(task, token, 0, None)
@@ -2015,6 +3187,7 @@ class AgentSessionRunner:
 
     async def _decide_one(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         token: CancellationToken,
     ) -> tuple[ToolExecution, ApprovalDecision] | None:
@@ -2036,12 +3209,13 @@ class AgentSessionRunner:
         fire. Siblings decided in the same batch have all been scheduled by
         then, so their hooks fire too — the guarantee is about entry, not about
         interrupting a batch already under way."""
-        task = asyncio.ensure_future(self._decide_with_middleware(execution))
+        task = asyncio.ensure_future(self._decide_with_middleware(conversation_id, execution))
         completed, pair, _ = await _race_cancellation(task, token, 0, None)
         return pair if completed else None
 
     async def _decide_with_middleware(
         self,
+        conversation_id: str,
         execution: ToolExecution,
     ) -> tuple[ToolExecution, ApprovalDecision]:
         """Apply `before_permission_check` middleware, call the registry's
@@ -2058,7 +3232,11 @@ class AgentSessionRunner:
                 created_at=self.now_ms(),
             )
         else:
-            decision = await self.tool_registry.decide(self.session, modified)
+            decision = await self.tool_registry.decide(
+                self.session,
+                conversation_id,
+                modified,
+            )
         return modified, self._run_middlewares(
             "after_permission_decision",
             decision,
@@ -2067,6 +3245,7 @@ class AgentSessionRunner:
 
     async def _dispatch_batch(
         self,
+        conversation_id: str,
         ready: list[ToolExecution],
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
@@ -2084,11 +3263,12 @@ class AgentSessionRunner:
         for execution in ready:
             if token.cancelled:
                 return
-            async for event in self._dispatch_one(execution, token):
+            async for event in self._dispatch_one(conversation_id, execution, token):
                 yield event
 
     async def _dispatch_one(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
@@ -2119,7 +3299,7 @@ class AgentSessionRunner:
         here."""
         execution = self._run_middlewares("before_tool_execution", execution)
 
-        prepare_task = asyncio.ensure_future(self._prepare_tool(execution))
+        prepare_task = asyncio.ensure_future(self._prepare_tool(conversation_id, execution))
         try:
             prepared_ok, prepared, _ = await _race_cancellation(
                 prepare_task,
@@ -2129,13 +3309,14 @@ class AgentSessionRunner:
             )
         except Exception as exc:
             _, event = self._finalize_outcome(
+                conversation_id,
                 self._terminal_for_prepare_failure(execution, exc),
                 exc,
             )
             yield event
             return
         if not prepared_ok:
-            _, event = self._finalize_outcome(self._cancelled_in_place(execution))
+            _, event = self._finalize_outcome(conversation_id, self._cancelled_in_place(execution))
             yield event
             return
         if not callable(prepared):
@@ -2151,27 +3332,30 @@ class AgentSessionRunner:
                 f"{type(prepared).__name__}, which is not callable."
             )
             _, event = self._finalize_outcome(
+                conversation_id,
                 self._terminal_for_prepare_failure(execution, exc),
                 exc,
             )
             yield event
             return
         if token.cancelled:
-            _, event = self._finalize_outcome(self._cancelled_in_place(execution))
+            _, event = self._finalize_outcome(conversation_id, self._cancelled_in_place(execution))
             yield event
             return
 
         execution = self._persist_execution(
+            conversation_id,
             execution,
             status=ExecutionStatus.RUNNING,
             started_at=self.now_ms(),
         )
         yield ToolExecutionStarted(
+            conversation_id=conversation_id,
             tool_call_id=execution.tool_call_id,
             execution=execution.model_copy(deep=True),
         )
-        terminal, exception = await self._run_tool_body(execution, prepared, token)
-        _, event = self._finalize_outcome(terminal, exception)
+        terminal, exception = await self._run_tool_body(conversation_id, execution, prepared, token)
+        _, event = self._finalize_outcome(conversation_id, terminal, exception)
         yield event
 
     def _terminal_for_prepare_failure(
@@ -2226,16 +3410,21 @@ class AgentSessionRunner:
             },
         )
 
-    async def _prepare_tool(self, execution: ToolExecution) -> PreparedTool:
+    async def _prepare_tool(self, conversation_id: str, execution: ToolExecution) -> PreparedTool:
         """The single `registry.prepare` call site. A toolless runner raises
         `ToolNotFound` so a loaded ready execution still terminalizes
         honestly (NOT_FOUND) instead of crashing the run."""
         if self.tool_registry is None:
             raise ToolNotFound(f"Unknown tool: {execution.raw_tool_call.name!r}.")
-        return await self.tool_registry.prepare(self.session, execution)
+        return await self.tool_registry.prepare(
+            self.session,
+            conversation_id,
+            execution,
+        )
 
     async def _run_tool_body(
         self,
+        conversation_id: str,
         execution: ToolExecution,
         prepared: PreparedTool,
         token: CancellationToken,
@@ -2275,6 +3464,7 @@ class AgentSessionRunner:
         def note_cancel_signalled() -> None:
             nonlocal current
             current = self._persist_execution(
+                conversation_id,
                 current,
                 cancel_signalled_at=self.now_ms(),
             )
@@ -2348,7 +3538,26 @@ class AgentSessionRunner:
             },
         ), None
 
-    def _is_doom_loop(self, tc) -> bool:
+    def _step_limits(self, conversation_id: str) -> tuple[int, int]:
+        """`(soft, hard)` for this conversation, resolved from its DEPTH.
+
+        A subagent gets `subagent_*_max_steps` when set, and falls back to the
+        main limits when they are `None`. That fallback is why `None` and `Inf`
+        are different values: `None` means "same as the main conversation",
+        `Inf` means "no limit at all". The bound matters because a child is
+        never compaction-checked in V0 — the step limit is what stops it
+        growing without one."""
+        config = self.session.session_config.runtime_config
+        if self.session.conversations[conversation_id].depth == 0:
+            return config.soft_max_steps, config.hard_max_steps
+        soft = config.subagent_soft_max_steps
+        hard = config.subagent_hard_max_steps
+        return (
+            config.soft_max_steps if soft is None else soft,
+            config.hard_max_steps if hard is None else hard,
+        )
+
+    def _is_doom_loop(self, conversation_id: str, tc) -> bool:
         """True if the current tool call would be the Nth consecutive identical
         call (same name + arguments, compared on `raw_tool_call`) in the open
         turn (where N = doom_loop_threshold). Checks the already-appended
@@ -2358,13 +3567,13 @@ class AgentSessionRunner:
         if threshold <= 0:
             return False
         lookback = threshold - 1
-        current_turn_executions = self.ledger.open_turn_executions()
+        current_turn_executions = self.ledger.open_turn_executions(conversation_id)
         subset = current_turn_executions[-lookback:]
         if len(subset) != lookback:
             return False
         return all(te.raw_tool_call.name == tc.name and te.raw_tool_call.arguments == tc.arguments for te in subset)
 
-    def _close_turn(self, outcome: TurnOutcome, error: str | None = None) -> None:
+    def _close_turn(self, conversation_id: str, outcome: TurnOutcome, error: str | None = None) -> None:
         """The only TurnFinish writer that APPENDS — normal close, cancel
         wind-down, failure close, and every non-transition compaction ending
         land here. The status re-derives from the entries (IDLE for
@@ -2376,19 +3585,16 @@ class AgentSessionRunner:
         here: its marker belongs to the outgoing conversation and is written
         inside the transition — see `_commit`.)"""
         self._append(
+            conversation_id,
             lambda entry_id, parent_id, ts: TurnFinish(
                 id=entry_id,
                 parent_id=parent_id,
                 created_at=ts,
                 outcome=outcome,
                 error=error,
-            )
+            ),
         )
-        self._closed_outcome = outcome
-        self._refresh_status()
-
-    def _set_status(self, status: ConversationStatus) -> None:
-        self.session.active_conversation.status = status
+        self._closed_outcomes[conversation_id] = outcome
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -2405,6 +3611,46 @@ class _CompactionEnded(Exception):
         super().__init__(error or outcome.value)
         self.outcome = outcome
         self.error = error
+
+
+# The five names the spawn convention settles. The core matches on the FIELD
+# NAME, never on a tool name and never on a core type contrib has to import —
+# that is what keeps "what a spawn looks like" owned by the plugin. `luca.agent`
+# core never imports from contrib, so `SubagentSpawn` is the plugin's guarantee
+# about the payload it emits, not something the core can or should validate
+# against.
+SPAWN_MARKER = "is_subagent_spawn"
+SPAWN_REQUIRED_KEYS = ("task_id", "prompt", "description", "process_subagent_result_tool_name")
+
+
+def _unresolved_children(session: AgentSession, conversation_id: str) -> list[ChildConversation]:
+    """The open turn's subagents that have not produced a result yet."""
+    conversation = session.conversations[conversation_id]
+    return open_turn_unresolved_children(conversation.nodes, session.entries)
+
+
+def _declares_spawn(spec: ToolSpec) -> bool:
+    """Does this SPEC declare that it can spawn? A shape check on the published
+    output schema, read BEFORE the model call — there is no value to check yet.
+
+    The asymmetry with the handshake is deliberate and is what the flag buys:
+    `is_subagent_spawn` is a `bool`, not a constant, so a spawn tool that
+    decides at runtime NOT to spawn (a rejected task, a failed validation, a
+    request it answered inline) returns the payload with `False` and no child
+    is created. It is still GATED, because the gate reads the declaration."""
+    schema = spec.output_schema
+    return isinstance(schema, dict) and SPAWN_MARKER in (schema.get("properties") or {})
+
+
+def _spawn_payload(execution: ToolExecution) -> dict | None:
+    """The handshake payload of a COMPLETED execution that claims it spawned,
+    or None. Value check, after the fact — the other half of `_declares_spawn`."""
+    if execution.status != ExecutionStatus.COMPLETED or execution.result is None:
+        return None
+    payload = execution.result.structured_content
+    if not isinstance(payload, dict) or payload.get(SPAWN_MARKER) is not True:
+        return None
+    return payload
 
 
 def _outcome_for(exception: Exception) -> TurnOutcome:
@@ -2558,19 +3804,23 @@ def _normalize_post_parts(content: str | list[ContentPart]) -> list[ContentPart]
     return _POST_PARTS.validate_python(content)
 
 
-def _to_delta_event(event) -> AgentEvent | None:
+def _to_delta_event(conversation_id: str, event) -> AgentEvent | None:
     """Translate one client stream event into its agent delta/`*Start` mirror
     (None for raw/usage events with no agent-level equivalent)."""
     if event.type == "text_start":
-        return TextStart()
+        return TextStart(conversation_id=conversation_id)
     if event.type == "text_delta":
-        return TextDelta(text=event.delta)
+        return TextDelta(conversation_id=conversation_id, text=event.delta)
     if event.type == "thinking_start":
-        return ReasoningStart()
+        return ReasoningStart(conversation_id=conversation_id)
     if event.type == "thinking_delta":
-        return ReasoningDelta(text=event.delta)
+        return ReasoningDelta(conversation_id=conversation_id, text=event.delta)
     if event.type == "tool_call_start":
-        return ToolCallStart(tool_call_id=event.id, name=event.name)
+        return ToolCallStart(
+            conversation_id=conversation_id,
+            tool_call_id=event.id,
+            name=event.name,
+        )
     return None
 
 

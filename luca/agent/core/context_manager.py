@@ -7,7 +7,15 @@ only its durable results persist) owning five policies over the shared
 `Entry` abstraction. All five take the live `AgentSession` first, so one
 argument order describes the whole contract and every policy can see the same
 state — the active model included, which is what makes a real tokenizer
-implementable:
+implementable.
+
+TWO of the five also take a `conversation_id`, and the split is a decision
+rather than an oversight. `calculate_context` and `prune_entry` do NOT, because
+`context_tokens` is intrinsic to the ENTRY and shared by every conversation
+that references it. `process_tool_output` does NOT, because the execution it
+already receives carries `conversation_id` — a manager that wants to truncate a
+subagent's output harder than the main conversation's reads it from there. The
+compaction pair DOES, because compaction is a fact about one path:
 
 - `calculate_context(session, entry)` — the entry's intrinsic context-token
   count. Called by the runner on every new entry before `before_entry_written`
@@ -37,11 +45,12 @@ implementable:
   "truncate `bash` output but never `read`" expressible. It is IN TRANSITION:
   `status` is still RUNNING and `result` is not yet attached, so it must not
   be inspected for outcome.
-- `should_compact(session)` — has the active conversation crossed the point
-  where compaction is worth doing? Consulted at the top of every drive (and at
-  `start()` time, which is why this is SYNC). Unlike `calculate_context` this
-  one is MEANT to sum the path: it runs once per drive, not once per entry.
-- `compact(session, nodes, entry)` — the compaction itself: fill in a deep
+- `should_compact(session, conversation_id)` — has that conversation crossed
+  the point where compaction is worth doing? Consulted at the top of every
+  drive (and at `start()` time, which is why this is SYNC). Unlike
+  `calculate_context` this one is MEANT to sum the path: it runs once per
+  drive, not once per entry.
+- `compact(session, conversation_id, nodes, entry)` — the compaction itself: fill in a deep
   copy of `entry` and return a `CompactionPlan` describing the resulting
   conversation. The base raises `NotImplementedError` and the base
   `should_compact` returns False, so the default manager never compacts and
@@ -94,6 +103,7 @@ from .exceptions import AgentError
 from .models import (
     AgentSession,
     AssistantMessage,
+    ChildConversation,
     CompactionEntry,
     Entry,
     ExecutionResult,
@@ -128,8 +138,10 @@ class ContextManager:
         tool execution owns only its model-facing outcome (result content,
         else its structured error message), and is 0 while nonterminal; a
         compaction owns its summary `parts` (0 until they land, which is why
-        the runner recalculates when they do); a pruned entry owns its
-        replacement content. Markers own nothing.
+        the runner recalculates when they do); a child conversation owns its
+        RESULT and nothing of the child's own path (0 until it resolves, and
+        recalculated then); a pruned entry owns its replacement content.
+        Markers own nothing.
 
         Non-text content is counted separately by `_media_tokens`, so
         `_estimate_tokens` and `_model_facing_text` stay text-shaped and
@@ -178,10 +190,14 @@ class ContextManager:
 
     # ── compaction ───────────────────────────────────────────────────────────
 
-    def should_compact(self, session: AgentSession) -> bool:
-        """Has the active conversation crossed the point where compaction is
-        worth doing? Consulted at the top of every drive (and at `start()`
-        time, which is why this is SYNC).
+    def should_compact(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> bool:
+        """Has `conversation_id` crossed the point where compaction is worth
+        doing? Consulted at the top of every drive (and at `start()` time,
+        which is why this is SYNC).
 
         The threshold, the context sum and the window size are all yours —
         core has no context-total API, and `luca.client.catalog` carries
@@ -192,14 +208,18 @@ class ContextManager:
     async def compact(
         self,
         session: AgentSession,
+        conversation_id: str,
         nodes: tuple[str, ...],
         entry: CompactionEntry,
     ) -> CompactionPlan | None:
         """Fill in a DEEP COPY of `entry` and describe the resulting
         conversation.
 
-        `nodes` is THE PATH YOU MAY REWRITE: the active conversation's path
-        with this compaction's own `TurnStart` removed, ending with `entry`.
+        `nodes` is THE PATH YOU MAY REWRITE: `conversation_id`'s path with this
+        compaction's own `TurnStart` removed, ending with `entry`. It barely
+        needs the id — `nodes` already carries the work — but it takes it
+        anyway: the signature IS the contract, and adding a parameter later
+        breaks every implementor.
         `plan.nodes` may carry any of these ids, in any order, with new
         entries interleaved — and nothing else; an id outside this tuple is a
         plan rejection, so you never have to recognize or route around
@@ -212,9 +232,9 @@ class ContextManager:
         You own the LLM call end to end — its prompt, its model (record it in
         `entry.llm_config`), its messages. The turn middleware hooks
         deliberately do NOT fire for it. Never mutate `session`: the runner
-        refuses to commit if the active path moved under you, and the entry
-        you are handed is a copy precisely so a failed attempt cannot leave a
-        summary projecting onto an unchanged path."""
+        refuses to commit if the path moved under you, and the entry you are
+        handed is a copy precisely so a failed attempt cannot leave a summary
+        projecting onto an unchanged path."""
         raise NotImplementedError()
 
     # ── derivation helpers ───────────────────────────────────────────────────
@@ -247,6 +267,10 @@ class ContextManager:
             return ""
         if isinstance(entry, CompactionEntry):
             return _text_of(entry.parts or [])
+        if isinstance(entry, ChildConversation):
+            # What the child contributes to its PARENT is its result, and only
+            # that: the child's own conversation has its own window.
+            return _text_of(entry.execution_result.content) if entry.execution_result is not None else ""
         if isinstance(entry, PrunedEntry):
             return _text_of(entry.content)
         return ""
@@ -268,6 +292,8 @@ class ContextManager:
             return entry.result.content if entry.result is not None else []
         if isinstance(entry, CompactionEntry):
             return entry.parts or []
+        if isinstance(entry, ChildConversation):
+            return entry.execution_result.content if entry.execution_result is not None else []
         if isinstance(entry, PrunedEntry):
             return entry.content
         return []

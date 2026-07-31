@@ -47,7 +47,6 @@ from luca.agent.core.models import (
     ApprovalOption,
     ApprovalStatus,
     AssistantMessage,
-    Conversation,
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
@@ -83,6 +82,7 @@ from tests.agent.scenarios import (
     FakeToolRegistry,
     MultiplyTool,
     ReadFileTool,
+    conversation,
     make_session,
 )
 
@@ -108,6 +108,7 @@ class ExplodingRegistry(FakeToolRegistry):
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         raise RuntimeError("strategy down")
@@ -121,6 +122,7 @@ class UnresolvableRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         raise ToolNotFound(f"Unknown tool: {tool_execution.raw_tool_call.name!r}.")
@@ -137,10 +139,11 @@ class SessionRecordingRegistry(FakeToolRegistry):
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         self.sessions.append(session)
-        return await super().decide(session, tool_execution)
+        return await super().decide(session, conversation_id, tool_execution)
 
 
 # ── reaching the gate ──────────────────────────────────────────────────────────
@@ -165,7 +168,8 @@ async def test_pending_decision_pauses_runner_and_records_it():
                 parts=[TextContent(text="Add 1 and 2")],
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry([AddTool()], decisions=[PENDING_1000])
@@ -182,6 +186,7 @@ async def test_pending_decision_pauses_runner_and_records_it():
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -198,11 +203,11 @@ async def test_pending_decision_pauses_runner_and_records_it():
         }
     )
     assert events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth),
-        ApprovalRequired(executions=[gated]),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth),
+        ApprovalRequired(conversation_id="c1", executions=[gated]),
     ]
-    assert runner.awaiting_approval()
+    assert runner.blocked()
     assert runner.pending_approvals() == [gated]
     assert runner.session.entries["te1"] == gated
     # the ledger filed the spec once, under the id stamped on the execution
@@ -226,7 +231,8 @@ async def test_decide_is_handed_the_live_session():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = SessionRecordingRegistry([AddTool()], decisions=[PENDING_1000])
@@ -262,7 +268,8 @@ async def test_streaming_pauses_at_approval_gate():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -278,6 +285,7 @@ async def test_streaming_pauses_at_approval_gate():
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -294,12 +302,12 @@ async def test_streaming_pauses_at_approval_gate():
         }
     )
     assert events == [
-        ToolCallStart(tool_call_id="tc1", name="add"),
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth),
-        ApprovalRequired(executions=[gated]),
+        ToolCallStart(conversation_id="c1", tool_call_id="tc1", name="add"),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth),
+        ApprovalRequired(conversation_id="c1", executions=[gated]),
     ]
-    assert runner.awaiting_approval()
+    assert runner.blocked()
 
 
 async def test_denied_call_is_rejected_and_loop_continues():
@@ -318,7 +326,8 @@ async def test_denied_call_is_rejected_and_loop_continues():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -334,6 +343,7 @@ async def test_denied_call_is_rejected_and_loop_continues():
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -352,19 +362,20 @@ async def test_denied_call_is_rejected_and_loop_continues():
         }
     )
     assert events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=rejected,
             result_text="[tool execution rejected]",
             is_error=True,
         ),
-        TextBlock(text="Okay, I won't."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="Okay, I won't."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session.entries["te1"] == rejected
-    assert runner.session.active_conversation.status == ConversationStatus.IDLE
+    assert runner.session.get_conversation_status(runner.session.main_conversation_id).status == ConversationStatus.IDLE
 
 
 async def test_mixed_decisions_reject_and_execute_in_one_batch():
@@ -386,7 +397,8 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -405,6 +417,7 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
 
     birth1 = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -415,6 +428,7 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
     )
     birth2 = ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=1000,
         tool_call_id="tc2",
@@ -451,24 +465,26 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
     # the denial is terminal at decision time, so its ToolExecuted precedes
     # the allowed sibling's dispatch pair
     assert events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth1),
-        ToolCallReceived(tool_call_id="tc2", execution=birth2),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth1),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc2", execution=birth2),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc2",
             execution=rejected2,
             result_text="[tool execution rejected]",
             is_error=True,
         ),
-        ToolExecutionStarted(tool_call_id="tc1", execution=running1),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running1),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed1,
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="Only added."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="Only added."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session.entries["te1"] == completed1
     assert runner.session.entries["te2"] == rejected2
@@ -490,7 +506,8 @@ async def test_approval_context_lands_on_execution_and_reaches_strategy():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="read")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry([ReadFileTool()], decisions=[PENDING_1000])
@@ -507,6 +524,7 @@ async def test_approval_context_lands_on_execution_and_reaches_strategy():
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -560,7 +578,8 @@ async def test_allowed_call_that_cannot_be_resolved_records_not_found():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -576,6 +595,7 @@ async def test_allowed_call_that_cannot_be_resolved_records_not_found():
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -600,16 +620,17 @@ async def test_allowed_call_that_cannot_be_resolved_records_not_found():
         }
     )
     assert events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=not_found,
             result_text="Unknown tool: 'add'.",
             is_error=True,
         ),
-        TextBlock(text="No such tool."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="No such tool."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session.entries["te1"] == not_found
     assert runner.session.entries["te1"].dispatched is False
@@ -639,7 +660,8 @@ async def test_rerun_reasks_strategy_and_accumulates_decisions():
                 parts=[TextContent(text="Add 1 and 2")],
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
@@ -656,12 +678,13 @@ async def test_rerun_reasks_strategy_and_accumulates_decisions():
 
     async with runner.run() as run:  # pauses at the gate
         _ = [event async for event in run]
-    assert runner.awaiting_approval()
+    assert runner.blocked()
     async with runner.run() as run:  # NO exception: re-asks
         resume_events = [event async for event in run]
 
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -693,15 +716,16 @@ async def test_rerun_reasks_strategy_and_accumulates_decisions():
         }
     )
     assert resume_events == [
-        ToolExecutionStarted(tool_call_id="tc1", execution=running),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed,
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="It's 3."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It's 3."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session.entries["te1"] == completed
     # asked twice, each time with the then-current snapshot
@@ -731,7 +755,8 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     registry = FakeToolRegistry(
@@ -751,6 +776,7 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
 
     birth1 = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -761,6 +787,7 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
     )
     birth2 = ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=1000,
         tool_call_id="tc2",
@@ -794,19 +821,20 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
     )
     # the allowed sibling ran; only the deferred call holds the turn open
     assert first_events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=birth1),
-        ToolCallReceived(tool_call_id="tc2", execution=birth2),
-        ToolExecutionStarted(tool_call_id="tc1", execution=running1),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=birth1),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc2", execution=birth2),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running1),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed1,
             result_text="3",
             is_error=False,
         ),
-        ApprovalRequired(executions=[gated2]),
+        ApprovalRequired(conversation_id="c1", executions=[gated2]),
     ]
-    assert runner.awaiting_approval()
+    assert runner.blocked()
     assert runner.pending_approvals() == [gated2]
     assert runner.session.entries["te1"] == completed1
     assert len(faux.requests) == 1  # no second model call while te2 is open
@@ -825,13 +853,14 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
     )
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc2",
             execution=rejected2,
             result_text="[tool execution rejected]",
             is_error=True,
         ),
-        TextBlock(text="done"),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="done"),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     # te1 was decided ONCE (never re-asked once resolved); te2 twice
     assert registry.seen == [birth1, birth2, gated2]
@@ -852,7 +881,7 @@ async def test_loaded_gated_session_exposes_pending_approvals():
         now=1000,
     )
 
-    assert runner.awaiting_approval()
+    assert runner.blocked()
     assert runner.pending_approvals() == [session.entries["te1"]]
 
 
@@ -901,6 +930,7 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=500,
                 tool_call_id="tc1",
@@ -935,13 +965,15 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
             "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
         },
         usages={"c1": {"a2": Usage(conversation_id="c1", entry_id="a2")}},
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "a2", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -983,15 +1015,16 @@ async def test_cleared_execution_dispatches_before_any_llm_call_without_redecidi
         }
     )
     assert events == [
-        ToolExecutionStarted(tool_call_id="tc1", execution=running),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed,
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="It's 3."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It's 3."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     # a resolved call is NEVER re-decided
     assert registry.seen == []
@@ -1027,7 +1060,7 @@ async def test_undecided_session_self_heals_and_run_asks_strategy():
         now=1000,
     )
 
-    assert runner.pending()  # stale RUNNING self-healed; not AWAITING_APPROVAL
+    assert runner.busy()  # stale RUNNING self-healed; not AWAITING_APPROVAL
     async with runner.run() as run:
         events = [event async for event in run]
 
@@ -1055,7 +1088,7 @@ async def test_undecided_session_self_heals_and_run_asks_strategy():
 
 async def test_stale_running_status_self_heals_on_construction():
     session = STALE_RUNNING_SESSION.model_copy(deep=True)
-    assert session.active_conversation.status == ConversationStatus.RUNNING
+    assert session.get_conversation_status(session.main_conversation_id).status == ConversationStatus.BUSY
 
     runner = DeterministicRunner(
         session,
@@ -1064,7 +1097,7 @@ async def test_stale_running_status_self_heals_on_construction():
         now=1000,
     )
 
-    assert runner.pending()  # the open turn with a cleared call means: call run()
+    assert runner.busy()  # the open turn with a cleared call means: call run()
 
 
 # ── decide() failure ─────────────────────────────────────────────────────────
@@ -1086,7 +1119,8 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1104,6 +1138,7 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
     # the execution was persisted eagerly and stays unprocessed...
     birth = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1122,7 +1157,7 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
         ids=["a2", "tf"],
         now=1000,
     )
-    assert resumed.pending()
+    assert resumed.busy()
     async with resumed.run() as run:
         events = [event async for event in run]
 
@@ -1143,15 +1178,16 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
         }
     )
     assert events == [
-        ToolExecutionStarted(tool_call_id="tc1", execution=running),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed,
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="It's 3."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It's 3."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert resumed.idle()
 
@@ -1175,7 +1211,8 @@ async def test_gated_session_survives_restart_and_resumes():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1201,6 +1238,7 @@ async def test_gated_session_survives_restart_and_resumes():
 
     gated = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1216,7 +1254,7 @@ async def test_gated_session_survives_restart_and_resumes():
     # restored the execution's `tool_spec` cache from `tool_spec_id`
     assert reloaded.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
     assert reloaded.entries["te1"] == gated
-    assert resumed.awaiting_approval()
+    assert resumed.blocked()
     assert resumed.pending_approvals() == [gated]
 
     async with resumed.run() as run:
@@ -1239,15 +1277,16 @@ async def test_gated_session_survives_restart_and_resumes():
         }
     )
     assert events == [
-        ToolExecutionStarted(tool_call_id="tc1", execution=running),
+        ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=running),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=completed,
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="It's 3."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It's 3."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert resumed.idle()
     assert resumed.session.entries["te1"] == completed

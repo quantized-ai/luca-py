@@ -23,7 +23,8 @@ from luca.agent.core import ToolKind, ToolSpec
 | `name` | the name the model calls |
 | `description` | required — the client's wire tool type rejects null |
 | `input_schema` | required — the arguments as a JSON Schema dict |
-| `output_schema` | optional — the shape of the result the tool can produce, as a JSON Schema dict. Read by the application, never sent to the model |
+| `output_schema` | optional — the shape of the result the tool can produce, as a JSON Schema dict. Read by the application, never sent to the model — and by the framework in exactly one case (§6) |
+| `is_private` | keep this tool off the wire: the runtime may call it, the model may not (§6) |
 | `metadata` | free-form, registry-owned; never interpreted by the core |
 | `tool_kind` / `namespace` / `version` / `timeout_in_ms` | identity and deadline — §2 |
 
@@ -45,7 +46,8 @@ One type plays two roles: the **advertisement** sent to the model
 (`name` / `description` / `input_schema`) and the **identity snapshot** kept on
 a past execution, so a session whose tools were deleted from the codebase years
 ago still renders what it called. It carries no arguments — those live on
-`ToolExecution.raw_tool_call`.
+`ToolExecution.raw_tool_call`. A private tool is the one exception to the first
+role and none to the second (§6).
 
 > ⚠️ **`input_schema` is required and never `None`.** A tool that takes no
 > arguments advertises the empty object schema —
@@ -73,8 +75,12 @@ GET_WEATHER = ToolSpec(
 > ⚠️ **`output_schema` never reaches the model.** No provider accepts an output
 > schema on a function tool, so the adapter drops it like every other non-wire
 > field. It advertises to your application — a UI, another registry, an MCP
-> bridge mapping `outputSchema`. Declaring one is optional and changes no
-> framework behavior.
+> bridge mapping `outputSchema`.
+
+Declaring one changes no framework behavior with one exception: a schema that
+declares `is_subagent_spawn` marks the tool as a spawn tool, and the runner
+reads that before the model call to decide whether spawning is allowed at all
+([13](13-subagents.md)).
 
 ## 2. Kind, namespace, version — and the deadline
 
@@ -96,6 +102,10 @@ tool mid-run never moves an in-flight call's deadline.
 
 ## 3. A registry advertises specs
 
+Every method names the conversation it is answering for — a session can hold
+several at once ([13](13-subagents.md)), and a registry that keys its state by
+that id needs no lock.
+
 `get_tools` is a query, re-run fresh before every LLM call; the adapter
 projects each spec onto the wire tool the provider sees
 (`input_schema` → `parameters`, verbatim). Because a spec is plain data, a
@@ -112,20 +122,24 @@ from luca.agent.core import (
 SPECS = {READ_FILE.name: READ_FILE}
 
 class RemoteToolRegistry(ToolRegistry):
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+    async def get_tools(self, session: AgentSession, conversation_id: str) -> list[ToolSpec]:
         return list(SPECS.values())
 
-    async def create_execution(self, session: AgentSession, call: ToolCall) -> ToolExecution:
+    async def create_execution(
+        self, session: AgentSession, conversation_id: str, call: ToolCall
+    ) -> ToolExecution:
         return ToolExecution(              # a birth DRAFT: no id, no timestamps
             tool_call_id=call.id,
             raw_tool_call=call,
             tool_spec=SPECS.get(call.name),
         )
 
-    async def decide(self, session: AgentSession, execution: ToolExecution) -> ApprovalDecision:
+    async def decide(
+        self, session: AgentSession, conversation_id: str, execution: ToolExecution
+    ) -> ApprovalDecision:
         return ApprovalDecision(decision=ApprovalOption.ALLOW)
 
-    async def prepare(self, session: AgentSession, execution: ToolExecution):
+    async def prepare(self, session: AgentSession, conversation_id: str, execution: ToolExecution):
         call = execution.raw_tool_call
         spec = SPECS.get(call.name)
         if spec is None:
@@ -210,4 +224,38 @@ You never have to handle these paths: the
 [`ConversationProjector`](10-projection.md) derives a correlated tool message
 for every terminal status, so the model always sees exactly one output per call
 it made. Failures are isolated — one bad call never touches its siblings.
+
+## 6. Private tools
+
+`is_private=True` keeps a spec off the wire while leaving everything else about
+it unchanged. The runtime can call it; the model cannot see it and cannot call
+it.
+
+```python
+SUMMARIZE = ToolSpec(
+    name="summarize_subagent_result",
+    description="Turn a finished subagent's transcript into one result.",
+    input_schema={"type": "object", "properties": {"conversation_id": {"type": "string"}}},
+    is_private=True,
+)
+```
+
+| Where | What happens |
+|---|---|
+| the tool list sent to the model | filtered out, on every call |
+| a model call naming it anyway | `NOT_FOUND` — "Unknown tool: 'x'." — as if it did not exist |
+| a call the RUNTIME makes | dispatched normally: same registry, same approval, same durable `ToolExecution` |
+| the transcript, events, `pretty_print` | an ordinary execution, indistinguishable |
+
+Keep advertising it from `get_tools` — that is how the runtime resolves it. The
+filter is the runner's job, at the wire boundary only.
+
+> ⚠️ **Privacy is not authorization.** A private tool the model names is refused
+> because it is invisible, not because it was checked. Anything that must be
+> denied gets denied by the approval policy ([05](05-permissions.md)).
+
+This exists for one shape today: the framework needs to run a tool the model
+never asked for — the one that turns a finished subagent into its parent's
+answer ([13](13-subagents.md)).
+
 Next: [`04-runner.md`](04-runner.md).

@@ -65,7 +65,6 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Conversation,
-    ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -116,6 +115,36 @@ def spec(name: str, **over) -> ToolSpec:
     }
     fields.update(over)
     return ToolSpec(**fields)
+
+
+def conversation(
+    conversation_id: str,
+    nodes: list[str] | None = None,
+    *,
+    created_at: int = 500,
+    updated_at: int = 500,
+    **over,
+) -> Conversation:
+    """A `Conversation` for a precondition literal.
+
+    `created_at` / `updated_at` default to the 500 every literal here uses, and
+    `previous_conversation_id` / `depth` stay at their defaults unless a test
+    is about them — so an ordinary literal reads
+    `conversation("c1", ["u1", "ts"])` and says only what it means."""
+    return Conversation(
+        id=conversation_id,
+        nodes=list(nodes or []),
+        created_at=created_at,
+        updated_at=updated_at,
+        **over,
+    )
+
+
+def main_conversation(session: AgentSession) -> Conversation:
+    """A session's main conversation — `session.conversations[
+    session.main_conversation_id]`, which is what an assertion about "the
+    conversation" means now that a session holds several."""
+    return session.conversations[session.main_conversation_id]
 
 
 def make_session(**fields) -> AgentSession:
@@ -175,12 +204,17 @@ class FakeToolRegistry(ToolRegistry):
         self.seen: list[ToolExecution] = []
         self.prepared: list[str] = []
 
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+    async def get_tools(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[ToolSpec]:
         return [tool.get_tool_spec() for tool in self.tools]
 
     async def create_execution(
         self,
         session: AgentSession,
+        conversation_id: str,
         call: ToolCall,
     ) -> ToolExecution:
         def draft(status, tool_spec=None, error=None, extras=None):
@@ -223,6 +257,7 @@ class FakeToolRegistry(ToolRegistry):
                 extras["approval_context"] = await tool.get_approval_context(
                     args.model_dump(),
                     session,
+                    conversation_id,
                 )
             except Exception as exc:
                 return draft(
@@ -243,6 +278,7 @@ class FakeToolRegistry(ToolRegistry):
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         self.seen.append(tool_execution)
@@ -256,6 +292,7 @@ class FakeToolRegistry(ToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         name = tool_execution.raw_tool_call.name
@@ -278,6 +315,7 @@ class FakeToolRegistry(ToolRegistry):
             return await tool.execute(
                 payload,
                 session,
+                conversation_id,
                 cancellation_token=cancellation_token,
             )
 
@@ -318,7 +356,7 @@ class FakeContextManager(ContextManager):
         self.seen: list[tuple] = []
         self.should_calls = 0
 
-    def should_compact(self, session: AgentSession) -> bool:
+    def should_compact(self, session: AgentSession, conversation_id: str) -> bool:
         self.should_calls += 1
         if isinstance(self.should, list):
             if len(self.should) > 1:
@@ -329,6 +367,7 @@ class FakeContextManager(ContextManager):
     async def compact(
         self,
         session: AgentSession,
+        conversation_id: str,
         nodes: tuple[str, ...],
         entry: CompactionEntry,
     ) -> CompactionPlan | None:
@@ -412,20 +451,25 @@ class FakeTool:
     Args: ClassVar[type[BaseModel]]
     tool_kind: ClassVar[ToolKind] = ToolKind.OTHER
     timeout_in_ms: ClassVar[int | None] = None
+    is_private: ClassVar[bool] = False
+    output_schema: ClassVar[dict | None] = None
 
     def get_tool_spec(self) -> ToolSpec:
         return ToolSpec(
             name=self.name,
             description=self.description,
             input_schema=self.Args.model_json_schema(),
+            output_schema=self.output_schema,
             tool_kind=self.tool_kind,
             timeout_in_ms=self.timeout_in_ms,
+            is_private=self.is_private,
         )
 
     async def _execute(
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -435,12 +479,14 @@ class FakeTool:
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         output = await self._execute(
             args,
             session,
+            conversation_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -455,6 +501,7 @@ class AddTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -470,6 +517,7 @@ class MultiplyTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -489,6 +537,7 @@ class CapturingTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -508,7 +557,7 @@ class ReadFileTool(FakeTool):
     Args = PathArgs
     tool_kind = ToolKind.READ
 
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession, conversation_id: str) -> dict:
         return {
             "resources": [args["path"]],
             "preview": f"Read {args['path']}",
@@ -519,6 +568,7 @@ class ReadFileTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -534,10 +584,31 @@ class RaisingTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         raise ValueError("kaboom")
+
+
+class PrivateTool(FakeTool):
+    """Runtime-only: the RUNTIME resolves and dispatches it, the model is never
+    shown it, and a model call naming it is refused."""
+
+    name = "secret"
+    description = "Never advertised."
+    Args = BinaryArgs
+    is_private = True
+
+    async def _execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> str:
+        return "ran privately"
 
 
 class RichErrorTool(FakeTool):
@@ -551,6 +622,7 @@ class RichErrorTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -571,6 +643,7 @@ READ_FILE_SPEC = ReadFileTool().get_tool_spec()
 CAPTURE_SPEC = CapturingTool().get_tool_spec()
 BOOM_SPEC = RaisingTool().get_tool_spec()
 REPORT_SPEC = RichErrorTool().get_tool_spec()
+SECRET_SPEC = PrivateTool().get_tool_spec()
 
 
 # ── mid-state session literals ─────────────────────────────────────────────────
@@ -597,6 +670,7 @@ GATED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=500,
             tool_call_id="tc1",
@@ -611,13 +685,15 @@ GATED_SESSION = make_session(
             updated_at=500,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1"],
-        created_at=500,
-        updated_at=500,
-        status=ConversationStatus.AWAITING_APPROVAL,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1"],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -644,6 +720,7 @@ CLEARED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=500,
             tool_call_id="tc1",
@@ -659,13 +736,15 @@ CLEARED_SESSION = make_session(
             updated_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1"],
-        created_at=500,
-        updated_at=600,
-        status=ConversationStatus.PENDING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1"],
+            created_at=500,
+            updated_at=600,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -678,12 +757,10 @@ UNDECIDED_SESSION = GATED_SESSION.model_copy(deep=True, update={"id": "s_undecid
 UNDECIDED_SESSION.entries["te1"] = UNDECIDED_SESSION.entries["te1"].model_copy(
     update={"approval_decisions": [], "approval_status": None, "updated_at": None},
 )
-UNDECIDED_SESSION.active_conversation.status = ConversationStatus.RUNNING
 
 # The cleared session as a crashed process would have left it: the persisted
 # status is a stale RUNNING that construction must self-heal to PENDING.
 STALE_RUNNING_SESSION = CLEARED_SESSION.model_copy(deep=True, update={"id": "s_stale"})
-STALE_RUNNING_SESSION.active_conversation.status = ConversationStatus.RUNNING
 
 # A parked cancel: the user abandoned the turn at the approval gate (cancel()
 # appended the durable CancelRequested after the gated execution) and the
@@ -695,9 +772,8 @@ CANCEL_PARKED_SESSION.entries["cr"] = CancelRequested(
     parent_id="te1",
     created_at=600,
 )
-CANCEL_PARKED_SESSION.active_conversation.nodes.append("cr")
-CANCEL_PARKED_SESSION.active_conversation.updated_at = 600
-CANCEL_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
+main_conversation(CANCEL_PARKED_SESSION).nodes.append("cr")
+main_conversation(CANCEL_PARKED_SESSION).updated_at = 600
 
 # A failed turn as the engine leaves it: the LLM call timed out, the bracket
 # was closed (TurnFinish carries the outcome + error) and the exception
@@ -720,13 +796,15 @@ POST_FAILURE_SESSION = make_session(
             error="completion exceeded total_timeout=0.05s",
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "tf"],
-        created_at=500,
-        updated_at=500,
-        status=ConversationStatus.PENDING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "tf"],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -754,6 +832,7 @@ RUNNING_ORPHAN_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=500,
             tool_call_id="tc1",
@@ -769,13 +848,15 @@ RUNNING_ORPHAN_SESSION = make_session(
             updated_at=500,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1"],
-        created_at=500,
-        updated_at=500,
-        status=ConversationStatus.RUNNING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1"],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -811,6 +892,7 @@ RICH_SESSION = make_session(
         # the pruned referent: in the store, on no path
         "te0": ToolExecution(
             id="te0",
+            conversation_id="c1",
             created_at=400,
             tool_call_id="tc0",
             raw_tool_call=ToolCall(
@@ -874,6 +956,7 @@ RICH_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=500,
             tool_call_id="tc1",
@@ -891,6 +974,7 @@ RICH_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=500,
             tool_call_id="tc2",
@@ -965,6 +1049,7 @@ RICH_SESSION = make_session(
         ),
         "te3": ToolExecution(
             id="te3",
+            conversation_id="c1",
             parent_id="a3",
             created_at=500,
             tool_call_id="tc3",
@@ -1037,51 +1122,47 @@ RICH_SESSION = make_session(
             ),
         },
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=[
-            "cmp0",
-            "u1",
-            "ts1",
-            "a1",
-            "te1",
-            "te2",
-            "pr1",
-            "a2",
-            "tf1",
-            "u2",
-            "ts2",
-            "tf2",
-            "u3",
-            "ts3",
-            "a3",
-            "te3",
-            "cr1",
-            "tf3",
-            "u4",
-        ],
-        created_at=500,
-        updated_at=500,
-        status=ConversationStatus.PENDING,
-    ),
-    conversation_history=[
-        Conversation(
-            id="c0",
-            nodes=["u0", "a0"],
-            created_at=400,
-            updated_at=400,
-            status=ConversationStatus.IDLE,
-        ),
-    ],
+    conversations={
+        "c1": conversation(
+            "c1",
+            [
+                "cmp0",
+                "u1",
+                "ts1",
+                "a1",
+                "te1",
+                "te2",
+                "pr1",
+                "a2",
+                "tf1",
+                "u2",
+                "ts2",
+                "tf2",
+                "u3",
+                "ts3",
+                "a3",
+                "te3",
+                "cr1",
+                "tf3",
+                "u4",
+            ],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
+# `c0` is the conversation `cmp0` archived. It stays a first-class row — usage
+# records key on it (see `usages` above) — reachable from `c1` backwards.
+RICH_SESSION.conversations["c0"] = conversation("c0", ["u0", "a0"], created_at=400, updated_at=400)
+main_conversation(RICH_SESSION).previous_conversation_id = "c0"
 
 # The same conversation with the trailing question answered — nothing is
 # queued, so a compaction here is the whole drive. Derived status: IDLE.
 RICH_IDLE_SESSION = RICH_SESSION.model_copy(deep=True, update={"id": "s_rich_idle"})
 RICH_IDLE_SESSION.entries.pop("u4")
-RICH_IDLE_SESSION.active_conversation.nodes.remove("u4")
-RICH_IDLE_SESSION.active_conversation.status = ConversationStatus.IDLE
+main_conversation(RICH_IDLE_SESSION).nodes.remove("u4")
 
 # `schedule_compaction()` as it lands on disk: the bracket and the entry are
 # durable, nothing has started. Derived status: PENDING — an open bracket
@@ -1101,8 +1182,8 @@ COMPACTION_SCHEDULED_SESSION.entries["cmp"] = CompactionEntry(
     created_at=600,
     source=CompactionSource.USER,
 )
-COMPACTION_SCHEDULED_SESSION.active_conversation.nodes += ["ts_c", "cmp"]
-COMPACTION_SCHEDULED_SESSION.active_conversation.updated_at = 600
+main_conversation(COMPACTION_SCHEDULED_SESSION).nodes += ["ts_c", "cmp"]
+main_conversation(COMPACTION_SCHEDULED_SESSION).updated_at = 600
 
 # A crash MID-SUMMARY: `started_at` is stamped, `parts` never landed, and the
 # persisted status is a stale RUNNING that construction self-heals. The next
@@ -1114,7 +1195,6 @@ COMPACTION_INTERRUPTED_SESSION = COMPACTION_SCHEDULED_SESSION.model_copy(
 COMPACTION_INTERRUPTED_SESSION.entries["cmp"] = COMPACTION_INTERRUPTED_SESSION.entries["cmp"].model_copy(
     update={"started_at": 600},
 )
-COMPACTION_INTERRUPTED_SESSION.active_conversation.status = ConversationStatus.RUNNING
 
 # The user cancelled a scheduled compaction and the process stopped before any
 # drive consumed it. The next run() is the FLUSH: close the bracket, no policy
@@ -1128,8 +1208,7 @@ COMPACTION_CANCEL_PARKED_SESSION.entries["cr"] = CancelRequested(
     parent_id="cmp",
     created_at=700,
 )
-COMPACTION_CANCEL_PARKED_SESSION.active_conversation.nodes.append("cr")
-COMPACTION_CANCEL_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
+main_conversation(COMPACTION_CANCEL_PARKED_SESSION).nodes.append("cr")
 
 # A compaction that FAILED and closed. The bracket is closed, so it is never
 # retried — and the skip rule derives IDLE from the turn before it, which is
@@ -1159,9 +1238,8 @@ COMPACTION_FAILED_SESSION.entries["tf_c"] = TurnFinish(
     outcome=TurnOutcome.ERRORED,
     error="the policy raised",
 )
-COMPACTION_FAILED_SESSION.active_conversation.nodes += ["ts_c", "cmp", "tf_c"]
-COMPACTION_FAILED_SESSION.active_conversation.updated_at = 700
-COMPACTION_FAILED_SESSION.active_conversation.status = ConversationStatus.IDLE
+main_conversation(COMPACTION_FAILED_SESSION).nodes += ["ts_c", "cmp", "tf_c"]
+main_conversation(COMPACTION_FAILED_SESSION).updated_at = 700
 
 # A no-op compaction closed behind a queued question, so `u4` is no longer the
 # leaf. Without the skip rule this session derives IDLE and the question is
@@ -1178,9 +1256,8 @@ COMPACTION_BURIED_SESSION.entries["tf_c"] = TurnFinish(
     parent_id="cmp",
     created_at=700,
 )
-COMPACTION_BURIED_SESSION.active_conversation.nodes.append("tf_c")
-COMPACTION_BURIED_SESSION.active_conversation.updated_at = 700
-COMPACTION_BURIED_SESSION.active_conversation.status = ConversationStatus.PENDING
+main_conversation(COMPACTION_BURIED_SESSION).nodes.append("tf_c")
+main_conversation(COMPACTION_BURIED_SESSION).updated_at = 700
 
 # A COMMITTED transition as it lands on disk: `c1` archived with the bracket
 # it ran in, `c2` active over the summary plus the question it kept. Every
@@ -1237,15 +1314,18 @@ POST_COMPACTION_SESSION.usages["c1"]["cmp"] = Usage(
     output=40,
     total_tokens=540,
 )
-_OUTGOING = POST_COMPACTION_SESSION.active_conversation
+# The transition: `c1` keeps the bracket it ran in and stays in the catalog;
+# `c2` is installed over the summary plus the question it kept, names `c1` as
+# its predecessor, and becomes the main conversation. Nothing is destroyed and
+# nothing moves — only the NAME moves.
+_OUTGOING = main_conversation(POST_COMPACTION_SESSION)
 _OUTGOING.nodes += ["ts_c", "cmp", "tf_c"]
 _OUTGOING.updated_at = 700
-_OUTGOING.status = ConversationStatus.IDLE
-POST_COMPACTION_SESSION.conversation_history.append(_OUTGOING)
-POST_COMPACTION_SESSION.active_conversation = Conversation(
-    id="c2",
-    nodes=["cmp", "u4"],
+POST_COMPACTION_SESSION.conversations["c2"] = conversation(
+    "c2",
+    ["cmp", "u4"],
     created_at=700,
     updated_at=700,
-    status=ConversationStatus.PENDING,
+    previous_conversation_id="c1",
 )
+POST_COMPACTION_SESSION.main_conversation_id = "c2"

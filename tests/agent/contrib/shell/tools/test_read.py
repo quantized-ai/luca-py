@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from luca.agent.contrib.resource_permissions import ResourcePermission
 from luca.agent.contrib.shell import FileReadTracker, ReadTool
 from luca.agent.core import ImageBase64, ImageContent
+from tests.agent.contrib.shell.conftest import CONVERSATION
 
 
 def make_tool(tmp_path, tracker=None) -> ReadTool:
@@ -54,7 +55,7 @@ async def test_successful_read_records_the_file_on_the_tracker(tmp_path, run):
 
     await run(make_tool(tmp_path, tracker), {"file_path": "notes.txt"})
 
-    assert tracker.was_read(tmp_path / "notes.txt")
+    assert tracker.was_read(CONVERSATION, tmp_path / "notes.txt")
 
 
 # ── scenario 2: offset and limit ──────────────────────────────────────────────

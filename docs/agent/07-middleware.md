@@ -60,12 +60,14 @@ class AgentMiddlewareMixin:
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,
         AssistantMessage, ToolExecution, TurnStart, TurnFinish,
-        CancelRequested, CompactionEntry) AND every update to the two MUTABLE
-        entry types: a `ToolExecution` (approval changes, the RUNNING
-        transition, cancellation stamps, terminal outcomes) and a
+        CancelRequested, CompactionEntry, ChildConversation) AND every update
+        to the three MUTABLE entry types: a `ToolExecution` (approval changes,
+        the RUNNING transition, cancellation stamps, terminal outcomes), a
         `CompactionEntry` (the `started_at` stamp, and the summary landing at
-        the commit point). Return the (possibly modified) entry — add
-        metadata, stamp external ids, mutate fields before persistence."""
+        the commit point), and a `ChildConversation` (its `execution_result`
+        landing once the subagent finishes). Return the (possibly modified)
+        entry — add metadata, stamp external ids, mutate fields before
+        persistence."""
         return entry
 
     def before_llm_call(
@@ -272,7 +274,24 @@ class RedactResults:
 > return — statuses, results, errors, timestamps included. It performs no
 > defensive repair; unusual authored state is yours to own.
 
-## 5. Ordering
+## 5. Middleware is conversation-blind
+
+No hook receives a `conversation_id`. With subagents running
+([13](13-subagents.md)) that means a hook cannot tell which conversation it is
+firing for, and hooks from several conversations interleave on one event loop.
+
+| What that costs you | What to do |
+|---|---|
+| `before_entry_written` cannot attribute an entry to a conversation | a `ToolExecution` carries `execution.conversation_id`; nothing else does |
+| the per-LLM-call hooks fire once per call in EVERY conversation | a turn-count router or a trailing reminder written for "the turn" now also rewrites a subagent's request |
+| hook instances are shared | keep no per-call state on `self`; a field written in `before_llm_call` and read in `after_llm_response` is a race |
+
+> ⚠️ **No error tells you.** Nothing in `luca/` implements a middleware hook, so
+> this is a missing capability rather than a broken one — but an application
+> that shipped a hook assuming one conversation gets wrong behavior silently
+> once subagents are switched on.
+
+## 6. Ordering
 
 Every hook runs through the whole list in order; `middleware[n]`'s output is
 `middleware[n+1]`'s input. There is **no** reverse ordering, even for
@@ -289,9 +308,12 @@ middleware=[AddSuffix("-preview"), AddSuffix("-2025")]
 
 ## Calling the build methods directly
 
-The per-call hooks are driven by public runner methods you can also call in tests
-or subclasses: `build_model_string(llm_cfg)`, `await build_tool_list()`,
-`build_messages()` *(no hook — delegates to the projector)*,
-`build_system_message()` *(no hook — assembler only)*, and `prepare_llm_call()`
-(runs `before_llm_call` after the builders). Next:
-[`08-runtime-config.md`](08-runtime-config.md).
+The per-call hooks are driven by public runner methods you can also call in
+tests or subclasses. Each names the conversation it builds for:
+`build_model_string(llm_cfg)`, `await resolve_tool_specs(conversation_id)` then
+`build_tool_list(conversation_id, specs)` (the split is what lets the private
+filter and the wire conversion happen in one place),
+`build_messages(conversation_id)` *(no hook — delegates to the projector)*,
+`build_system_message(conversation_id)` *(no hook — assembler only)*, and
+`prepare_llm_call(conversation_id)` (runs `before_llm_call` after the builders).
+Next: [`08-runtime-config.md`](08-runtime-config.md).

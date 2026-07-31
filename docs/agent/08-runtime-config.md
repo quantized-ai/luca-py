@@ -49,8 +49,8 @@ with zero grace, and the runner awaits the killed task's unwinding so a
 (sync I/O, a CPU spin) cannot be interrupted and will ignore the cancel until it
 returns; push blocking work into `asyncio.to_thread`.
 
-A model call that times out closes the turn `TIMED_OUT` and re-raises (status →
-`PENDING`, retry-ready). See [`contrib/tools/`](contrib/tools/README.md) §7 for
+A model call that times out closes the turn `TIMED_OUT` and re-raises; the
+conversation is then `IDLE` — a closed turn — so recovering means posting again. See [`contrib/tools/`](contrib/tools/README.md) §7 for
 the cooperative side of tool cancellation.
 
 ## Step limits
@@ -61,7 +61,7 @@ Two ceilings guard runaway loops:
 | Field | Behavior when reached |
 |---|---|
 | `soft_max_steps` | The next model call gets `tool_choice="none"` (if `limit_tool_choice_on_soft_max_steps_reached`, default `True`) — the model must answer in text, ending the turn gracefully. |
-| `hard_max_steps` | The turn closes immediately with `TurnOutcome.ERRORED` (status → `PENDING`, retry-ready). A hard stop, not a graceful one. |
+| `hard_max_steps` | The turn closes immediately with `TurnOutcome.ERRORED`. A hard stop, not a graceful one. |
 
 Set `soft` below `hard` so the agent gets a chance to wrap up before the hard cut.
 Setting them **equal** (both > 0) emits a `UserWarning` — hard prevails, so the
@@ -70,6 +70,26 @@ soft stop never happens.
 ```python
 RuntimeConfig(soft_max_steps=20, hard_max_steps=30)   # nudge at 20, force-stop at 30
 ```
+
+## Subagents
+
+Off by default. Switching them on is **configuration, not installation** —
+installing the spawn tool changes nothing until this says yes
+([13](13-subagents.md)).
+
+| Field | Effect |
+|---|---|
+| `subagents_enabled` | `False` by default. The gate every spawn is checked against |
+| `subagents_max_depth` | how deep the tree may go; `1` (the only supported value in V0) means the main conversation spawns and a subagent does not |
+| `subagent_soft_max_steps` | soft step ceiling for a SUBAGENT's turn; `None` falls back to `soft_max_steps` |
+| `subagent_hard_max_steps` | the same for the hard ceiling |
+
+```python
+RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagent_hard_max_steps=20)
+```
+
+> ⚠️ **A subagent is never compaction-checked in V0**, so its own step ceiling
+> is what stops one growing without limit. Set it if a subagent can loop.
 
 ## Doom-loop detection
 

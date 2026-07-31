@@ -25,7 +25,6 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
-    Conversation,
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
@@ -51,6 +50,8 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    conversation,
+    main_conversation,
     make_session,
 )
 
@@ -62,6 +63,7 @@ ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 # `tool_spec_id`, so every persisted copy carries the id too.
 ADD_BIRTH = ToolExecution(
     id="te1",
+    conversation_id="c1",
     parent_id="a1",
     created_at=1000,
     tool_call_id="tc1",
@@ -97,17 +99,18 @@ ADD_GATED = ADD_BIRTH.model_copy(
 
 # the event list of the standard one-tool-round turn used throughout
 TOOL_TURN_EVENTS = [
-    FinishReason(finish_reason="tool_use"),
-    ToolCallReceived(tool_call_id="tc1", execution=ADD_BIRTH),
-    ToolExecutionStarted(tool_call_id="tc1", execution=ADD_RUNNING),
+    FinishReason(conversation_id="c1", finish_reason="tool_use"),
+    ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=ADD_BIRTH),
+    ToolExecutionStarted(conversation_id="c1", tool_call_id="tc1", execution=ADD_RUNNING),
     ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=ADD_FINAL,
         result_text="3",
         is_error=False,
     ),
-    TextBlock(text="It's 3."),
-    FinishReason(finish_reason="stop"),
+    TextBlock(conversation_id="c1", text="It's 3."),
+    FinishReason(conversation_id="c1", finish_reason="stop"),
 ]
 
 # the same turn resumed after a suspend at the tool-call boundary: the
@@ -131,7 +134,8 @@ async def test_lazy_handle_creation_is_a_noop():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -143,8 +147,8 @@ async def test_lazy_handle_creation_is_a_noop():
 
     discarded = runner.run()  # never driven: no work, no validation, no guard
 
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1"]
     assert faux.requests == []
     # a second handle drives normally — the discarded one held nothing
     result = await runner.run()
@@ -155,7 +159,8 @@ async def test_lazy_handle_creation_is_a_noop():
 async def test_run_on_idle_session_raises_at_first_drive():
     session = make_session(
         id="s_idle",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        conversations={"c1": conversation("c1", [], created_at=900, updated_at=900)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(session, now=1000)
@@ -169,7 +174,8 @@ async def test_run_on_idle_session_raises_at_first_drive():
 async def test_start_on_idle_session_raises_at_call_time():
     session = make_session(
         id="s_idle_eager",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        conversations={"c1": conversation("c1", [], created_at=900, updated_at=900)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(session, now=1000)
@@ -190,7 +196,8 @@ def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -207,8 +214,8 @@ def test_start_outside_a_running_loop_raises_and_leaves_the_runner_usable():
     # again — not the one-engine AgentError a leaked guard would produce)
     with pytest.raises(RuntimeError):
         runner.start()
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1"]
 
 
 async def test_second_drive_while_a_run_is_live_raises():
@@ -227,7 +234,8 @@ async def test_second_drive_while_a_run_is_live_raises():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -258,7 +266,8 @@ async def test_iteration_outside_the_context_manager_raises():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(session, provider=FauxProvider(), now=1000)
@@ -281,7 +290,8 @@ async def test_eager_iteration_outside_the_context_manager_raises():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -311,7 +321,8 @@ async def test_await_twice_returns_the_cached_result():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -346,7 +357,8 @@ async def test_await_inside_the_block_after_partial_iteration_drives_to_the_stop
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -381,7 +393,8 @@ async def test_await_returns_completed_result_at_idle_stop():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -416,7 +429,8 @@ async def test_await_returns_pause_result_at_approval_stop():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -430,11 +444,11 @@ async def test_await_returns_pause_result_at_approval_stop():
     result = await runner.run()
 
     assert result == RunResult(
-        status=ConversationStatus.AWAITING_APPROVAL,
+        status=ConversationStatus.BLOCKED,
         outcome=None,
         pending_approvals=[ADD_GATED],
     )
-    assert runner.awaiting_approval()
+    assert runner.blocked()
 
 
 # ── suspend: break / exit the lazy block ─────────────────────────────────────
@@ -456,7 +470,8 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -473,8 +488,8 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
 
     # nothing new recorded by the exit; the status re-derived (no stale
     # RUNNING) and record+create were atomic: the execution exists undecided
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "a1", "te1"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1"]
     assert runner.session.entries["te1"] == ADD_BIRTH
 
     async with runner.run() as resumed:
@@ -500,7 +515,8 @@ async def test_suspended_session_cold_resumes_after_reload():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -528,7 +544,7 @@ async def test_suspended_session_cold_resumes_after_reload():
     # execution's inline copy is restored from `tool_spec_id` on load
     assert resumed.session.tool_specs == {ADD_SPEC.spec_id(): ADD_SPEC}
     assert resumed.session.entries["te1"] == ADD_BIRTH
-    assert resumed.pending()
+    assert resumed.busy()
 
     async with resumed.run() as run:
         events = [event async for event in run]
@@ -553,7 +569,8 @@ async def test_finalized_suspended_handle_rejects_await_and_reentry():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -587,7 +604,8 @@ async def test_completed_lazy_run_still_answers_await_after_exit():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -600,7 +618,10 @@ async def test_completed_lazy_run_still_answers_await_after_exit():
     async with runner.run() as run:
         events = [event async for event in run]
 
-    assert events == [TextBlock(text="Hello!"), FinishReason(finish_reason="stop")]
+    assert events == [
+        TextBlock(conversation_id="c1", text="Hello!"),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
     assert (await run).outcome == TurnOutcome.COMPLETED  # cached, not re-driven
     assert len(faux.requests) == 1
 
@@ -624,7 +645,8 @@ async def test_eager_run_completes_without_observation():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -639,7 +661,7 @@ async def test_eager_run_completes_without_observation():
 
     assert result.outcome == TurnOutcome.COMPLETED
     assert runner.idle()
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "u1",
         "ts",
         "a1",
@@ -661,7 +683,8 @@ async def test_eager_empty_block_runs_to_completion_and_exit_joins():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -693,7 +716,8 @@ async def test_eager_late_consumer_sees_the_full_history_from_event_zero():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -728,7 +752,8 @@ async def test_eager_break_does_not_stop_the_agent_and_the_cursor_continues():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -768,7 +793,8 @@ async def test_eager_background_exception_surfaces_on_join_and_iteration():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -807,7 +833,8 @@ async def test_on_event_sync_callback_sees_every_event_of_an_awaited_run():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -836,7 +863,8 @@ async def test_on_event_async_callback_is_awaited_inline():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -853,7 +881,10 @@ async def test_on_event_async_callback_is_awaited_inline():
     result = await runner.start(on_event=on_event)
 
     assert result.outcome == TurnOutcome.COMPLETED
-    assert seen == [TextBlock(text="Hello!"), FinishReason(finish_reason="stop")]
+    assert seen == [
+        TextBlock(conversation_id="c1", text="Hello!"),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
 
 
 async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complete():
@@ -868,7 +899,8 @@ async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complet
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -888,7 +920,7 @@ async def test_on_event_exception_after_the_final_answer_leaves_the_turn_complet
     # before the first event was delivered: the crash cost only the event
     # delivery, never a duplicate LLM call
     assert runner.idle()
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "a1", "tf"]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "tf"]
     assert runner.session.entries["tf"].outcome == TurnOutcome.COMPLETED
     assert len(faux.requests) == 1
 
@@ -909,7 +941,8 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -928,8 +961,8 @@ async def test_on_event_exception_mid_tool_round_crashes_resumably():
 
     # crash on the first event of an UNFINISHED round: open bracket, no
     # TurnFinish, derived status — resumable
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "a1", "te1"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1"]
 
     async with runner.run() as resumed:
         events = [event async for event in resumed]

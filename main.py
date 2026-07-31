@@ -3,13 +3,15 @@
 A thin launcher over `luca.agent.contrib.tui` — the full-screen agent chat:
 transcript, live streaming, modal tool approvals, Esc cancellation, per-run
 session persistence. The agent wiring (shell + memory plugins, the demo math
-tools, one shared permission strategy) lives in the tui package.
+tools, one shared permission strategy) lives in the tui package. `--subagents`
+adds the subagent tools and turns the capability on for the session.
 
 Usage:
     uv run python main.py                          # start a fresh session
     uv run python main.py --faux                   # offline scripted demo, no key
     uv run python main.py --conversation <id>      # resume <id>.json
     uv run python main.py --conversation <id> --fork  # branch into a new session
+    uv run python main.py --subagents              # let it spawn parallel subagents
     uv run python main.py --no-streaming           # block-level rendering
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 

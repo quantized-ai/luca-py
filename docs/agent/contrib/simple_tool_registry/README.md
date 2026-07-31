@@ -24,20 +24,35 @@ registry = SimpleToolRegistry(tools=TOOLS, permission_policy=YoloPermissionPolic
 runner = AgentSessionRunner(session, tool_registry=registry)
 ```
 
-What it does per contract method — all four `async`, session first:
+What it does per contract method — all four `async`, session first, the
+conversation second:
 
 | Method | Behavior |
 |---|---|
-| `get_tools(session)` | one `ToolSpec` per tool, from `Tool.get_tool_spec()` |
-| `create_execution(session, call)` | the classic preflight: resolve the name (miss → `NOT_FOUND` birth), validate `Args` (failure → `INVALID` birth), collect the duck-typed `get_approval_context(args, session)` (a raise → `FAILED` birth with `details={"phase": "approval_context"}`; success → stored under `extras["approval_context"]`), else a `PENDING` birth carrying the tool's `ToolSpec` (incl. `timeout_in_ms`) |
-| `decide(session, execution)` | delegates to `permission_policy.decide(session, execution)` |
-| `prepare(session, execution)` | resolves by `raw_tool_call.name` (the middleware-effective call), validates `Args`, and returns a closure binding the validated arguments and the session |
+| `get_tools(session, conversation_id)` | one `ToolSpec` per tool, from `Tool.get_tool_spec()` |
+| `create_execution(session, conversation_id, call)` | the classic preflight: resolve the name (miss → `NOT_FOUND` birth), validate `Args` (failure → `INVALID` birth), collect the duck-typed `get_approval_context(args, session, conversation_id)` (a raise → `FAILED` birth with `details={"phase": "approval_context"}`; success → stored under `extras["approval_context"]`), else a `PENDING` birth carrying the tool's `ToolSpec` (incl. `timeout_in_ms`) |
+| `decide(session, conversation_id, execution)` | delegates to `permission_policy.decide(session, execution)` — the policy needs no id, the execution carries one |
+| `prepare(session, conversation_id, execution)` | resolves by `raw_tool_call.name` (the middleware-effective call), validates `Args`, and returns a closure binding the validated arguments, the session and the conversation |
 
 `prepare()` does everything fallible; the callable it returns runs the body:
 
 ```python
-prepared = await registry.prepare(session, execution)   # ToolNotFound / InvalidToolArguments
-result = await prepared(cancellation_token=token)       # tool.execute(args, session, …)
+prepared = await registry.prepare(session, conversation_id, execution)   # ToolNotFound / InvalidToolArguments
+result = await prepared(cancellation_token=token)                        # tool.execute(args, session, conversation_id, …)
+```
+
+The registry holds no per-call state, which is what makes it safe for several
+conversations at once ([`13-subagents.md`](../../13-subagents.md)). A subclass
+that adds some keys it by `conversation_id`, and a `get_tools` override is where
+a per-conversation tool list belongs:
+
+```python
+class GatedRegistry(SimpleToolRegistry):
+    async def get_tools(self, session, conversation_id):
+        specs = await super().get_tools(session, conversation_id)
+        if session.conversations[conversation_id].depth:      # a subagent
+            return [s for s in specs if s.name not in self.main_only]
+        return specs
 ```
 
 A raise means the body never ran — `ToolNotFound` records `NOT_FOUND`,

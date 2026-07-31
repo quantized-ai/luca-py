@@ -12,10 +12,8 @@ actually carried.
 import pytest
 
 from luca.agent.core.models import (
-    Conversation,
-    ConversationStatus,
+    AgentSession,
     SessionConfig,
-    SessionRuntimeStatus,
     SystemPromptPart,
     TextContent,
     UserMessage,
@@ -32,6 +30,7 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    conversation,
     make_session,
 )
 
@@ -51,20 +50,16 @@ class ScriptedAssembler(SystemPromptAssembler):
 
 
 class PartCallable:
-    """Callable part double: returns a scripted value (str, dict, or
-    `SystemPromptPart`); records every (session_config, runtime_status) pair
-    it was invoked with."""
+    """Callable part double: returns a scripted value (str, dict,
+    `SystemPromptPart`, or None); records every (session, conversation_id)
+    pair it was invoked with."""
 
     def __init__(self, value) -> None:
         self.value = value
-        self.calls: list[tuple[SessionConfig, SessionRuntimeStatus]] = []
+        self.calls: list[tuple[AgentSession, str]] = []
 
-    def __call__(
-        self,
-        session_config: SessionConfig,
-        runtime_status: SessionRuntimeStatus,
-    ):
-        self.calls.append((session_config, runtime_status))
+    def __call__(self, session: AgentSession, conversation_id: str):
+        self.calls.append((session, conversation_id))
         return self.value
 
 
@@ -83,7 +78,8 @@ async def test_no_system_prompt_parts_sends_no_system_message():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -112,7 +108,8 @@ async def test_string_part_reaches_the_assembler_as_a_part():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -144,7 +141,8 @@ async def test_dict_part_reaches_the_assembler_as_a_part():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -182,7 +180,8 @@ async def test_system_prompt_part_reaches_the_assembler_unchanged():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -221,7 +220,8 @@ async def test_callable_part_returning_string_is_invoked_and_coerced():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -236,16 +236,7 @@ async def test_callable_part_returning_string_is_invoked_and_coerced():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [
-        (
-            runner.session.session_config,
-            SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING,
-                turn_count=1,
-                step_count=0,
-            ),
-        )
-    ]
+    assert part.calls == [(runner.session, "c1")]
     assert assembler.calls == [[SystemPromptPart(text="You are helpful.")]]
     assert [r.system_message for r in faux.requests] == ["ASSEMBLED PROMPT"]
 
@@ -264,7 +255,8 @@ async def test_callable_part_returning_dict_is_invoked_and_coerced():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -279,16 +271,7 @@ async def test_callable_part_returning_dict_is_invoked_and_coerced():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [
-        (
-            runner.session.session_config,
-            SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING,
-                turn_count=1,
-                step_count=0,
-            ),
-        )
-    ]
+    assert part.calls == [(runner.session, "c1")]
     assert assembler.calls == [
         [
             SystemPromptPart(text="You are helpful.", source="env", priority=5),
@@ -313,7 +296,8 @@ async def test_callable_part_returning_part_is_invoked_and_passed_through():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -328,16 +312,7 @@ async def test_callable_part_returning_part_is_invoked_and_passed_through():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [
-        (
-            runner.session.session_config,
-            SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING,
-                turn_count=1,
-                step_count=0,
-            ),
-        )
-    ]
+    assert part.calls == [(runner.session, "c1")]
     assert assembler.calls == [
         [
             SystemPromptPart(text="You are helpful.", source="model", priority=2),
@@ -359,7 +334,8 @@ async def test_assembler_receives_priority_sorted_parts_across_all_forms():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -403,7 +379,8 @@ async def test_blank_assembled_prompt_sends_no_system_message():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -440,7 +417,8 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -456,24 +434,7 @@ async def test_parts_resolved_and_assembled_before_every_llm_call():
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert part.calls == [
-        (
-            runner.session.session_config,
-            SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING,
-                turn_count=1,
-                step_count=0,
-            ),
-        ),
-        (
-            runner.session.session_config,
-            SessionRuntimeStatus(
-                status=ConversationStatus.RUNNING,
-                turn_count=1,
-                step_count=1,
-            ),
-        ),
-    ]
+    assert part.calls == [(runner.session, "c1"), (runner.session, "c1")]
     assert assembler.calls == [
         [SystemPromptPart(text="Use the tools.")],
         [SystemPromptPart(text="Use the tools.")],
@@ -490,9 +451,10 @@ def test_invalid_static_part_raises_type_error_at_construction():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
-    with pytest.raises(TypeError, match="SystemPromptPart, str, or dict"):
+    with pytest.raises(TypeError, match="SystemPromptPart, str, dict, or None"):
         DeterministicRunner(session, system_prompt_parts=[42], now=1000)

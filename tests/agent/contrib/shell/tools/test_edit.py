@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from luca.agent.contrib.resource_permissions import ResourcePermission
 from luca.agent.contrib.shell import EditTool, FileReadTracker
+from tests.agent.contrib.shell.conftest import CONVERSATION
 
 BOM = b"\xef\xbb\xbf"
 
@@ -18,7 +19,7 @@ def make_tool(tmp_path, *read_paths) -> EditTool:
     """An EditTool whose tracker has already 'read' the given paths."""
     tracker = FileReadTracker()
     for path in read_paths:
-        tracker.record(path)
+        tracker.record(CONVERSATION, path)
     return EditTool(workdir=tmp_path, tracker=tracker)
 
 

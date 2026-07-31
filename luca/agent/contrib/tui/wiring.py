@@ -22,6 +22,7 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
+from luca.agent.contrib.subagents import SubagentsPlugin
 from luca.agent.contrib.tools import Tool
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import AgentSession, LLMConfig
@@ -53,6 +54,7 @@ class AddTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -68,6 +70,7 @@ class SubtractTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -83,6 +86,7 @@ class MultiplyTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -145,9 +149,10 @@ def build_runner(
     context_manager=None,
     additional_directories: list | None = None,
     extra_rules: list | None = None,
+    subagents: bool = False,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
-    shared strategy. `provider=` is the zero-logic passthrough the tests use
+    shared strategy, and — with `subagents=True` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
     to inject a `FauxProvider`; `context_manager=` is the same for context
     accounting and compaction — `None` falls back to core's default, which
     accounts but never compacts, so `/compact` fails until one that implements
@@ -163,10 +168,18 @@ def build_runner(
         tools=[AddTool(), SubtractTool(), MultiplyTool()],
         permission_policy=strategy,
     )
+    plugins: list = [MemoryPlugin(), shell]
+    if subagents:
+        # Installing the plugin is not on its own enough: `subagents_enabled`
+        # still has to be True on the session's RuntimeConfig. The capability
+        # is configuration, not installation — and a subagent gets the same
+        # shell and memory tools the main agent has, each keyed by conversation
+        # so the two never overwrite each other.
+        plugins.append(SubagentsPlugin())
     runner = PluginAgentSessionRunner(
         session,
         tool_registry=registry,
-        plugins=[MemoryPlugin(), shell],
+        plugins=plugins,
         system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
         context_manager=context_manager,

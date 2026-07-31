@@ -37,7 +37,6 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
-    Conversation,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -77,6 +76,8 @@ from tests.agent.scenarios import (
     FakeTool,
     FakeToolRegistry,
     MultiplyTool,
+    conversation,
+    main_conversation,
     make_session,
 )
 
@@ -97,6 +98,7 @@ class CooperatingHangTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -131,6 +133,7 @@ class StubbornHangTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -154,6 +157,7 @@ class TightTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -172,6 +176,7 @@ class LookupTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -190,6 +195,7 @@ class ValidatingTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -218,6 +224,7 @@ class RaisingPrepareRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         raise self.raises
@@ -235,11 +242,12 @@ class NonCallablePrepareRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         if tool_execution.raw_tool_call.name == self.broken:
             return self.returns
-        return await super().prepare(session, tool_execution)
+        return await super().prepare(session, conversation_id, tool_execution)
 
 
 class SyncPrepareRegistry(FakeToolRegistry):
@@ -249,6 +257,7 @@ class SyncPrepareRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         self.prepared.append(tool_execution.raw_tool_call.name)
@@ -266,10 +275,11 @@ class SlowPrepareRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         await asyncio.sleep(0.05)
-        return await super().prepare(session, tool_execution)
+        return await super().prepare(session, conversation_id, tool_execution)
 
 
 class HangingCallableRegistry(FakeToolRegistry):
@@ -279,6 +289,7 @@ class HangingCallableRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         self.prepared.append(tool_execution.raw_tool_call.name)
@@ -299,11 +310,11 @@ class FlakyGetToolsRegistry(FakeToolRegistry):
         self.raises = raises
         self.list_calls = 0
 
-    async def get_tools(self, session: AgentSession):
+    async def get_tools(self, session: AgentSession, conversation_id: str):
         self.list_calls += 1
         if self.list_calls == 1:
             raise self.raises
-        return await super().get_tools(session)
+        return await super().get_tools(session, conversation_id)
 
 
 class TornDownPrepareRegistry(FakeToolRegistry):
@@ -315,6 +326,7 @@ class TornDownPrepareRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         raise asyncio.CancelledError()
@@ -333,10 +345,11 @@ class ProbeRegistry(FakeToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         name = tool_execution.raw_tool_call.name
-        inner = await super().prepare(session, tool_execution)
+        inner = await super().prepare(session, conversation_id, tool_execution)
 
         async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
             self.invocations.append(name)
@@ -402,12 +415,15 @@ def one_call_session(session_id: str) -> AgentSession:
                 parts=[TextContent(text="go")],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1"],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1"],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -425,6 +441,7 @@ def prepare_failure(
     is None, so `dispatched` is False, and there is no result."""
     return ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -463,6 +480,7 @@ def resolution_facts(execution: ToolExecution) -> dict:
 # an orphan is exactly another INTERRUPTED execution.
 RECOVERED_ORPHAN = ToolExecution(
     id="te1",
+    conversation_id="c1",
     parent_id="a1",
     created_at=500,
     tool_call_id="tc1",
@@ -501,7 +519,8 @@ async def test_tool_timeout_records_timed_out_and_the_turn_continues():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=RuntimeConfig(tool_execution_timeout_in_ms=50),
@@ -531,6 +550,7 @@ async def test_tool_timeout_records_timed_out_and_the_turn_continues():
     # deadline is not a cancel (`cancel_signalled_at` stays None)
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -577,7 +597,8 @@ async def test_non_cooperating_hanger_is_recorded_on_time_and_detached():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=RuntimeConfig(tool_execution_timeout_in_ms=50),
@@ -621,7 +642,8 @@ async def test_per_tool_deadline_beats_the_config_deadline():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             # effectively infinite next to the tool's own 50ms
@@ -660,7 +682,8 @@ async def test_instant_tool_under_a_huge_deadline_is_unaffected():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=RuntimeConfig(tool_execution_timeout_in_ms=600_000),
@@ -679,6 +702,7 @@ async def test_instant_tool_under_a_huge_deadline_is_unaffected():
 
     completed = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -704,6 +728,7 @@ async def test_instant_tool_under_a_huge_deadline_is_unaffected():
         "finish_reason",
     ]
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=completed,
         result_text="3",
@@ -740,6 +765,7 @@ async def test_a_prepare_slower_than_the_tools_own_deadline_still_succeeds():
     assert result.outcome == TurnOutcome.COMPLETED
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -787,6 +813,7 @@ async def test_the_same_deadline_against_a_slow_callable_records_timed_out():
     assert result.outcome == TurnOutcome.COMPLETED
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1013,6 +1040,7 @@ async def test_a_non_callable_prepare_fails_one_execution_and_leaves_the_rest(re
     )
     assert runner.session.entries["te2"] == ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=1000,
         tool_call_id="tc2",
@@ -1134,6 +1162,7 @@ async def test_a_tool_body_raising_tool_not_found_records_failed_at_execution():
     ]
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1184,6 +1213,7 @@ async def test_a_tool_body_raising_a_validation_error_records_failed_not_invalid
 
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1248,6 +1278,7 @@ async def test_a_prepared_callable_that_returns_a_plain_value_fails_after_dispat
     error_message = "An asyncio.Future, a coroutine or an awaitable is required"
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1293,7 +1324,7 @@ async def test_a_toolless_runner_terminalizes_a_loaded_ready_execution():
         now=1000,
     )
 
-    assert runner.pending()
+    assert runner.busy()
     async with runner.run() as run:
         events = [event async for event in run]
 
@@ -1304,6 +1335,7 @@ async def test_a_toolless_runner_terminalizes_a_loaded_ready_execution():
     ]
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1369,7 +1401,7 @@ async def test_get_tools_raising_aborts_the_run_and_the_next_one_asks_again():
     # the bracket opened and stayed open, and no LLM call was made at all
     assert list(runner.session.entries) == ["u1", "ts"]
     assert faux.requests == []
-    assert runner.pending()
+    assert runner.busy()
 
     await runner.run()  # the resume asks again
 
@@ -1402,19 +1434,20 @@ async def test_orphaned_running_execution_recovers_to_interrupted_without_redisp
         now=1000,
     )
 
-    assert runner.pending()  # stale RUNNING status self-healed on construction
+    assert runner.busy()  # stale RUNNING status self-healed on construction
     async with runner.run() as run:
         events = [event async for event in run]
 
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=RECOVERED_ORPHAN,
             result_text="[tool execution interrupted]",
             is_error=True,
         ),
-        TextBlock(text="It was interrupted."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It was interrupted."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session.entries["te1"] == RECOVERED_ORPHAN
     # the model was called only after recovery, with the derived tool output
@@ -1484,6 +1517,7 @@ async def test_a_crash_during_prepare_leaves_it_pending_and_the_next_drive_prepa
 
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1540,7 +1574,8 @@ async def test_llm_timeout_closes_the_turn_and_reraises_through_await():
                 parts=[TextContent(text="Add 1 and 2")],
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=RuntimeConfig(client_completion_timeout_in_ms=50),
@@ -1565,8 +1600,8 @@ async def test_llm_timeout_closes_the_turn_and_reraises_through_await():
         outcome=TurnOutcome.TIMED_OUT,
         error="completion exceeded total_timeout=0.05s",
     )
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "tf"]
-    assert runner.pending()  # retry-ready, no AssistantMessage recorded
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "tf"]
+    assert runner.idle()  # a failed close is IDLE: recover by posting, not by re-running
 
 
 async def test_scripted_client_timeout_is_indistinguishable_from_a_real_one():
@@ -1586,7 +1621,8 @@ async def test_scripted_client_timeout_is_indistinguishable_from_a_real_one():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1606,7 +1642,7 @@ async def test_scripted_client_timeout_is_indistinguishable_from_a_real_one():
         outcome=TurnOutcome.TIMED_OUT,
         error="connect timeout",
     )
-    assert runner.pending()
+    assert runner.idle()  # a closed bracket is IDLE whatever its outcome
 
 
 async def test_llm_error_closes_the_turn_and_reraises_through_iteration():
@@ -1624,7 +1660,8 @@ async def test_llm_error_closes_the_turn_and_reraises_through_iteration():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1647,7 +1684,7 @@ async def test_llm_error_closes_the_turn_and_reraises_through_iteration():
         outcome=TurnOutcome.ERRORED,
         error="provider 500",
     )
-    assert runner.pending()
+    assert runner.idle()  # a closed bracket is IDLE whatever its outcome
 
 
 async def test_streaming_llm_error_closes_the_turn_after_the_deltas():
@@ -1665,7 +1702,8 @@ async def test_streaming_llm_error_closes_the_turn_after_the_deltas():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1685,7 +1723,7 @@ async def test_streaming_llm_error_closes_the_turn_after_the_deltas():
             async for event in run:
                 events.append(event)  # noqa: PERF401
 
-    assert events == [TextStart(), TextDelta(text="Hel")]
+    assert events == [TextStart(conversation_id="c1"), TextDelta(conversation_id="c1", text="Hel")]
     assert run.result is None
     assert runner.session.entries["tf"] == TurnFinish(
         id="tf",
@@ -1694,7 +1732,7 @@ async def test_streaming_llm_error_closes_the_turn_after_the_deltas():
         outcome=TurnOutcome.ERRORED,
         error="boom mid-stream",
     )
-    assert runner.pending()  # the partial assistant message was dropped
+    assert runner.idle()  # closed bracket; the partial assistant message was dropped
 
 
 async def test_post_failure_session_reloads_cold_and_a_new_turn_reanswers():
@@ -1708,24 +1746,33 @@ async def test_post_failure_session_reloads_cold_and_a_new_turn_reanswers():
     runner = DeterministicRunner(
         session,
         provider=faux,
-        ids=["ts2", "a1", "tf2"],
+        ids=["u2", "ts2", "a1", "tf2"],
         now=2000,
     )
 
-    assert runner.pending()  # derived from the trailing failed TurnFinish
+    # A failed turn is IDLE, not retry-ready: a bare `run()` would silently
+    # re-send the identical request, so recovery goes through post_message.
+    assert runner.idle()
+    with pytest.raises(AgentError, match="Nothing to run"):
+        await runner.run()
+
+    runner.post_message("Add 1 and 2")
     result = await runner.run()
 
     assert result.outcome == TurnOutcome.COMPLETED
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "u1",
         "ts",
         "tf",
+        "u2",
         "ts2",
         "a1",
         "tf2",
     ]
-    # the failed bracket projected nothing to the wire — just the user message
+    # the failed bracket projected nothing to the wire — just the two user
+    # messages (the original and the one that re-armed the session)
     assert faux.requests[0].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
         LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
     ]
     assert runner.idle()
@@ -1740,8 +1787,8 @@ async def test_post_message_is_legal_after_a_failed_turn():
 
     runner.post_message("Take your time, retry.")
 
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "tf", "u2"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "tf", "u2"]
 
 
 async def test_post_message_rejects_awaiting_approval():
@@ -1780,6 +1827,6 @@ async def test_post_message_rejects_an_open_resumable_bracket():
         now=1000,
     )
 
-    assert runner.pending()
+    assert runner.busy()
     with pytest.raises(AgentError):
         runner.post_message("also this")

@@ -4,11 +4,15 @@ A *declarative* definition of the agent's foundation types — no runtime
 behavior lives here. Implements `data_model_proposal_v0.md`:
 
 - Storage is a flat dict (`AgentSession.entries`); traversal is an ordered
-  id list (`Conversation.nodes`).
+  id list (`Conversation.nodes`). Conversations are themselves a store —
+  `AgentSession.conversations`, keyed by id, holding the main conversation,
+  its archived predecessors and (later) one per subagent — with
+  `main_conversation_id` as the pointer into it. Status is never stored:
+  `AgentSession.get_conversation_status(id)` recomputes it from the nodes.
 - Messages *are* entries: `UserMessage` / `AssistantMessage` sit in
   `entries` next to `ToolExecution`, `TurnStart`, `TurnFinish`,
-  `CompactionEntry`, `PrunedEntry`. One `Entry` base, one `type`
-  discriminator.
+  `CompactionEntry`, `ChildConversation`, `PrunedEntry`. One `Entry` base, one
+  `type` discriminator.
 - A tool call is two things: the request *block* inside the assistant
   message (`ToolCall`) and a separate, mutable `ToolExecution` entry that
   references it by `tool_call_id`.
@@ -272,9 +276,13 @@ class ToolSpec(BaseModel):
       conversation still describes the tool selected at the time even if the
       registry later changes or drops it.
 
-    `output_schema` is neither: it is a declaration to the APPLICATION — no
-    provider accepts an output schema on a function tool, so it never reaches
-    the model.
+    `output_schema` is neither: it is a declaration to the APPLICATION — and,
+    since subagents, to the runner's spawn gate — but never to the model, since
+    no provider accepts an output schema on a function tool.
+
+    "The advertisement sent to the model" has exactly ONE exception:
+    `is_private=True` marks a spec the runtime can resolve and dispatch but
+    that is never put on the wire.
 
     Nothing here references a Python class: a session whose tools were deleted
     from the codebase years ago still renders its name, description, schema and
@@ -305,6 +313,18 @@ class ToolSpec(BaseModel):
     # bridge mapping `outputSchema`), not to the model. None = the tool
     # declares nothing, which is not the same as declaring an empty shape.
     output_schema: dict | None = None
+    # NEVER ADVERTISED TO THE MODEL. A private tool is one the RUNTIME invokes:
+    # `get_tools()` still returns it — that is how it resolves, prepares and
+    # dispatches — but the runner omits it when building the wire tool list, and
+    # a model tool call naming one records NOT_FOUND rather than resolving (from
+    # the model's point of view that tool does not exist). Everything else is
+    # untouched: the spec is filed under `spec_id()`, and an ordinary
+    # `ToolExecution` is created with approvals, middleware, timeouts, events
+    # and usage. Only its relationship to the WIRE changes.
+    #
+    # Like every other field it is definition-scoped and participates in
+    # `spec_id()`, so a tool that gains it is a new row.
+    is_private: bool = False
     metadata: dict | None = None  # free-form, registry-owned; never interpreted
     tool_kind: ToolKind = ToolKind.OTHER  # permission/classification kind
     namespace: str | None = None  # owning tool group, e.g. "builtin.shell_tools"
@@ -472,7 +492,7 @@ class ToolExecution(Entry):
     session is constructed and stripped from a serialized session. The id is
     authoritative and `tool_spec` must never be the source of truth for
     anything durable — a deliberate exception to the rule that nothing on the
-    session is transient, alongside `AgentSession.session_runtime_status`.
+    session is transient, and now the only one.
     Both are `None` when the tool never resolved. Reading `tool_spec` works
     unchanged for every consumer, in memory and after a reload, which is what
     keeps the tool lifecycle EVENTS (which carry a deep copy of the execution
@@ -494,6 +514,26 @@ class ToolExecution(Entry):
 
     type: Literal["tool_execution"] = "tool_execution"
     tool_call_id: str  # → duplicates raw_tool_call.id (correlation key)
+    # PROVENANCE, never traversal: the conversation this execution was BORN in.
+    #
+    # It is on THIS entry and no other because a `ToolExecution` is the only
+    # entry a consumer ever receives DETACHED from a path — handed to
+    # `ToolRegistry.decide()`, to the four tool middleware hooks, and carried as
+    # a deep snapshot inside the tool events, `ApprovalRequired` and
+    # `RunResult.pending_approvals`, none of which carry a session. Every other
+    # entry reaches a consumer by walking `Conversation.nodes`, where the
+    # conversation is already in hand. Do NOT generalize it onto `Entry`.
+    #
+    # Nothing may resolve a path through it: an entry CAN be referenced by two
+    # conversations (a compaction carries node ids into its successor), so for a
+    # historical execution this names the PREDECESSOR — under-reporting, never
+    # wrong. For every LIVE use the birth conversation IS the current one,
+    # because compaction never runs while a conversational turn is open.
+    #
+    # The RUNNER stamps it, alongside `id` / `parent_id` / `created_at`; a
+    # registry's birth draft leaves it None and must not set it, which is why
+    # the type is `str | None`.
+    conversation_id: str | None = None
     raw_tool_call: ToolCall  # the (possibly middleware-effective) request
     tool_spec: ToolSpec | None = None  # restorable cache; None if unresolved
     tool_spec_id: str | None = None  # → AgentSession.tool_specs; the durable ref
@@ -628,6 +668,41 @@ class CompactionEntry(Entry):
     metadata: dict = Field(default_factory=dict)  # policy-owned; opaque to core
 
 
+# ── subagents ─────────────────────────────────────────────────────────────────
+
+
+class ChildConversation(Entry):
+    """A subagent, as a node in its PARENT's path — the THIRD mutable entry
+    type, alongside `ToolExecution` and `CompactionEntry`.
+
+    A subagent is not a new session and not a new runtime: it is one more
+    conversation over the same stores, linked into its parent's path by this
+    entry. That position is what makes the child's outcome appear in the
+    parent's projected history at the right point; the child conversation
+    itself lives in `AgentSession.conversations` like every other.
+
+    - `conversation_id` names the child. A compaction of that child would
+      re-point it, exactly as `main_conversation_id` moves for the main one —
+      the name follows the conversation.
+    - `tool_execution_id` names the spawn execution that created it, which is
+      what carries the handshake payload (task id, prompt, description, and the
+      tool that derives the result).
+    - `execution_result` is the child's outcome, derived once its turn bracket
+      closes — WHATEVER the outcome. A child that failed or timed out is a
+      finished child whose result says so, not an exception travelling upward.
+      `None` means unresolved; the parent cannot call the model until every
+      `ChildConversation` in its open turn has one.
+
+    `context_tokens` is the size of what this contributes to the PARENT — its
+    result. The child's own conversation does not count against the parent's
+    window; that separation is the main reason subagents are useful."""
+
+    type: Literal["child_conversation"] = "child_conversation"
+    conversation_id: str
+    tool_execution_id: str
+    execution_result: ExecutionResult | None = None
+
+
 # ── pruning ───────────────────────────────────────────────────────────────────
 
 
@@ -660,6 +735,7 @@ AnyEntry = Annotated[
     | TurnFinish
     | CancelRequested
     | CompactionEntry
+    | ChildConversation
     | PrunedEntry,
     Field(discriminator="type"),
 ]
@@ -672,8 +748,8 @@ def is_compaction_bracket(
 ) -> bool:
     """Is the bracket opened by `nodes[turn_start_index]` a COMPACTION bracket?
 
-    One definition, four consumers — the ledger's resume read and its
-    `derive_status` skip rule, `SessionRuntimeStatus.turn_count`, and
+    One definition, four consumers — the resumable-compaction read, the
+    status derivation's skip rule, `conversational_turn_count`, and
     `ConversationProjector.project()` — which is why it lives here, upstream of
     all of them, as a plain function rather than a method on any of them.
 
@@ -692,6 +768,193 @@ def is_compaction_bracket(
     if following >= len(nodes):
         return False
     return isinstance(entries.get(nodes[following]), CompactionEntry)
+
+
+# ── path derivations (pure functions of one path + the entry store) ───────────
+#
+# Every one of these is a pure function of `(nodes, entries)` — no session, no
+# conversation object, no runtime state. They live HERE, upstream of both
+# consumers, for the same reason `is_compaction_bracket` does: `SessionLedger`
+# reads them bound to a conversation id, and `AgentSession.get_conversation_
+# status` reads them to derive status. Two doors, one implementation; and
+# `models.py` cannot import the ledger, since the ledger imports models.
+#
+# They RESOLVE TOLERANTLY: a node id with no entry behind it contributes
+# nothing rather than raising. These are QUERIES over possibly hand-edited
+# durable data — `pretty_print` promises that a broken session still prints,
+# and a status read is not the place to discover corruption. The fail-loud
+# rule stays where it belongs: `ConversationProjector` raises on a missing
+# node, because that one is about to be sent to a model.
+
+
+def open_turn_index(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> int | None:
+    """Index of the `TurnStart` opening an unclosed turn, or None. Walking back
+    from the leaf, a `TurnFinish` means the last turn is closed; a `TurnStart`
+    seen first means that turn is still open."""
+    for i in range(len(nodes) - 1, -1, -1):
+        entry = entries.get(nodes[i])
+        if isinstance(entry, TurnFinish):
+            return None
+        if isinstance(entry, TurnStart):
+            return i
+    return None
+
+
+def open_turn_executions(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> list[ToolExecution]:
+    """Every `ToolExecution` in the open turn, in path order."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return []
+    return [entry for node_id in nodes[index:] if isinstance(entry := entries.get(node_id), ToolExecution)]
+
+
+def open_turn_cancel_requested(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> CancelRequested | None:
+    """The unconsumed `CancelRequested` inside the open turn, or None (no open
+    turn, or none requested). At most one can exist — `cancel()` refuses to
+    stack a second; instances in closed turns are consumed."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return None
+    for node_id in nodes[index:]:
+        if isinstance(entry := entries.get(node_id), CancelRequested):
+            return entry
+    return None
+
+
+def open_compaction_entry(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> CompactionEntry | None:
+    """The RESUMABLE `CompactionEntry` inside the open bracket, or None.
+
+    `None` means "there is no compaction to resume", for any of three inputs
+    that mean the same thing to every caller: no open bracket at all; an open
+    CONVERSATIONAL turn; or an open compaction-shaped bracket whose entry
+    already has `parts` — a compaction that already committed and whose markers
+    a plan carried, not an interrupted attempt.
+
+    That last test is the one that matters (G6). An open bracket is the SIGNAL
+    that a compaction was interrupted; the entry's own state is the TEST."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return None
+    if not is_compaction_bracket(nodes, entries, index):
+        return None
+    entry = entries[nodes[index + 1]]  # is_compaction_bracket proved it resolves
+    return None if entry.parts is not None else entry
+
+
+def end_before_closed_compaction_brackets(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> int:
+    """The length of the path with every trailing CLOSED compaction bracket
+    dropped — the slice status derives from.
+
+    A compaction bracket is not a conversational turn, and leaving it as the
+    leaf gives a wrong answer silently: a compaction that closed behind a
+    queued user message would bury it (the message stops being the leaf, so it
+    stops deriving BUSY and is silently never answered).
+
+    A trailing `TurnFinish` with no `TurnStart` to anchor it — a policy carried
+    one without its pair — is NOT a compaction bracket: stop skipping and let
+    the ordinary closed-turn rules apply."""
+    end = len(nodes)
+    while end > 0 and isinstance(entries.get(nodes[end - 1]), TurnFinish):
+        start = None
+        for i in range(end - 2, -1, -1):
+            entry = entries.get(nodes[i])
+            if isinstance(entry, TurnFinish):
+                break
+            if isinstance(entry, TurnStart):
+                start = i
+                break
+        if start is None or not is_compaction_bracket(nodes, entries, start):
+            break
+        end = start
+    return end
+
+
+def conversational_turn_count(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> int:
+    """`TurnStart` entries on the path, excluding compaction brackets — a
+    compaction is not a turn. Scoped to the path because entries outlive their
+    conversation (a compaction archives one and opens another over the same
+    store)."""
+    return sum(
+        1
+        for index, node_id in enumerate(nodes)
+        if isinstance(entries.get(node_id), TurnStart) and not is_compaction_bracket(nodes, entries, index)
+    )
+
+
+def open_turn_step_count(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> int:
+    """`AssistantMessage` entries in the currently open turn."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return 0
+    return sum(1 for node_id in nodes[index:] if isinstance(entries.get(node_id), AssistantMessage))
+
+
+def open_turn_unresolved_children(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> list[ChildConversation]:
+    """The subagents spawned in the open turn that have not produced a result.
+
+    These are what a parent's turn is BLOCKED on: it cannot call the model
+    again until every one has resolved."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return []
+    return [
+        entry
+        for node_id in nodes[index:]
+        if isinstance(entry := entries.get(node_id), ChildConversation) and entry.execution_result is None
+    ]
+
+
+def open_turn_is_runnable(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Can this open turn be advanced by a drive, LOOKING ONLY AT THIS PATH?
+
+    In precedence order: a persisted `RUNNING` execution is an orphan the next
+    drive recovers; a `PENDING` execution the policy has not resolved (or has
+    ALLOWED) is decidable or dispatchable; anything else still `PENDING` is a
+    gate the application must answer out of band, and with only those left
+    nothing can advance; and once every execution is terminal the model can be
+    called.
+
+    UNRESOLVED SUBAGENTS ARE NOT CONSIDERED HERE — a path cannot see another
+    conversation's entries. `AgentSession.get_conversation_status` handles that
+    term, because it is the thing that can reach the child."""
+    executions = open_turn_executions(nodes, entries)
+    if any(execution.status == ExecutionStatus.RUNNING for execution in executions):
+        return True
+    if any(
+        execution.status == ExecutionStatus.PENDING and execution.approval_status in (None, ApprovalStatus.ALLOWED)
+        for execution in executions
+    ):
+        return True
+    # Anything still PENDING here is gated: with only those left, nothing in
+    # this conversation can advance until the application answers.
+    return not any(execution.status == ExecutionStatus.PENDING for execution in executions)
 
 
 # ── runtime context ───────────────────────────────────────────────────────────
@@ -737,6 +1000,22 @@ class RuntimeConfig(BaseConfigModel):
     # Inf (-1) or 0 disables detection.
     doom_loop_threshold: int = Inf
 
+    # ── subagents ──────────────────────────────────────────────────────────
+    # Off by default, so existing sessions and tests are unaffected: with this
+    # False the registry withholds the spawn tool and the runner raises if one
+    # comes back anyway.
+    subagents_enabled: bool = False
+    # The only supported value in V0: a subagent cannot spawn subagents. The
+    # DATA MODEL supports arbitrary nesting; this is the runtime limit, and the
+    # implementation is allowed to rely on it.
+    subagents_max_depth: int = 1
+    # Step limits for subagent conversations. `None` falls back to the main
+    # `soft_max_steps` / `hard_max_steps` above. These are what make an
+    # uncompacted subagent safe: a child is never compaction-checked in V0, so
+    # a bound on its steps is what stops it growing without limit.
+    subagent_soft_max_steps: int | None = None
+    subagent_hard_max_steps: int | None = None
+
     # When soft_max_steps is reached, pass tool_choice="none" to the LLM.
     limit_tool_choice_on_soft_max_steps_reached: bool = True
     # When a doom-loop-flagged execution exists in the current turn, pass
@@ -752,11 +1031,22 @@ class RuntimeConfig(BaseConfigModel):
         "soft_max_steps",
         "hard_max_steps",
         "doom_loop_threshold",
+        "subagents_max_depth",
     )
     @classmethod
     def _inf_or_natural(cls, value: int) -> int:
         if value < Inf:
             raise ValueError(f"must be >= {Inf} ({Inf} = infinite / disabled)")
+        return value
+
+    @field_validator("subagent_soft_max_steps", "subagent_hard_max_steps")
+    @classmethod
+    def _optional_inf_or_natural(cls, value: int | None) -> int | None:
+        """Same rule as the fields above, but `None` is meaningful here: it
+        means "fall back to the main conversation's limit", which is a
+        different fact from `Inf` ("no limit")."""
+        if value is not None and value < Inf:
+            raise ValueError(f"must be >= {Inf} ({Inf} = infinite / disabled) or None")
         return value
 
 
@@ -774,76 +1064,100 @@ class SessionConfig(BaseConfigModel):
 
 
 class ConversationStatus(str, Enum):
-    """Global status of a conversation, set by the runner. The data model only
-    *supports* it (a plain, persisted field); it does NOT enforce the transitions
-    (that is the runner's job). The runner re-derives/normalizes it from the
-    entries on load, so it doubles as a denormalized cache of the entry state."""
+    """What the next `run()` on a conversation will do. DERIVED from the
+    entries on every read and never stored — see
+    `AgentSession.get_conversation_status`.
 
-    IDLE = "idle"  # nothing queued; awaiting a user message
-    PENDING = "pending"  # work queued (message, resolved approvals, retry) — call run()
-    RUNNING = "running"  # a run is actively driving (internal; crash-recovery only)
-    AWAITING_APPROVAL = "awaiting_approval"  # paused at a tool-approval gate
+    | | the next `run()` | post a message? |
+    |---|---|---|
+    | `IDLE` | nothing — there is no work | yes |
+    | `BUSY` | work — the run can still be exhausted | no |
+    | `BLOCKED` | stop again immediately; you must act first | no |
+    | `CANCELLING` | flush the turn, not answer it | no |
+
+    **It says nothing about approvals**, deliberately. A gate can belong to a
+    subagent, and its siblings may still be working — so the conversation is
+    `BUSY` (the run can be exhausted) while `pending_approvals()` already
+    returns that gate. Only when nothing else can advance does it become
+    `BLOCKED`. An `AWAITING_APPROVAL` status could not express that.
+
+    `BUSY` is still true after a crash: "can be advanced" survives the process
+    dying, so unlike the old `RUNNING` it needs no self-healing rule."""
+
+    IDLE = "idle"  # nothing to do; the only postable state
+    BUSY = "busy"  # the run can still be exhausted
+    BLOCKED = "blocked"  # nothing can advance; you must act first
     CANCELLING = "cancelling"  # unconsumed CancelRequested — the next drive flushes
 
 
 class Conversation(BaseModel):
+    """One ordered path over the shared entry store.
+
+    A conversation owns its own history, BY REFERENCE: compaction archives one
+    conversation and installs another over a rewritten path, so the predecessor
+    belongs to its successor — `previous_conversation_id`. An archived
+    conversation stays a first-class row in `AgentSession.conversations`; it has
+    to, because usage records key on conversation id. One home per
+    conversation, pointers everywhere else.
+
+    There is deliberately NO `parent_conversation_id`. A parent mints its
+    child's handle and re-mints it after a reload from its own unresolved
+    entries, so parent → child is the only direction anything traverses — which
+    is exactly why `depth` has to be a stored field: with no link upwards it is
+    not derivable from the conversation alone. It is stamped at creation and
+    copied when a compaction installs a successor.
+
+    There is also NO `status`. Status is a pure function of the entries, so a
+    stored copy is a rendering rather than state, and a persisted one lets a
+    stale file disagree with the log — read
+    `AgentSession.get_conversation_status(id)`, which is the only door."""
+
     id: str  # stable identity of this path/branch — usage records key on it
     nodes: list[str] = Field(default_factory=list)  # ordered entry ids = THE path
     created_at: int
     updated_at: int
-    status: ConversationStatus = ConversationStatus.IDLE
+    # What this conversation replaced: the conversation a compaction archived
+    # when it installed this one. None for a conversation nothing preceded.
+    previous_conversation_id: str | None = None
+    # 0 = the main conversation; a subagent's is its parent's + 1. Stored
+    # because nothing links upwards, and read on every tool-list decision.
+    depth: int = 0
 
     model_config = ConfigDict(extra="forbid")
 
 
-class SessionRuntimeStatus(BaseModel):
-    """Derived view of a session's current runtime state — always recomputed
-    from the entry log, never trusted from serialized data. Accessed via the
-    `AgentSession.session_runtime_status` computed field."""
+class ConversationRuntimeStatus(BaseModel):
+    """Derived view of ONE conversation's runtime state — always recomputed
+    from the entry log, never stored and never trusted from serialized data.
+    Obtained through `AgentSession.get_conversation_status(conversation_id)`,
+    which is the only door."""
 
     status: ConversationStatus = ConversationStatus.IDLE
-    # Conversational turns on the ACTIVE conversation, including the open one.
-    # Scoped to the path because entries outlive their conversation (a
-    # compaction archives one and opens another over the same store), and
-    # excluding compaction brackets because a compaction is not a turn.
+    # Conversational turns on this path, including the open one. Scoped to the
+    # path because entries outlive their conversation (a compaction archives
+    # one and opens another over the same store), and excluding compaction
+    # brackets because a compaction is not a turn.
     turn_count: int = 0
     step_count: int = 0  # AssistantMessages in the currently open turn
 
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
-    def get_runtime_status_from_agent_session(
-        cls,
-        session: AgentSession,
-    ) -> SessionRuntimeStatus:
-        nodes = session.active_conversation.nodes
-        entries = session.entries
-        turn_count = sum(
-            1
-            for index, node_id in enumerate(nodes)
-            if isinstance(entries[node_id], TurnStart) and not is_compaction_bracket(nodes, entries, index)
-        )
-        open_idx: int | None = None
-        for i in range(len(nodes) - 1, -1, -1):
-            entry = entries[nodes[i]]
-            if isinstance(entry, TurnFinish):
-                break
-            if isinstance(entry, TurnStart):
-                open_idx = i
-                break
-        step_count = 0
-        if open_idx is not None:
-            step_count = sum(1 for node_id in nodes[open_idx:] if isinstance(entries[node_id], AssistantMessage))
-        return cls(
-            status=session.active_conversation.status,
-            turn_count=turn_count,
-            step_count=step_count,
-        )
-
 
 class AgentSession(BaseModel):
-    """The whole durable session: one flat entry store, the traversal paths
-    over it, and the normalized tool-spec store.
+    """The whole durable session: one flat entry store, the CATALOG of
+    conversations over it, and the normalized tool-spec store.
+
+    `conversations` is a store keyed by id, exactly like `entries`,
+    `tool_specs` and `usages`, and `main_conversation_id` is a pointer into it.
+    That mirrors the entries/nodes split one level up: conversations are stored
+    in one place and referenced from several. There is no "active"
+    conversation — with several advancing at once there is no single one.
+
+    ARCHIVED conversations live in the same dict as live ones. They have to:
+    usage records key on conversation id, and a session total sums across the
+    catalog. Nesting them under their successor would either put the same
+    conversation in two places or leave `usages[cid]` with nothing to resolve
+    against. Lineage is a pointer — `Conversation.previous_conversation_id`.
 
     Constructing one RESTORES `ToolExecution.tool_spec` from `tool_spec_id`
     and refuses a session it cannot restore — see `_restore_tool_specs`.
@@ -863,11 +1177,29 @@ class AgentSession(BaseModel):
     # reads and cleanup are direct: usages[conversation_id][entry_id] → Usage.
     # Written only through `SessionLedger.record_usage()`.
     usages: dict[str, dict[str, Usage]] = Field(default_factory=dict)
-    active_conversation: Conversation
-    conversation_history: list[Conversation] = Field(default_factory=list)
+    # conversation_id → Conversation. Every conversation this session has ever
+    # held: the main one, its archived predecessors, and (later) one per
+    # subagent. Written only through `SessionLedger`.
+    conversations: dict[str, Conversation] = Field(default_factory=dict)
+    # Which row in `conversations` is the one a user talks to. A compaction
+    # re-points it at the successor it installed.
+    main_conversation_id: str
     session_config: SessionConfig
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_main_conversation(self) -> AgentSession:
+        """`main_conversation_id` must name a row in `conversations`.
+
+        The same class of load guard as `_restore_tool_specs`: a session whose
+        pointer dangles loads fine and then fails on the first drive, deep
+        inside the ledger, with nothing saying the file was wrong."""
+        if self.main_conversation_id not in self.conversations:
+            raise ValueError(
+                f"main_conversation_id {self.main_conversation_id!r} is absent from session.conversations."
+            )
+        return self
 
     @model_validator(mode="after")
     def _restore_tool_specs(self) -> AgentSession:
@@ -939,12 +1271,82 @@ class AgentSession(BaseModel):
                     entry.pop("tool_spec", None)
         return data
 
-    @property
-    def session_runtime_status(self) -> SessionRuntimeStatus:
-        """Always recomputed from entries — never trust serialized values."""
-        return SessionRuntimeStatus.get_runtime_status_from_agent_session(self)
+    def get_conversation_status(
+        self,
+        conversation_id: str,
+    ) -> ConversationRuntimeStatus:
+        """One conversation's runtime state, RECOMPUTED FROM THE NODES on every
+        call. The only door — nothing caches this and nothing stores it.
 
-    @property
-    def status(self) -> ConversationStatus:
-        """The active conversation's status (convenience accessor)."""
-        return self.active_conversation.status
+        Derivation, in precedence order:
+
+        - open turn with an unconsumed cancel  → `CANCELLING`
+        - open turn with something runnable    → `BUSY`
+        - open turn with nothing runnable      → `BLOCKED`
+        - trailing `UserMessage` (queued work) → `BUSY`
+        - anything else, INCLUDING a closed `TurnFinish` whatever its outcome
+          → `IDLE`
+
+        Two consequences, both deliberate. A failed turn derives `IDLE`, so
+        recovering from one means posting a new message rather than re-driving
+        the identical request. And a trailing `UserMessage` derives `BUSY`, so
+        a second message cannot be queued behind a first — "let the user type
+        while the agent works" is an application-level input buffer that posts
+        on the next `IDLE`, not a fact the session represents.
+
+        Trailing CLOSED compaction brackets are transparent and skipped
+        (repeatedly, if several stack), so a compaction that closed behind a
+        queued question does not bury it."""
+        conversation = self.conversations.get(conversation_id)
+        if conversation is None:
+            raise KeyError(f"no conversation {conversation_id!r} in session {self.id!r}")
+        nodes = conversation.nodes
+        entries = self.entries
+        return ConversationRuntimeStatus(
+            status=self._derive_status(nodes, entries),
+            turn_count=conversational_turn_count(nodes, entries),
+            step_count=open_turn_step_count(nodes, entries),
+        )
+
+    def _derive_status(
+        self,
+        nodes: Sequence[str],
+        entries: Mapping[str, AnyEntry],
+    ) -> ConversationStatus:
+        if open_turn_index(nodes, entries) is not None:
+            if open_turn_cancel_requested(nodes, entries) is not None:
+                return ConversationStatus.CANCELLING
+            children = open_turn_unresolved_children(nodes, entries)
+            if children:
+                # SUBTREE-AWARE, and it has to be: a parent is BUSY while its
+                # children work, and a `Conversation` on its own cannot see
+                # another conversation's entries. This term is what makes the
+                # BUSY → BLOCKED flip land at the right instant — it is
+                # triggered by a child's SIBLINGS finishing, with nothing in
+                # the parent's own entries changing at all.
+                #
+                # A BUSY child is working; an IDLE one has finished and this
+                # conversation can resolve it; a CANCELLING one is winding
+                # down. Only when every child is BLOCKED does the parent become
+                # BLOCKED too.
+                if any(
+                    self.get_conversation_status(child.conversation_id).status
+                    in (
+                        ConversationStatus.BUSY,
+                        ConversationStatus.IDLE,
+                        ConversationStatus.CANCELLING,
+                    )
+                    for child in children
+                    if child.conversation_id in self.conversations
+                ):
+                    return ConversationStatus.BUSY
+                return ConversationStatus.BLOCKED
+            if open_turn_is_runnable(nodes, entries):
+                return ConversationStatus.BUSY
+            return ConversationStatus.BLOCKED
+        end = end_before_closed_compaction_brackets(nodes, entries)
+        if end == 0:
+            return ConversationStatus.IDLE
+        if isinstance(entries.get(nodes[end - 1]), UserMessage):
+            return ConversationStatus.BUSY
+        return ConversationStatus.IDLE

@@ -33,7 +33,6 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
-    Conversation,
     Entry,
     ExecutionResult,
     ExecutionStatus,
@@ -64,6 +63,8 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    conversation,
+    main_conversation,
 )
 
 
@@ -128,12 +129,15 @@ def _session(session_id: str) -> AgentSession:
                 parts=[TextContent(text="Add 1 and 2")],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1"],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1"],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -174,12 +178,15 @@ async def test_the_configured_context_manager_counts_every_new_entry():
 async def test_middleware_has_the_final_say_on_context_tokens():
     session = AgentSession(
         id="s_mw",
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -224,6 +231,7 @@ async def test_processed_tool_output_reaches_session_event_and_wire_identically(
     # calculated from the processed content
     final = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -249,6 +257,7 @@ async def test_processed_tool_output_reaches_session_event_and_wire_identically(
     # event: derived from the same persisted execution
     executed = next(event for event in events if event.type == "tool_executed")
     assert executed == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=final,
         result_text="[output truncated]",
@@ -291,6 +300,7 @@ async def test_process_tool_output_is_handed_the_in_transition_execution():
     assert manager.seen == [
         ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=1000,
             tool_call_id="tc1",
@@ -343,10 +353,10 @@ async def test_pruning_machinery_composes_and_reaches_the_next_wire_request():
         pruned.context_tokens = manager.calculate_context(runner.session, pruned)
         return pruned
 
-    pruned = runner.ledger.prune("te1", build)
+    pruned = runner.ledger.prune(session.main_conversation_id, "te1", build)
 
     # the path visits the replacement; the original entry is untouched
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "u1",
         "ts",
         "a1",

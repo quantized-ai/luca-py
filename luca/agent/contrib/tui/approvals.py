@@ -59,6 +59,11 @@ class ApprovalPrompt(BaseModel):
     resources: list[str]
     preview: str
     options: list[PromptOption]
+    # Which conversation is asking, when it is not the main one. `None` for the
+    # main agent — the ordinary case, where naming it would be noise. The
+    # execution carries this itself (`ToolExecution.conversation_id`), which is
+    # exactly why no wrapper type is needed to attribute a gate.
+    conversation_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -117,8 +122,16 @@ def _build_options(request: PermissionRequest) -> list[PromptOption]:
 def build_approval_prompts(
     execution: ToolExecution,
     strategy: PermissionStrategy,
+    *,
+    main_conversation_id: str | None = None,
 ) -> list[ApprovalPrompt]:
-    """The execution's UNCOVERED approval steps as display-ready prompts."""
+    """The execution's UNCOVERED approval steps as display-ready prompts.
+
+    `main_conversation_id`, when given, is what makes "which conversation is
+    asking" answerable: a gate from anything else is labelled as a subagent's.
+    Now that `pending_approvals()` is subtree-scoped, a flat list can mix the
+    main agent's requests with several subagents' — and the execution
+    attributes itself, so no wrapper type is needed."""
     name = execution.raw_tool_call.name
     requests = strategy.pending_requests(execution)
     if not requests:  # resourceless tool without the mixin (add/subtract/…)
@@ -140,6 +153,11 @@ def build_approval_prompts(
                 resources=resources,
                 preview=preview,
                 options=_build_options(request),
+                conversation_id=(
+                    execution.conversation_id
+                    if main_conversation_id is not None and execution.conversation_id != main_conversation_id
+                    else None
+                ),
             )
         )
     return prompts

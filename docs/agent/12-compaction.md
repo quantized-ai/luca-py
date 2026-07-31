@@ -5,14 +5,15 @@ replaces the older span with a summary of it, so the agent keeps working with
 the recent exchanges intact and everything older represented densely.
 
 Nothing is destroyed. Compaction opens a **new conversation inside the same
-session**: the pre-compaction path is archived in `conversation_history`, every
-compacted entry stays in `entries`, and the summary entry records exactly which
-ids it replaced.
+session**: both paths stay in the catalog, every compacted entry stays in
+`entries`, and the summary entry records exactly which ids it replaced.
 
 ```
-entries:              u1 ts1 a1 tf1 u2 ts2 a2 tf2 cmp     ← one addition
-active_conversation:  c2 → [cmp, u2, ts2, a2, tf2]        ← the new view
-conversation_history: [c1 → [u1, ts1, a1, tf1, …]]        ← archived intact
+entries:               u1 ts1 a1 tf1 u2 ts2 a2 tf2 cmp    ← one addition
+conversations:         c1 → [u1, ts1, a1, tf1, …]         ← the predecessor, intact
+                       c2 → [cmp, u2, ts2, a2, tf2]       ← the new view
+main_conversation_id:  "c2"
+c2.previous_conversation_id == "c1"
 ```
 
 The session id does not change. The session file does not change. The next
@@ -60,7 +61,7 @@ await runner.run()                   # compacts, then drives if work is queued
 ```
 
 `schedule_compaction()` is idempotent and **durable**: the intent survives a
-crash, and the session derives `PENDING` until it has been driven.
+crash, and the conversation derives `BUSY` until it has been driven.
 
 > ⚠️ **`post_message` raises while a compaction is scheduled or in flight.**
 > It requires a closed bracket, and a compaction has one of its own — durably,
@@ -110,12 +111,12 @@ from luca.agent.core import (
 CHEAP = LLMConfig(model="openai/gpt-4o-mini", provider="openrouter")
 
 class KeepLastTurn(ContextManager):
-    def should_compact(self, session) -> bool:
-        nodes = session.active_conversation.nodes
+    def should_compact(self, session, conversation_id) -> bool:
+        nodes = session.conversations[conversation_id].nodes
         total = sum(session.entries[n].context_tokens for n in nodes)
         return total > 100_000                       # your gauge, your threshold
 
-    async def compact(self, session, nodes, entry):
+    async def compact(self, session, conversation_id, nodes, entry):
         keep = list(nodes[-5:-1])                    # the tail you carry over
         summary, usage = await self._summarize(session, nodes)
         return CompactionPlan(
@@ -130,10 +131,15 @@ class KeepLastTurn(ContextManager):
 ```
 
 **`should_compact`** is sync (so `start()` can consult it at call time) and gets
-the whole session. The threshold, the sum and the window size are all yours —
-core has no context-total API, and `luca.client.catalog` carries
-`context_window` per model. Core remembers nothing about past failures either:
-a manager that should stop trying returns `False`.
+the whole session plus the conversation being asked about. The threshold, the
+sum and the window size are all yours — core has no context-total API, and
+`luca.client.catalog` carries `context_window` per model. Core remembers nothing
+about past failures either: a manager that should stop trying returns `False`.
+
+> ⚠️ **Only the MAIN conversation is ever compaction-checked (V0).** A subagent
+> is bounded by its own step ceiling instead ([08](08-runtime-config.md)); the
+> pair still takes a `conversation_id` because the decision is about one
+> conversation and always was.
 
 **`compact`** is async — it makes an LLM call, which you own end to end. Return
 `None` for "nothing to do".
@@ -174,7 +180,7 @@ stamped, exactly like one an ordinary turn wrote.
 | # | Invariant |
 |---|---|
 | 1 | Carried entries are never copied, renumbered, reordered or mutated. |
-| 2 | The pre-compaction conversation is archived in `conversation_history` with its exact path plus the closing marker, frozen at `IDLE`. |
+| 2 | The pre-compaction conversation stays in the catalog with its exact path plus the closing marker; the successor names it in `previous_conversation_id`. |
 | 3 | Every entry you did not carry stays in `entries` and is listed, in path order, in `compacted_nodes`. Nothing is ever deleted. |
 | 4 | Entries you create get their identity stamped by the framework (above). |
 | 5 | If you return `None`, raise, time out or are cancelled, the conversation is identical to before plus one closed bracket. No partial state exists, ever. |
@@ -199,7 +205,7 @@ bracket `ERRORED` and leaves the conversation untouched:
 | the same id twice | `plan references entry 'x' twice` |
 | an empty plan | `an empty plan is not a compaction` |
 | the plan omits the compaction entry | `plan omits the compaction entry 'cmp'` |
-| the active conversation moved under the plan | `the active conversation … changed under the plan` |
+| the conversation moved under the plan | `the … conversation changed under the plan` |
 | no content (None, empty, or whitespace-only text) | `plan carries no content` |
 
 All raise `CompactionPlanError`. An image-only summary is legitimate content
@@ -218,10 +224,11 @@ what your entries *mean*:
   provider-side 400 on the very next request;
 - **carrying a nonterminal `ToolExecution`** → `ProjectionError` on the next
   request;
-- **carrying a turn marker without its pair** → a carried `TurnFinish` with no
-  opener still derives retry-ready `PENDING`; a carried `TurnStart` with no
+- **carrying a turn marker without its pair** → a carried `TurnStart` with no
   finish is a *phantom open turn* and the next drive resumes a turn that never
   happened;
+- **carrying an unresolved `ChildConversation`** → `ProjectionError` on the next
+  request, exactly like a nonterminal execution;
 - **reordering carried ids** — you chose the path;
 - **summarizing away a trailing unanswered `UserMessage`** → **the one silent
   failure**: the question disappears with no error anywhere.
@@ -263,14 +270,18 @@ against the drive, not against the compaction alone.
 After a compaction nothing has been destroyed:
 
 ```python
-archived = session.conversation_history[-1]          # the exact pre-compaction path
-summary = session.entries[session.active_conversation.nodes[0]]
+main = session.conversations[session.main_conversation_id]
+archived = session.conversations[main.previous_conversation_id]   # the pre-compaction path
+summary = session.entries[main.nodes[0]]
 summary.compacted_nodes                              # precisely which ids it replaced
 summary.llm_config                                   # and what wrote it
 session.usages[archived.id][summary.id]              # and what that cost
 ```
 
+`previous_conversation_id` chains one hop at a time, so several stacked
+compactions walk back to the original conversation.
+
 Every compacted entry is still in `session.entries`, so a bad summary is a
 recoverable mistake. (No "undo" command ships — the data supports one.)
 
-Next: back to the [index](README.md).
+Next: [`13-subagents.md`](13-subagents.md).

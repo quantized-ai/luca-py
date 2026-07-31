@@ -13,7 +13,7 @@ CLI flags: it overrides a resumed session's model, and a `--model` flag still
 overrides the file. Every field is optional; unknown keys are rejected, and a
 malformed file exits with a one-line error.
 
-Point your editor at [`luca.schema.json`](../../../luca.schema.json) via the
+Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 `$schema` key for autocomplete.
 
 ## Every field

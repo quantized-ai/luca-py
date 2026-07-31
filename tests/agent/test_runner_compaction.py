@@ -5,7 +5,8 @@ The mandate this file answers: a strategy author's unit is `compact()`, so the
 session/conversation handling around it must be proven coherent for EVERY
 ending. Almost every scenario therefore asserts the same three things — the
 new conversation is what it should be, the pre-existing entries are unmutated,
-and the old conversation is in `conversation_history` intact.
+and the old conversation stays in `conversations` intact, named as the
+successor's `previous_conversation_id`.
 
 House style: precondition (a literal from `scenarios.py`, deep-copied, or a
 cold reload) → one action → full-object postcondition. `DeterministicRunner`
@@ -85,6 +86,8 @@ from tests.agent.scenarios import (
     RICH_SESSION,
     DeterministicRunner,
     FakeContextManager,
+    conversation,
+    main_conversation,
     spec,
 )
 
@@ -97,8 +100,8 @@ ECHO_SPEC = spec("echo")
 
 # `c1`'s path before any compaction, and the ids a fold-everything plan
 # replaces on the trailing-question session.
-RICH_NODES = list(RICH_SESSION.active_conversation.nodes)
-RICH_IDLE_NODES = list(RICH_IDLE_SESSION.active_conversation.nodes)
+RICH_NODES = list(main_conversation(RICH_SESSION).nodes)
+RICH_IDLE_NODES = list(main_conversation(RICH_IDLE_SESSION).nodes)
 
 
 # ── policy doubles ────────────────────────────────────────────────────────────
@@ -116,7 +119,7 @@ class CancellingPolicy(FakeContextManager):
         super().__init__()
         self.hard_cancelled = False
 
-    async def compact(self, session, nodes, entry):
+    async def compact(self, session, conversation_id, nodes, entry):
         self.seen.append((session, nodes, entry))
         self.runner.cancel()
         try:
@@ -288,13 +291,16 @@ def image_only_summary(session, nodes, entry):
     )
 
 
-def replace_the_active_conversation(session, nodes, entry):
-    session.active_conversation = Conversation(
+def replace_the_compacting_conversation(session, nodes, entry):
+    """A manager that installed a successor and re-pointed the name under the
+    runner — the shape G2 exists to catch."""
+    session.conversations["c9"] = Conversation(
         id="c9",
         nodes=list(nodes),
         created_at=1000,
         updated_at=1000,
     )
+    session.main_conversation_id = "c9"
     return CompactionPlan(
         entry=entry.model_copy(update={"parts": SUMMARY}),
         nodes=[entry.id],
@@ -308,7 +314,7 @@ def append_to_the_active_path(session, nodes, entry):
         created_at=999,
         parts=[TextContent(text="late")],
     )
-    session.active_conversation.nodes.append("late")
+    main_conversation(session).nodes.append("late")
     return CompactionPlan(
         entry=entry.model_copy(update={"parts": SUMMARY}),
         nodes=[entry.id],
@@ -364,22 +370,22 @@ async def test_the_transition_archives_the_old_path_and_installs_the_new_one():
     runner.schedule_compaction()
     await runner.run()
 
-    assert runner.session.conversation_history == [
-        RICH_SESSION.conversation_history[0],
+    assert runner.session.conversations["c0"] == RICH_SESSION.conversations["c0"]
+    assert [
+        RICH_SESSION.conversations["c0"],
         Conversation(
             id="c1",
             nodes=[*RICH_IDLE_NODES, "ts_c", "cmp", "tf_c"],
             created_at=500,
             updated_at=1000,
-            status=ConversationStatus.IDLE,
         ),
     ]
-    assert runner.session.active_conversation == Conversation(
+    assert main_conversation(runner.session) == Conversation(
         id="c2",
+        previous_conversation_id="c1",
         nodes=["cmp"],
         created_at=1000,
         updated_at=1000,
-        status=ConversationStatus.IDLE,
     )
 
 
@@ -432,11 +438,11 @@ async def test_the_bracket_stays_behind_and_only_the_entry_carries_over():
 
     await runner.run()
 
-    archived = runner.session.conversation_history[-1]
+    archived = runner.session.conversations["c1"]
     assert archived.nodes[-3:] == ["ts_c", "cmp", "tf_c"]
-    assert runner.session.active_conversation.nodes[0] == "cmp"
-    assert "ts_c" not in runner.session.active_conversation.nodes
-    assert "tf_c" not in runner.session.active_conversation.nodes
+    assert main_conversation(runner.session).nodes[0] == "cmp"
+    assert "ts_c" not in main_conversation(runner.session).nodes
+    assert "tf_c" not in main_conversation(runner.session).nodes
 
 
 async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable():
@@ -453,7 +459,7 @@ async def test_the_pruned_referent_and_the_archived_conversation_stay_reachable(
 
     assert runner.session.entries["te0"] == RICH_SESSION.entries["te0"]
     assert runner.session.entries["u0"] == RICH_SESSION.entries["u0"]
-    assert runner.session.conversation_history[0] == (RICH_SESSION.conversation_history[0])
+    assert runner.session.conversations["c0"] == RICH_SESSION.conversations["c0"]
 
 
 async def test_the_old_usage_records_survive():
@@ -521,7 +527,7 @@ async def test_a_plan_with_created_entries_stamps_and_threads_them_in_order():
     runner.schedule_compaction()
     await runner.run()
 
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "new1",
         "cmp",
         "new2",
@@ -575,7 +581,7 @@ async def test_a_plan_may_reorder_carried_ids():
     await runner.run()
 
     # the policy chose the path; the runner validates structure, not sense
-    assert runner.session.active_conversation.nodes == ["u1", "cmp", "a2"]
+    assert main_conversation(runner.session).nodes == ["u1", "cmp", "a2"]
 
 
 async def test_a_fold_everything_plan_leaves_the_compaction_entry_as_the_leaf():
@@ -590,7 +596,7 @@ async def test_a_fold_everything_plan_leaves_the_compaction_entry_as_the_leaf():
     runner.schedule_compaction()
     result = await runner.run()
 
-    assert runner.session.active_conversation.nodes == ["cmp"]
+    assert main_conversation(runner.session).nodes == ["cmp"]
     assert result == RunResult(
         status=ConversationStatus.IDLE,
         outcome=TurnOutcome.COMPLETED,
@@ -610,7 +616,7 @@ async def test_a_keep_last_assistant_plan_leaves_an_assistant_leaf():
     runner.schedule_compaction()
     result = await runner.run()
 
-    assert runner.session.active_conversation.nodes == ["cmp", "a2"]
+    assert main_conversation(runner.session).nodes == ["cmp", "a2"]
     assert result == RunResult(
         status=ConversationStatus.IDLE,
         outcome=TurnOutcome.COMPLETED,
@@ -633,7 +639,7 @@ async def test_a_full_carry_plan_commits_with_an_empty_compacted_span():
 
     # `[]`, not None — nothing was replaced, and that is the policy's call
     assert runner.session.entries["cmp"].compacted_nodes == []
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         *RICH_IDLE_NODES,
         "cmp",
     ]
@@ -655,7 +661,7 @@ async def test_a_span_of_only_a_previous_summary_is_committed():
     await runner.run()
 
     assert runner.session.entries["cmp"].compacted_nodes == ["cmp0"]
-    assert runner.session.conversation_history[-1].id == "c1"
+    assert main_conversation(runner.session).previous_conversation_id == "c1"
 
 
 async def test_the_next_request_projects_only_the_new_path():
@@ -720,6 +726,11 @@ async def test_a_created_tool_execution_has_its_spec_filed_and_survives_a_reload
     )
 
     assert reloaded == runner.session
+    # `conversation_id` stays None: a plan-INVENTED execution has no birth
+    # conversation the runner can name — the one it lands in is minted inside
+    # the transition, after this entry is built. The field is provenance for
+    # executions the runner creates from a model tool call, and nothing
+    # resolves a path through it.
     assert reloaded.entries["te9"] == ToolExecution(
         id="te9",
         parent_id="cmp",
@@ -749,6 +760,7 @@ async def test_an_updated_tool_execution_has_its_spec_filed_and_survives_a_reloa
     respecced = session.entries["te1"].model_copy(update={"tool_spec": ECHO_SPEC})
 
     runner.ledger.transition_conversation(
+        session.main_conversation_id,
         updates=[respecced],
         created=[],
         closing=None,
@@ -763,6 +775,7 @@ async def test_an_updated_tool_execution_has_its_spec_filed_and_survives_a_reloa
     assert reloaded == runner.session
     assert reloaded.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -804,6 +817,7 @@ async def test_the_events_are_scheduled_started_finished():
 
     assert events == [
         CompactionScheduled(
+            conversation_id="c1",
             entry=CompactionEntry(
                 id="cmp",
                 parent_id="ts_c",
@@ -812,6 +826,7 @@ async def test_the_events_are_scheduled_started_finished():
             ),
         ),
         CompactionStarted(
+            conversation_id="c1",
             entry=CompactionEntry(
                 id="cmp",
                 parent_id="ts_c",
@@ -821,11 +836,12 @@ async def test_the_events_are_scheduled_started_finished():
             ),
         ),
         CompactionFinished(
+            conversation_id="c1",
             entry=runner.session.entries["cmp"],
             outcome=TurnOutcome.COMPLETED,
             error=None,
             created=[],
-            conversation_id="c2",
+            new_conversation_id="c2",
         ),
     ]
 
@@ -885,10 +901,10 @@ async def test_a_policy_that_writes_to_its_copy_and_fails_cannot_inject_a_summar
 
     assert runner.session.entries["cmp"].parts is None
     assert ConversationProjector().project(
-        runner.session.active_conversation,
+        main_conversation(runner.session).nodes,
         runner.session.entries,
     ) == ConversationProjector().project(
-        RICH_IDLE_SESSION.active_conversation,
+        main_conversation(RICH_IDLE_SESSION).nodes,
         RICH_IDLE_SESSION.entries,
     )
 
@@ -909,7 +925,7 @@ async def test_a_policy_returning_none_closes_completed_without_transitioning():
     async with runner.run() as run:
         events = [event async for event in run]
 
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         *RICH_IDLE_NODES,
         "ts_c",
         "cmp",
@@ -917,25 +933,29 @@ async def test_a_policy_returning_none_closes_completed_without_transitioning():
     ]
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.COMPLETED
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
     assert events[-1] == CompactionFinished(
+        conversation_id="c1",
         entry=runner.session.entries["cmp"],
         outcome=TurnOutcome.COMPLETED,
         error=None,
         created=[],
-        conversation_id=None,
+        new_conversation_id=None,
     )
 
 
 async def test_scheduling_on_an_empty_session_compacts_nothing():
     session = AgentSession(
         id="s_fresh",
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -948,7 +968,7 @@ async def test_scheduling_on_an_empty_session_compacts_nothing():
     runner.schedule_compaction()
     result = await runner.run()
 
-    assert runner.session.active_conversation.nodes == ["ts_c", "cmp", "tf_c"]
+    assert main_conversation(runner.session).nodes == ["ts_c", "cmp", "tf_c"]
     assert result == RunResult(
         status=ConversationStatus.IDLE,
         outcome=TurnOutcome.COMPLETED,
@@ -1007,7 +1027,7 @@ async def test_a_malformed_plan_is_refused_and_the_conversation_is_unchanged(
         await runner.run()
 
     assert runner.session.entries["cmp"].parts is None
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         *RICH_IDLE_NODES,
         "ts_c",
         "cmp",
@@ -1015,7 +1035,7 @@ async def test_a_malformed_plan_is_refused_and_the_conversation_is_unchanged(
     ]
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
     assert message in runner.session.entries["tf_c"].error
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
 
 
 async def test_a_plan_computed_against_a_replaced_conversation_is_refused():
@@ -1024,7 +1044,7 @@ async def test_a_plan_computed_against_a_replaced_conversation_is_refused():
     runner = DeterministicRunner(
         session,
         context_manager=FakeContextManager(
-            plan=replace_the_active_conversation,
+            plan=replace_the_compacting_conversation,
         ),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
@@ -1033,17 +1053,19 @@ async def test_a_plan_computed_against_a_replaced_conversation_is_refused():
 
     with pytest.raises(
         CompactionPlanError,
-        match="the active conversation changed",
+        match="the compacting conversation changed",
     ):
         await runner.run()
 
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
-    assert len(runner.session.conversation_history) == 1
+    # The runner committed NOTHING: `c9` is the policy's own doing, and no
+    # conversation names `c1` as the one it replaced.
+    assert [c.id for c in runner.session.conversations.values() if c.previous_conversation_id == "c1"] == []
 
 
 async def test_a_plan_computed_against_a_path_that_moved_is_refused():
-    # G2 by path: the policy appended to `session.active_conversation.nodes`
+    # G2 by path: the policy appended to `main_conversation(session).nodes`
     # under its own plan
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
@@ -1059,7 +1081,9 @@ async def test_a_plan_computed_against_a_path_that_moved_is_refused():
 
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
-    assert len(runner.session.conversation_history) == 1
+    # The runner committed NOTHING: `c9` is the policy's own doing, and no
+    # conversation names `c1` as the one it replaced.
+    assert [c.id for c in runner.session.conversations.values() if c.previous_conversation_id == "c1"] == []
 
 
 async def test_an_image_only_summary_is_committed():
@@ -1075,7 +1099,7 @@ async def test_an_image_only_summary_is_committed():
     await runner.run()
 
     assert runner.session.entries["cmp"].context_tokens == 1_000
-    assert runner.session.active_conversation.nodes == ["cmp"]
+    assert main_conversation(runner.session).nodes == ["cmp"]
 
 
 async def test_usage_is_recorded_for_a_rejected_plan():
@@ -1108,7 +1132,7 @@ async def test_a_policy_that_replaced_the_conversation_still_gets_g2s_error():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
-        context_manager=FakeContextManager(plan=replace_the_active_conversation),
+        context_manager=FakeContextManager(plan=replace_the_compacting_conversation),
         ids=["ts_c", "cmp", "tf_c"],
         now=1000,
     )
@@ -1116,7 +1140,7 @@ async def test_a_policy_that_replaced_the_conversation_still_gets_g2s_error():
 
     with pytest.raises(
         CompactionPlanError,
-        match="the active conversation changed under the plan",
+        match="the compacting conversation changed under the plan",
     ):
         await runner.run()
 
@@ -1135,10 +1159,10 @@ async def test_a_rejected_plan_leaves_the_entry_projecting_nothing():
         await runner.run()
 
     assert ConversationProjector().project(
-        runner.session.active_conversation,
+        main_conversation(runner.session).nodes,
         runner.session.entries,
     ) == ConversationProjector().project(
-        RICH_IDLE_SESSION.active_conversation,
+        main_conversation(RICH_IDLE_SESSION).nodes,
         RICH_IDLE_SESSION.entries,
     )
 
@@ -1220,7 +1244,7 @@ async def test_a_policy_source_failure_degrades_and_the_queued_turn_still_runs()
     )
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
     # the failed compaction bracket AND the new turn both land on c1
-    assert runner.session.active_conversation.nodes[-7:] == [
+    assert main_conversation(runner.session).nodes[-7:] == [
         "u4",
         "ts_c",
         "cmp",
@@ -1229,7 +1253,8 @@ async def test_a_policy_source_failure_degrades_and_the_queued_turn_still_runs()
         "a4",
         "tf4",
     ]
-    assert runner.session.conversation_history == RICH_SESSION.conversation_history
+    assert runner.session.main_conversation_id == "c1"  # no successor was installed
+    assert set(runner.session.conversations) == {"c0", "c1"}
     assert len(faux.requests) == 1
 
 
@@ -1253,7 +1278,7 @@ async def test_a_degraded_failure_is_only_visible_on_the_event_stream():
     finished = [e for e in events if e.type == "compaction_finished"]
     assert finished[0].outcome == TurnOutcome.ERRORED
     assert finished[0].error == "kaboom"
-    assert finished[0].conversation_id is None
+    assert finished[0].new_conversation_id is None
 
 
 async def test_a_client_timeout_from_the_policy_closes_timed_out():
@@ -1354,7 +1379,7 @@ async def test_middleware_raising_during_preparation_leaves_the_path_unchanged()
     with pytest.raises(RuntimeError, match="no summaries here"):
         await runner.run()
 
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
     assert runner.session.entries["cmp"].parts is None
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.ERRORED
 
@@ -1380,7 +1405,7 @@ async def test_middleware_raising_while_closing_a_failed_bracket_leaves_it_open(
         await runner.run()
 
     assert "tf_c" not in runner.session.entries  # the bracket is still open
-    assert runner.pending()  # resumable
+    assert runner.busy()  # resumable
 
 
 async def test_repeated_policy_failures_burn_one_attempt_per_drive():
@@ -1421,10 +1446,10 @@ async def test_repeated_policy_failures_burn_one_attempt_per_drive():
     runner.post_message("again?")
     await runner.run()
 
-    nodes = runner.session.active_conversation.nodes
+    nodes = main_conversation(runner.session).nodes
     assert nodes.count("cmp") == 1
     assert nodes.count("cmp2") == 1
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
 
 
 # ── E. cancellation ───────────────────────────────────────────────────────────
@@ -1451,7 +1476,7 @@ async def test_cancelling_between_scheduled_and_started_closes_cancelled():
     assert policy.seen == []  # the policy was never called
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.CANCELLED
     assert runner.session.entries["cmp"].parts is None
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
 
 
 async def test_cancelling_mid_summary_closes_cancelled_and_tears_the_policy_down():
@@ -1472,7 +1497,7 @@ async def test_cancelling_mid_summary_closes_cancelled_and_tears_the_policy_down
     assert policy.hard_cancelled  # …and torn down where it hung
     assert runner.session.entries["cmp"].parts is None  # nothing was produced
     assert runner.session.entries["tf_c"].outcome == TurnOutcome.CANCELLED
-    assert len(runner.session.conversation_history) == 1
+    assert len(runner.session.conversations) == len(RICH_SESSION.conversations)
 
 
 async def test_a_cancel_stops_the_drive_and_the_queued_message_is_not_answered():
@@ -1492,7 +1517,7 @@ async def test_a_cancel_stops_the_drive_and_the_queued_message_is_not_answered()
                 run.cancel()
 
     assert faux.requests == []
-    assert runner.pending()  # u4 still drives on the next run
+    assert runner.busy()  # u4 still drives on the next run
 
 
 async def test_the_run_after_a_cancelled_compaction_carries_no_interrupted_marker():
@@ -1551,7 +1576,7 @@ async def test_an_immediate_cancel_on_start_parks_the_compaction_flush():
     run.cancel()
     result = await run
 
-    assert runner.session.active_conversation.nodes[-4:] == [
+    assert main_conversation(runner.session).nodes[-4:] == [
         "ts_c",
         "cmp",
         "cr",
@@ -1587,7 +1612,7 @@ async def test_run_result_after_a_cancelled_compaction():
     result = await runner.run()
 
     assert result == RunResult(
-        status=ConversationStatus.PENDING,  # u4 is still queued
+        status=ConversationStatus.BUSY,  # u4 is still queued
         outcome=TurnOutcome.CANCELLED,
         pending_approvals=[],
     )
@@ -1631,11 +1656,11 @@ async def test_a_scheduled_compaction_survives_a_reload_and_resumes_in_place():
         now=1000,
     )
 
-    assert runner.pending()
+    assert runner.busy()
     await runner.run()
 
     # the SAME entry was reused — no second bracket, no new id
-    assert runner.session.conversation_history[-1].nodes.count("cmp") == 1
+    assert runner.session.conversations["c1"].nodes.count("cmp") == 1
     assert runner.session.entries["cmp"].parts == SUMMARY
 
 
@@ -1649,7 +1674,7 @@ async def test_an_interrupted_compaction_keeps_its_original_started_at():
         now=1000,
     )
 
-    assert runner.pending()  # the stale RUNNING self-healed at construction
+    assert runner.busy()  # the stale RUNNING self-healed at construction
     await runner.run()
 
     assert runner.session.entries["cmp"].started_at == 600  # not re-stamped
@@ -1685,11 +1710,11 @@ async def test_a_closed_completed_bracket_does_not_bury_a_queued_message():
         now=1000,
     )
 
-    assert runner.pending()
+    assert runner.busy()
     await runner.run()
 
     assert len(faux.requests) == 1  # u4 was answered
-    assert runner.session.active_conversation.nodes.count("cmp") == 1
+    assert main_conversation(runner.session).nodes.count("cmp") == 1
 
 
 async def test_a_committed_compaction_inside_a_counterfeit_bracket_is_not_re_run():
@@ -1697,7 +1722,7 @@ async def test_a_committed_compaction_inside_a_counterfeit_bracket_is_not_re_run
     # re-call compact() over finished work and overwrite the record of what
     # that summary replaced — the one hazard that damages an audit trail.
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["ts3", "cmp", "u4"]
+    main_conversation(session).nodes = ["ts3", "cmp", "u4"]
     committed = session.entries["cmp"].model_copy(deep=True)
     policy = FakeContextManager(should=True, plan=fold_everything)
     runner = DeterministicRunner(
@@ -1717,7 +1742,7 @@ async def test_a_committed_compaction_inside_a_counterfeit_bracket_is_not_re_run
 
 async def test_schedule_compaction_raises_on_a_counterfeit_bracket():
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["ts3", "cmp", "u4"]
+    main_conversation(session).nodes = ["ts3", "cmp", "u4"]
     runner = DeterministicRunner(
         session,
         context_manager=FakeContextManager(),
@@ -1728,7 +1753,7 @@ async def test_schedule_compaction_raises_on_a_counterfeit_bracket():
     with pytest.raises(AgentError, match="requires a closed turn"):
         runner.schedule_compaction()
 
-    assert runner.session.active_conversation.nodes == ["ts3", "cmp", "u4"]
+    assert main_conversation(runner.session).nodes == ["ts3", "cmp", "u4"]
 
 
 async def test_suspending_a_lazy_run_mid_compaction_leaves_the_bracket_open():
@@ -1747,8 +1772,8 @@ async def test_suspending_a_lazy_run_mid_compaction_leaves_the_bracket_open():
                 break
 
     assert "tf_c" not in runner.session.entries
-    assert runner.pending()
-    assert runner.ledger.open_compaction_entry() is not None
+    assert runner.busy()
+    assert runner.ledger.open_compaction_entry(session.main_conversation_id) is not None
 
 
 async def test_an_on_event_raise_during_started_leaves_the_bracket_open():
@@ -1769,7 +1794,7 @@ async def test_an_on_event_raise_during_started_leaves_the_bracket_open():
         await runner.run(on_event=explode)
 
     assert "tf_c" not in runner.session.entries
-    assert runner.pending()
+    assert runner.busy()
 
 
 async def test_a_reloaded_compacted_session_drives_normally():
@@ -1814,7 +1839,7 @@ async def test_a_carried_trailing_user_message_keeps_driving():
 
     result = await runner.run()
 
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "cmp",
         "u4",
         "ts4",
@@ -1844,7 +1869,7 @@ async def test_a_folded_trailing_user_message_is_committed_and_the_question_is_l
 
     await runner.run()
 
-    assert runner.session.active_conversation.nodes == ["cmp"]
+    assert main_conversation(runner.session).nodes == ["cmp"]
     assert runner.idle()
     assert faux.requests == []
     assert "u4" in runner.session.entries
@@ -1873,31 +1898,26 @@ async def test_a_trailing_turn_finish_gives_a_compaction_only_drive():
     )
 
 
-async def test_a_carried_failed_turn_finish_is_retried_in_the_same_drive():
+async def test_a_carried_failed_turn_finish_is_not_retried_after_the_transition():
     faux = _answering_provider()
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(
         session,
         provider=faux,
         context_manager=FakeContextManager(plan=carry_the_failed_turn_finish),
-        ids=["ts_c", "cmp", "tf_c", "c2", "ts4", "a4", "tf4"],
+        ids=["ts_c", "cmp", "tf_c", "c2"],
         now=1000,
     )
 
     runner.schedule_compaction()
     await runner.run()
 
-    # the carried TurnFinish(ERRORED) leaf derives PENDING → the drive retries
-    assert len(faux.requests) == 1
-    assert runner.session.active_conversation.nodes == [
-        "cmp",
-        "u2",
-        "ts2",
-        "tf2",
-        "ts4",
-        "a4",
-        "tf4",
-    ]
+    # The carried TurnFinish(ERRORED) is a CLOSED bracket, so the installed
+    # conversation derives IDLE and the compaction-only drive stops there. A
+    # failed turn is no longer retry-ready — nothing re-sends the request.
+    assert faux.requests == []
+    assert runner.idle()
+    assert main_conversation(runner.session).nodes == ["cmp", "u2", "ts2", "tf2"]
 
 
 async def test_a_carried_phantom_open_turn_is_committed_as_given():
@@ -1918,7 +1938,7 @@ async def test_a_carried_phantom_open_turn_is_committed_as_given():
 
     # ts3 came over without its TurnFinish: the drive resumes a turn that
     # never happened. The hazard is the policy's — core commits it as given.
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "cmp",
         "ts3",
         "u4",
@@ -1950,7 +1970,7 @@ async def test_a_phantom_bracket_around_the_summary_is_driven_as_a_turn():
 
     assert len(policy.seen) == 1  # compact() ran once, not twice
     assert runner.session.entries["cmp"].compacted_nodes is not None
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "ts3",
         "cmp",
         "u4",
@@ -1975,14 +1995,14 @@ def test_schedule_compaction_writes_the_bracket_and_the_entry():
     entry_id = runner.schedule_compaction()
 
     assert entry_id == "cmp"
-    assert runner.session.active_conversation.nodes == [*RICH_IDLE_NODES, "ts_c", "cmp"]
+    assert main_conversation(runner.session).nodes == [*RICH_IDLE_NODES, "ts_c", "cmp"]
     assert runner.session.entries["cmp"] == CompactionEntry(
         id="cmp",
         parent_id="ts_c",
         created_at=1000,
         source=CompactionSource.USER,
     )
-    assert runner.pending()
+    assert runner.busy()
 
 
 def test_schedule_compaction_is_idempotent():
@@ -2024,7 +2044,7 @@ def test_schedule_compaction_rejects_an_approval_gate():
         now=1000,
     )
 
-    with pytest.raises(AgentError, match="status=awaiting_approval"):
+    with pytest.raises(AgentError, match="status=blocked"):
         runner.schedule_compaction()
 
 
@@ -2058,7 +2078,7 @@ def test_post_message_is_illegal_while_a_compaction_is_scheduled():
         now=1000,
     )
 
-    with pytest.raises(AgentError, match="post_message requires a closed turn"):
+    with pytest.raises(AgentError, match="post_message requires an IDLE conversation"):
         runner.post_message("meanwhile…")
 
 
@@ -2075,7 +2095,7 @@ async def test_post_message_is_legal_once_the_compaction_has_been_driven():
     await runner.run()
     runner.post_message("meanwhile…")
 
-    assert runner.session.active_conversation.nodes == ["cmp", "u5"]
+    assert main_conversation(runner.session).nodes == ["cmp", "u5"]
 
 
 async def test_start_opens_a_compaction_bracket_when_one_is_due():
@@ -2096,12 +2116,12 @@ async def test_start_opens_a_compaction_bracket_when_one_is_due():
     await run
 
     # no bare TurnStart was opened before the compaction bracket
-    assert runner.session.conversation_history[-1].nodes[-3:] == [
+    assert runner.session.conversations["c1"].nodes[-3:] == [
         "ts_c",
         "cmp",
         "tf_c",
     ]
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "cmp",
         "u4",
         "ts4",
@@ -2124,7 +2144,7 @@ async def test_start_with_an_already_scheduled_compaction_opens_nothing_extra():
     await run
 
     assert policy.should_calls == 0  # a scheduled compaction wins
-    assert runner.session.conversation_history[-1].nodes.count("ts_c") == 1
+    assert runner.session.conversations["c1"].nodes.count("ts_c") == 1
 
 
 async def test_a_scheduled_compaction_wins_over_the_policy():
@@ -2195,12 +2215,12 @@ async def test_at_most_one_compaction_per_drive():
 
     # `should_compact` is still True, but the step sits outside the loop
     assert len(policy.seen) == 1
-    assert len(runner.session.conversation_history) == 2
+    assert len(runner.session.conversations) == len(RICH_IDLE_SESSION.conversations) + 1
 
 
 async def test_a_should_compact_that_raises_propagates_from_run():
     class Exploding(FakeContextManager):
-        def should_compact(self, session):
+        def should_compact(self, session, conversation_id):
             raise RuntimeError("bad threshold arithmetic")
 
     session = RICH_SESSION.model_copy(deep=True)
@@ -2217,7 +2237,7 @@ async def test_a_should_compact_that_raises_propagates_from_run():
 
 async def test_a_should_compact_that_raises_from_start_leaves_the_runner_usable():
     class Exploding(FakeContextManager):
-        def should_compact(self, session):
+        def should_compact(self, session, conversation_id):
             raise RuntimeError("bad threshold arithmetic")
 
     faux = _answering_provider()
@@ -2377,7 +2397,7 @@ async def test_a_deadline_that_does_not_expire_lets_the_compaction_commit():
     runner.schedule_compaction()
     result = await runner.run()
 
-    assert runner.session.active_conversation.nodes == ["cmp"]
+    assert main_conversation(runner.session).nodes == ["cmp"]
     assert result.outcome == TurnOutcome.COMPLETED
 
 

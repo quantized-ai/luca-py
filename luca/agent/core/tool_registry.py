@@ -7,14 +7,29 @@ methods — everything else (permission policies, registries with behavior,
 plugins) is application space; `luca.agent.contrib.simple_tool_registry` is
 the batteries-included implementation.
 
-All four methods are async and take the live `AgentSession` first. None of
-them receives the cancellation token: the runner races each call against it
-instead (see `context.py`).
+All four methods are async and take the live `AgentSession` first and the
+`conversation_id` they are answering for second. None of them receives the
+cancellation token: the runner races each call against it instead (see
+`context.py`).
+
+WHY THE CONVERSATION IS AN ARGUMENT. A session holds several conversations —
+the main one and one per subagent — and they advance CONCURRENTLY. There is no
+"active" conversation to read behind the caller's back, so the scope is passed.
+It is always the ID, never the `Conversation` object: a conversation is LIVE
+and MUTABLE (the runner appends to its `nodes` while application code holds
+it), and every other cross-reference in the data model is an id too. Resolve it
+when you need the object — `session.conversations[conversation_id]` — which is
+one lookup, because the session is always the first argument.
+
+That is what lets a registry answer DIFFERENTLY per conversation: withholding a
+tool from a subagent, deciding approvals differently inside one, or keying its
+own state by conversation.
 
 Contract semantics:
 
 - `get_tools` is DYNAMIC: the runner calls it fresh per LLM call, and the
-  result may vary with session state. It is a query — never a lifecycle hook.
+  result may vary with session state AND with the conversation asked about. It
+  is a query — never a lifecycle hook.
   It returns `ToolSpec`s — plain JSON-serializable data, not Python classes —
   so a registry backed by a remote tool server (MCP, an HTTP tool service,
   another agent) can hand back the JSON Schema it already has. An exception
@@ -59,7 +74,7 @@ must produce an awaitable; a callable that returns a plain value has already
 been invoked, so it records as a post-dispatch failure (FAILED, `started_at`
 set) rather than a preparation failure.
 
-WHAT THE TWO ARGUMENTS MEAN. The `AgentSession` is the LIVE object — the same
+WHAT THE ARGUMENTS MEAN. The `AgentSession` is the LIVE object — the same
 instance the runner and ledger write through, not a copy. A registry may hold
 the reference and re-read current state from it later, including from inside a
 prepared callable, where `session.entries[execution.id]` is the correct way to
@@ -128,6 +143,38 @@ of them fails silently when violated.
 12. Do not put volatile data in `ToolSpec.metadata`. A spec must be a pure
     function of the tool definition; anything call-scoped mints a new stored
     row on every call and silently defeats normalization.
+13. BE CONCURRENCY-SAFE. One registry instance serves every conversation, and
+    the framework does NOT serialize these calls — serializing them would gate
+    every sibling subagent behind the slowest one, which is exactly what
+    parallel subagents exist to avoid. `get_tools`, `prepare` and the prepared
+    callable are now concurrent ACROSS conversations (`create_execution` and
+    `decide` already were, across sibling calls in one response). Six rules:
+    a. NO PER-CALL STATE ON `self`. `self` is for immutable configuration.
+       Anything stashed there and read back after an `await` may belong to
+       another conversation by then. This is the failure mode, and it is
+       silent — a tool that returns another subagent's answer, intermittently,
+       with nothing in the log.
+    b. State keyed by `conversation_id` needs NO lock. Tool dispatch within one
+       conversation is sequential, so exactly one body ever touches a given
+       conversation's slot at a time. (Sequential dispatch is a runner CHOICE,
+       documented as such; if it ever becomes parallel this line is revisited.)
+    c. State deliberately shared ACROSS conversations needs an `asyncio.Lock`
+       around the MUTATION, never around the I/O. Holding a lock across a slow
+       await re-serializes the tree. Do the I/O unlocked, take the lock for the
+       read-modify-write.
+    d. `asyncio.to_thread` is REAL parallelism. Two conversations' bodies then
+       genuinely run on two OS threads, and nothing the single-threaded
+       argument buys you survives that boundary: shared state touched inside
+       needs a `threading.Lock`, on both sides.
+    e. Cancellation can kill a body at any await, and the LOCK is not what is
+       at risk — `async with` releases correctly. The DATA can be left
+       half-written and a sibling may read it. Make the mutation the last
+       await-free step, or make it idempotent.
+    f. Process-global and external resources are not a locking problem. The
+       current working directory, relative paths, temp files, subprocesses, a
+       git worktree, a connection that cannot have two queries in flight —
+       scope them PER CONVERSATION instead. A mutex around a shared cwd is the
+       wrong shape.
 
 COMPOSING REGISTRIES. A registry that routes to children must gate a call
 through its owning child's permission policy on every path where it can
@@ -161,12 +208,17 @@ class ToolRegistry:
     """The four-method tool-lifecycle contract. A duck-typed concrete base
     (no ABC), matching the house strategy style — subclass and override."""
 
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+    async def get_tools(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[ToolSpec]:
         raise NotImplementedError
 
     async def create_execution(
         self,
         session: AgentSession,
+        conversation_id: str,
         call: ToolCall,
     ) -> ToolExecution:
         raise NotImplementedError
@@ -174,6 +226,7 @@ class ToolRegistry:
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         raise NotImplementedError
@@ -181,6 +234,7 @@ class ToolRegistry:
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         raise NotImplementedError

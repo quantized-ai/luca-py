@@ -34,21 +34,28 @@ from luca.agent.contrib.simple_tool_registry import (
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
-    Conversation,
     SessionConfig,
     ToolSpec,
 )
-from tests.agent.scenarios import MODEL
+from tests.agent.scenarios import (
+    MODEL,
+    conversation,
+    main_conversation,
+)
 
 SESSION = AgentSession(
     id="s_memory",
-    active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+    conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
 
 def run_kwargs() -> dict:
     return {"cancellation_token": CancellationToken()}
+
+
+CONVERSATION = main_conversation(SESSION).id
 
 
 # ── the specs the model is shown ──────────────────────────────────────────────
@@ -186,7 +193,7 @@ def test_get_tool_registry_wraps_the_tools_in_an_auto_allowing_registry():
 async def test_registry_get_tools_advertises_the_four_memory_specs():
     registry = MemoryPlugin().get_tool_registry(SESSION)
 
-    specs = await registry.get_tools(SESSION)
+    specs = await registry.get_tools(SESSION, CONVERSATION)
 
     assert specs == [
         READ_SCRATCHPAD_SPEC,
@@ -210,7 +217,7 @@ def test_get_system_prompt_parts_returns_the_scratchpad_and_todo_parts():
 async def test_read_empty_scratchpad_returns_empty_string():
     read, _, _, _ = MemoryPlugin().get_tools()
 
-    assert await read._execute({}, SESSION, **run_kwargs()) == ""
+    assert await read._execute({}, SESSION, CONVERSATION, **run_kwargs()) == ""
 
 
 async def test_write_then_read_round_trips():
@@ -219,20 +226,21 @@ async def test_write_then_read_round_trips():
     output = await write._execute(
         {"content": "plan: step 1"},
         SESSION,
+        CONVERSATION,
         **run_kwargs(),
     )
 
     assert output == "Scratchpad updated successfully"
-    assert await read._execute({}, SESSION, **run_kwargs()) == "plan: step 1"
+    assert await read._execute({}, SESSION, CONVERSATION, **run_kwargs()) == "plan: step 1"
 
 
 async def test_write_fully_replaces_previous_content():
     read, write, _, _ = MemoryPlugin().get_tools()
-    await write._execute({"content": "first draft"}, SESSION, **run_kwargs())
+    await write._execute({"content": "first draft"}, SESSION, CONVERSATION, **run_kwargs())
 
-    await write._execute({"content": "second draft"}, SESSION, **run_kwargs())
+    await write._execute({"content": "second draft"}, SESSION, CONVERSATION, **run_kwargs())
 
-    assert await read._execute({}, SESSION, **run_kwargs()) == "second draft"
+    assert await read._execute({}, SESSION, CONVERSATION, **run_kwargs()) == "second draft"
 
 
 async def test_each_plugin_instance_owns_its_own_scratchpad():
@@ -241,9 +249,9 @@ async def test_each_plugin_instance_owns_its_own_scratchpad():
     _, write_a, _, _ = plugin_a.get_tools()
     read_b, _, _, _ = plugin_b.get_tools()
 
-    await write_a._execute({"content": "private to a"}, SESSION, **run_kwargs())
+    await write_a._execute({"content": "private to a"}, SESSION, CONVERSATION, **run_kwargs())
 
-    assert await read_b._execute({}, SESSION, **run_kwargs()) == ""
+    assert await read_b._execute({}, SESSION, CONVERSATION, **run_kwargs()) == ""
 
 
 # ── todo-list behavior ────────────────────────────────────────────────────────
@@ -252,7 +260,7 @@ async def test_each_plugin_instance_owns_its_own_scratchpad():
 async def test_read_empty_todo_list_returns_empty_list_repr():
     _, _, read_todo, _ = MemoryPlugin().get_tools()
 
-    assert await read_todo._execute({}, SESSION, **run_kwargs()) == "[]"
+    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == "[]"
 
 
 async def test_update_todos_then_read_round_trips():
@@ -266,11 +274,12 @@ async def test_update_todos_then_read_round_trips():
             ]
         },
         SESSION,
+        CONVERSATION,
         **run_kwargs(),
     )
 
     assert output == "Todo list updated successfully"
-    assert await read_todo._execute({}, SESSION, **run_kwargs()) == (
+    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
         "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'in_progress'}]"
     )
 
@@ -286,6 +295,7 @@ async def test_update_todos_replaces_the_whole_list():
             ]
         },
         SESSION,
+        CONVERSATION,
         **run_kwargs(),
     )
 
@@ -297,10 +307,11 @@ async def test_update_todos_replaces_the_whole_list():
             ]
         },
         SESSION,
+        CONVERSATION,
         **run_kwargs(),
     )
 
-    assert await read_todo._execute({}, SESSION, **run_kwargs()) == (
+    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
         "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'completed'}]"
     )
 
@@ -313,9 +324,11 @@ async def test_update_todos_stores_registry_validated_args_as_plain_text():
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
     args = UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "completed"}]}).model_dump()
 
-    await update_todos._execute(args, SESSION, **run_kwargs())
+    await update_todos._execute(args, SESSION, CONVERSATION, **run_kwargs())
 
-    assert await read_todo._execute({}, SESSION, **run_kwargs()) == ("[{'content': 'T1', 'status': 'completed'}]")
+    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
+        "[{'content': 'T1', 'status': 'completed'}]"
+    )
 
 
 def test_update_todos_args_reject_an_unknown_status():

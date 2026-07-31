@@ -41,6 +41,10 @@ from luca.agent.core.models import (
     TurnStart,
     UserMessage,
 )
+from tests.agent.scenarios import (
+    conversation,
+    main_conversation,
+)
 
 MODEL = LLMConfig(model="test-model", provider="faux")
 CHEAP = LLMConfig(model="cheap-model", provider="faux")
@@ -88,15 +92,18 @@ SESSION = AgentSession(
             started_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
-        created_at=500,
-        updated_at=600,
-    ),
-    conversation_history=[
-        Conversation(id="c0", nodes=["a0"], created_at=400, updated_at=400),
-    ],
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
+            created_at=500,
+            updated_at=600,
+            previous_conversation_id="c0",
+        ),
+        # the archived predecessor — a first-class row, reachable backwards
+        "c0": conversation("c0", ["a0"], created_at=400, updated_at=400),
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -142,23 +149,27 @@ def test_a_blank_text_part_beside_an_image_is_content():
 
 
 def test_check_snapshot_passes_when_nothing_moved():
-    assert check_snapshot(session=SESSION, snapshot=SNAPSHOT) is None
+    assert check_snapshot(session=SESSION, conversation_id="c1", snapshot=SNAPSHOT) is None
 
 
-def test_check_snapshot_rejects_a_replaced_active_conversation():
+def test_check_snapshot_rejects_a_conversation_that_was_replaced_under_the_plan():
+    # A manager that installed a successor and re-pointed the name: the caller
+    # re-resolves `main_conversation_id` before checking, so the plan is caught
+    # here rather than committing onto a conversation nobody is driving.
     session = SESSION.model_copy(deep=True)
-    session.active_conversation = Conversation(
+    session.conversations["c9"] = Conversation(
         id="c9",
         nodes=list(SNAPSHOT.nodes),
         created_at=500,
         updated_at=600,
     )
+    session.main_conversation_id = "c9"
 
     with pytest.raises(
         CompactionPlanError,
-        match="the active conversation changed under the plan",
+        match="the compacting conversation changed under the plan",
     ):
-        check_snapshot(session=session, snapshot=SNAPSHOT)
+        check_snapshot(session=session, conversation_id=session.main_conversation_id, snapshot=SNAPSHOT)
 
 
 def test_check_snapshot_rejects_a_path_that_grew_under_the_plan():
@@ -168,13 +179,13 @@ def test_check_snapshot_rejects_a_path_that_grew_under_the_plan():
         created_at=700,
         parts=[TextContent(text="late")],
     )
-    session.active_conversation.nodes.append("u3")
+    main_conversation(session).nodes.append("u3")
 
     with pytest.raises(
         CompactionPlanError,
-        match="the active conversation's path changed under the plan",
+        match="the compacting conversation's path changed under the plan",
     ):
-        check_snapshot(session=session, snapshot=SNAPSHOT)
+        check_snapshot(session=session, conversation_id=session.main_conversation_id, snapshot=SNAPSHOT)
 
 
 # ── validate_plan: the rejection list, in evaluation order ───────────────────
@@ -182,7 +193,8 @@ def test_check_snapshot_rejects_a_path_that_grew_under_the_plan():
 
 def test_a_plan_computed_against_another_conversation_is_rejected():
     session = SESSION.model_copy(deep=True)
-    session.active_conversation.id = "c9"
+    session.conversations["c9"] = main_conversation(session).model_copy(update={"id": "c9"})
+    session.main_conversation_id = "c9"
     plan = CompactionPlan(
         entry=SESSION.entries["cmp"].model_copy(update={"parts": SUMMARY}),
         nodes=["cmp"],
@@ -192,19 +204,31 @@ def test_a_plan_computed_against_another_conversation_is_rejected():
         CompactionPlanError,
         match=r"changed under the plan \('c1' → 'c9'\)",
     ):
-        validate_plan(plan, entry_id="cmp", session=session, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=session,
+            conversation_id=session.main_conversation_id,
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_computed_against_a_stale_path_is_rejected():
     session = SESSION.model_copy(deep=True)
-    session.active_conversation.nodes.remove("u1")
+    main_conversation(session).nodes.remove("u1")
     plan = CompactionPlan(
         entry=SESSION.entries["cmp"].model_copy(update={"parts": SUMMARY}),
         nodes=["cmp"],
     )
 
     with pytest.raises(CompactionPlanError, match="path changed under the plan"):
-        validate_plan(plan, entry_id="cmp", session=session, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=session,
+            conversation_id=session.main_conversation_id,
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_an_empty_plan_is_rejected():
@@ -217,7 +241,13 @@ def test_an_empty_plan_is_rejected():
         CompactionPlanError,
         match="an empty plan is not a compaction",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_referencing_an_unknown_id_is_rejected():
@@ -230,7 +260,13 @@ def test_a_plan_referencing_an_unknown_id_is_rejected():
         CompactionPlanError,
         match="plan references unknown entry 'nowhere'",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_carrying_an_entry_from_an_archived_conversation_is_rejected():
@@ -244,7 +280,13 @@ def test_a_plan_carrying_an_entry_from_an_archived_conversation_is_rejected():
         CompactionPlanError,
         match="plan references entry 'a0', which is not on conversation 'c1'",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_carrying_the_brackets_own_turn_start_is_rejected():
@@ -259,7 +301,13 @@ def test_a_plan_carrying_the_brackets_own_turn_start_is_rejected():
         CompactionPlanError,
         match="plan references entry 'ts_c', which is not on conversation 'c1'",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_referencing_the_same_id_twice_is_rejected():
@@ -272,7 +320,13 @@ def test_a_plan_referencing_the_same_id_twice_is_rejected():
         CompactionPlanError,
         match="plan references entry 'u2' twice",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_omitting_the_compaction_entry_is_rejected():
@@ -285,14 +339,26 @@ def test_a_plan_omitting_the_compaction_entry_is_rejected():
         CompactionPlanError,
         match="plan omits the compaction entry 'cmp'",
     ):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_with_no_parts_is_rejected():
     plan = CompactionPlan(entry=SESSION.entries["cmp"], nodes=["cmp"])
 
     with pytest.raises(CompactionPlanError, match="plan carries no content"):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_with_empty_parts_is_rejected():
@@ -302,7 +368,13 @@ def test_a_plan_with_empty_parts_is_rejected():
     )
 
     with pytest.raises(CompactionPlanError, match="plan carries no content"):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 def test_a_plan_with_whitespace_only_parts_is_rejected():
@@ -314,7 +386,13 @@ def test_a_plan_with_whitespace_only_parts_is_rejected():
     )
 
     with pytest.raises(CompactionPlanError, match="plan carries no content"):
-        validate_plan(plan, entry_id="cmp", session=SESSION, snapshot=SNAPSHOT)
+        validate_plan(
+            plan,
+            entry_id="cmp",
+            session=SESSION,
+            conversation_id="c1",
+            snapshot=SNAPSHOT,
+        )
 
 
 # ── validate_plan: what it accepts ────────────────────────────────────────────
@@ -331,6 +409,7 @@ def test_a_fold_everything_plan_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -348,6 +427,7 @@ def test_carrying_the_offered_nodes_verbatim_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -370,6 +450,7 @@ def test_a_plan_interleaving_created_entries_between_carried_ids_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -388,6 +469,7 @@ def test_a_plan_reordering_carried_ids_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -405,6 +487,7 @@ def test_an_image_only_summary_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -429,6 +512,7 @@ def test_a_plan_with_every_usage_counter_set_is_accepted():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None
@@ -457,6 +541,7 @@ def test_every_non_content_field_of_the_returned_entry_is_ignored():
             plan,
             entry_id="cmp",
             session=SESSION,
+            conversation_id="c1",
             snapshot=SNAPSHOT,
         )
         is None

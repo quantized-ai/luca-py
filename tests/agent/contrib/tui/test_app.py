@@ -33,6 +33,7 @@ from luca.client.testing import (
 from tests.agent.scenarios import (
     COMPACTION_FAILED_SESSION,
     POST_COMPACTION_SESSION,
+    main_conversation,
 )
 
 from .helpers import fresh_session, idle_again, submit, wait_until
@@ -198,7 +199,9 @@ async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
 
         [notice] = app.query(NoticeCell)
         assert "turn failed" in notice.text
-        assert app.runner.status is ConversationStatus.PENDING  # retry-ready
+        # the bracket closed ERRORED, so the conversation is IDLE: recovery is
+        # a new message, not a silent re-send of the same request
+        assert app.runner.status is ConversationStatus.IDLE
         assert (tmp_path / f"{session.id}.json").exists()
 
 
@@ -287,7 +290,7 @@ async def test_pasted_image_is_attached_and_sent_with_the_next_message(
         assert [cell.text for cell in app.query(UserCell)] == [
             "[image: pasted-1.png]\nwhat is this?",
         ]
-        first = session.entries[session.active_conversation.nodes[0]]
+        first = session.entries[main_conversation(session).nodes[0]]
         assert [part.type for part in first.parts] == ["image", "text"]
         assert app._pending_images == []
 
@@ -309,7 +312,7 @@ async def test_a_pasted_image_can_be_sent_without_any_text(tmp_path, monkeypatch
         await wait_until(pilot, lambda: idle_again(app))
 
         assert [cell.text for cell in app.query(UserCell)] == ["[image: pasted-1.png]"]
-        first = session.entries[session.active_conversation.nodes[0]]
+        first = session.entries[main_conversation(session).nodes[0]]
         assert [part.type for part in first.parts] == ["image"]
 
 
@@ -477,8 +480,7 @@ async def test_a_resumed_compacted_session_replays_its_summary(tmp_path):
     # the summary IS the history on the new conversation — replaying nothing
     # for it would leave the transcript blank above the next message
     session = POST_COMPACTION_SESSION.model_copy(deep=True)
-    session.active_conversation.status = ConversationStatus.IDLE
-    session.active_conversation.nodes = ["cmp"]
+    main_conversation(session).nodes = ["cmp"]
     app = AgentApp(
         session,
         provider=scripted(),
