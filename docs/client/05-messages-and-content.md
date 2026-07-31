@@ -64,10 +64,35 @@ ToolMessage`) is discriminated on `role`.
 | `ImageBlock(source)` | `"image"` | User, tool |
 | `AudioBlock(source)` | `"audio"` | User |
 | `FileBlock(source, name=None)` | `"file"` | User |
-| `ThinkingBlock(text, signature=None, redacted=False)` | `"thinking"` | Assistant |
+| `ThinkingBlock(text, id=None, signature=None, redacted=False)` | `"thinking"` | Assistant |
 | `ToolCall(id, name, arguments, partial_arguments, complete, thought_signature=None)` | `"tool_call"` | Assistant |
 | `ToolResultBlock(tool_call_id, content, is_error=False)` | `"tool_result"` | (Anthropic-style inline; prefer `ToolMessage`) |
 | `RefusalBlock(text)` | `"refusal"` | Assistant |
+
+### Reasoning is provider-owned
+
+`ThinkingBlock.id` and `ThinkingBlock.signature` are opaque: the id is how the
+provider names the reasoning item (`rs_…` on OpenAI), the signature is its
+attestation over the content (Anthropic's `signature`, OpenAI's
+`encrypted_content`). Both round-trip verbatim or not at all — editing `text`
+invalidates the signature.
+
+They are also **pair-scoped**. A signature minted by one (provider, model) is
+rejected by every other, so a transport replays a thinking block only when the
+assistant message carrying it names the provider and model being called:
+
+```python
+AssistantMessage(
+    content=[ThinkingBlock(text="…", id="rs_1", signature="enc-1")],
+    provider="openai",         # ← the pair that minted it
+    model="gpt-5.4",
+)
+```
+
+Send that to `anthropic:claude-sonnet-5` and the reasoning is dropped from the
+wire (the text stays in your message object). A message with no `provider` /
+`model` is taken as caller-driven and replayed as-is. This is what keeps a
+conversation valid across a mid-session model switch.
 
 ### Media sources
 

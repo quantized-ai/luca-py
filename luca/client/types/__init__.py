@@ -53,7 +53,12 @@ from .streaming import (
     ToolCallStartEvent,
     UsageEvent,
 )
-from .structured import ResponseFormat, parse_structured_output
+from .structured import (
+    ResponseFormat,
+    parse_structured_output,
+    response_format_to_json_schema,
+    strictify_json_schema,
+)
 from .tools import Tool, ToolChoice, ToolParameters, tool_parameters_to_json_schema
 
 # Resolve forward references. AssistantMessage references Usage as a string;
@@ -127,6 +132,8 @@ __all__ = [
     # structured
     "ResponseFormat",
     "parse_structured_output",
+    "response_format_to_json_schema",
+    "strictify_json_schema",
     # tools
     "Tool",
     "ToolChoice",

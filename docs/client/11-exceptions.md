@@ -53,7 +53,9 @@ to render or branch on, not a bug to catch.
 ## Mapping (per transport)
 
 Each transport's `_map_chat_completion_http_error` decides which subclass to
-raise. For `OpenAITransport` (and OpenAI-compatible hosts):
+raise. Both OpenAI transports share one mapping (`OpenAIErrorMappingMixin` —
+same error envelope on `/v1/responses` and `/chat/completions`), and every
+OpenAI-compatible host inherits it:
 
 | HTTP / error | Raised as |
 |---|---|

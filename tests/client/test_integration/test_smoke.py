@@ -32,16 +32,18 @@ def test_openai_completion_smoke(monkeypatch):
         return httpx.Response(
             200,
             json={
-                "id": "chatcmpl-test",
+                "id": "resp_test",
                 "model": "gpt-4o-2024-08-06",
-                "choices": [
+                "status": "completed",
+                "output": [
                     {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "Hello!"},
-                        "finish_reason": "stop",
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Hello!"}],
                     }
                 ],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
             },
         )
 
@@ -56,8 +58,10 @@ def test_openai_completion_smoke(monkeypatch):
         messages=[UserMessage(content="Hi")],
     )
 
-    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
-    assert captured["body"]["messages"] == [{"role": "user", "content": "Hi"}]
+    # Provider `openai` runs on the Responses API, not chat completions.
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["body"]["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]
+    assert captured["body"]["store"] is False
     assert response.finish_reason == "stop"
     assert response.provider == "openai"
     assert response.message.content == [TextBlock(text="Hello!")]
@@ -69,8 +73,14 @@ def test_openai_completion_smoke(monkeypatch):
 
 def test_openai_streaming_smoke(monkeypatch):
     chunks = [
-        b'data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n',
-        b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        b'data: {"type":"response.output_item.added","output_index":0,'
+        b'"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}\n\n',
+        b'data: {"type":"response.content_part.added","output_index":0,"content_index":0,'
+        b'"part":{"type":"output_text","text":""}}\n\n',
+        b'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hi"}\n\n',
+        b'data: {"type":"response.content_part.done","output_index":0,"content_index":0}\n\n',
+        b'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed",'
+        b'"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}\n\n',
         b"data: [DONE]\n\n",
     ]
     body = b"".join(chunks)
@@ -163,20 +173,25 @@ def test_structured_output_parse_smoke(monkeypatch):
         title: str
         year: int
 
+    captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
         return httpx.Response(
             200,
             json={
-                "id": "x",
+                "id": "resp_x",
                 "model": "gpt-4o",
-                "choices": [
+                "status": "completed",
+                "output": [
                     {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": '{"title":"Hi","year":2024}'},
-                        "finish_reason": "stop",
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": '{"title":"Hi","year":2024}'}],
                     }
                 ],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "usage": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
             },
         )
 
@@ -191,6 +206,25 @@ def test_structured_output_parse_smoke(monkeypatch):
         messages=[UserMessage(content="Give me a movie.")],
         response_format=Movie,
     )
+
+    # The schema goes up strictified, or `strict: true` is a 400.
+    assert captured["body"]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "Movie",
+            "schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"title": "Title", "type": "string"},
+                    "year": {"title": "Year", "type": "integer"},
+                },
+                "required": ["title", "year"],
+                "title": "Movie",
+                "type": "object",
+            },
+            "strict": True,
+        }
+    }
     movie = response.parse()
     assert isinstance(movie, Movie)
     assert movie.title == "Hi"
@@ -202,29 +236,19 @@ def test_tool_call_round_trip_smoke(monkeypatch):
         return httpx.Response(
             200,
             json={
-                "id": "x",
+                "id": "resp_x",
                 "model": "gpt-4o",
-                "choices": [
+                "status": "completed",
+                "output": [
                     {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "get_weather",
-                                        "arguments": '{"city":"NYC"}',
-                                    },
-                                }
-                            ],
-                        },
-                        "finish_reason": "tool_calls",
+                        "id": "fc_1",
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": '{"city":"NYC"}',
                     }
                 ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
             },
         )
 
@@ -250,6 +274,6 @@ def test_tool_call_round_trip_smoke(monkeypatch):
         ],
     )
     assert response.finish_reason == "tool_use"
-    assert response.provider_finish_reason == "tool_calls"
+    assert response.provider_finish_reason == "completed"
     assert response.tool_calls[0].name == "get_weather"
     assert response.tool_calls[0].arguments == {"city": "NYC"}

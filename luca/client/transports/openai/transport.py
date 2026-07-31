@@ -13,19 +13,7 @@ from typing import Any
 
 import httpx
 
-from ...exceptions import (
-    AuthenticationError,
-    BadRequestError,
-    ClientError,
-    ConnectionError as ClientConnectionError,
-    ContextLengthExceededError,
-    InvalidModelError,
-    ModelNotFoundError,
-    ProviderAPIError,
-    RateLimitError,
-    TimeoutError as ClientTimeoutError,
-    UnsupportedParameterError,
-)
+from ...exceptions import BadRequestError
 from ...types.completion import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -41,11 +29,13 @@ from ...types.content import (
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
+from ...types.structured import response_format_to_json_schema, strictify_json_schema
 from ...types.tools import tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
+from .errors import OpenAIErrorMappingMixin
 
 
-class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
+class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTransportMixin):
     transport_id = "openai"
 
     # --- payload building ---
@@ -261,31 +251,18 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         return choice
 
     def _project_response_format(self, fmt: Any) -> Any:
-        if isinstance(fmt, dict):
-            return fmt
-        try:
-            from pydantic import BaseModel, TypeAdapter
-        except ImportError:  # pragma: no cover
-            return fmt
-        if isinstance(fmt, type) and issubclass(fmt, BaseModel):
-            return {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": fmt.__name__,
-                    "schema": fmt.model_json_schema(),
-                    "strict": True,
-                },
-            }
-        if isinstance(fmt, TypeAdapter):
-            return {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "structured_output",
-                    "schema": fmt.json_schema(),
-                    "strict": True,
-                },
-            }
-        return fmt
+        """Chat Completions nests the schema one level down, under
+        `json_schema`. Strictified first — `strict: true` alongside a raw
+        `model_json_schema()` is a 400 on every current model."""
+        name, schema = response_format_to_json_schema(fmt)
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": strictify_json_schema(schema),
+                "strict": True,
+            },
+        }
 
     # --- response parsing ---
 
@@ -392,106 +369,6 @@ class OpenAITransport(BaseTransport, ChatCompletionTransportMixin):
         if provider_value is None:
             return (None, None)
         return (provider_value, None)
-
-    # --- error mapping ---
-
-    def _map_chat_completion_http_error(self, exc: httpx.HTTPError) -> ClientError:
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code
-            body = self._safe_json(exc.response)
-            err_obj = (body or {}).get("error") if isinstance(body, dict) else {}
-            err_type = (err_obj or {}).get("type", "") if isinstance(err_obj, dict) else ""
-            msg = (err_obj or {}).get("message", str(exc)) if isinstance(err_obj, dict) else str(exc)
-
-            if status == 401:
-                return AuthenticationError(
-                    msg,
-                    provider=self._provider,
-                    original_exception=exc,
-                )
-            if status == 429:
-                return RateLimitError(
-                    msg,
-                    provider=self._provider,
-                    original_exception=exc,
-                    retry_after=self._retry_after(exc.response),
-                )
-            if status == 400:
-                if "context_length" in err_type or "context_length" in msg.lower():
-                    return ContextLengthExceededError(
-                        msg,
-                        provider=self._provider,
-                        original_exception=exc,
-                    )
-                if "model" in err_type.lower():
-                    return InvalidModelError(
-                        msg,
-                        provider=self._provider,
-                        original_exception=exc,
-                    )
-                if "unsupported" in err_type.lower():
-                    return UnsupportedParameterError(
-                        msg,
-                        provider=self._provider,
-                        original_exception=exc,
-                    )
-                return BadRequestError(
-                    msg,
-                    provider=self._provider,
-                    original_exception=exc,
-                )
-            if status == 404:
-                return ModelNotFoundError(
-                    msg,
-                    provider=self._provider,
-                    original_exception=exc,
-                )
-            if 500 <= status < 600:
-                return ProviderAPIError(
-                    msg,
-                    provider=self._provider,
-                    original_exception=exc,
-                )
-            return ProviderAPIError(
-                msg,
-                provider=self._provider,
-                original_exception=exc,
-            )
-
-        if isinstance(exc, httpx.TimeoutException):
-            return ClientTimeoutError(
-                str(exc),
-                provider=self._provider,
-                original_exception=exc,
-            )
-        if isinstance(exc, httpx.NetworkError):
-            return ClientConnectionError(
-                str(exc),
-                provider=self._provider,
-                original_exception=exc,
-            )
-        return ProviderAPIError(
-            str(exc),
-            provider=self._provider,
-            original_exception=exc,
-        )
-
-    @staticmethod
-    def _safe_json(response: httpx.Response) -> dict | None:
-        try:
-            return response.json()
-        except Exception:
-            return None
-
-    @staticmethod
-    def _retry_after(response: httpx.Response) -> float | None:
-        val = response.headers.get("retry-after")
-        if val is None:
-            return None
-        try:
-            return float(val)
-        except ValueError:
-            return None
 
     # --- stream class hooks ---
 

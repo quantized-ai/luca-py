@@ -25,6 +25,7 @@ from ...exceptions import (
     ProviderAPIError,
     RateLimitError,
     TimeoutError as ClientTimeoutError,
+    UnsupportedParameterError,
 )
 from ...types.completion import (
     ChatCompletionRequest,
@@ -41,6 +42,11 @@ from ...types.content import (
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
+from ...types.structured import (
+    response_format_to_json_schema,
+    strictify_json_schema,
+    strip_unsupported_keywords,
+)
 from ...types.tools import tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
@@ -90,7 +96,7 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         payload: dict[str, Any] = {
             "model": request.model,
             "max_tokens": max_tokens,
-            "messages": self._project_messages(request.messages),
+            "messages": self._project_messages(request.messages, request),
         }
         payload.update(thinking)
         if request.system_message is not None:
@@ -120,7 +126,39 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.metadata is not None:
             payload["metadata"] = request.metadata
         payload.update(options)
+        # After the options merge, deliberately: `update` replaces the whole
+        # `output_config` key, so applying the format first let a caller who
+        # set `output_config` lose their `response_format` silently.
+        if request.response_format is not None:
+            self._apply_response_format(payload, request, capabilities)
         return payload
+
+    def _apply_response_format(
+        self,
+        payload: dict,
+        request: ChatCompletionRequest,
+        capabilities,
+    ) -> None:
+        """Structured output lands on `output_config.format`.
+
+        Merged into a COPY: `resolve_reasoning` already puts `effort` there,
+        and after the options merge the dict may be the caller's own object.
+        A hand-written `format` still wins.
+
+        Refused only for models KNOWN to predate structured outputs — an
+        unrecognized id goes through, since refusing it would block every
+        model released after this table was written."""
+        if capabilities.is_known_model and not capabilities.supports_structured_output:
+            raise UnsupportedParameterError(
+                f"response_format is not supported on {request.model!r}; "
+                "the model predates Anthropic structured outputs.",
+                provider=self._provider,
+            )
+        _, schema = response_format_to_json_schema(request.response_format)
+        schema = strip_unsupported_keywords(strictify_json_schema(schema))
+        output_config = dict(payload.get("output_config") or {})
+        output_config.setdefault("format", {"type": "json_schema", "schema": schema})
+        payload["output_config"] = output_config
 
     def _provider_options(self, request: ChatCompletionRequest) -> dict:
         """This provider's raw options, or nothing. Scoped by provider name so
@@ -153,13 +191,13 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             return system_message
         return [{"type": "text", "text": b.text} for b in system_message if isinstance(b, TextBlock)]
 
-    def _project_messages(self, messages: list) -> list[dict]:
+    def _project_messages(self, messages: list, request: ChatCompletionRequest) -> list[dict]:
         out: list[dict] = []
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                out.append(self._project_assistant_message(msg))
+                out.append(self._project_assistant_message(msg, request))
             elif isinstance(msg, ToolMessage):
                 # Anthropic represents tool results as a user message with a
                 # tool_result content block.
@@ -202,13 +240,17 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             return {"type": "image", "source": {"type": "file", "file_id": source.file_id}}
         raise BadRequestError("Unknown image source type", provider=self._provider)
 
-    def _project_assistant_message(self, msg: AssistantMessage) -> dict:
+    def _project_assistant_message(
+        self,
+        msg: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> dict:
         wire_blocks: list[dict] = []
         for block in msg.content:
             if isinstance(block, TextBlock):
                 wire_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
-                thinking = self._project_thinking_block(block)
+                thinking = self._project_thinking_block(block, msg, request)
                 if thinking is not None:
                     wire_blocks.append(thinking)
             elif isinstance(block, ToolCall):
@@ -225,7 +267,12 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 continue
         return {"role": "assistant", "content": wire_blocks}
 
-    def _project_thinking_block(self, block: ThinkingBlock) -> dict | None:
+    def _project_thinking_block(
+        self,
+        block: ThinkingBlock,
+        msg: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> dict | None:
         """One thinking block on the way back, or None to omit it.
 
         An unsigned block is DROPPED rather than sent. Anthropic rejects a
@@ -235,8 +282,14 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         `signature_delta`, and a session moved from an OpenAI-compatible host
         carries reasoning text that was never signed. Sending it would make
         the whole conversation permanently unusable; dropping it costs one
-        turn's visible reasoning."""
+        turn's visible reasoning.
+
+        A signature minted by a DIFFERENT (provider, model) pair is dropped for
+        the same reason — Anthropic 400s on a foreign attestation just as it
+        does on a missing one."""
         if block.signature is None:
+            return None
+        if not self._attestation_is_replayable(msg, request):
             return None
         if block.redacted:
             return {"type": "redacted_thinking", "data": block.signature}
@@ -351,7 +404,13 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return AssistantMessage(
             content=content,
             provider=self._provider,
-            model=data.get("model") or request.model,
+            # `model` is what we ASKED for, `response_model` what Anthropic
+            # resolved it to (an alias resolves to a dated id). Keeping the
+            # requested string here is what makes provenance comparable: it
+            # matches the streaming path, every other transport, and the
+            # `request.model` that a later replay is checked against.
+            model=request.model,
+            response_model=data.get("model"),
             response_id=data.get("id"),
         )
 

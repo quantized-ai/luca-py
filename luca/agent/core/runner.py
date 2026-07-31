@@ -1113,6 +1113,22 @@ class AgentSessionRunner:
         model_string = f"{llm_cfg.provider}:{llm_cfg.model}"
         return self._run_middlewares("build_model_string", model_string, llm_cfg)
 
+    def effective_llm_config(self, llm_cfg: LLMConfig, model_string: str) -> LLMConfig:
+        """The config a call actually ran under, which is NOT always the
+        session's — `build_model_string` middleware may have routed the turn
+        elsewhere. Recording the session config for a routed turn makes
+        provenance lie, and the transports compare provenance against the
+        model being called to decide whether a thinking signature may be
+        replayed: a stale record both drops valid reasoning and replays
+        foreign attestations.
+
+        Splits at the FIRST colon, the rule the client uses, so a model id
+        containing one survives. `reasoning` and `extras` are preserved."""
+        provider, _, model = model_string.partition(":")
+        if not model:  # no prefix — middleware returned a bare model id
+            return llm_cfg.model_copy(update={"model": model_string})
+        return llm_cfg.model_copy(update={"provider": provider, "model": model})
+
     async def build_tool_list(self) -> list[LucaTool]:
         """Return the wire tool list for this LLM call: query the registry
         fresh (`get_tools` is dynamic — the result may vary with session
@@ -1661,6 +1677,9 @@ class AgentSessionRunner:
             # execution is terminal.
             llm_cfg = self.session.session_config.llm_config
             model_string = self.build_model_string(llm_cfg)
+            # Recorded instead of `llm_cfg`, so provenance names the model
+            # that actually produced the turn.
+            effective_cfg = self.effective_llm_config(llm_cfg, model_string)
             messages, system_message = self.prepare_llm_call()
             # `get_tools` is application code and may block indefinitely, so
             # the whole step is raced. A lost race produces no tool list and
@@ -1784,7 +1803,7 @@ class AgentSessionRunner:
             # The round keys off the tool_calls themselves, not finish_reason:
             # a misclassifying provider can neither wedge the conversation
             # ("stop" + calls) nor loop it ("tool_use" + none).
-            events = self._record_assistant(message, finish_reason, llm_cfg)
+            events = self._record_assistant(message, finish_reason, effective_cfg)
             if message.tool_calls:
                 events.extend(await self._create_executions(message, token))
                 for event in events:

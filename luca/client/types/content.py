@@ -43,8 +43,15 @@ class FileBlock(BaseModel):
 
 
 class ThinkingBlock(BaseModel):
+    """The model's reasoning. `signature` is the provider's opaque attestation
+    over it; `id` is the provider's opaque identity FOR it — the OpenAI
+    Responses API only replays a reasoning item when both its `rs_…` id and
+    its encrypted content come back, so an id-less block is unreplayable
+    there. Both are provider-owned: they round-trip verbatim or not at all."""
+
     type: Literal["thinking"] = "thinking"
     text: str
+    id: str | None = None
     signature: str | None = None
     redacted: bool = False
 

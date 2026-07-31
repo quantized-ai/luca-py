@@ -83,8 +83,18 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         options = self._provider_options(request)
         extra_fields, max_tokens = self._reasoning_config(request, capabilities, options)
 
+        if request.response_format is not None:
+            # Converse has no structured-output field. Refused rather than
+            # accepted-and-ignored: a caller who thinks the schema is being
+            # enforced gets prose back and a StructuredOutputError from
+            # `parse()`, with nothing pointing at the cause.
+            raise UnsupportedParameterError(
+                "response_format is not supported on Bedrock Converse; it has no structured-output field.",
+                provider=self._provider,
+            )
+
         payload: dict[str, Any] = {
-            "messages": self._project_messages(request.messages),
+            "messages": self._project_messages(request.messages, request),
         }
         if request.system_message is not None:
             payload["system"] = self._project_system(request.system_message)
@@ -166,7 +176,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
             return [{"text": system_message}]
         return [{"text": b.text} for b in system_message if isinstance(b, TextBlock)]
 
-    def _project_messages(self, messages: list) -> list[dict]:
+    def _project_messages(self, messages: list, request: ChatCompletionRequest) -> list[dict]:
         out: list[dict] = []
         for msg in messages:
             if isinstance(msg, UserMessage):
@@ -175,7 +185,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 out.append(
                     {
                         "role": "assistant",
-                        "content": self._project_assistant_content(msg),
+                        "content": self._project_assistant_content(msg, request),
                     }
                 )
             elif isinstance(msg, ToolMessage):
@@ -238,13 +248,17 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         fmt = media_type.rsplit("/", 1)[-1].lower()
         return "jpeg" if fmt == "jpg" else fmt
 
-    def _project_assistant_content(self, msg: AssistantMessage) -> list[dict]:
+    def _project_assistant_content(
+        self,
+        msg: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> list[dict]:
         blocks: list[dict] = []
         for block in msg.content:
             if isinstance(block, TextBlock):
                 blocks.append({"text": block.text})
             elif isinstance(block, ThinkingBlock):
-                reasoning = self._project_thinking_block(block)
+                reasoning = self._project_thinking_block(block, msg, request)
                 if reasoning is not None:
                     blocks.append(reasoning)
             elif isinstance(block, ToolCall):
@@ -261,14 +275,23 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 continue
         return blocks
 
-    def _project_thinking_block(self, block: ThinkingBlock) -> dict | None:
+    def _project_thinking_block(
+        self,
+        block: ThinkingBlock,
+        msg: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> dict | None:
         """One reasoning block on the way back, or None to omit it.
 
         An unsigned block is dropped: Bedrock rejects a reasoning block whose
         signature is missing, and an unsigned block is reachable (a truncated
         turn, or a session moved from a host that never signed it). Dropping
-        it costs one turn's visible reasoning; sending it breaks the request."""
+        it costs one turn's visible reasoning; sending it breaks the request.
+        A signature minted by a different (provider, model) pair is dropped for
+        the same reason."""
         if block.signature is None:
+            return None
+        if not self._attestation_is_replayable(msg, request):
             return None
         if block.redacted:
             return {"reasoningContent": {"redactedContent": block.signature}}

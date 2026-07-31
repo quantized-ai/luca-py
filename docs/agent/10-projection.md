@@ -28,7 +28,7 @@ client's job — the projector never builds OpenAI dicts or Anthropic blocks):
 | Entry | Projects to |
 |---|---|
 | `UserMessage` | client `UserMessage`, content in order — text and image blocks |
-| `AssistantMessage` | client `AssistantMessage` — text / thinking / tool-call blocks in order |
+| `AssistantMessage` | client `AssistantMessage` — text / thinking / tool-call blocks in order, plus the producing model as `provider` / `model` |
 | `ToolExecution` (terminal) | one correlated client `ToolMessage` (below) |
 | `CompactionEntry` | a synthetic user message carrying the summary |
 | `PrunedEntry` | its replacement content, under the *original* entry's role and correlation ([11](11-context-and-usage.md)) |
@@ -40,6 +40,26 @@ read-only entry mapping, so a projection can resolve cross-entry references
 (that's how `project_pruned` finds its original). No merging, trimming, or
 token counting happens by default — that's yours to add by overriding
 `project`.
+
+### Why an assistant message keeps its provenance
+
+Usage, stop reason and the rest of the durable record are NOT copied —
+projection reconstructs conversation content, not response objects. `provider`
+and `model` are the exception, and they are load-bearing.
+
+A `ThinkingContent` carries opaque provider data: Anthropic's `signature`,
+OpenAI's `rs_…` id plus its encrypted payload. Each is minted by one
+(provider, model) pair and rejected by every other with a 400 that makes the
+conversation permanently unusable. Whether a given attestation may go back on
+the wire is therefore per-vendor knowledge, and it lives on the **transport**
+(`_attestation_is_replayable`), which compares this provenance against the
+model it is about to call and drops the block when they disagree.
+
+That matters because switching model mid-session is one keystroke — the TUI's
+`/model` rewrites `session_config.llm_config` and the runner re-reads it on
+every call, so the next request replays a history produced by something else.
+A projector subclass that rebuilds the message itself must carry the two
+fields, or reasoning replay breaks silently.
 
 ## 2. Tool outcomes on the wire
 

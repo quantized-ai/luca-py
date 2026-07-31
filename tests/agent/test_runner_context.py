@@ -366,14 +366,20 @@ async def test_pruning_machinery_composes_and_reaches_the_next_wire_request():
         LucaAssistantMessage(
             content=[
                 LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-            ]
+            ],
+            provider="faux",
+            model="test-model",
         ),
         ToolMessage(
             tool_call_id="tc1",
             content=[TextBlock(text=PRUNED_TOOL_OUTPUT_MARKER)],
             is_error=False,
         ),
-        LucaAssistantMessage(content=[TextBlock(text="It's 3.")]),
+        LucaAssistantMessage(
+            content=[TextBlock(text="It's 3.")],
+            provider="faux",
+            model="test-model",
+        ),
         LucaUserMessage(content=[TextBlock(text="And now?")]),
     ]
 

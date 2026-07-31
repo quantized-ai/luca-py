@@ -95,3 +95,18 @@ def test_message_to_parts_keeps_a_redacted_block():
     assert parts == [
         ThinkingContent(thinking="", signature="encrypted", redacted=True),
     ]
+
+
+def test_message_to_parts_keeps_the_reasoning_item_id():
+    # OpenAI's Responses API replays a reasoning item only when its `rs_…` id
+    # comes back with the encrypted payload; dropping the id here loses half
+    # the identity and the block becomes unreplayable.
+    parts = message_to_parts(
+        LucaAssistantMessage(
+            content=[
+                ThinkingBlock(text="reasoning", id="rs_1", signature="enc-1"),
+            ]
+        ),
+    )
+
+    assert parts == [ThinkingContent(thinking="reasoning", id="rs_1", signature="enc-1")]
