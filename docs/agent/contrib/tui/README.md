@@ -20,7 +20,7 @@ uv run python main.py                     # fresh session (needs OPENROUTER_API_
 uv run python main.py --faux              # offline scripted demo — no key, no network
 uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
-uv run python main.py --subagents         # let it spawn subagents that work in parallel
+uv run python main.py --no-subagents      # stop it spawning subagents that work in parallel
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 ```
@@ -28,11 +28,13 @@ uv run python main.py --conversation <id> --pretty-print  # transcript, then exi
 `--model` / `--provider` / `--reasoning` update the session's `LLMConfig`;
 they persist with the session and override the stored values on a resume.
 
-`--subagents` installs `SubagentsPlugin` **and** sets `subagents_enabled` on the
-session ([`subagents/`](../subagents/README.md)) — both are required, since
-installing the tools is not the same as switching the capability on. A subagent
-gets the same shell and memory tools the main agent has, each keyed by
-conversation so the two never overwrite each other.
+Subagents are on by default: the app installs `SubagentsPlugin` **and** sets
+`subagents_enabled` on the session ([`subagents/`](../subagents/README.md)) —
+both are required, since installing the tools is not the same as switching the
+capability on. A subagent gets the same shell and memory tools the main agent
+has, each keyed by conversation so the two never overwrite each other.
+`--no-subagents` withholds the plugin and clears the flag on the session, so a
+resumed session that had subagents on comes back with them off.
 
 `--pretty-print` replaces the app: it loads `<id>.json`, writes the
 [`pretty_print`](../../02-data-model.md#13-read-a-saved-session) transcript to
@@ -55,7 +57,7 @@ the workspace can all live in a `luca.json` file instead of flags. See
 
 | Piece | Behavior |
 |---|---|
-| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). With `--subagents` the stream is the whole tree's, so live-cell state is keyed by `event.conversation_id` and two conversations can be mid-block at once. Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
+| Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). With subagents the stream is the whole tree's, so live-cell state is keyed by `event.conversation_id` and two conversations can be mid-block at once. Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/simple_context_manager` |

@@ -149,10 +149,10 @@ def build_runner(
     context_manager=None,
     additional_directories: list | None = None,
     extra_rules: list | None = None,
-    subagents: bool = False,
+    subagents: bool = True,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
-    shared strategy, and — with `subagents=True` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
+    shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
     to inject a `FauxProvider`; `context_manager=` is the same for context
     accounting and compaction — `None` falls back to core's default, which
     accounts but never compacts, so `/compact` fails until one that implements

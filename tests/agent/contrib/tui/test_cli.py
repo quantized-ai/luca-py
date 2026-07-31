@@ -6,7 +6,7 @@ from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import default_model
-from luca.agent.core.models import LLMConfig
+from luca.agent.core.models import LLMConfig, RuntimeConfig
 from luca.agent.core.utils import pretty_print
 
 from .helpers import fresh_session
@@ -34,6 +34,15 @@ def test_default_args():
         None,
     )
     assert (args.workspace, args.mode) == (None, None)
+    assert args.subagents is True
+
+
+def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
+    on = build_session(arg_parser().parse_args([]))
+    off = build_session(arg_parser().parse_args(["--no-subagents"]))
+
+    assert on.session_config.runtime_config.subagents_enabled is True
+    assert off.session_config.runtime_config.subagents_enabled is False
 
 
 def test_model_and_reasoning_override_the_fresh_session():
@@ -180,7 +189,8 @@ def test_pretty_print_without_a_conversation_exits_with_a_usage_error(capsys):
 
 def test_resume_and_fork(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    session = fresh_session()
+    # subagents on, the default every session the CLI builds gets
+    session = fresh_session(RuntimeConfig(subagents_enabled=True))
     save_session(session)
 
     resumed = build_session(

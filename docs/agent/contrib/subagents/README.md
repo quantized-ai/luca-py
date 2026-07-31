@@ -128,7 +128,7 @@ subagents keeps Yolo.
 > `spec.name`; `namespace` does not disambiguate. The failure is loud — the
 > proxy raises on a duplicate — so it is a naming rule, not a hazard.
 
-The demo wires all of this: `uv run python main.py --subagents`
+The demo wires all of this by default: `uv run python main.py`
 ([`tui/`](../tui/README.md)).
 
 Next: [`simple_context_manager/README.md`](../simple_context_manager/README.md).

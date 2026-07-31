@@ -2,7 +2,7 @@
 
     uv run python -m luca.agent.contrib.tui                     # fresh session
     uv run python -m luca.agent.contrib.tui --faux              # offline, scripted
-    uv run python -m luca.agent.contrib.tui --subagents         # parallel subagents
+    uv run python -m luca.agent.contrib.tui --no-subagents      # no parallel subagents
     uv run python -m luca.agent.contrib.tui --conversation <id> # resume <id>.json
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
@@ -72,9 +72,11 @@ def arg_parser() -> argparse.ArgumentParser:
         help="Live token deltas (--no-streaming for block-level events).",
     )
     parser.add_argument(
-        "--subagents",
-        action="store_true",
-        help="Let the agent spawn subagents that work in parallel (off by default).",
+        "--no-subagents",
+        dest="subagents",
+        action="store_false",
+        default=True,
+        help="Stop the agent from spawning subagents (parallel subagents are on by default).",
     )
     parser.add_argument(
         "--faux",
@@ -146,10 +148,10 @@ def build_session(args: argparse.Namespace, config: LucaConfig | None = None) ->
         session.session_config.runtime_config,
         config,
     )
-    if getattr(args, "subagents", False):
-        # The flag turns the CAPABILITY on for this session, durably; wiring
-        # the plugin only makes the tools available to a session that asked.
-        session.session_config.runtime_config.subagents_enabled = True
+    # The flag sets the CAPABILITY on this session, durably — including on a
+    # resumed one, so `--no-subagents` turns a session that had them off;
+    # wiring the plugin only makes the tools available to a session that asked.
+    session.session_config.runtime_config.subagents_enabled = getattr(args, "subagents", True)
     return session
 
 

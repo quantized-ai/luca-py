@@ -130,7 +130,7 @@ class AgentApp(App):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
-        subagents: bool = False,
+        subagents: bool = True,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
