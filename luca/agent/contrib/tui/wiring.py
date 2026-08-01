@@ -22,7 +22,7 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
-from luca.agent.contrib.subagents import SubagentsPlugin
+from luca.agent.contrib.subagents import SPAWN_TOOL_NAME, SubagentsPlugin
 from luca.agent.contrib.tools import Tool
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import AgentSession, LLMConfig
@@ -189,8 +189,18 @@ def build_runner(
 
 def build_faux_provider() -> FauxProvider:
     """Scripted offline conversation for `--faux`: one turn — thinking, a
-    gated `multiply` call, then the wrap-up. A second user message exhausts
-    the script (the faux raises), which the app surfaces as a turn error."""
+    gated `multiply` call, a subagent that does its own gated `multiply`, then
+    the wrap-up. A second user message exhausts the script (the faux raises),
+    which the app surfaces as a turn error.
+
+    ONE subagent, not several, and that is a limit of the script rather than a
+    preference: responses are served FIFO from a single queue, so with two
+    children racing for the next one there is no way to say which gets which.
+    Parallel panels need a real model.
+
+    The subagent's own `multiply` gates, which is the point of scripting one at
+    all — it is the shape where the approval modal has to name WHICH
+    conversation is asking."""
     faux = FauxProvider()
     faux.set_responses(
         [
@@ -205,7 +215,31 @@ def build_faux_provider() -> FauxProvider:
                 finish_reason="tool_use",
             ),
             faux_assistant_message(
-                [faux_text("The product is 42 (via the multiply tool).")],
+                [
+                    faux_text("Let me have a helper check that independently."),
+                    faux_tool_call(
+                        SPAWN_TOOL_NAME,
+                        {
+                            "prompt": "Multiply 6 by 7 with the multiply tool and report the product.",
+                            "description": "check the arithmetic",
+                            "task_id": "faux-check",
+                        },
+                        id="tc_faux_2",
+                    ),
+                ],
+                finish_reason="tool_use",
+            ),
+            # the subagent's own turn — its cells mount inside its panel
+            faux_assistant_message(
+                [faux_tool_call("multiply", {"a": 6, "b": 7}, id="tc_faux_3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_text("Confirmed: 6 × 7 = 42.")],
+                finish_reason="stop",
+            ),
+            faux_assistant_message(
+                [faux_text("The product is 42 (via the multiply tool), and my helper agrees.")],
                 finish_reason="stop",
             ),
         ]
