@@ -5,7 +5,10 @@ home:
 
 - `~/.config/luca/luca.json` (or `$XDG_CONFIG_HOME/luca/luca.json`) — your
   personal defaults across every repo.
-- `./luca.json` — repo policy, committed with the project.
+- `luca.json` — repo policy, committed with the project. The nearest one at or
+  above the current directory wins, so it applies from any subdirectory. The
+  search stops at the directory holding `.git`, so a `luca.json` outside the
+  repo never leaks in.
 
 Precedence, highest first: **CLI flag > `./luca.json` > `~/.config/luca/luca.json`
 > the persisted session > built-in default.** So the file behaves like sticky

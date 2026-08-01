@@ -94,7 +94,81 @@ def test_provider_maps_merge_per_key_but_rule_lists_are_replaced(tmp_path):
 
 
 def test_missing_files_give_an_empty_config(tmp_path):
+    (tmp_path / ".git").mkdir()  # bound the walk; else it reaches the real fs
     assert load_luca_config(cwd=tmp_path, home=tmp_path / "nope") == LucaConfig()
+
+
+# ── finding the project file (walk up, bounded by the repo) ──────────────────
+
+
+def test_a_project_config_applies_from_a_subdirectory(tmp_path):
+    (tmp_path / ".git").mkdir()
+    _write(tmp_path, {"model": {"model": "project"}})
+    deep = tmp_path / "src" / "deep"
+    deep.mkdir(parents=True)
+
+    config = load_luca_config(cwd=deep, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="project"))
+
+
+def test_the_nearest_project_config_wins(tmp_path):
+    (tmp_path / ".git").mkdir()
+    _write(tmp_path, {"model": {"model": "outer"}})
+    inner = tmp_path / "packages" / "app"
+    inner.mkdir(parents=True)
+    _write(inner, {"model": {"model": "inner"}})
+
+    config = load_luca_config(cwd=inner, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="inner"))
+
+
+def test_the_walk_stops_at_the_repository_boundary(tmp_path):
+    _write(tmp_path, {"model": {"model": "outside-the-repo"}})
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    config = load_luca_config(cwd=repo, home=tmp_path / "none")
+
+    assert config == LucaConfig()
+
+
+def test_the_repo_root_config_is_read_even_though_it_holds_the_git_marker(tmp_path):
+    repo = tmp_path / "repo"
+    source = repo / "src"
+    source.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    _write(repo, {"model": {"model": "repo-root"}})
+
+    config = load_luca_config(cwd=source, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="repo-root"))
+
+
+def test_a_git_FILE_bounds_the_walk_too(tmp_path):
+    _write(tmp_path, {"model": {"model": "outside-the-repo"}})
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+
+    config = load_luca_config(cwd=worktree, home=tmp_path / "none")
+
+    assert config == LucaConfig()
+
+
+def test_an_explicit_path_bypasses_the_walk_entirely(tmp_path):
+    (tmp_path / ".git").mkdir()
+    _write(tmp_path, {"model": {"model": "project"}})
+    deep = tmp_path / "src"
+    deep.mkdir()
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"model": {"model": "named"}}))
+
+    config = load_luca_config(cwd=deep, home=tmp_path / "none", path=named)
+
+    assert config == LucaConfig(model=ModelConfig(model="named"))
 
 
 # ── an explicitly named config file ──────────────────────────────────────────
@@ -155,8 +229,6 @@ def test_no_flag_and_no_environment_means_discovery(monkeypatch):
 
 
 def test_an_exported_but_empty_environment_variable_means_discovery(monkeypatch):
-    """`export LUCA_CONFIG_PATH=` is set-but-empty. Treating it as a path would
-    make every run fail on a config file named "" — it means "not configured"."""
     monkeypatch.setenv(ENV_CONFIG_PATH, "")
     assert resolve_config_path(None) is None
 
@@ -170,9 +242,6 @@ def test_a_tilde_is_expanded_in_both_channels(monkeypatch):
 
 
 def test_load_luca_config_never_reads_the_environment_itself(tmp_path, monkeypatch):
-    """The env var is resolved by `resolve_config_path`, deliberately not by
-    the loader — otherwise an ambient value would redirect a caller that
-    passed cwd/home precisely to control where it reads from."""
     monkeypatch.setenv(ENV_CONFIG_PATH, str(tmp_path / "ambient.json"))
     _write(tmp_path, {"model": {"model": "project"}})
 

@@ -78,7 +78,7 @@ Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual T
 
 The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `.env` — except with `--faux`. Sessions persist to `<session-id>.json` in the working directory.
 
-Configuration is read from `./luca.json` over `~/.config/luca/luca.json`. `--config <path>` (or `LUCA_CONFIG_PATH`, which the flag overrides) names one file to use INSTEAD of both — see [docs/agent/contrib/tui/config.md](docs/agent/contrib/tui/config.md).
+Configuration is read from the nearest `luca.json` at or above the cwd (bounded by the repo) over `~/.config/luca/luca.json`. `--config <path>` (or `LUCA_CONFIG_PATH`, which the flag overrides) names one file to use INSTEAD of both — see [docs/agent/contrib/tui/config.md](docs/agent/contrib/tui/config.md).
 
 ## Code style (project-wide)
 

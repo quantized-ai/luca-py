@@ -20,11 +20,11 @@
 requires `--conversation` and ignores every other flag — config included, since
 a transcript does not depend on it.
 
-Configuration layers, highest precedence first: CLI flags, then `./luca.json`
-(repo policy), then `~/.config/luca/luca.json` (personal defaults), then the
-persisted session, then built-in defaults. `--config <path>` (or the
-`LUCA_CONFIG_PATH` env var, which the flag overrides) REPLACES both file layers
-with the one named file. See `config.py` and the docs.
+Configuration layers, highest precedence first: CLI flags, then the nearest
+`luca.json` at or above the cwd (repo policy), then `~/.config/luca/luca.json`
+(personal defaults), then the persisted session, then built-in defaults.
+`--config <path>` (or the `LUCA_CONFIG_PATH` env var, which the flag overrides)
+REPLACES both file layers with the one named file. See `config.py` and the docs.
 
 Sessions persist to `<session-id>.json` in the working directory after every
 run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
