@@ -60,6 +60,7 @@ from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
+    ChildConversation,
     CompactionEntry,
     ContentPart,
     ExecutionStatus,
@@ -80,6 +81,7 @@ from .cells import (
     CompactionCell,
     NoticeCell,
     ReasoningCell,
+    SubagentPanel,
     ToolCallCell,
     TranscriptCell,
     UserCell,
@@ -89,7 +91,10 @@ from .commands import COMMANDS, dispatch
 from .context_bar import ContextBar
 from .render import (
     REDACTED_REASONING_MARKER,
+    child_links,
+    is_runtime_plumbing,
     reasoning_transcript_text,
+    subagent_task,
     user_transcript_text,
 )
 from .screens import ApprovalScreen
@@ -151,6 +156,9 @@ class AgentApp(App):
         self._live_reasoning: dict[str, ReasoningCell | None] = {}
         self._live_text: dict[str, AssistantCell | None] = {}
         self._tool_cells: dict[str, ToolCallCell] = {}
+        # conversation id → the panel its cells mount into. A conversation with
+        # no panel here is the main one, and mounts into the transcript itself.
+        self._panels: dict[str, SubagentPanel] = {}
         self._pending_images: list[ImageContent] = []
 
     @property
@@ -231,6 +239,10 @@ class AgentApp(App):
                             await self._on_agent_event(event)
                 finally:
                     self._current_run = None
+                    # A cancelled subagent is resolved by the wind-down with no
+                    # result-tool event to close its panel, so reconcile here
+                    # too — the run ending is the last chance to.
+                    self._sync_panels()
                     save_session(runner.session, self._session_dir)
                     self._refresh_status()
                 if runner.blocked():
@@ -259,6 +271,7 @@ class AgentApp(App):
                 execution,
                 self.strategy,
                 main_conversation_id=self.runner.main_conversation_id,
+                subagent_labels={cid: panel.description for cid, panel in self._panels.items()},
             ):
                 option = await self.push_screen_wait(ApprovalScreen(prompt))
                 if option.is_abandon:
@@ -279,9 +292,10 @@ class AgentApp(App):
         the block event finalizes it (or mounts it whole when not
         streaming).
 
-        Every event names its conversation, and the live-cell state is keyed by
-        it — with subagents the stream is the whole tree's, so two
-        conversations can be mid-block at the same time."""
+        Every event names its conversation, and BOTH the live-cell state and
+        the mount target are keyed by it — with subagents the stream is the
+        whole tree's, so two conversations can be mid-block at the same time
+        and their cells must not land in the same column."""
         source = event.conversation_id
         match event:
             case ReasoningStart():
@@ -291,12 +305,14 @@ class AgentApp(App):
                     self._live_reasoning.get(source),
                     ReasoningCell,
                     text,
+                    source,
                 )
             case ReasoningBlock(text=text, redacted=redacted):
                 await self._settle_cell(
                     self._live_reasoning.get(source),
                     ReasoningCell,
                     REDACTED_REASONING_MARKER if redacted else text,
+                    source,
                 )
                 self._live_reasoning[source] = None
             case TextStart():
@@ -306,18 +322,28 @@ class AgentApp(App):
                     self._live_text.get(source),
                     AssistantCell,
                     text,
+                    source,
                 )
             case TextBlock(text=text):
-                await self._settle_cell(self._live_text.get(source), AssistantCell, text)
+                await self._settle_cell(self._live_text.get(source), AssistantCell, text, source)
                 self._live_text[source] = None
+            case ToolCallReceived(execution=execution) if is_runtime_plumbing(execution):
+                # A spawn renders as its child's panel and a private tool as
+                # nothing; neither gets a cell to start, so neither gets one to
+                # update later.
+                pass
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
                 cell = ToolCallCell(execution)
                 self._tool_cells[tool_call_id] = cell
-                await self._mount_cell(cell)
+                await self._mount_cell(cell, source)
             case ToolExecutionStarted(tool_call_id=tool_call_id, execution=execution):
                 cell = self._tool_cells.get(tool_call_id)
                 if cell is not None:
                     cell.mark_running(execution)
+            case ToolExecuted(execution=execution) if is_runtime_plumbing(execution):
+                # The result tool completing is how a subagent's panel closes
+                # while its siblings are still working.
+                self._sync_panels()
             case ToolExecuted(
                 tool_call_id=tool_call_id,
                 execution=execution,
@@ -328,13 +354,13 @@ class AgentApp(App):
                 if cell is None:  # e.g. an orphan recovered on resume
                     cell = ToolCallCell(execution)
                     self._tool_cells[tool_call_id] = cell
-                    await self._mount_cell(cell)
+                    await self._mount_cell(cell, source)
                 cell.finish(execution, result_text, is_error)
             case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED):
                 if entry.parts:
-                    await self._mount_cell(CompactionCell(entry))
+                    await self._mount_cell(CompactionCell(entry), source)
                 else:
-                    await self._mount_cell(NoticeCell("nothing to compact"))
+                    await self._mount_cell(NoticeCell("nothing to compact"), source)
             case CompactionFinished(outcome=outcome, error=error):
                 # A policy-initiated failure degrades silently otherwise: this
                 # event is the only place it surfaces.
@@ -343,10 +369,15 @@ class AgentApp(App):
                         f"compaction {outcome.value}" + (f": {error}" if error else ""),
                         error=outcome is not TurnOutcome.CANCELLED,
                     ),
+                    source,
                 )
             case SubagentsSpawned(conversation_ids=conversation_ids):
-                count = len(conversation_ids)
-                await self._notice(f"spawned {count} subagent{'s' if count > 1 else ''}")
+                # `source` is the PARENT, so a panel nests inside its spawner's
+                # panel whenever that spawner has one. V0 caps the depth at 1,
+                # which makes the parent the transcript — but the rule that
+                # places it is the same either way.
+                for child_id in conversation_ids:
+                    await self._open_panel(child_id, source)
             case ToolCallStart() | FinishReason() | ApprovalRequired() | CompactionScheduled() | CompactionStarted():
                 pass
 
@@ -355,6 +386,7 @@ class AgentApp(App):
         cell: _CellT | None,
         cell_class: type[_CellT],
         delta: str,
+        conversation_id: str | None = None,
     ) -> _CellT | None:
         """Append a delta, mounting the cell on the first visible one so a
         whitespace-only block never gets a cell."""
@@ -362,7 +394,7 @@ class AgentApp(App):
             if not delta.strip():
                 return None
             cell = cell_class()
-            await self._mount_cell(cell)
+            await self._mount_cell(cell, conversation_id)
         cell.append_text(delta)
         self._scroll_end()
         return cell
@@ -372,6 +404,7 @@ class AgentApp(App):
         cell: _CellT | None,
         cell_class: type[_CellT],
         text: str,
+        conversation_id: str | None = None,
     ) -> None:
         """Settle a streamed cell against its completed block (or mount it
         whole when not streaming). Blank text never survives: providers emit
@@ -382,33 +415,94 @@ class AgentApp(App):
             return
         if cell is None:
             cell = cell_class()
-            await self._mount_cell(cell)
+            await self._mount_cell(cell, conversation_id)
         cell.set_text(text)
+
+    # ── subagent panels ────────────────────────────────────────────────────────
+
+    async def _open_panel(
+        self,
+        conversation_id: str,
+        parent_id: str | None = None,
+    ) -> SubagentPanel | None:
+        """Mount the panel a subagent's cells go into. Idempotent: the same
+        child is announced once by the event and again by a replay, and only
+        the first one mounts."""
+        if conversation_id in self._panels:
+            return self._panels[conversation_id]
+        entry = self._child_link(conversation_id)
+        if entry is None:
+            return None
+        description, prompt = subagent_task(self.runner.session, entry)
+        panel = SubagentPanel(conversation_id, description, prompt)
+        self._panels[conversation_id] = panel
+        await self._mount_cell(panel, parent_id)
+        return panel
+
+    def _child_link(self, conversation_id: str) -> ChildConversation | None:
+        for _parent_id, entry in child_links(self.runner.session):
+            if entry.conversation_id == conversation_id:
+                return entry
+        return None
+
+    def _sync_panels(self) -> None:
+        """Settle every panel whose subagent has resolved.
+
+        THE LINK IS THE SOURCE OF TRUTH, not the result tool's event: a
+        cancelled subagent is resolved by the parent's wind-down without that
+        tool ever running, so a panel driven by the event alone would say
+        "running" forever on the one path where the user most wants to know it
+        stopped."""
+        for _parent_id, entry in child_links(self.runner.session):
+            panel = self._panels.get(entry.conversation_id)
+            if panel is None or entry.execution_result is None:
+                continue
+            panel.settle(is_error=entry.execution_result.is_error)
 
     # ── history replay (resume) ────────────────────────────────────────────────
 
     async def _replay_history(self) -> None:
         session = self.runner.session
+        await self._replay_path(session.conversations[session.main_conversation_id].nodes)
+        self._sync_panels()
+
+    async def _replay_path(
+        self,
+        nodes: list[str],
+        conversation_id: str | None = None,
+    ) -> None:
+        """Replay one path's entries as cells. Recursive: a `ChildConversation`
+        replays the subagent's own path inside the panel it mounts, so a
+        resumed session shows the delegated work rather than a gap where it
+        happened.
+
+        `conversation_id` is None for the main conversation — the one that
+        mounts into the transcript itself — and names the subagent otherwise."""
+        session = self.runner.session
         entries = session.entries
-        for node_id in session.conversations[session.main_conversation_id].nodes:
+        for node_id in nodes:
             entry = entries.get(node_id)
             if isinstance(entry, UserMessage):
-                await self._mount_cell(
-                    UserCell(user_transcript_text(entry.parts)),
-                )
+                # A subagent's path begins with its seed prompt and never gets
+                # another user message. The panel's border already carries it,
+                # so replaying it here would say the same thing twice.
+                if conversation_id is None:
+                    await self._mount_cell(UserCell(user_transcript_text(entry.parts)))
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
                     if isinstance(part, ThinkingContent):
                         text = reasoning_transcript_text(part)
                         if text:
-                            await self._mount_cell(ReasoningCell(text))
+                            await self._mount_cell(ReasoningCell(text), conversation_id)
                     elif isinstance(part, TextContent) and part.text.strip():
-                        await self._mount_cell(AssistantCell(part.text))
+                        await self._mount_cell(AssistantCell(part.text), conversation_id)
                     # a ToolCall part renders through its ToolExecution entry
             elif isinstance(entry, ToolExecution):
+                if is_runtime_plumbing(entry):
+                    continue  # the spawn and the result tool render as the panel
                 cell = ToolCallCell(entry)
                 self._tool_cells[entry.tool_call_id] = cell
-                await self._mount_cell(cell)
+                await self._mount_cell(cell, conversation_id)
                 if entry.status not in (
                     ExecutionStatus.PENDING,
                     ExecutionStatus.RUNNING,
@@ -421,14 +515,19 @@ class AgentApp(App):
                     except ProjectionError:
                         continue
                     cell.finish(entry, tool_message_text(message), message.is_error)
+            elif isinstance(entry, ChildConversation):
+                panel = await self._open_panel(entry.conversation_id, conversation_id)
+                child = session.conversations.get(entry.conversation_id)
+                if panel is not None and child is not None:
+                    await self._replay_path(child.nodes, entry.conversation_id)
             elif isinstance(entry, CompactionEntry):
                 # Only a COMMITTED compaction carries content, and only on the
                 # path where the history it replaced is gone — the same rule
                 # the wire projection follows.
                 if entry.parts:
-                    await self._mount_cell(CompactionCell(entry))
+                    await self._mount_cell(CompactionCell(entry), conversation_id)
             elif isinstance(entry, TurnFinish) and entry.outcome is TurnOutcome.CANCELLED:
-                await self._mount_cell(NoticeCell("turn cancelled"))
+                await self._mount_cell(NoticeCell("turn cancelled"), conversation_id)
 
     # ── actions ────────────────────────────────────────────────────────────────
 
@@ -506,15 +605,24 @@ class AgentApp(App):
         self._live_reasoning.clear()
         self._live_text.clear()
         self._tool_cells.clear()
+        self._panels.clear()
         self._pending_images.clear()
         self._refresh_status()
         self.query_one("#prompt", Input).focus()
 
     # ── plumbing ───────────────────────────────────────────────────────────────
 
-    async def _mount_cell(self, cell: TranscriptCell) -> None:
-        transcript = self.query_one("#transcript", VerticalScroll)
-        await transcript.mount(cell)
+    async def _mount_cell(
+        self,
+        cell: TranscriptCell | SubagentPanel,
+        conversation_id: str | None = None,
+    ) -> None:
+        """Mount a cell where its conversation lives: inside that subagent's
+        panel, or in the transcript for the main agent (and for any
+        conversation whose panel is not up yet)."""
+        panel = self._panels.get(conversation_id) if conversation_id else None
+        target = panel if panel is not None else self.query_one("#transcript", VerticalScroll)
+        await target.mount(cell)
         self._scroll_end()
 
     def _scroll_end(self) -> None:

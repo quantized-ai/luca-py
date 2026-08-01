@@ -1,10 +1,13 @@
-"""Pure text formatting for transcript cells. No Textual imports."""
+"""Pure text formatting and session reads for transcript cells. No Textual
+imports, so everything here is unit-testable without a running app."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from luca.agent.core.models import (
+    AgentSession,
+    ChildConversation,
     CompactionEntry,
     ContentPart,
     ExecutionStatus,
@@ -12,11 +15,14 @@ from luca.agent.core.models import (
     TextContent,
     ThinkingContent,
     ToolCall,
+    ToolExecution,
 )
 
 RESULT_MAX_LINES = 12
 RESULT_MAX_CHARS = 2_000
 ARG_VALUE_MAX_CHARS = 80
+TASK_MAX_LINES = 6
+TASK_MAX_CHARS = 400
 
 STATUS_LABELS: dict[ExecutionStatus, str] = {
     ExecutionStatus.PENDING: "pending",
@@ -99,6 +105,69 @@ def compaction_transcript_text(entry: CompactionEntry) -> str:
 def compaction_subtitle(entry: CompactionEntry) -> str:
     replaced = len(entry.compacted_nodes or [])
     return f"replaced {replaced} {'entry' if replaced == 1 else 'entries'}"
+
+
+# ── subagents ─────────────────────────────────────────────────────────────────
+
+
+def is_runtime_plumbing(execution: ToolExecution) -> bool:
+    """Does this execution render as something OTHER than a tool cell?
+
+    Two kinds, both matched by DECLARATION rather than by name — the same
+    contract the runner matches on, so an application that ships its own spawn
+    and result tools renders exactly like the built-in pair:
+
+    - a PRIVATE tool is invoked by the runtime and never advertised to the
+      model (the subagent result tool is one). Showing plumbing as a tool call
+      the model appears to have made is simply wrong.
+    - a SPAWN tool already has a richer rendering: the panel its child
+      conversation gets. A tool cell beside it says the same thing twice.
+
+    An unresolved spec answers False: with nothing declared there is nothing to
+    match, and an ordinary tool cell is the honest fallback."""
+    spec = execution.tool_spec
+    if spec is None:
+        return False
+    if spec.is_private:
+        return True
+    schema = spec.output_schema
+    return isinstance(schema, dict) and "is_subagent_spawn" in (schema.get("properties") or {})
+
+
+def subagent_task(session: AgentSession, entry: ChildConversation) -> tuple[str, str]:
+    """One subagent's `(description, prompt)`, read from the spawn execution
+    that created it.
+
+    Both live on the spawn result's `structured_content` — the handshake
+    payload, which never reaches the model and so costs the conversation
+    nothing. The raw call's arguments are the fallback for the shape where a
+    tool spawned without echoing its own payload, and the conversation id is
+    the last resort: a panel with no label is worse than a panel labelled by
+    id."""
+    execution = session.entries.get(entry.tool_execution_id)
+    sources: list[dict] = []
+    if isinstance(execution, ToolExecution):
+        if execution.result is not None and execution.result.structured_content:
+            sources.append(execution.result.structured_content)
+        sources.append(execution.raw_tool_call.arguments)
+    for source in sources:
+        description = source.get("description")
+        if description:
+            return str(description), str(source.get("prompt") or "")
+    return f"subagent {entry.conversation_id[:8]}", ""
+
+
+def child_links(session: AgentSession) -> Iterator[tuple[str, ChildConversation]]:
+    """Every `ChildConversation` in the session, as `(parent_id, entry)`.
+
+    Walks the CONVERSATIONS rather than the entry store, because the entry
+    store alone cannot say which path a link hangs from — and a nested subagent
+    (a link on another subagent's path) has to nest in the transcript too."""
+    for parent_id, conversation in session.conversations.items():
+        for node_id in conversation.nodes:
+            entry = session.entries.get(node_id)
+            if isinstance(entry, ChildConversation):
+                yield parent_id, entry
 
 
 def clip_text(
