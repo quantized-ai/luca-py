@@ -21,6 +21,9 @@ uv run python main.py --faux              # offline scripted demo — no key, no
 uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
 uv run python main.py --no-subagents      # stop it spawning subagents that work in parallel
+uv run python main.py --subagents-max-depth 1     # no nesting (the app default is 3)
+uv run python main.py --subagents-max-per-turn 5  # spawn budget per turn (default: none)
+uv run python main.py --subagents-max-workers 3   # how many work at once (default: no cap)
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 ```
@@ -34,7 +37,11 @@ both are required, since installing the tools is not the same as switching the
 capability on. A subagent gets the same shell and memory tools the main agent
 has, each keyed by conversation so the two never overwrite each other.
 `--no-subagents` withholds the plugin and clears the flag on the session, so a
-resumed session that had subagents on comes back with them off.
+resumed session that had subagents on comes back with them off. The three
+limit flags write the same way — every launch, resumed sessions included, so
+the flags always describe the run being started: depth defaults to 3 (main
+plus three levels of nesting), the per-turn spawn budget and the worker cap
+default to no limit ([`08-runtime-config.md`](../../08-runtime-config.md)).
 
 `--pretty-print` replaces the app: it loads `<id>.json`, writes the
 [`pretty_print`](../../02-data-model.md#13-read-a-saved-session) transcript to
@@ -58,7 +65,7 @@ the workspace can all live in a `luca.json` file instead of flags. See
 | Piece | Behavior |
 |---|---|
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
-| Subagent panels | One indented `SubagentPanel` per subagent, titled with the task it was given and subtitled `running… / done / failed`. Everything that subagent produces — its text, its reasoning, its own tool cells — is mounted **inside** its panel. See §2.1 |
+| Subagent panels | One indented `SubagentPanel` per subagent, titled with the task it was given and subtitled `waiting… / running… / done / failed` — `waiting…` while queued behind `--subagents-max-workers` or parked at a gate, driven by the subagent lifecycle events. Everything that subagent produces — its text, its reasoning, its own tool cells — is mounted **inside** its panel. See §2.1 |
 | Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/simple_context_manager` |

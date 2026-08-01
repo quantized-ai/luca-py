@@ -77,6 +77,7 @@ STATUS_LABELS: dict[ExecutionStatus, str] = {
     ExecutionStatus.NOT_FOUND: "NOT FOUND",
     ExecutionStatus.INVALID: "INVALID",
     ExecutionStatus.REJECTED: "DENIED",
+    ExecutionStatus.REFUSED: "REFUSED",
     ExecutionStatus.CANCELLED: "CANCELLED",
     ExecutionStatus.INTERRUPTED: "INTERRUPTED",
     ExecutionStatus.TIMED_OUT: "TIMED OUT",

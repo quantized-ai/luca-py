@@ -205,6 +205,7 @@ always:
 | registry authored a terminal birth | `NOT_FOUND` / `INVALID` / `FAILED` | `False` |
 | `create_execution` raised (or the runner has no registry) | `FAILED` / `NOT_FOUND` | `False` |
 | `decide` returned DENY | `REJECTED` | `False` |
+| a framework runtime limit refused the call (the spawn budget, [13](13-subagents.md)) | `REFUSED` | `False` |
 | `prepare` raised `ToolNotFound` | `NOT_FOUND` | `False` |
 | `prepare` raised `InvalidToolArguments` or a pydantic `ValidationError` | `INVALID` | `False` |
 | `prepare` raised anything else, or returned a non-callable | `FAILED` | `False` |
@@ -214,7 +215,7 @@ always:
 | the deadline expired | `TIMED_OUT` | `True` |
 | the cancel grace expired, or the process died mid-body | `INTERRUPTED` | `True` |
 
-`FAILED` / `NOT_FOUND` / `INVALID` carry a structured `ToolExecutionError`;
+`FAILED` / `NOT_FOUND` / `INVALID` / `REFUSED` carry a structured `ToolExecutionError`;
 the other terminal statuses are complete facts on their own (resultless,
 errorless). Every registry- or tool-owned raise stamps `details["phase"]` —
 `"create_execution"`, `"prepare"` or `"execution"` — so a failure is

@@ -147,7 +147,10 @@ from .events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    SubagentFinished,
+    SubagentPaused,
     SubagentsSpawned,
+    SubagentStarted,
     TextBlock,
     TextDelta,
     TextStart,
@@ -193,6 +196,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    open_turn_executions,
     open_turn_unresolved_children,
 )
 from .projection import ConversationProjector, tool_message_text
@@ -237,6 +241,34 @@ class RunResult(BaseModel):
     pending_approvals: list[ToolExecution]  # non-empty iff BLOCKED
 
 
+class _SlotWaiter:
+    """One request for a worker-pool slot, queued FIFO.
+
+    `grant` is `handle._start_eager` for a never-started child,
+    `handle._redrive` for a parked child being restarted, and `Event.set` for
+    a live drive re-acquiring after a park (`resume=True`). All three are
+    synchronous. `announce` publishes `SubagentStarted` through that handle on
+    grant — set for every start and restart, None only where resuming is not
+    a start (a parked drive waking)."""
+
+    __slots__ = ("announce", "conversation_id", "grant", "handle", "resume")
+
+    def __init__(
+        self,
+        conversation_id: str,
+        grant: Callable[[], None],
+        *,
+        handle: AgentRun | None = None,
+        announce: AgentRun | None = None,
+        resume: bool = False,
+    ) -> None:
+        self.conversation_id = conversation_id
+        self.grant = grant
+        self.handle = handle
+        self.announce = announce
+        self.resume = resume
+
+
 class AgentRun:
     """One run of the agent — the handle `runner.run()` / `runner.start()`
     return. Three consumption forms: `await run` → `RunResult`;
@@ -261,6 +293,7 @@ class AgentRun:
         streaming: bool,
         on_event: EventCallback | None,
         eager: bool,
+        defer_start: bool = False,
         autostart_subagents: bool = True,
         parent: AgentRun | None = None,
     ) -> None:
@@ -306,27 +339,45 @@ class AgentRun:
         self._finished = False  # the engine produced its last event
         self._entered = False
         self._exited = False
-        if eager:
-            # Validates state synchronously at call time and spawns the
-            # background task. The loop is resolved FIRST so a sync-context
-            # start() fails before taking the one-engine guard; the bracket
-            # opens durably at call time so an immediate cancel() has an open
-            # turn to attach to (the first drive is then the flush) — and
-            # which bracket that is has to be decided here too, or a
-            # policy-driven compaction could never fire for an eager run.
-            loop = asyncio.get_running_loop()
-            self._runner._begin_run(self)
-            try:
-                self._runner._open_bracket_for_start(conversation_id)
-            except BaseException:
-                # `_begin_run` has already taken the one-run guard, and the
-                # three sites that release it are all downstream of
-                # `create_task`, which never runs. Without this the runner is
-                # permanently unusable after one raise from application code
-                # (`should_compact`, or `before_entry_written`).
-                self._runner._end_run(self)
-                raise
-            self._task = loop.create_task(self._consume())
+        # A deferred handle the pool decided never to start (its subtree was
+        # suspended, or its admission failed). Terminal: it will never drive.
+        self._abandoned = False
+        # A per-drive latch for the SubagentPaused / SubagentFinished
+        # announcement, so the extra `_end_run` call sites cannot publish the
+        # same drive's ending twice. Armed by `_start_eager` / `_redrive`.
+        self._ended_published = True
+        if eager and not defer_start:
+            self._start_eager()
+
+    def _start_eager(self) -> None:
+        """Begin this handle's drive — the one door through which an eager
+        drive ever starts.
+
+        Validates state synchronously at call time and spawns the background
+        task. The loop is resolved FIRST so a sync-context start() fails
+        before taking the one-engine guard; the bracket opens durably at call
+        time so an immediate cancel() has an open turn to attach to (the first
+        drive is then the flush) — and which bracket that is has to be decided
+        here too, or a policy-driven compaction could never fire for an eager
+        run. A no-op if the drive already started; `_wake` is set at the end
+        so a consumer blocked on a not-yet-started handle re-checks."""
+        if self._task is not None:
+            return
+        loop = asyncio.get_running_loop()
+        self._runner._begin_run(self)
+        try:
+            self._runner._open_bracket_for_start(self.conversation_id)
+        except BaseException:
+            # `_begin_run` has already taken the one-run guard, and the
+            # three sites that release it are all downstream of
+            # `create_task`, which never runs. Without this the runner is
+            # permanently unusable after one raise from application code
+            # (`should_compact`, or `before_entry_written`).
+            self._runner._end_run(self)
+            raise
+        self._ended_published = False
+        self._task = loop.create_task(self._consume())
+        self._wake.set()
 
     # ── the subtree ─────────────────────────────────────────────────────────
 
@@ -401,13 +452,17 @@ class AgentRun:
         application's own `drive(child)` returned and it already has control.
         The buffer is cumulative across drives, so a consumer reading this
         handle sees one continuous stream."""
-        if self._task is not None and not self._task.done():
+        if self._task is None or not self._task.done():
+            # None: never started — a deferred handle's first start belongs to
+            # the pool (`_start_eager`), and a drive spun up here would run
+            # with no token and no bracket. Not done: already driving.
             return
         self._finished = False
         self._exception = None
         # The previous drive closed this handle's approvals stream; a new drive
         # can raise new gates, so it reopens.
         self._approvals_closed = False
+        self._ended_published = False
         self._task = asyncio.get_running_loop().create_task(self._consume())
 
     # ── the three consumption forms ─────────────────────────────────────────
@@ -424,14 +479,27 @@ class AgentRun:
         self._runner.cancel(outcome, error, conversation_id=self.conversation_id)
 
     def cancel_drive(self) -> None:
-        """Park this run's background drive at its next step boundary WITHOUT
-        writing a `CancelRequested`.
+        """Park this run's SUBTREE at its next step boundaries WITHOUT writing
+        a `CancelRequested`.
 
         This is suspension, not cancellation: nothing durable is recorded and
         the bracket stays open and resumable. `cancel()` is the other thing —
-        it writes the durable request and closes the turn."""
+        it writes the durable request and closes the turn. A child that never
+        started (queued behind the worker pool) is ABANDONED instead: there is
+        no drive to park, but the pool must not start one for a suspended
+        tree. The cascade is recursive so a nested tree suspends whole."""
+        if self._eager and self._task is None:
+            self._abandoned = True
+            self._wake.set()  # a joiner parked in _await_started re-checks
         if self._task is not None and not self._task.done():
             self._task.cancel()
+        # A pending slot request for this conversation — a queued start, or a
+        # gated child's already-answered redrive — must not fire after the
+        # suspension: the pool would otherwise run real model/tool work
+        # inside a tree the application believes is fully parked.
+        self._runner._drop_waiter(self.conversation_id)
+        for child in self._children.values():
+            child.cancel_drive()
 
     def notify(self, execution: ToolExecution) -> None:
         """Something changed out of band for this execution's conversation —
@@ -624,7 +692,14 @@ class AgentRun:
                 waiters.add(self._own_step)
             forwarded: asyncio.Future | None = None
             settled: asyncio.Future | None = None
-            if self._live_children():
+            # The inbox is armed while the OWN ENGINE is live too, not only
+            # while children are: an engine step can publish onto its own
+            # run's inbox mid-step (the spawn announcement and the batch's
+            # `SubagentStarted`s), and an unarmed inbox would sit undelivered
+            # until the step's next yield. Termination is unaffected — with
+            # the engine exhausted and no live children nothing arms, and the
+            # loop top already drained the queue.
+            if self._live_children() or self._engine is not None:
                 self._subtree_wake.clear()
                 if not self._inbox.empty():
                     return self._inbox.get_nowait()
@@ -646,6 +721,12 @@ class AgentRun:
                     await _cancel_quietly(settled)
                 return forwarded.result()
             if self._own_step is not None and self._own_step in done:
+                if not self._inbox.empty():
+                    # Events published DURING the step that just completed go
+                    # first — the same inbox-before-engine rule the loop top
+                    # applies, made consistent WITHIN a pull. The completed
+                    # step is held; a later iteration consumes its result.
+                    return self._inbox.get_nowait()
                 step, self._own_step = self._own_step, None
                 try:
                     return step.result()
@@ -656,8 +737,26 @@ class AgentRun:
                     raise
             # only `settled` fired: a child ended. Loop and re-evaluate.
 
+    @property
+    def _queued(self) -> bool:
+        """Created for an eager start the worker pool has not granted yet.
+
+        Derived from the conversation rather than latched on the handle, so a
+        queued child that is cancelled and flushed by its parent's drive
+        (turn closed → IDLE) stops counting on its own — no bookkeeping call
+        has to remember to clear it."""
+        if not self._eager or self._task is not None or self._abandoned:
+            return False
+        status = self._runner.session.get_conversation_status(self.conversation_id).status
+        return status is not ConversationStatus.IDLE
+
     def _live_children(self) -> bool:
-        return any(child._task is not None and not child._task.done() for child in self._children.values())
+        # A queued child counts: it has not produced events yet, but it will —
+        # ending the parent's stream on it would truncate the run (§ the fan-in
+        # terminates only when the whole subtree is settled).
+        return any(
+            (child._task is not None and not child._task.done()) or child._queued for child in self._children.values()
+        )
 
     async def _close_engine(self) -> None:
         """Tear the engine down, held step first.
@@ -739,12 +838,18 @@ class AgentRun:
             self._parent._inbox.put_nowait(event)
 
     async def _next_buffered(self) -> AgentEvent:
+        # `_task is None` is a deferred handle the pool has not admitted yet:
+        # not done, nothing buffered — wait on `_wake`, which `_start_eager`
+        # sets on admission (and abandonment sets, ending the empty stream).
         while True:
             if self._cursor < len(self._buffer):
                 event = self._buffer[self._cursor]
                 self._cursor += 1
                 return event
-            if self._task.done():
+            if self._task is None:
+                if self._abandoned:
+                    raise StopAsyncIteration  # never started — an empty stream
+            elif self._task.done():
                 if self._task.cancelled():
                     raise asyncio.CancelledError()
                 exc = self._task.exception()
@@ -752,11 +857,28 @@ class AgentRun:
                     raise exc  # buffer drained → surface the failure
                 raise StopAsyncIteration
             self._wake.clear()
-            if self._cursor < len(self._buffer) or self._task.done():
+            if self._cursor < len(self._buffer) or self._abandoned or (self._task is not None and self._task.done()):
                 continue  # produced between the check and the clear
             await self._wake.wait()
 
+    async def _await_started(self) -> None:
+        """Joining a deferred handle waits for the pool to admit it first —
+        that is the honest answer to "join this child". An ABANDONED handle
+        (cancelled or suspended before admission) will never start, and
+        consumers return with whatever the session records for it instead of
+        blocking forever."""
+        while self._task is None and not self._abandoned:
+            self._wake.clear()
+            if self._task is not None or self._abandoned:
+                break
+            await self._wake.wait()
+
     async def _join(self) -> RunResult:
+        await self._await_started()
+        if self._task is None:
+            # abandoned before it ever started — no drive ever ran, so the
+            # session-derived result is the whole answer
+            return self._runner._build_run_result(self.conversation_id)
         try:
             return await self._task
         except asyncio.CancelledError:
@@ -769,6 +891,9 @@ class AgentRun:
             raise
 
     async def _finalize_eager(self, swallow_failure: bool) -> None:
+        await self._await_started()
+        if self._task is None:
+            return  # abandoned before it ever started — nothing to finalize
         try:
             await self._task
         except asyncio.CancelledError:
@@ -888,6 +1013,25 @@ class AgentSessionRunner:
         # undecided, so there is nothing to persist, and a stale id left behind
         # is harmless — waking a conversation with nothing undecided is a no-op.
         self._recheck: set[str] = set()
+        # ── the subagent worker pool (`subagents_max_workers`) ──────────────
+        # Conversations currently holding a slot: a strict subset of the
+        # subagent conversations, and NOT derivable from `_runs` — a drive
+        # parked on its subtree or winding a cancelled turn down is live but
+        # holds no slot, and a just-granted child holds one before its task
+        # exists. With the default `Inf` both stay empty and every request is
+        # granted inline.
+        self._working: set[str] = set()
+        # Everything that wants a slot, in FIFO order: queued children waiting
+        # to start, gated children waiting to be re-driven, parked drives
+        # waiting to resume. One queue, so ordering is a single testable
+        # policy.
+        self._waiters: list[_SlotWaiter] = []
+        # A pool-granted start that failed (`before_entry_written` raising on
+        # the child's `TurnStart`, say) has no caller to raise into — the
+        # exception is recorded against the CHILD conversation here and
+        # re-raised by the PARENT's drive at its loop top. Fail-loud,
+        # preserved for deferred starts.
+        self._admission_errors: dict[str, BaseException] = {}
         # Per-DRIVE state, keyed by conversation and reset in `_begin_run`.
         # Keyed rather than plain attributes because several drives run at
         # once: a plain attribute would belong to whichever conversation wrote
@@ -1149,6 +1293,21 @@ class AgentSessionRunner:
         run = self._runs.get(target)
         if run is not None and run._token is not None:
             run._token.cancel()
+        if run is None:
+            # No live drive will consume this request, so nothing would wake
+            # on its own — a real hazard since the worker pool made "spawned
+            # but never started" an ordinary state. A QUEUED handle is
+            # abandoned (the pool must never start it now, and a joiner
+            # blocked on it must unblock), and the PARENT's drive is woken:
+            # it is the only conversation that will flush this child
+            # (`_flush_cancelled_children`) and resolve its link.
+            handle = self._parked_handle(target)
+            if handle is not None and handle._eager and handle._task is None:
+                handle._abandoned = True
+                handle._wake.set()
+            parent_id = self._parent_of(target)
+            if parent_id is not None:
+                self._ensure_driven(parent_id)
         self._cascade_cancel(target, outcome, error)
 
     def _cascade_cancel(
@@ -1183,6 +1342,21 @@ class AgentSessionRunner:
                     and entry.execution_result is None
                 ):
                     return entry
+        return None
+
+    def _parent_of(self, child_id: str) -> str | None:
+        """The conversation whose path holds the unresolved link to
+        `child_id`, if any — the one whose drive flushes it. Same scan as
+        `_link_for`, cancellation-only."""
+        for conversation_id, conversation in self.session.conversations.items():
+            for node_id in conversation.nodes:
+                entry = self.session.entries.get(node_id)
+                if (
+                    isinstance(entry, ChildConversation)
+                    and entry.conversation_id == child_id
+                    and entry.execution_result is None
+                ):
+                    return conversation_id
         return None
 
     def _unresolved_child_ids(self, conversation_id: str) -> list[str]:
@@ -1226,6 +1400,13 @@ class AgentSessionRunner:
         `streaming` selects the event vocabulary only (block events vs block +
         delta events). Events reach `on_event` even when the run is only
         awaited; without it, an awaited run discards them."""
+        if not autostart_subagents and self.session.session_config.runtime_config.subagents_max_workers != Inf:
+            raise AgentError(
+                "subagents_max_workers is framework-owned: it works by withholding a "
+                "subagent's start, which is only the framework's to withhold under "
+                "autostart_subagents=True. Drive the children yourself and pace them "
+                "yourself, or let the framework drive them and cap them."
+            )
         return AgentRun(
             self,
             conversation_id=self.session.main_conversation_id,
@@ -1310,17 +1491,18 @@ class AgentSessionRunner:
                 continue
             if self.session.get_conversation_status(child_id).status is ConversationStatus.IDLE:
                 continue  # finished — this run resolves it; there is nothing to drive
-            run._adopt(
-                AgentRun(
-                    self,
-                    conversation_id=child_id,
-                    streaming=run._streaming,
-                    on_event=None,  # the parent's callback sees it through the fan-in
-                    eager=True,
-                    autostart_subagents=True,
-                    parent=run,
-                )
+            child = AgentRun(
+                self,
+                conversation_id=child_id,
+                streaming=run._streaming,
+                on_event=None,  # the parent's callback sees it through the fan-in
+                eager=True,
+                defer_start=True,  # the pool decides when — a resume must not stampede past the cap
+                autostart_subagents=True,
+                parent=run,
             )
+            run._adopt(child)
+            self._request_slot(child_id, child._start_eager, handle=child, announce=child)
 
     def _compaction_ran(self, conversation_id: str) -> bool:
         return conversation_id in self._compaction_did_run
@@ -1344,6 +1526,15 @@ class AgentSessionRunner:
     def _end_run(self, run: AgentRun) -> None:
         if self._runs.get(run.conversation_id) is run:
             del self._runs[run.conversation_id]
+        # ANNOUNCE BEFORE RELEASING: releasing pumps the pool, and the pump
+        # may start a queued sibling that announces its own start — "S1
+        # paused, so S4 started" must arrive in that order on the stream.
+        # Deliberately OUTSIDE the `_runs` guard: a `_redrive`n drive was
+        # never re-registered there, and its ending must still announce and
+        # release (`_publish_run_ended` is latched per drive, so the extra
+        # call sites cannot double-publish).
+        self._publish_run_ended(run)
+        self._release_slot(run.conversation_id)
 
     # ── waking a conversation out of band ───────────────────────────────────
 
@@ -1365,8 +1556,15 @@ class AgentSessionRunner:
             wake.set()
             return
         run = self._runs.get(conversation_id) or self._parked_handle(conversation_id)
-        if run is not None and run._framework_owned:
-            run._redrive()
+        if run is None or not run._framework_owned:
+            return
+        if run._task is None or not run._task.done():
+            # Never started — its FIRST start belongs to the pool, and a
+            # `_redrive` here would spin a drive up with no token and no
+            # bracket. Or still driving — nothing to restart.
+            return
+        # A restart is a start a consumer has to see, so it announces.
+        self._request_slot(conversation_id, run._redrive, handle=run, announce=run)
 
     def _parked_handle(self, conversation_id: str) -> AgentRun | None:
         """A finished handle for `conversation_id`, found through the live
@@ -1376,6 +1574,176 @@ class AgentSessionRunner:
             if found is not None:
                 return found
         return None
+
+    # ── the subagent worker pool ─────────────────────────────────────────────
+    #
+    # `subagents_max_workers` bounds how many subagent conversations are DOING
+    # WORK at the same time. The rule everything below follows: a slot is held
+    # only while a conversation does its own productive work — never while it
+    # waits for another conversation, waits for a human, or winds a cancelled
+    # turn down. That rule is what makes a nested tree unable to deadlock: a
+    # parent releases on park, so its children can always be admitted.
+
+    def _slot_limit(self) -> int:
+        return self.session.session_config.runtime_config.subagents_max_workers
+
+    def _needs_slot(self, conversation_id: str) -> bool:
+        """The main conversation never competes — the cap bounds subagent
+        work and the main conversation must always be able to advance — and
+        an unlimited pool never accounts."""
+        return self._slot_limit() != Inf and self.session.conversations[conversation_id].depth > 0
+
+    def _request_slot(
+        self,
+        conversation_id: str,
+        grant: Callable[[], None],
+        *,
+        handle: AgentRun | None = None,
+        announce: AgentRun | None = None,
+        resume: bool = False,
+    ) -> None:
+        """Ask for a slot; granted synchronously if one is free."""
+        waiter = _SlotWaiter(conversation_id, grant, handle=handle, announce=announce, resume=resume)
+        if not self._needs_slot(conversation_id):
+            self._grant(waiter)
+            return
+        self._waiters.append(waiter)
+        self._pump_slots()
+
+    def _grant(self, waiter: _SlotWaiter) -> None:
+        """The ONE place a slot is handed over, so accounting, announcement
+        and failure routing cannot drift apart."""
+        if self._needs_slot(waiter.conversation_id):
+            self._working.add(waiter.conversation_id)
+        try:
+            waiter.grant()
+        except BaseException as exc:
+            # A pool-granted start has no caller to raise into — the sibling
+            # whose `finally` pumped the queue must not inherit the failure,
+            # and the parent would otherwise park forever on a child whose
+            # seed message still derives BUSY. Route it to the parent's drive.
+            self._working.discard(waiter.conversation_id)
+            if waiter.handle is not None:
+                waiter.handle._abandoned = True
+                waiter.handle._wake.set()  # a joiner parked on it re-checks
+            self._admission_errors[waiter.conversation_id] = exc
+            parent = waiter.handle._parent if waiter.handle is not None else None
+            if parent is not None:
+                parent._subtree_wake.set()
+                parent._wake.set()
+                self._ensure_driven(parent.conversation_id)
+            return
+        if waiter.announce is not None:
+            self._publish_subagent_event(
+                waiter.announce,
+                SubagentStarted(conversation_id=waiter.conversation_id),
+            )
+
+    def _release_slot(self, conversation_id: str) -> None:
+        """Give a slot back (a no-op for a conversation holding none) and
+        hand it on."""
+        self._working.discard(conversation_id)
+        self._pump_slots()
+
+    def _pump_slots(self) -> None:
+        while self._waiters and (self._slot_limit() == Inf or len(self._working) < self._slot_limit()):
+            waiter = self._waiters.pop(0)
+            if not self._still_wants_slot(waiter):
+                continue  # stale — drop it and take the next
+            self._grant(waiter)
+
+    def _still_wants_slot(self, waiter: _SlotWaiter) -> bool:
+        """A waiter can go stale between enqueue and grant."""
+        conversation_id = waiter.conversation_id
+        if waiter.handle is not None and waiter.handle._abandoned:
+            return False  # its tree was suspended before admission
+        if waiter.handle is not None and waiter.handle._task is not None and not waiter.handle._task.done():
+            return False  # already driving — a duplicate request
+        if conversation_id not in self.session.conversations:
+            return False
+        if waiter.resume:
+            # A parked drive re-acquiring: it is live by definition, so the
+            # start-oriented checks below do not apply. It is stale only when
+            # that drive is gone — ended or suspended mid-wait — in which
+            # case granting would strand a slot nobody will ever release.
+            return conversation_id in self._runs or self._wakes.get(conversation_id) is not None
+        if conversation_id in self._runs:
+            return False  # already driving — a restart path got there first
+        if self.session.get_conversation_status(conversation_id).status is ConversationStatus.IDLE:
+            return False  # already finished, or already flushed
+        # A CANCELLED CONVERSATION IS NEVER GRANTED A SLOT. Its parent's
+        # drive flushes it (`_flush_cancelled_children`) — the path that
+        # already exists for a child with no drive. Starting one purely so it
+        # could wind itself down would burn a slot on bookkeeping AND race
+        # the parent for the same flush.
+        return self.ledger.open_turn_cancel_requested(conversation_id) is None
+
+    def _drop_waiter(self, conversation_id: str) -> None:
+        self._waiters = [w for w in self._waiters if w.conversation_id != conversation_id]
+
+    async def _acquire_slot(self, conversation_id: str, token: CancellationToken) -> bool:
+        """Take (or retake) a slot before doing work. False only when the
+        cancellation token won the race — the caller then proceeds without a
+        slot, straight into a wind-down that needs none."""
+        if not self._needs_slot(conversation_id):
+            return True
+        granted = asyncio.Event()
+        # announce=None: resuming a parked drive is not a start.
+        self._request_slot(conversation_id, granted.set, resume=True)
+        if granted.is_set():
+            return True
+        waiter = asyncio.ensure_future(granted.wait())
+        cancelled = asyncio.ensure_future(token.wait_cancelled())
+        try:
+            await asyncio.wait({waiter, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            await _cancel_quietly(waiter)
+            await _cancel_quietly(cancelled)
+        if granted.is_set():
+            return True
+        self._drop_waiter(conversation_id)  # cancelled while queued
+        return False
+
+    def _pop_admission_error(self, conversation_id: str) -> BaseException | None:
+        """The recorded failure of a pool-granted start among this
+        conversation's unresolved children, if any — consumed by its drive."""
+        for child_id in self._unresolved_child_ids(conversation_id):
+            exc = self._admission_errors.pop(child_id, None)
+            if exc is not None:
+                return exc
+        return None
+
+    def _publish_subagent_event(self, run: AgentRun, event: AgentEvent) -> None:
+        """Put a subagent lifecycle event on the stream that OWNS the
+        subagent: the PARENT run's inbox — the same door the child's own
+        events already ride (`AgentRun._forward`), so it bubbles to the root
+        handle like any other event. `put_nowait` is synchronous and never
+        blocks, which is what lets this be called from `_end_run` and
+        `_grant`, neither of which runs inside the drive generator."""
+        parent = run._parent
+        if parent is None:
+            return
+        parent._inbox.put_nowait(event)
+
+    def _publish_run_ended(self, run: AgentRun) -> None:
+        """Announce a framework-driven subagent's drive ending — a pause (its
+        turn is still open; it will run again) or a finish (its turn closed,
+        with the outcome the close recorded). Latched per drive, so the extra
+        `_end_run` call sites cannot publish one ending twice."""
+        if run._ended_published:
+            return
+        run._ended_published = True
+        if run._task is None:
+            return  # never actually drove — the failed-start unwind path
+        if run._parent is None or not run._framework_owned:
+            return  # not a framework-driven subagent: no lifecycle events
+        status = self.session.get_conversation_status(run.conversation_id).status
+        if status is ConversationStatus.IDLE:
+            outcome = self._closed_outcomes.get(run.conversation_id) or TurnOutcome.COMPLETED
+            ended: AgentEvent = SubagentFinished(conversation_id=run.conversation_id, outcome=outcome)
+        else:
+            ended = SubagentPaused(conversation_id=run.conversation_id)
+        self._publish_subagent_event(run, ended)
 
     def _ensure_open_turn(self, conversation_id: str) -> None:
         """Open a new bracket unless one is already open (resume). Called at
@@ -1735,16 +2103,27 @@ class AgentSessionRunner:
         tool_list = [adapter.tool_spec_to_luca_tool(spec) for spec in specs if not spec.is_private]
         return self._run_middlewares("build_tool_list", tool_list)
 
-    def _spawn_gate_open(self, conversation_id: str) -> bool:
+    def _spawn_gate_open(self, conversation_id: str, *, exclude: str | None = None) -> bool:
         """May THIS conversation spawn subagents?
 
         The predicate the gate and the system prompt must both derive from —
         a static prompt telling a subagent at the depth cap that it can spawn,
-        while the tool list withholds the tool, would have the model try."""
+        while the tool list withholds the tool, would have the model try.
+
+        `exclude` drops one execution id from the per-turn count. `_spawn_one`
+        needs it: converting a settled spawn re-checks this gate at a point
+        where that execution is already counted, and its question is "was
+        there room for this one?", not "is there room for another?"."""
         config = self.session.session_config.runtime_config
         if not config.subagents_enabled:
             return False
-        return self.session.conversations[conversation_id].depth < config.subagents_max_depth
+        depth_cap = config.subagents_max_depth
+        if depth_cap != Inf and self.session.conversations[conversation_id].depth >= depth_cap:
+            return False
+        # the per-turn budget: Inf by default, so this clause never fires for
+        # a session that did not ask for a limit
+        limit = config.subagents_max_per_turn
+        return limit == Inf or spawns_committed(self.session, conversation_id, exclude=exclude) < limit
 
     def _verify_gate(self, conversation_id: str, specs: list[ToolSpec]) -> None:
         """A registry that returned a spawn-declaring spec for a conversation
@@ -1756,7 +2135,7 @@ class AgentSessionRunner:
         appears with nothing in the log explaining why."""
         if self._spawn_gate_open(conversation_id):
             return
-        leaked = [spec.name for spec in specs if _declares_spawn(spec)]
+        leaked = [spec.name for spec in specs if declares_spawn(spec)]
         if leaked:
             raise AgentError(
                 f"tool registry offered spawn-declaring tool(s) {leaked} to conversation "
@@ -1764,7 +2143,9 @@ class AgentSessionRunner:
                 f"(subagents_enabled="
                 f"{self.session.session_config.runtime_config.subagents_enabled}, "
                 f"depth={self.session.conversations[conversation_id].depth}, "
-                f"max_depth={self.session.session_config.runtime_config.subagents_max_depth})."
+                f"max_depth={self.session.session_config.runtime_config.subagents_max_depth}, "
+                f"spawns_committed={spawns_committed(self.session, conversation_id)}, "
+                f"max_per_turn={self.session.session_config.runtime_config.subagents_max_per_turn})."
             )
 
     async def _collect_tools(
@@ -2259,6 +2640,14 @@ class AgentSessionRunner:
                     yield event
                 return
 
+            # 0b) A pool-granted start that failed after the spawn batch
+            # returned has no caller of its own — the failure was recorded
+            # against the child and this drive re-raises it, preserving the
+            # fail-loud contract a synchronous start had.
+            admission_error = self._pop_admission_error(conversation_id)
+            if admission_error is not None:
+                raise admission_error
+
             # 1) Undecided executions → THE decide() call site. Serves the
             # fresh path (created one iteration ago) and every resume path (a
             # re-entered run, a reloaded session) identically. A registry
@@ -2314,16 +2703,32 @@ class AgentSessionRunner:
             # handled, so this is idempotent across a reload for free.
             spawned = list(self._spawn_children(conversation_id))
             if spawned:
-                # BEFORE the announcement: a `yield` suspends this generator,
-                # so a consumer reacting to the event runs while the drive is
-                # parked here. The handles have to exist by then, or
-                # `run.child(cid)` inside that branch — the whole point of the
-                # `autostart_subagents=False` shape — returns None.
-                self._start_children(conversation_id, spawned)
-                yield SubagentsSpawned(
+                announcement = SubagentsSpawned(
                     conversation_id=conversation_id,
                     conversation_ids=[entry.conversation_id for entry in spawned],
                 )
+                run = self._runs.get(conversation_id) or self._parked_handle(conversation_id)
+                if run is not None and run.autostart_subagents:
+                    # THE INBOX, NOT A YIELD, in framework mode. The fan-in
+                    # drains the inbox before the engine on every pull, so a
+                    # fast child's forwarded events would overtake an
+                    # engine-yielded announcement (and its Started, parked in
+                    # this generator, would arrive after the child's own
+                    # Finished). Putting the announcement here, synchronously,
+                    # BEFORE the starts — which publish onto the same queue
+                    # before any child task has had a chance to run — is what
+                    # guarantees Spawned ≺ Started(child) ≺ that child's own
+                    # events, in every consumption mode.
+                    run._inbox.put_nowait(announcement)
+                    self._start_children(conversation_id, spawned)
+                else:
+                    # Application-driven children: the yield IS the transfer
+                    # of control — the consumer drives every child inside
+                    # this event's branch, and the handles have to exist by
+                    # then or `run.child(cid)` returns None. No lifecycle
+                    # events exist in this mode.
+                    self._start_children(conversation_id, spawned)
+                    yield announcement
 
             # 2c) RESOLVE FINISHED CHILDREN. A child is finished when its turn
             # bracket closes, whatever the outcome — a child that failed is a
@@ -2595,7 +3000,7 @@ class AgentSessionRunner:
         for execution in self.ledger.open_turn_executions(conversation_id):
             if execution.id in handled:
                 continue
-            payload = _spawn_payload(execution)
+            payload = spawn_payload(execution)
             if payload is None:
                 continue
             created.append(self._spawn_one(conversation_id, execution, payload))
@@ -2612,7 +3017,7 @@ class AgentSessionRunner:
         # around the gate entirely: the child would be spawned at any depth and
         # the cap would silently not exist. Same invisible failure a name match
         # would have had, closed from the other side.
-        if execution.tool_spec is None or not _declares_spawn(execution.tool_spec):
+        if execution.tool_spec is None or not declares_spawn(execution.tool_spec):
             raise AgentError(
                 f"execution {execution.id!r} returned a {SPAWN_MARKER!r} payload but its "
                 f"tool spec never declared one; a spawn that bypasses the gate is a "
@@ -2622,7 +3027,9 @@ class AgentSessionRunner:
         # gate lives in `get_tools`, but a registry resolves by NAME at
         # dispatch, so anything reaching dispatch with that name runs. This
         # check puts the cap where it actually means something: child creation.
-        if not self._spawn_gate_open(conversation_id):
+        # `exclude` because THIS execution is settled and already in the count
+        # — without it the Nth legitimate spawn would read as the (N+1)th.
+        if not self._spawn_gate_open(conversation_id, exclude=execution.id):
             raise AgentError(
                 f"conversation {conversation_id!r} may not spawn subagents "
                 f"(depth={self.session.conversations[conversation_id].depth}, "
@@ -2680,8 +3087,13 @@ class AgentSessionRunner:
         spawned: list[ChildConversation],
     ) -> None:
         """Give every fresh child a handle on the run that spawned it, started
-        or not according to who owns them."""
-        run = self._runs.get(conversation_id)
+        or queued according to who owns them and what the worker pool allows.
+
+        Every admission — inline or later — announces `SubagentStarted` from
+        `_grant`, synchronously, before the child's task first runs; with the
+        batch's `SubagentsSpawned` already on the same inbox, the stream
+        carries them in order."""
+        run = self._runs.get(conversation_id) or self._parked_handle(conversation_id)
         if run is None:
             return
         for entry in spawned:
@@ -2691,10 +3103,18 @@ class AgentSessionRunner:
                 streaming=run._streaming,
                 on_event=None,  # the parent's callback sees it through the fan-in
                 eager=run.autostart_subagents,
+                defer_start=True,  # ← the pool decides when
                 autostart_subagents=run.autostart_subagents,
                 parent=run,
             )
             run._adopt(child)
+            if run.autostart_subagents:
+                self._request_slot(
+                    entry.conversation_id,
+                    child._start_eager,
+                    handle=child,
+                    announce=child,
+                )
 
     def _child_entries(self, conversation_id: str) -> list[ChildConversation]:
         entries = self.session.entries
@@ -2744,7 +3164,7 @@ class AgentSessionRunner:
         entry: ChildConversation,
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
-        payload = _spawn_payload(self.session.entries[entry.tool_execution_id])
+        payload = spawn_payload(self.session.entries[entry.tool_execution_id])
         if payload is None:  # unreachable: the child only exists because it spawned
             raise AgentError(f"ChildConversation {entry.id!r} has no spawn payload to derive a result from.")
         # A runtime-minted call. The tool_call_id is the RUNNER's, not a
@@ -2870,6 +3290,10 @@ class AgentSessionRunner:
             return False
         if token.cancelled:
             return True  # loop; the cancel check at the top winds down
+        # PARKED IS NOT WORKING. Releasing here is what lets this
+        # conversation's own children be admitted, and it is the whole reason
+        # a nested tree cannot deadlock under `subagents_max_workers`.
+        self._release_slot(conversation_id)
         waiter = asyncio.ensure_future(wake.wait())
         cancelled = asyncio.ensure_future(token.wait_cancelled())
         try:
@@ -2877,6 +3301,10 @@ class AgentSessionRunner:
         finally:
             await _cancel_quietly(waiter)
             await _cancel_quietly(cancelled)
+            # Re-acquire, raced against the token: a drive blocked on a slot
+            # must stay cancellable. When the token wins this returns without
+            # a slot, and the loop top winds the turn down — which needs none.
+            await self._acquire_slot(conversation_id, token)
         return True
 
     def _can_subtree_advance(self, conversation_id: str) -> bool:
@@ -2929,7 +3357,19 @@ class AgentSessionRunner:
         unprojectable (the same fail-loud rule a nonterminal execution gets), so
         leaving one would wedge the conversation permanently. This also covers
         the `autostart_subagents=False` child that was never driven at all."""
+        # WIND-DOWN IS BOOKKEEPING, NOT WORK: no model call, no tool body.
+        # The slot goes back first — waiting below for cancelled children to
+        # settle while holding one would be a slot-holder waiting on other
+        # conversations, the one thing the pool's rule forbids — and the
+        # freed capacity goes to an unrelated queued subagent immediately
+        # rather than a grace window later.
+        self._release_slot(conversation_id)
         for child_id in self._unresolved_child_ids(conversation_id):
+            # A child whose pool-granted start failed carries a recorded
+            # admission error; resolving its link below makes it unreachable
+            # for the loop-top re-raise, so the cancel deliberately wins and
+            # the record is discarded rather than leaked.
+            self._admission_errors.pop(child_id, None)
             run = self._runs.get(child_id)
             if run is not None and run._task is not None:
                 with contextlib.suppress(BaseException):
@@ -3078,6 +3518,12 @@ class AgentSessionRunner:
             # previously-appended executions; parallel tool calls are
             # evaluated in append order.
             doom_flagged = self._is_doom_loop(conversation_id, tc)
+            # The spawn budget the tool list could not enforce: the list was
+            # fixed before the model call, so several spawn calls in ONE
+            # response can overrun it. Sequential by construction — calls
+            # 1…k-1 of this same message are already appended, so the count
+            # sees them as in-flight reservations.
+            refusal = self._spawn_budget_refusal(conversation_id, draft)
 
             def build(
                 entry_id,
@@ -3085,19 +3531,22 @@ class AgentSessionRunner:
                 ts,
                 _draft=draft,
                 _d=doom_flagged,
+                _r=refusal,
             ) -> ToolExecution:
-                return _draft.model_copy(
-                    update={
-                        "id": entry_id,
-                        "parent_id": parent_id,
-                        "created_at": ts,
-                        # Provenance, stamped here with the rest of the identity
-                        # set the runner owns. A registry must not set it.
-                        "conversation_id": conversation_id,
-                        "ended_at": (ts if _draft.status != ExecutionStatus.PENDING else None),
-                        "is_doom_loop_flagged": _d,
-                    },
-                )
+                update = {
+                    "id": entry_id,
+                    "parent_id": parent_id,
+                    "created_at": ts,
+                    # Provenance, stamped here with the rest of the identity
+                    # set the runner owns. A registry must not set it.
+                    "conversation_id": conversation_id,
+                    "is_doom_loop_flagged": _d,
+                }
+                if _r is not None:
+                    update |= {"status": ExecutionStatus.REFUSED, "error": _r}
+                status = update.get("status", _draft.status)
+                update["ended_at"] = ts if status != ExecutionStatus.PENDING else None
+                return _draft.model_copy(update=update)
 
             execution = self._append(conversation_id, build)
             events.append(
@@ -3111,6 +3560,39 @@ class AgentSessionRunner:
                 _, event = self._finalize_undispatched(conversation_id, execution, exception)
                 events.append(event)
         return events
+
+    def _spawn_budget_refusal(
+        self,
+        conversation_id: str,
+        draft: ToolExecution,
+    ) -> ToolExecutionError | None:
+        """None if this call may spawn; the durable error to be born with if
+        the open turn has spent its `subagents_max_per_turn` budget.
+
+        Decided BEFORE either body runs, so dispatch order, concurrency and
+        tool duration are all irrelevant — the only ordering it relies on is
+        `_create_executions`' append loop, which is inherent to persisting
+        executions in model-request order. A draft already terminal at birth
+        keeps its own status: it will never dispatch, so it neither consumes
+        the budget nor needs refusing."""
+        if draft.status != ExecutionStatus.PENDING:
+            return None
+        if draft.tool_spec is None or not declares_spawn(draft.tool_spec):
+            return None
+        limit = self.session.session_config.runtime_config.subagents_max_per_turn
+        if limit == Inf:
+            return None
+        committed = spawns_committed(self.session, conversation_id)
+        if committed < limit:
+            return None
+        return ToolExecutionError(
+            error_type="SpawnLimitReached",
+            error_message=(
+                f"Spawn limit reached ({committed}/{limit} subagents this turn). "
+                f"Complete the remaining work yourself; do not retry."
+            ),
+            details={"limit": limit, "committed": committed},
+        )
 
     async def _birth_draft(
         self,
@@ -3629,7 +4111,7 @@ def _unresolved_children(session: AgentSession, conversation_id: str) -> list[Ch
     return open_turn_unresolved_children(conversation.nodes, session.entries)
 
 
-def _declares_spawn(spec: ToolSpec) -> bool:
+def declares_spawn(spec: ToolSpec) -> bool:
     """Does this SPEC declare that it can spawn? A shape check on the published
     output schema, read BEFORE the model call — there is no value to check yet.
 
@@ -3642,15 +4124,55 @@ def _declares_spawn(spec: ToolSpec) -> bool:
     return isinstance(schema, dict) and SPAWN_MARKER in (schema.get("properties") or {})
 
 
-def _spawn_payload(execution: ToolExecution) -> dict | None:
+def spawn_payload(execution: ToolExecution) -> dict | None:
     """The handshake payload of a COMPLETED execution that claims it spawned,
-    or None. Value check, after the fact — the other half of `_declares_spawn`."""
+    or None. Value check, after the fact — the other half of `declares_spawn`."""
     if execution.status != ExecutionStatus.COMPLETED or execution.result is None:
         return None
     payload = execution.result.structured_content
     if not isinstance(payload, dict) or payload.get(SPAWN_MARKER) is not True:
         return None
     return payload
+
+
+def spawns_committed(
+    session: AgentSession,
+    conversation_id: str,
+    *,
+    exclude: str | None = None,
+) -> int:
+    """Subagents this conversation's OPEN TURN has already committed to.
+
+    The number both halves of the per-turn budget count — the gate that
+    withholds the spawn tool and the runner's born-REFUSED fallback — so it is
+    a pure read over durable entries and rebuilds correctly after a reload.
+
+    Counting rules, and why:
+    - only spawn-DECLARING executions count; the budget is about subagents,
+      not tool calls
+    - a settled call counts only if it actually spawned — a spawn tool may
+      return `is_subagent_spawn=False`, and a refusal is not a subagent
+    - a call still in flight (PENDING / RUNNING) counts as ONE, reserved: it
+      is about to become a child, and the budget must hold before the fact.
+      If it ends up not spawning, the reservation is released simply by it
+      becoming settled-and-not-spawned.
+
+    `exclude` drops one execution id from the count. `_spawn_one` needs it:
+    converting a settled spawn re-checks the gate at a point where that
+    execution is already counted, and the question there is "was there room
+    for this one?", not "is there room for another?"."""
+    conversation = session.conversations[conversation_id]
+    count = 0
+    for execution in open_turn_executions(conversation.nodes, session.entries):
+        if execution.id == exclude:
+            continue
+        if execution.tool_spec is None or not declares_spawn(execution.tool_spec):
+            continue
+        if execution.status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
+            count += 1  # in flight — reserved
+        elif spawn_payload(execution) is not None:
+            count += 1  # settled, and it spawned
+    return count
 
 
 def _outcome_for(exception: Exception) -> TurnOutcome:

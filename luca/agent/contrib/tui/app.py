@@ -47,7 +47,10 @@ from luca.agent.core.events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    SubagentFinished,
+    SubagentPaused,
     SubagentsSpawned,
+    SubagentStarted,
     TextBlock,
     TextDelta,
     TextStart,
@@ -340,7 +343,12 @@ class AgentApp(App):
                 cell = self._tool_cells.get(tool_call_id)
                 if cell is not None:
                     cell.mark_running(execution)
-            case ToolExecuted(execution=execution) if is_runtime_plumbing(execution):
+            case ToolExecuted(execution=execution, result_text=result_text) if is_runtime_plumbing(execution):
+                if execution.status is ExecutionStatus.REFUSED:
+                    # A refused spawn has no panel to render as — without this
+                    # the budget's refusal would be invisible to the user
+                    # while the model reads it.
+                    await self._mount_cell(NoticeCell(result_text, error=True), source)
                 # The result tool completing is how a subagent's panel closes
                 # while its siblings are still working.
                 self._sync_panels()
@@ -373,12 +381,28 @@ class AgentApp(App):
                 )
             case SubagentsSpawned(conversation_ids=conversation_ids):
                 # `source` is the PARENT, so a panel nests inside its spawner's
-                # panel whenever that spawner has one. V0 caps the depth at 1,
-                # which makes the parent the transcript — but the rule that
-                # places it is the same either way.
+                # panel whenever that spawner has one: at depth 1 the parent is
+                # the transcript, and a deeper tree nests by the same rule.
                 for child_id in conversation_ids:
                     await self._open_panel(child_id, source)
-            case ToolCallStart() | FinishReason() | ApprovalRequired() | CompactionScheduled() | CompactionStarted():
+            case SubagentStarted():
+                # `source` is the SUBAGENT here — the panel lookup is the same
+                # one the tool cells use.
+                panel = self._panels.get(source)
+                if panel is not None:
+                    panel.set_activity("running")
+            case SubagentPaused():
+                panel = self._panels.get(source)
+                if panel is not None:
+                    panel.set_activity("waiting")
+            case (
+                ToolCallStart()
+                | FinishReason()
+                | ApprovalRequired()
+                | CompactionScheduled()
+                | CompactionStarted()
+                | SubagentFinished()  # terminal rendering is the settle path's
+            ):
                 pass
 
     async def _stream_into(
@@ -499,6 +523,12 @@ class AgentApp(App):
                     # a ToolCall part renders through its ToolExecution entry
             elif isinstance(entry, ToolExecution):
                 if is_runtime_plumbing(entry):
+                    if entry.status is ExecutionStatus.REFUSED and entry.error is not None:
+                        # a refused spawn never got a panel; replay its notice
+                        await self._mount_cell(
+                            NoticeCell(entry.error.error_message, error=True),
+                            conversation_id,
+                        )
                     continue  # the spawn and the result tool render as the panel
                 cell = ToolCallCell(entry)
                 self._tool_cells[entry.tool_call_id] = cell

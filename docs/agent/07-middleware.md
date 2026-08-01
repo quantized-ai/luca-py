@@ -121,7 +121,8 @@ class AgentMiddlewareMixin:
         `raw_tool_call` here to alter the effective call, which is what the
         registry's `prepare()` then resolves and validates from (the hook
         deliberately runs AHEAD of it). A terminal-at-birth call arrives with
-        NOT_FOUND / INVALID / FAILED already set, a denied call with REJECTED,
+        NOT_FOUND / INVALID / FAILED already set, a budget-refused call with
+        REFUSED, a denied call with REJECTED,
         a call cancelled before dispatch with CANCELLED. Not invoked again
         when a RUNNING call later reaches its terminal status. Return the
         (possibly modified) execution.
@@ -249,7 +250,8 @@ class Args10x:
 ```
 
 A call that never dispatches also passes through — with `NOT_FOUND` / `INVALID`
-/ `FAILED` (terminal at birth), `REJECTED` (denied), or `CANCELLED` already set.
+/ `FAILED` (terminal at birth), `REFUSED` (a runtime limit, [13](13-subagents.md)),
+`REJECTED` (denied), or `CANCELLED` already set.
 
 > ⚠️ **Once per dispatch attempt, not once per call forever.** A crash during
 > `prepare()` persists nothing, so the call is still `PENDING` and the next
@@ -259,7 +261,8 @@ A call that never dispatches also passes through — with `NOT_FOUND` / `INVALID
 `after_tool_execution(execution, exception=None)` observes **every** outcome —
 `COMPLETED`, `FAILED` (with the live exception behind a `prepare()` or body
 raise; registry-authored terminal births carry none), `NOT_FOUND`, `INVALID`,
-`REJECTED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT` — and its return value is
+`REJECTED`, `REFUSED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT` — and its return
+value is
 what gets persisted:
 
 ```python

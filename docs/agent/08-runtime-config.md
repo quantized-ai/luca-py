@@ -80,12 +80,14 @@ installing the spawn tool changes nothing until this says yes
 | Field | Effect |
 |---|---|
 | `subagents_enabled` | `False` by default. The gate every spawn is checked against |
-| `subagents_max_depth` | how deep the tree may go; `1` (the only supported value in V0) means the main conversation spawns and a subagent does not |
+| `subagents_max_depth` | how deep the tree may go: `N` allows spawning from depths `0..N-1`, so the deepest subagent sits at depth `N` — the main conversation plus `N` levels. Default `1`: the main conversation spawns, a subagent does not |
+| `subagents_max_per_turn` | how many subagents one conversation may spawn in one turn; `Inf` (default) = no limit. Spent budget withholds the spawn tool; an overflow call in one response is born `REFUSED` ([13](13-subagents.md)) |
+| `subagents_max_workers` | how many subagents may be **doing work** at once, session-wide; `Inf` (default) = no limit. Spawning always succeeds — the rest queue for a slot ([13](13-subagents.md)). Size it by fan-out, never by depth; `0` is invalid (that is `subagents_enabled=False` spelled incorrectly) |
 | `subagent_soft_max_steps` | soft step ceiling for a SUBAGENT's turn; `None` falls back to `soft_max_steps` |
 | `subagent_hard_max_steps` | the same for the hard ceiling |
 
 ```python
-RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagent_hard_max_steps=20)
+RuntimeConfig(subagents_enabled=True, subagents_max_depth=2, subagents_max_workers=20, subagent_hard_max_steps=20)
 ```
 
 > ⚠️ **A subagent is never compaction-checked in V0**, so its own step ceiling

@@ -132,6 +132,7 @@ class ConversationProjector:
     # lifecycle facts on their own (no ToolExecutionError to elaborate with).
     STATUS_ONLY_OUTPUTS: ClassVar[dict[ExecutionStatus, str]] = {
         ExecutionStatus.REJECTED: "[tool execution rejected]",
+        ExecutionStatus.REFUSED: "[tool execution refused]",
         ExecutionStatus.CANCELLED: "[tool execution cancelled]",
         ExecutionStatus.INTERRUPTED: "[tool execution interrupted]",
         ExecutionStatus.TIMED_OUT: "[tool execution timed_out]",
@@ -511,6 +512,10 @@ class ConversationProjector:
             if error is not None:
                 return f"Tool execution failed: {error.error_type}: {error.error_message}"
             return "[tool execution failed]"
+        if entry.status == ExecutionStatus.REFUSED and error is not None:
+            # the limit's own wording, verbatim — the model must read the real
+            # reason ("Spawn limit reached (3/3)…"), not a placeholder
+            return error.error_message
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
     def _content_block(self, part) -> TextBlock | ClientImageBlock:

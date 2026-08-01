@@ -765,6 +765,32 @@ def test_status_only_terminals_project_their_placeholders():
     )
 
 
+def test_refused_projects_the_limits_own_wording():
+    # REFUSED carries the refusing limit's message — the model must read the
+    # real reason, not a placeholder; without an error it rides the dict
+    refused = _execution(
+        status=ExecutionStatus.REFUSED,
+        error=ToolExecutionError(
+            error_type="SpawnLimitReached",
+            error_message="Spawn limit reached (3/3 subagents this turn). Do not retry.",
+            details={"limit": 3, "committed": 3},
+        ),
+        ended_at=1001,
+    )
+    bare = _execution(status=ExecutionStatus.REFUSED, ended_at=1001)
+
+    assert PROJECTOR.project_tool_execution(refused, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="Spawn limit reached (3/3 subagents this turn). Do not retry.")],
+        is_error=True,
+    )
+    assert PROJECTOR.project_tool_execution(bare, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="[tool execution refused]")],
+        is_error=True,
+    )
+
+
 def test_pending_execution_is_not_projectable():
     execution = _execution(status=ExecutionStatus.PENDING)
 

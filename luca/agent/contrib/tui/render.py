@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
+from luca.agent.core import declares_spawn
 from luca.agent.core.models import (
     AgentSession,
     ChildConversation,
@@ -32,6 +33,7 @@ STATUS_LABELS: dict[ExecutionStatus, str] = {
     ExecutionStatus.NOT_FOUND: "not found",
     ExecutionStatus.INVALID: "invalid arguments",
     ExecutionStatus.REJECTED: "denied",
+    ExecutionStatus.REFUSED: "refused",
     ExecutionStatus.CANCELLED: "cancelled",
     ExecutionStatus.INTERRUPTED: "interrupted",
     ExecutionStatus.TIMED_OUT: "timed out",
@@ -128,10 +130,7 @@ def is_runtime_plumbing(execution: ToolExecution) -> bool:
     spec = execution.tool_spec
     if spec is None:
         return False
-    if spec.is_private:
-        return True
-    schema = spec.output_schema
-    return isinstance(schema, dict) and "is_subagent_spawn" in (schema.get("properties") or {})
+    return spec.is_private or declares_spawn(spec)
 
 
 def subagent_task(session: AgentSession, entry: ChildConversation) -> tuple[str, str]:

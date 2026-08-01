@@ -34,8 +34,8 @@ runner = PluginAgentSessionRunner(session, plugins=[SubagentsPlugin(), *others])
 | `SpawnSubagent` (`spawn_subagent`) | starts one subagent. Args: `prompt` (self-contained instructions), `description` (for the user), optional `task_id` |
 | `CreateConversationResult` (`create_conversation_result`) | **private** — the runtime calls it when a child finishes, to turn that conversation into one result |
 | `SPAWNING_PROMPT` | the system-prompt text that teaches spawning, contributed as a **callable** part |
-| `SubagentToolRegistry` | `SimpleToolRegistry` + the depth gate |
-| `spawn_gate_open(session, conversation_id)` | the one predicate everything derives from |
+| `SubagentToolRegistry` | `SimpleToolRegistry` + the gate (enabled, depth, spawn budget) |
+| `spawn_gate_open(session, conversation_id, *, exclude=None)` | the one predicate everything derives from |
 
 Both tools ship auto-approved, in their own always-allowing registry — the
 pattern `MemoryPlugin` uses. That is the right call, not a shortcut: the
@@ -45,16 +45,28 @@ would ask about the wrapper and never the payload.
 
 ## 3. The gate
 
-`spawn_gate_open` is the single predicate:
+`spawn_gate_open` is the single predicate — enabled, then the depth cap, then
+the per-turn spawn budget:
 
 ```python
-def spawn_gate_open(session, conversation_id) -> bool:
+def spawn_gate_open(session, conversation_id, *, exclude=None) -> bool:
     config = session.session_config.runtime_config
-    return (
-        config.subagents_enabled
-        and session.conversations[conversation_id].depth < config.subagents_max_depth
-    )
+    if not config.subagents_enabled:
+        return False
+    conversation = session.conversations.get(conversation_id)
+    if conversation is None:
+        return False
+    if config.subagents_max_depth != Inf and conversation.depth >= config.subagents_max_depth:
+        return False
+    limit = config.subagents_max_per_turn
+    return limit == Inf or spawns_committed(session, conversation_id, exclude=exclude) < limit
 ```
+
+`spawns_committed` (exported by `luca.agent.core`) counts the open turn's
+committed subagents from durable entries alone — settled spawns that actually
+spawned, plus in-flight spawn calls as reservations — so the gate survives a
+reload mid-turn. `exclude` mirrors the core's own gate; no contrib caller
+needs it.
 
 Both the tool list and the system prompt derive from it, and that identity is
 the whole reason the prompt part is a callable. A static part would tell a
@@ -74,7 +86,7 @@ output** — declared on the spec, populated on the result:
 
 | | What is read | When | Meaning |
 |---|---|---|---|
-| **Gate** | `ToolSpec.output_schema` declares `is_subagent_spawn` | before the model call, from the spec alone | this tool *can* spawn → it is subject to the depth cap |
+| **Gate** | `ToolSpec.output_schema` declares `is_subagent_spawn` | before the model call, from the spec alone | this tool *can* spawn → it is subject to the depth cap and the spawn budget |
 | **Handshake** | `structured_content["is_subagent_spawn"] is True` | after the execution completes | this call *did* spawn → create the child |
 
 ```python

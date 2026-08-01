@@ -13,6 +13,9 @@ Usage:
     uv run python main.py --conversation <id>      # resume <id>.json
     uv run python main.py --conversation <id> --fork  # branch into a new session
     uv run python main.py --no-subagents           # no parallel subagents
+    uv run python main.py --subagents-max-depth 1  # no nesting (default 3)
+    uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
+    uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-streaming           # block-level rendering
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 

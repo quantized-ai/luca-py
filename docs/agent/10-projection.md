@@ -78,6 +78,7 @@ for every tool status. `COMPLETED` projects the tool's own `result.content` and 
 | `NOT_FOUND` | `Unknown tool: 'read_database'.` |
 | `INVALID` | `Arguments for tool 'add' are invalid.` + the validation errors as JSON |
 | `FAILED` | `Tool execution failed: ConnectionError: …` |
+| `REFUSED` | the refusing limit's own message, e.g. `Spawn limit reached (3/3 subagents this turn). …` |
 | `REJECTED` / `CANCELLED` / `INTERRUPTED` / `TIMED_OUT` | `[tool execution rejected]` etc. |
 
 All of this wording lives **on the class** — swap a placeholder without

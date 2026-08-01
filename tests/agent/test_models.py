@@ -799,6 +799,7 @@ def test_execution_status_members():
         "NOT_FOUND": "not_found",
         "INVALID": "invalid",
         "REJECTED": "rejected",
+        "REFUSED": "refused",
         "CANCELLED": "cancelled",
         "INTERRUPTED": "interrupted",
         "TIMED_OUT": "timed_out",
@@ -875,6 +876,8 @@ def test_runtime_config_defaults_are_infinite_and_zero_grace():
         limit_tool_choice_on_doom_loop_flagged=True,
         subagents_enabled=False,
         subagents_max_depth=1,
+        subagents_max_per_turn=Inf,
+        subagents_max_workers=Inf,
         subagent_soft_max_steps=None,
         subagent_hard_max_steps=None,
         extras={},
@@ -917,6 +920,28 @@ def test_subagent_step_limits_reject_below_inf():
 def test_subagents_max_depth_rejects_below_inf():
     with pytest.raises(ValidationError):
         RuntimeConfig(subagents_max_depth=-2)
+
+
+def test_subagents_max_per_turn_is_inf_or_positive():
+    # 0 is not "disabled" — it would mean no subagent may ever exist, which is
+    # subagents_enabled=False spelled incorrectly
+    assert RuntimeConfig(subagents_max_per_turn=Inf).subagents_max_per_turn == Inf
+    assert RuntimeConfig(subagents_max_per_turn=1).subagents_max_per_turn == 1
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_per_turn=0)
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_per_turn=-2)
+
+
+def test_subagents_max_workers_is_inf_or_positive():
+    # 0 is not "disabled" — it would mean no subagent may ever run, which is
+    # subagents_enabled=False spelled incorrectly
+    assert RuntimeConfig(subagents_max_workers=Inf).subagents_max_workers == Inf
+    assert RuntimeConfig(subagents_max_workers=1).subagents_max_workers == 1
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_workers=0)
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_workers=-2)
 
 
 def test_runtime_config_round_trips_with_extras():

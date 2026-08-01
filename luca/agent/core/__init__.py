@@ -75,13 +75,21 @@ from .models import (
     TurnStart,
     Usage,
     UserMessage,
+    open_turn_executions,
 )
 from .projection import (
     CANCELLED_TURN_MARKER,
     IMAGE_BLOCK_MARKER,
     ConversationProjector,
 )
-from .runner import AgentRun, AgentSessionRunner, RunResult
+from .runner import (
+    AgentRun,
+    AgentSessionRunner,
+    RunResult,
+    declares_spawn,
+    spawn_payload,
+    spawns_committed,
+)
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import PreparedTool, ToolRegistry
 from .utils import pretty_print
@@ -154,5 +162,9 @@ __all__ = [
     "Usage",
     "UsageCounters",
     "UserMessage",
+    "declares_spawn",
+    "open_turn_executions",
     "pretty_print",
+    "spawn_payload",
+    "spawns_committed",
 ]

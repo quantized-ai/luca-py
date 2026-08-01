@@ -143,7 +143,8 @@ class AgentMiddlewareMixin:
         `raw_tool_call` here to alter the effective call, which is what the
         registry's `prepare()` then resolves and validates from (the hook
         deliberately runs AHEAD of it). A terminal-at-birth call arrives with
-        NOT_FOUND / INVALID / FAILED already set, a denied call with REJECTED,
+        NOT_FOUND / INVALID / FAILED already set, a budget-refused call with
+        REFUSED, a denied call with REJECTED,
         a call cancelled before dispatch with CANCELLED. Not invoked again
         when a RUNNING call later reaches its terminal status. Return the
         (possibly modified) execution.

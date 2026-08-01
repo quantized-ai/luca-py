@@ -92,6 +92,9 @@ uv run python main.py --faux                       # offline scripted demo — n
 uv run python main.py --conversation <id>          # resume <id>.json
 uv run python main.py --conversation <id> --fork   # branch into a new session
 uv run python main.py --no-subagents               # stop it spawning parallel subagents
+uv run python main.py --subagents-max-depth 1      # no nesting (the demo default is 3)
+uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget (default: none)
+uv run python main.py --subagents-max-workers 3    # how many work at once (default: no cap)
 uv run python main.py --no-streaming               # block-level events instead of deltas
 uv run python main.py --model <id> --reasoning <level>  # override the session's LLMConfig
 ```

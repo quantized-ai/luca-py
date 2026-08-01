@@ -407,6 +407,7 @@ class ExecutionStatus(str, Enum):
     NOT_FOUND = "not_found"  # the requested/effective tool could not be resolved
     INVALID = "invalid"  # the requested/effective arguments failed validation
     REJECTED = "rejected"  # the registry's decide() denied the execution
+    REFUSED = "refused"  # a framework runtime limit refused the call before dispatch
     CANCELLED = "cancelled"  # cancellation prevented the body from starting
     INTERRUPTED = "interrupted"  # a started body did not finish (grace/orphan)
     TIMED_OUT = "timed_out"  # the framework-enforced deadline expired
@@ -1005,10 +1006,27 @@ class RuntimeConfig(BaseConfigModel):
     # False the registry withholds the spawn tool and the runner raises if one
     # comes back anyway.
     subagents_enabled: bool = False
-    # The only supported value in V0: a subagent cannot spawn subagents. The
-    # DATA MODEL supports arbitrary nesting; this is the runtime limit, and the
-    # implementation is allowed to rely on it.
+    # How deep the tree may go: N allows spawning from depths 0..N-1, so the
+    # deepest subagent sits at depth N — the main conversation plus N levels
+    # below it. Default 1: the main conversation spawns, a subagent does not.
+    # Nesting multiplies cost (step limits are per conversation, not per tree),
+    # so raising this is deliberate, not free.
     subagents_max_depth: int = 1
+    # How many subagents one conversation may spawn in one OPEN TURN. Spent
+    # budget withholds the spawn tool and its prompt part; a spawn call that
+    # arrives after the tool list was fixed is born REFUSED. Every subagent has
+    # its own turn and therefore its own budget; the count resets when the
+    # turn closes. Inf (-1) = no limit.
+    subagents_max_per_turn: int = Inf
+    # How many subagent conversations may be DOING WORK at the same time,
+    # across the whole session. Inf (-1, the default) = no limit. The main
+    # conversation never counts against it: it is not a subagent, and it must
+    # always be able to advance. A slot is held only while a subagent works —
+    # a conversation waiting on its own children, on a human, or winding a
+    # cancelled turn down holds none — so size this by FAN-OUT (how many
+    # siblings should work at once), never by `subagents_max_depth`: depth
+    # costs sequence, not concurrency.
+    subagents_max_workers: int = Inf
     # Step limits for subagent conversations. `None` falls back to the main
     # `soft_max_steps` / `hard_max_steps` above. These are what make an
     # uncompacted subagent safe: a child is never compaction-checked in V0, so
@@ -1037,6 +1055,16 @@ class RuntimeConfig(BaseConfigModel):
     def _inf_or_natural(cls, value: int) -> int:
         if value < Inf:
             raise ValueError(f"must be >= {Inf} ({Inf} = infinite / disabled)")
+        return value
+
+    @field_validator("subagents_max_per_turn", "subagents_max_workers")
+    @classmethod
+    def _inf_or_positive(cls, value: int) -> int:
+        """`Inf` (-1) or at least 1. `0` is not "disabled" — it would mean no
+        subagent may ever exist, which is `subagents_enabled=False` spelled
+        incorrectly."""
+        if value != Inf and value < 1:
+            raise ValueError(f"must be >= 1 or {Inf} ({Inf} = no limit)")
         return value
 
     @field_validator("subagent_soft_max_steps", "subagent_hard_max_steps")

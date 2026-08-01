@@ -3,6 +3,9 @@
     uv run python -m luca.agent.contrib.tui                     # fresh session
     uv run python -m luca.agent.contrib.tui --faux              # offline, scripted
     uv run python -m luca.agent.contrib.tui --no-subagents      # no parallel subagents
+    uv run python -m luca.agent.contrib.tui --subagents-max-depth 1   # no nesting
+    uv run python -m luca.agent.contrib.tui --subagents-max-per-turn 5
+    uv run python -m luca.agent.contrib.tui --subagents-max-workers 3
     uv run python -m luca.agent.contrib.tui --conversation <id> # resume <id>.json
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
@@ -31,7 +34,9 @@ import argparse
 import sys
 from typing import get_args
 
-from luca.agent.core import AgentSessionRunner, pretty_print
+from pydantic import ValidationError
+
+from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
 from luca.agent.core.models import AgentSession
 from luca.client.types import Reasoning
 
@@ -77,6 +82,24 @@ def arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=True,
         help="Stop the agent from spawning subagents (parallel subagents are on by default).",
+    )
+    parser.add_argument(
+        "--subagents-max-depth",
+        type=int,
+        default=3,
+        help="How many levels of subagents may nest below the main conversation (default 3; the library default is 1).",
+    )
+    parser.add_argument(
+        "--subagents-max-per-turn",
+        type=int,
+        default=None,
+        help="How many subagents one conversation may spawn in one turn (default: no limit).",
+    )
+    parser.add_argument(
+        "--subagents-max-workers",
+        type=int,
+        default=None,
+        help="How many subagents may be doing work at the same time, across the whole session (default: no limit).",
     )
     parser.add_argument(
         "--faux",
@@ -148,10 +171,28 @@ def build_session(args: argparse.Namespace, config: LucaConfig | None = None) ->
         session.session_config.runtime_config,
         config,
     )
-    # The flag sets the CAPABILITY on this session, durably — including on a
+    # The flags set the CAPABILITY on this session, durably — including on a
     # resumed one, so `--no-subagents` turns a session that had them off;
     # wiring the plugin only makes the tools available to a session that asked.
-    session.session_config.runtime_config.subagents_enabled = getattr(args, "subagents", True)
+    # Same rule for the subagent limits: every launch writes them, so the flags
+    # always describe the run you are starting now. Written through
+    # `model_validate` rather than attribute assignment: an invalid flag value
+    # (`--subagents-max-workers 0`) must fail loudly here, not wedge the first
+    # spawn and poison the saved session file.
+    per_turn = getattr(args, "subagents_max_per_turn", None)
+    max_workers = getattr(args, "subagents_max_workers", None)
+    try:
+        session.session_config.runtime_config = RuntimeConfig.model_validate(
+            {
+                **session.session_config.runtime_config.model_dump(),
+                "subagents_enabled": getattr(args, "subagents", True),
+                "subagents_max_depth": getattr(args, "subagents_max_depth", 3),
+                "subagents_max_per_turn": Inf if per_turn is None else per_turn,
+                "subagents_max_workers": Inf if max_workers is None else max_workers,
+            }
+        )
+    except ValidationError as exc:
+        raise LucaConfigError(f"invalid subagent flag value: {exc}") from exc
     return session
 
 

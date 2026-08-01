@@ -260,6 +260,85 @@ async def test_a_cancelled_subagents_panel_stops_saying_running(tmp_path):
         assert [entry.execution_result is not None for entry in links] == [True]
 
 
+async def test_a_queued_subagent_says_waiting_until_the_pool_admits_it(tmp_path):
+    """Under `subagents_max_workers` a spawned subagent may be queued: its
+    panel opens saying "waiting…" and flips to "running…" only when
+    `SubagentStarted` arrives — one field, driven entirely by the events."""
+    capped = RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagents_max_workers=1)
+    app = AgentApp(
+        fresh_session(capped),
+        provider=scripted(
+            faux_assistant_message(
+                [
+                    spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1"),
+                    spawn("read beta", "Read beta.txt.", call_id="c2", task_id="t2"),
+                ],
+            ),
+            faux_assistant_message([faux_hang()]),  # the first child holds the only slot
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "read both, one at a time")
+        await wait_until(pilot, lambda: len(panels(app)) == 2)
+        await wait_until(pilot, lambda: panels(app)[0].status == "running")
+
+        # the slot-holder runs; its sibling is queued and says so
+        assert [(panel.description, panel.border_subtitle) for panel in panels(app)] == [
+            ("read alpha", "running…"),
+            ("read beta", "waiting…"),
+        ]
+
+        await pilot.press("escape")  # unwind the hung child; both settle
+        await wait_until(pilot, lambda: idle_again(app))
+
+
+async def test_a_refused_spawn_renders_a_notice_not_nothing(tmp_path):
+    """A spawn past `subagents_max_per_turn` is born REFUSED and creates no
+    child — so the plumbing rule (spawns render as their child's panel) would
+    make it invisible. It gets a notice instead, live and on replay."""
+    budgeted = RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagents_max_per_turn=1)
+    app = AgentApp(
+        fresh_session(budgeted),
+        provider=scripted(
+            faux_assistant_message(
+                [
+                    spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1"),
+                    spawn("read beta", "Read beta.txt.", call_id="c2", task_id="t2"),
+                ],
+            ),
+            faux_assistant_message([faux_text("alpha read")]),
+            faux_assistant_message([faux_text("Only alpha; the budget refused beta.")]),
+        ),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "read both")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        notices = [row for row in tree(app) if row[0] == "NoticeCell"]
+        assert len(notices) == 1
+        assert "Spawn limit reached (1/1 subagents this turn)" in notices[0][3]
+        assert [panel.description for panel in panels(app)] == ["read alpha"]
+
+    # and the replay reproduces it
+    reloaded = AgentApp(
+        load_session(app.runner.session.id, directory=tmp_path),
+        provider=FauxProvider(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+    async with reloaded.run_test() as pilot:
+        await wait_until(pilot, lambda: bool(panels(reloaded)))
+        notices = [row for row in tree(reloaded) if row[0] == "NoticeCell"]
+        assert len(notices) == 1
+        assert "Spawn limit reached" in notices[0][3]
+
+
 async def test_a_subagents_approval_modal_names_it_by_its_task(tmp_path):
     """Two subagents can gate at the same moment, so the modal has to say which
     one is asking in terms the user can act on — the task, not the key."""

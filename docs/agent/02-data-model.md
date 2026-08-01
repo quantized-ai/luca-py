@@ -202,6 +202,7 @@ The lifecycle (`ExecutionStatus`):
 | `not_found` | no such tool |
 | `invalid` | arguments failed validation |
 | `rejected` | the registry's decide() denied it |
+| `refused` | a framework runtime limit refused the call before dispatch (e.g. the spawn budget, [13](13-subagents.md)) |
 | `cancelled` | cancellation prevented the body from starting |
 | `interrupted` | a started body didn't finish (crash, orphan recovery) |
 | `timed_out` | the framework-enforced deadline on the body expired |
@@ -218,7 +219,7 @@ dispatch leaves it `None`:
 | `dispatched` | Statuses |
 |---|---|
 | `True` | `running`, `completed`, `timed_out`, `interrupted`, and a `failed` raised by the tool body |
-| `False` | `pending`, `rejected`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
+| `False` | `pending`, `rejected`, `refused`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
 
 Every tool call yields **exactly one** tool output for the model — even a
 denied, cancelled, or malformed one (error text is derived from `status` +

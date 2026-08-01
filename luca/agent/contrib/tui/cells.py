@@ -180,9 +180,11 @@ class SubagentPanel(Vertical):
         self.conversation_id = conversation_id
         self.description = description
         self.prompt = prompt
-        self.status = "running"
+        # "waiting" until a `SubagentStarted` flips it: a spawned subagent may
+        # be queued behind `subagents_max_workers` before it ever runs.
+        self.status = "waiting"
         self.border_title = f"subagent · {description}"
-        self.border_subtitle = "running…"
+        self.border_subtitle = "waiting…"
 
     def compose(self) -> ComposeResult:
         # The task the subagent was given. Its conversation starts with exactly
@@ -194,6 +196,15 @@ class SubagentPanel(Vertical):
                 markup=False,
                 classes="subagent-task",
             )
+
+    def set_activity(self, status: str) -> None:
+        """The live note while the subagent is unresolved: "running" when its
+        drive holds a worker slot, "waiting" when it is queued or paused at a
+        gate. `settle()` owns the terminal state and wins over a late event."""
+        if self.status in ("done", "failed"):
+            return
+        self.status = status
+        self.border_subtitle = f"{status}…"
 
     def settle(self, *, is_error: bool) -> None:
         """Close the panel. Driven by the resolved `ChildConversation`, not by

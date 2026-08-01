@@ -24,6 +24,7 @@ from luca.agent.core import (
     RuntimeConfig,
     SessionConfig,
     ToolSpec,
+    declares_spawn,
 )
 from luca.agent.core.tool_registry import ToolRegistry
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text, faux_tool_call
@@ -118,7 +119,7 @@ class SubagentRegistry(ToolRegistry):
 
         specs = await self.subagent_tools.get_tools(session, conversation_id)
         if not spawn_gate_open(session, conversation_id):
-            specs = [spec for spec in specs if not _declares_spawn(spec)]
+            specs = [spec for spec in specs if not declares_spawn(spec)]
         return [*specs, *await self.other.get_tools(session, conversation_id)]
 
     async def create_execution(self, session, conversation_id, call):
@@ -129,11 +130,6 @@ class SubagentRegistry(ToolRegistry):
 
     async def prepare(self, session, conversation_id, tool_execution):
         return await self._for(tool_execution.raw_tool_call.name).prepare(session, conversation_id, tool_execution)
-
-
-def _declares_spawn(spec: ToolSpec) -> bool:
-    schema = spec.output_schema
-    return isinstance(schema, dict) and "is_subagent_spawn" in (schema.get("properties") or {})
 
 
 class UndeclaredSpawnTool(FakeTool):

@@ -117,7 +117,10 @@ renderer keys its live state by that field.
 | `ToolExecuted` | `.tool_call_id`, `.execution` (terminal), `.result_text`, `.is_error` — what the model is told |
 | `FinishReason` | `.finish_reason` |
 | `ApprovalRequired` | `.executions` — emitted when a call parks at a gate (not necessarily last: a sibling subagent may keep going) |
-| `SubagentsSpawned` | `.conversation_ids` — one batch of children, announced before they start ([13](13-subagents.md)) |
+| `SubagentsSpawned` | `.conversation_ids` — one batch of children, announced before any of them starts ([13](13-subagents.md)) |
+| `SubagentStarted` | the subagent (`.conversation_id`) began — or resumed — doing work; a spawned child with no start yet is queued behind `subagents_max_workers` ([13](13-subagents.md)) |
+| `SubagentPaused` | its drive ended with the turn still open (an approval gate, a suspension); it will run again |
+| `SubagentFinished` | its turn closed; `.outcome` is the closing `TurnFinish`'s |
 | `CompactionScheduled` / `CompactionStarted` / `CompactionFinished` | `.entry` (a deep snapshot) — one compaction's lifecycle ([12](12-compaction.md)) |
 
 The three tool events carry a **deep snapshot** of the durable `ToolExecution`
@@ -223,6 +226,7 @@ invokes that callable. What that buys you:
 | toolless runner, at birth | `NOT_FOUND` | `None` | `False` | `create_execution` |
 | the registry authored a terminal draft | `NOT_FOUND`/`INVALID`/`FAILED` | `None` | `False` | the registry's own |
 | `decide` returned `DENY` | `REJECTED` | `None` | `False` | — |
+| a framework runtime limit refused the call at birth (the spawn budget, [13](13-subagents.md)) | `REFUSED` | `None` | `False` | — |
 | `prepare` raised `ToolNotFound` | `NOT_FOUND` | `None` | `False` | `prepare` |
 | `prepare` raised `InvalidToolArguments` / `ValidationError` | `INVALID` | `None` | `False` | `prepare` |
 | `prepare` raised anything else | `FAILED` | `None` | `False` | `prepare` |
@@ -376,9 +380,10 @@ async for execution in run.approvals:     # gates raised during this run, as the
 
 | | `True` — the framework drives | `False` — you drive |
 |---|---|---|
-| when a child starts | immediately, on its own task | when you iterate the handle |
+| when a child starts | as soon as `subagents_max_workers` admits it (immediately by default) — announced by `SubagentStarted` | when you iterate the handle |
 | where its events arrive | on this run's stream, tagged with its conversation | on the child handle only (no double delivery) |
 | your obligation | none | drive or cancel every spawn, or the parent's turn never ends |
+| `subagents_max_workers` | applies ([13](13-subagents.md)) | refused — `run()` raises when a cap is set |
 
 ```python
 from luca.agent.core.events import SubagentsSpawned

@@ -13,8 +13,9 @@ Two tiers, selected by the run's `streaming=` flag:
 - DELTA / `*Start` events fire ONLY under `streaming=True`, as tokens arrive:
   `ReasoningStart`/`ReasoningDelta`, `TextStart`/`TextDelta`, `ToolCallStart`.
 
-Plus the LIFECYCLE events, which fire in both modes: `SubagentsSpawned`,
-`ApprovalRequired`,
+Plus the LIFECYCLE events, which fire in both modes: `SubagentsSpawned` and
+the three subagent lifecycle events (`SubagentStarted` / `SubagentPaused` /
+`SubagentFinished`), `ApprovalRequired`,
 emitted as the last event before the engine parks for external approval, and
 the three compaction events (`CompactionScheduled` / `CompactionStarted` /
 `CompactionFinished`), which map one-to-one onto the tool events — same
@@ -238,6 +239,49 @@ class SubagentsSpawned(AgentEventBase):
     conversation_ids: list[str]
 
 
+class SubagentStarted(AgentEventBase):
+    """A subagent's drive has begun: its turn bracket is open and it is now
+    one of the conversations doing work.
+
+    `conversation_id` (from `AgentEventBase`) is the SUBAGENT — the
+    conversation that started. That differs from `SubagentsSpawned`, which
+    names the PARENT, because that one is a batch fact about the parent's turn
+    while this is a fact about one child.
+
+    Fires on a subagent's FIRST start and on every RESTART — after an
+    answered approval, or on a later `run()` that re-drives a parked child —
+    so a consumer that tracks state sees `running` again each time. A spawned
+    subagent with no `SubagentStarted` yet is queued behind
+    `subagents_max_workers`; there is deliberately no separate queued event."""
+
+    type: Literal["subagent_started"] = "subagent_started"
+
+
+class SubagentPaused(AgentEventBase):
+    """A subagent's drive has ended with its turn still OPEN: it will run
+    again later. Two causes today — it deferred on an approval, or the whole
+    tree was suspended when the parent left its `async with` block.
+
+    `conversation_id` is the subagent. There is no durable entry behind this
+    event; a paused subagent's conversation looks like any other with an open
+    bracket and nothing runnable in it."""
+
+    type: Literal["subagent_paused"] = "subagent_paused"
+
+
+class SubagentFinished(AgentEventBase):
+    """A subagent's turn has CLOSED, whatever the outcome — answered, failed,
+    timed out, step-limited or cancelled. A finished subagent never runs
+    again; its parent resolves its `ChildConversation` link next.
+
+    `conversation_id` is the subagent. `outcome` comes from the closing
+    `TurnFinish`, so this event follows the durable record rather than
+    leading it, exactly like every other event in this framework."""
+
+    type: Literal["subagent_finished"] = "subagent_finished"
+    outcome: TurnOutcome
+
+
 AgentEvent = Annotated[
     ReasoningBlock
     | TextBlock
@@ -254,6 +298,9 @@ AgentEvent = Annotated[
     | CompactionScheduled
     | CompactionStarted
     | CompactionFinished
-    | SubagentsSpawned,
+    | SubagentsSpawned
+    | SubagentStarted
+    | SubagentPaused
+    | SubagentFinished,
     Field(discriminator="type"),
 ]

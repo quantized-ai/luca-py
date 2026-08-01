@@ -30,7 +30,14 @@ from luca.agent.contrib.simple_tool_registry import (
     SimpleToolRegistry,
     YoloPermissionPolicy,
 )
-from luca.agent.core import AgentSession, SystemPromptPart, ToolSpec
+from luca.agent.core import (
+    AgentSession,
+    Inf,
+    SystemPromptPart,
+    ToolSpec,
+    declares_spawn,
+    spawns_committed,
+)
 
 from .tools import RESULT_TOOL_NAME, CreateConversationResult, SpawnSubagent
 
@@ -43,7 +50,12 @@ Prefer subagents for wide, self-contained work (searching, reading a lot of file
 """.strip()
 
 
-def spawn_gate_open(session: AgentSession, conversation_id: str) -> bool:
+def spawn_gate_open(
+    session: AgentSession,
+    conversation_id: str,
+    *,
+    exclude: str | None = None,
+) -> bool:
     """Can THIS conversation spawn subagents?
 
     THE one predicate. The tool list and the system prompt both derive from it,
@@ -52,6 +64,11 @@ def spawn_gate_open(session: AgentSession, conversation_id: str) -> bool:
     the tool list withholds the tool, and the model would try. The prompt and
     the tool list must never disagree, and deriving both from one function is
     the cheapest way to guarantee it.
+
+    `exclude` mirrors the core's `_spawn_gate_open`: it drops one execution id
+    from the per-turn count. No contrib caller needs it — only the runner
+    converts settled spawns — but keeping the signatures identical is cheaper
+    than explaining why they differ.
     """
     config = session.session_config.runtime_config
     if not config.subagents_enabled:
@@ -59,7 +76,12 @@ def spawn_gate_open(session: AgentSession, conversation_id: str) -> bool:
     conversation = session.conversations.get(conversation_id)
     if conversation is None:
         return False
-    return conversation.depth < config.subagents_max_depth
+    if config.subagents_max_depth != Inf and conversation.depth >= config.subagents_max_depth:
+        return False
+    # the per-turn budget: Inf by default, so this clause never fires for a
+    # session that did not ask for a limit
+    limit = config.subagents_max_per_turn
+    return limit == Inf or spawns_committed(session, conversation_id, exclude=exclude) < limit
 
 
 def spawning_prompt_part(
@@ -79,10 +101,10 @@ class SubagentToolRegistry(SimpleToolRegistry):
     """`SimpleToolRegistry` plus THE GATE.
 
     The registry decides which tools a conversation is offered — the core makes
-    no tool-list policy of its own — so the depth cap is enforced here, by
-    withholding any tool whose `output_schema` declares `is_subagent_spawn`.
-    Reading the DECLARATION rather than the name is what makes a custom spawn
-    tool gate correctly too.
+    no tool-list policy of its own — so the depth cap and the per-turn spawn
+    budget are enforced here, by withholding any tool whose `output_schema`
+    declares `is_subagent_spawn`. Reading the DECLARATION rather than the name
+    is what makes a custom spawn tool gate correctly too.
 
     Only `get_tools` is overridden. Everything else is inherited: the runtime
     still resolves and dispatches whatever it is asked for, which is why the
@@ -97,12 +119,7 @@ class SubagentToolRegistry(SimpleToolRegistry):
         specs = await super().get_tools(session, conversation_id)
         if spawn_gate_open(session, conversation_id):
             return specs
-        return [spec for spec in specs if not _declares_spawn(spec)]
-
-
-def _declares_spawn(spec: ToolSpec) -> bool:
-    schema = spec.output_schema
-    return isinstance(schema, dict) and "is_subagent_spawn" in (schema.get("properties") or {})
+        return [spec for spec in specs if not declares_spawn(spec)]
 
 
 class SubagentsPlugin:
