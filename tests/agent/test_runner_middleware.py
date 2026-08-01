@@ -467,7 +467,8 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
         _ = [event async for event in run]
 
     assert recorder.seen == [
-        ExecutionStatus.PENDING,  # creation
+        ExecutionStatus.RECEIVED,  # appended with the assistant message
+        ExecutionStatus.PENDING,  # the registry's birth, folded in
         ExecutionStatus.PENDING,  # the ALLOW approval update
         ExecutionStatus.RUNNING,  # the dispatch transition
         ExecutionStatus.COMPLETED,  # the terminal outcome

@@ -400,6 +400,7 @@ class ExecutionStatus(str, Enum):
     returned result lives on `ExecutionResult.is_error` (COMPLETED means "the
     framework received a result", not "the tool considers it a success")."""
 
+    RECEIVED = "received"  # the model asked for it; the registry has not answered yet
     PENDING = "pending"  # body not started, no terminal outcome
     RUNNING = "running"  # body started, no terminal outcome
     COMPLETED = "completed"  # the body returned an ExecutionResult
@@ -411,6 +412,19 @@ class ExecutionStatus(str, Enum):
     CANCELLED = "cancelled"  # cancellation prevented the body from starting
     INTERRUPTED = "interrupted"  # a started body did not finish (grace/orphan)
     TIMED_OUT = "timed_out"  # the framework-enforced deadline expired
+
+
+# The statuses a drive can still advance. The single source of truth for every
+# "nonterminal" rule — projection, pruning, context accounting, the cancel
+# wind-down — so a status added to the lifecycle cannot be honoured in one of
+# them and forgotten in the next.
+NONTERMINAL_STATUSES = frozenset(
+    {
+        ExecutionStatus.RECEIVED,
+        ExecutionStatus.PENDING,
+        ExecutionStatus.RUNNING,
+    }
+)
 
 
 class ApprovalStatus(str, Enum):
@@ -935,17 +949,20 @@ def open_turn_is_runnable(
 ) -> bool:
     """Can this open turn be advanced by a drive, LOOKING ONLY AT THIS PATH?
 
-    In precedence order: a persisted `RUNNING` execution is an orphan the next
-    drive recovers; a `PENDING` execution the policy has not resolved (or has
-    ALLOWED) is decidable or dispatchable; anything else still `PENDING` is a
-    gate the application must answer out of band, and with only those left
-    nothing can advance; and once every execution is terminal the model can be
-    called.
+    In precedence order: a `RECEIVED` execution has not reached the registry
+    yet, so the next drive births it; a persisted `RUNNING` execution is an
+    orphan the next drive recovers; a `PENDING` execution the policy has not
+    resolved (or has ALLOWED) is decidable or dispatchable; anything else still
+    `PENDING` is a gate the application must answer out of band, and with only
+    those left nothing can advance; and once every execution is terminal the
+    model can be called.
 
     UNRESOLVED SUBAGENTS ARE NOT CONSIDERED HERE — a path cannot see another
     conversation's entries. `AgentSession.get_conversation_status` handles that
     term, because it is the thing that can reach the child."""
     executions = open_turn_executions(nodes, entries)
+    if any(execution.status == ExecutionStatus.RECEIVED for execution in executions):
+        return True
     if any(execution.status == ExecutionStatus.RUNNING for execution in executions):
         return True
     if any(

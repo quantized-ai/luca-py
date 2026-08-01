@@ -104,9 +104,11 @@ created — while still being gated, because the gate read the declaration rathe
 than the outcome.
 
 The payload is **free**: `structured_content` never reaches the model and is
-never counted toward context, so the prompt, the task id and the result tool's
-name cost the parent conversation nothing. The model sees one short status line
-(`"Spawned subagent: read the changelog"`).
+never counted toward context, so the prompt and the result tool's name cost the
+parent conversation nothing. The model sees one short status line, carrying the
+task id so it can correlate the answer with the task it asked for
+(`"Spawned subagent with id a3f01b2c: read the changelog"`) — which matters most
+when the model left `task_id` out and the tool made one up.
 
 Which tool derives the result travels *in the payload*, so an application can
 pair its own spawn tool with its own summarizer without the core knowing either

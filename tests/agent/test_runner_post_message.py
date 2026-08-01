@@ -52,7 +52,13 @@ from luca.client.testing import (
     faux_text,
     faux_tool_call,
 )
-from luca.client.types import TextBlock as LucaTextBlock, UserMessage as LucaUserMessage
+from luca.client.types import (
+    AssistantMessage as LucaAssistantMessage,
+    TextBlock as LucaTextBlock,
+    ToolCall as LucaToolCall,
+    ToolMessage as LucaToolMessage,
+    UserMessage as LucaUserMessage,
+)
 from tests.agent.scenarios import (
     ADD_SPEC,
     CANCEL_PARKED_SESSION,
@@ -229,6 +235,28 @@ class PostingTool(FakeTool):
     async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
         self.post()
         return str(args["a"] + args["b"])
+
+
+class PostingRegistry(FakeToolRegistry):
+    """Registry double whose `create_execution` posts, once, before answering
+    — the deterministic stand-in for a user typing while the registry is being
+    consulted about the model's tool calls.
+
+    `create_execution` is `async` and application-owned, so the runner awaits
+    it; that await is the one loop cycle in which a post can land between an
+    assistant message and its executions. Posting from inside it puts the
+    message at exactly that point without any timing trick."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.post = None  # wired by the test to runner.post_message
+        self.posted = False
+
+    async def create_execution(self, session, conversation_id, call):
+        if not self.posted:
+            self.posted = True
+            self.post()
+        return await super().create_execution(session, conversation_id, call)
 
 
 class PostDuringResponse:
@@ -614,6 +642,144 @@ async def test_a_mid_turn_post_between_tool_rounds_is_answered_before_the_close(
                 created_at=1000,
                 parts=[TextContent(text="Keep it short")],
                 context_tokens=3,  # len("Keep it short") // 4
+            ),
+            "a2": AssistantMessage(
+                id="a2",
+                parent_id="um",
+                created_at=1000,
+                parts=[TextContent(text="3 — and noted.")],
+                llm_config=MODEL,
+                stop_reason="stop",
+                context_tokens=3,  # len("3 — and noted.") // 4
+            ),
+            "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
+        },
+        tool_specs={ADD_SPEC_ID: ADD_SPEC},
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+            }
+        },
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "um", "a2", "tf"],
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    assert runner.idle()
+
+
+async def test_a_post_during_the_birth_of_the_executions_lands_behind_them():
+    # ── precondition ─────────────────────────────────────────────────────────
+    # An empty IDLE session and a registry that posts while it is being asked
+    # to create the executions for the model's tool call — the one await
+    # between the assistant message and its ToolExecutions. A tool call and
+    # its outputs are ONE transaction: whatever lands during it must land
+    # behind the whole set, or the next request puts a user message between an
+    # assistant tool_call and its tool result, which every provider rejects.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("3 — and noted.")], finish_reason="stop"),
+        ]
+    )
+    session = idle_session("s_birth_window")
+    registry = PostingRegistry([AddTool()])
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["u1", "ts", "a1", "te1", "um", "a2", "tf"],
+        now=1000,
+    )
+    registry.post = lambda: runner.post_message("remember to update the docs")
+    runner.post_message("Add 1 and 2")
+
+    # ── action ───────────────────────────────────────────────────────────────
+    result = await runner.run()
+
+    # ── postcondition ────────────────────────────────────────────────────────
+    # The whole second request, not just its tail: the tool result follows its
+    # own tool_call with nothing wedged between them, and the posted message
+    # sits after the complete round.
+    assert result.outcome == TurnOutcome.COMPLETED
+    assert faux.requests[1].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc1",
+            content=[LucaTextBlock(text="3")],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="remember to update the docs")]),
+    ]
+    assert runner.session == AgentSession(
+        id="s_birth_window",
+        entries={
+            "u1": UserMessage(
+                id="u1",
+                parent_id=None,
+                created_at=1000,
+                parts=[TextContent(text="Add 1 and 2")],
+                context_tokens=2,  # len("Add 1 and 2") // 4
+            ),
+            "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
+                parts=[ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+                context_tokens=4,  # (name + JSON args) // 4
+            ),
+            "te1": ToolExecution(
+                id="te1",
+                conversation_id="c1",
+                parent_id="a1",
+                created_at=1000,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                tool_spec=ADD_SPEC,
+                tool_spec_id=ADD_SPEC_ID,
+                extras={},
+                approval_status=ApprovalStatus.ALLOWED,
+                approval_decisions=[
+                    ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
+                ],
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(
+                    content=[TextContent(text="3")],
+                    metadata={},
+                    is_error=False,
+                ),
+                error=None,
+                started_at=1000,
+                ended_at=1000,
+                cancel_signalled_at=None,
+                updated_at=1000,
+                is_doom_loop_flagged=False,
+                context_tokens=0,
+            ),
+            "um": UserMessage(
+                id="um",
+                parent_id="te1",
+                created_at=1000,
+                parts=[TextContent(text="remember to update the docs")],
+                context_tokens=6,  # len("remember to update the docs") // 4
             ),
             "a2": AssistantMessage(
                 id="a2",

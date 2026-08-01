@@ -26,6 +26,7 @@ TASK_MAX_LINES = 6
 TASK_MAX_CHARS = 400
 
 STATUS_LABELS: dict[ExecutionStatus, str] = {
+    ExecutionStatus.RECEIVED: "pending",
     ExecutionStatus.PENDING: "pending",
     ExecutionStatus.RUNNING: "running…",
     ExecutionStatus.COMPLETED: "done",

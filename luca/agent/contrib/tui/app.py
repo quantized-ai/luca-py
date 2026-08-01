@@ -66,6 +66,7 @@ from luca.agent.core.events import (
 )
 from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
+    NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
     ChildConversation,
@@ -558,10 +559,7 @@ class AgentApp(App):
                 cell = ToolCallCell(entry)
                 self._tool_cells[entry.tool_call_id] = cell
                 await self._mount_cell(cell, conversation_id)
-                if entry.status not in (
-                    ExecutionStatus.PENDING,
-                    ExecutionStatus.RUNNING,
-                ):
+                if entry.status not in NONTERMINAL_STATUSES:
                     try:
                         message = self.runner.conversation_projector.project_tool_execution(
                             entry,

@@ -118,15 +118,16 @@ class SpawnSubagent(Tool):
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         description = args["description"]
+        task_id = args.get("task_id") or uuid.uuid4().hex[:8]
         payload = SubagentSpawn(
             is_subagent_spawn=True,
-            task_id=args.get("task_id") or uuid.uuid4().hex[:8],
+            task_id=task_id,
             prompt=args["prompt"],
             description=description,
             process_subagent_result_tool_name=self.result_tool_name,
         )
         return ExecutionResult(
-            content=[TextContent(text=f"Spawned subagent: {description}")],
+            content=[TextContent(text=f"Spawned subagent with id {task_id}: {description}")],
             structured_content=payload.model_dump(),
         )
 

@@ -195,7 +195,8 @@ The lifecycle (`ExecutionStatus`):
 
 | `status` | Meaning |
 |---|---|
-| `pending` | body not started, no terminal outcome |
+| `received` | the model asked for the call and the entry exists; the registry has not been consulted yet |
+| `pending` | born, body not started, no terminal outcome |
 | `running` | body started, no terminal outcome |
 | `completed` | the body returned a result |
 | `failed` | tool- or registry-owned code raised — while resolving the call, or inside the body |
@@ -211,6 +212,21 @@ The lifecycle (`ExecutionStatus`):
 > result. The tool's own verdict is `result.is_error`: a file tool returning
 > "file does not exist" with `is_error=True` is still `completed` — `failed`
 > is reserved for tool code that *raised*.
+
+**An assistant message and its executions are written together.** The moment a
+response with N tool calls is recorded, N `received` executions are appended
+with it, in one synchronous step — before the registry is asked anything.
+Asking the registry (`create_execution`) is a separate, resumable step that
+folds its answer into those entries, moving each to `pending` or straight to a
+terminal status.
+
+That ordering is not an implementation detail. It is what guarantees a path can
+never hold a `tool_call` without the execution node that answers it, so nothing
+appended concurrently — a `post_message` arriving mid-turn most of all
+([04](04-runner.md)) — can wedge itself between a tool call and its result and
+produce a request every provider rejects. `received` is the durable
+proof that the promise was recorded before the work began; a session that
+crashes there reloads and births on the next drive.
 
 `started_at` is stamped **iff the body was dispatched**, and `execution.dispatched`
 is exactly `started_at is not None`. Everything the framework settles before

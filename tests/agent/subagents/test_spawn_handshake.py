@@ -108,7 +108,7 @@ async def test_the_spawn_call_completes_immediately(faux):
 
     spawn = _spawn_execution(session)
     assert spawn.status is ExecutionStatus.COMPLETED
-    assert spawn.result.content[0].text == "Spawned subagent: a"
+    assert spawn.result.content[0].text == "Spawned subagent with id t1: a"
     # the handshake rides on structured_content, which never reaches the model
     assert spawn.result.structured_content["is_subagent_spawn"] is True
     assert spawn.result.structured_content["process_subagent_result_tool_name"] == "create_conversation_result"

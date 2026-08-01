@@ -792,6 +792,7 @@ def test_session_config_has_no_permission_state():
 
 def test_execution_status_members():
     assert {status.name: status.value for status in ExecutionStatus} == {
+        "RECEIVED": "received",
         "PENDING": "pending",
         "RUNNING": "running",
         "COMPLETED": "completed",

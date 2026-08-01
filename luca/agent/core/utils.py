@@ -70,6 +70,7 @@ OUTCOME_MARKS: dict[TurnOutcome, str] = {
 }
 
 STATUS_LABELS: dict[ExecutionStatus, str] = {
+    ExecutionStatus.RECEIVED: "RECEIVED",
     ExecutionStatus.PENDING: "PENDING",
     ExecutionStatus.RUNNING: "RUNNING",
     ExecutionStatus.COMPLETED: "OK",

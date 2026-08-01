@@ -105,8 +105,9 @@ async def test_spawn_returns_a_status_line_and_the_payload():
         cancellation_token=TOKEN,
     )
 
-    # the model sees ONE short line…
-    assert result.content == [TextContent(text="Spawned subagent: research A")]
+    # the model sees ONE short line, carrying the task id it must use to
+    # correlate the answer…
+    assert result.content == [TextContent(text="Spawned subagent with id t1: research A")]
     # …and the handshake rides free, on a channel the model never sees
     assert result.structured_content == {
         "is_subagent_spawn": True,
@@ -117,7 +118,7 @@ async def test_spawn_returns_a_status_line_and_the_payload():
     }
 
 
-async def test_a_missing_task_id_is_made_up():
+async def test_a_missing_task_id_is_made_up_and_told_to_the_model():
     result = await SpawnSubagent().execute(
         {"prompt": "p", "description": "d", "task_id": None},
         session_with(),
@@ -125,7 +126,12 @@ async def test_a_missing_task_id_is_made_up():
         cancellation_token=TOKEN,
     )
 
-    assert result.structured_content["task_id"]
+    made_up = result.structured_content["task_id"]
+    assert made_up
+    # the status line is the ONLY channel that reaches the model, so an id the
+    # model did not choose has to travel on it — otherwise the model cannot
+    # correlate the answer with the task it asked for
+    assert result.content == [TextContent(text=f"Spawned subagent with id {made_up}: d")]
 
 
 async def test_the_result_tool_name_travels_in_the_payload():

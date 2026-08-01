@@ -88,6 +88,7 @@ from luca.client.types import (
 
 from .exceptions import ProjectionError
 from .models import (
+    NONTERMINAL_STATUSES,
     AnyEntry,
     AssistantMessage,
     CancelRequested,
@@ -303,7 +304,7 @@ class ConversationProjector:
         that lacks what the rule needs fails loudly rather than being
         mutated into projectability."""
         status = entry.status
-        if status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
+        if status in NONTERMINAL_STATUSES:
             raise ProjectionError(
                 f"ToolExecution {entry.id!r} is {status.value}; a nonterminal "
                 "execution is not projectable as a tool output."

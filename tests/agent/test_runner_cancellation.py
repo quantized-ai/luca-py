@@ -1176,7 +1176,10 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
         session,
         tool_registry=registry,
         provider=faux,
-        ids=["ts", "a1", "cr", "te1", "tf"],
+        # The execution exists BEFORE the cancel can be requested: it was
+        # appended with the assistant message that asked for it, and only its
+        # birth was still in flight.
+        ids=["ts", "a1", "te1", "cr", "tf"],
         now=1000,
     )
     run = runner.start()
@@ -1193,7 +1196,7 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
     born = ToolExecution(
         id="te1",
         conversation_id="c1",
-        parent_id="cr",
+        parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ADD_CALL,
@@ -1224,6 +1227,64 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
     ]
     assert runner.session.entries["te1"] == cancelled
     assert runner.session.tool_specs == {}
+    assert runner.idle()
+
+
+async def test_cancel_on_an_unborn_execution_settles_it_instead_of_stranding_it():
+    # ── precondition ─────────────────────────────────────────────────────────
+    # A run suspended at the tool-call boundary: the execution is durable and
+    # RECEIVED — appended with the assistant message, never offered to the
+    # registry. The wind-down has to settle it like any other undispatched
+    # call; leaving it behind would close the turn over an execution no drive
+    # will ever finish, and every later projection would fail loudly on it.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
+    session = one_user_message_session("s_cancel_unborn")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "cr", "tf"],
+        now=1000,
+    )
+    async with runner.run() as run:
+        async for _ in run:
+            break  # suspend before the birth step
+    assert runner.session.entries["te1"].status is ExecutionStatus.RECEIVED
+
+    # ── action ───────────────────────────────────────────────────────────────
+    runner.cancel()
+    result = await runner.run()
+
+    # ── postcondition ────────────────────────────────────────────────────────
+    assert result == RunResult(
+        status=ConversationStatus.IDLE,
+        outcome=TurnOutcome.CANCELLED,
+        pending_approvals=[],
+    )
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=1000,
+        tool_call_id="tc1",
+        raw_tool_call=ADD_CALL,
+        tool_spec=None,  # the registry was never consulted
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        error=None,  # CANCELLED, never FAILED
+        started_at=None,
+        ended_at=1000,
+        cancel_signalled_at=1000,
+        updated_at=1000,
+    )
     assert runner.idle()
 
 
@@ -1415,7 +1476,9 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
         session,
         tool_registry=registry,
         provider=faux,
-        ids=["ts", "a1", "cr", "te1", "te2", "tf"],
+        # Both executions exist before the cancel: they were appended with the
+        # assistant message, and only their births were still in flight.
+        ids=["ts", "a1", "te1", "te2", "cr", "tf"],
         now=1000,
     )
     registry.runner = runner
@@ -1427,7 +1490,7 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
         conversation_id="c1",
-        parent_id="cr",
+        parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ADD_CALL,
@@ -1588,7 +1651,7 @@ async def test_a_resource_held_inside_create_execution_is_released_before_the_wi
         session,
         tool_registry=registry,
         provider=faux,
-        ids=["ts", "a1", "cr", "te1", "tf"],
+        ids=["ts", "a1", "te1", "cr", "tf"],
         now=1000,
         middleware=[HookRecorder(trace)],
     )

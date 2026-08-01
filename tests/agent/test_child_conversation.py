@@ -43,10 +43,14 @@ SPAWN = ToolExecution(
     created_at=500,
     conversation_id="c1",
     tool_call_id="tc1",
-    raw_tool_call=ToolCall(id="tc1", name="spawn_subagent", arguments={"prompt": "Research A"}),
+    raw_tool_call=ToolCall(
+        id="tc1",
+        name="spawn_subagent",
+        arguments={"prompt": "Research A", "description": "research A", "task_id": "t1"},
+    ),
     tool_spec=ADD_SPEC,
     status=ExecutionStatus.COMPLETED,
-    result=ExecutionResult(content=[TextContent(text="Spawned subagent: research A")]),
+    result=ExecutionResult(content=[TextContent(text="Spawned subagent with id t1: research A")]),
     started_at=500,
     ended_at=500,
 )
@@ -79,7 +83,7 @@ def test_the_spawn_output_and_the_child_result_are_two_separate_messages():
     messages = PROJECTOR.project(["te1", "cc1"], {"te1": SPAWN, "cc1": RESOLVED})
 
     assert [type(m).__name__ for m in messages] == ["ToolMessage", "UserMessage"]
-    assert messages[0].content[0].text == "Spawned subagent: research A"
+    assert messages[0].content[0].text == "Spawned subagent with id t1: research A"
     assert messages[1].content[0].text == "<task id=tc1>\nA is fine.\n</task>"
 
 

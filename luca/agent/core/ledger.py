@@ -63,7 +63,10 @@ trivially derived by the application from `AgentSession.usages` and
 `Entry.context_tokens` over a conversation's nodes.
 
 Execution vocabulary (over `status` + `approval_status`):
-- PENDING — body not started, no terminal outcome. Subsets by approval:
+- RECEIVED — appended with the assistant message that asked for it, before the
+  registry was consulted. The birth step's input, and the reason an assistant
+  message can never sit on a path without the execution nodes answering it.
+- PENDING — born, body not started, no terminal outcome. Subsets by approval:
   - UNDECIDED (`approval_status` None or PENDING) — what the runner offers
     to the permission policy;
   - AWAITING (`approval_status` PENDING) — the policy explicitly deferred;
@@ -73,6 +76,8 @@ Execution vocabulary (over `status` + `approval_status`):
 - RUNNING — body started, no terminal outcome. Any RUNNING execution seen at
   the start of a drive is an orphan (its live task is gone) and is recovered
   to INTERRUPTED.
+- UNDISPATCHED (RECEIVED or PENDING) — nonterminal and never started; what a
+  cancel wind-down settles.
 Approval state is always read from `approval_status` — never reconstructed
 from the `approval_decisions` audit log.
 """
@@ -83,6 +88,7 @@ from collections.abc import Callable
 
 from .exceptions import AgentError
 from .models import (
+    NONTERMINAL_STATUSES,
     AgentSession,
     AnyEntry,
     ApprovalStatus,
@@ -374,10 +380,7 @@ class SessionLedger:
                 f"{entry.pruned_entry_type!r} but entry {original_id!r} is "
                 f"{original.type!r}."
             )
-        if isinstance(original, ToolExecution) and original.status in (
-            ExecutionStatus.PENDING,
-            ExecutionStatus.RUNNING,
-        ):
+        if isinstance(original, ToolExecution) and original.status in NONTERMINAL_STATUSES:
             raise AgentError(
                 f"Cannot prune ToolExecution {original_id!r}: a nonterminal "
                 f"({original.status.value}) execution is not prunable."
@@ -397,13 +400,33 @@ class SessionLedger:
         """Every ToolExecution in the open turn, in path order."""
         return open_turn_executions(self._path(conversation_id), self.session.entries)
 
+    def open_turn_received_executions(self, conversation_id: str) -> list[ToolExecution]:
+        """Status RECEIVED — appended with the assistant message that asked for
+        them, not yet offered to `create_execution`. The birth step's input."""
+        return [
+            execution
+            for execution in self.open_turn_executions(conversation_id)
+            if execution.status == ExecutionStatus.RECEIVED
+        ]
+
     def open_turn_pending_executions(self, conversation_id: str) -> list[ToolExecution]:
-        """Status PENDING — not dispatched, not terminal. The cancel
-        wind-down's input."""
+        """Status PENDING — born, not dispatched, not terminal."""
         return [
             execution
             for execution in self.open_turn_executions(conversation_id)
             if execution.status == ExecutionStatus.PENDING
+        ]
+
+    def open_turn_undispatched_executions(self, conversation_id: str) -> list[ToolExecution]:
+        """Nonterminal and never dispatched — RECEIVED or PENDING. The cancel
+        wind-down's input: a cancel landing mid-birth must settle the unborn
+        too, or the turn closes over an execution no drive will ever finish.
+        RUNNING is deliberately excluded — a started body belongs to the grace
+        machinery, and an orphaned one to drive-start recovery."""
+        return [
+            execution
+            for execution in self.open_turn_executions(conversation_id)
+            if execution.status in (ExecutionStatus.RECEIVED, ExecutionStatus.PENDING)
         ]
 
     def open_turn_running_executions(self, conversation_id: str) -> list[ToolExecution]:

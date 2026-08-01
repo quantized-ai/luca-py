@@ -2728,6 +2728,18 @@ class AgentSessionRunner:
             self._recheck.discard(conversation_id)
             wake.clear()
 
+            # 1a) Unborn executions → THE create_execution() call site. They
+            # were appended synchronously with the assistant message that asked
+            # for them (`_receive_executions`), so the registry is consulted
+            # here, one step later, against durable state — which is what makes
+            # the birth resumable and what keeps the path projectable while it
+            # is in flight.
+            received = self.ledger.open_turn_received_executions(conversation_id)
+            if received:
+                for event in await self._birth_executions(conversation_id, received, token):
+                    yield event
+                continue  # → the cancel check, then decide() on the newly born
+
             undecided = self.ledger.open_turn_undecided_executions(conversation_id)
             if undecided:
                 pairs = await asyncio.gather(*(self._decide_one(conversation_id, ex, token) for ex in undecided))
@@ -2927,10 +2939,10 @@ class AgentSessionRunner:
             )
             if not tools_done:
                 continue
-            specs, tool_list = collected
-            # The names the model was NOT shown. A call naming one is refused
-            # rather than dispatched — see `_birth_draft`.
-            private_names = {spec.name for spec in specs if spec.is_private}
+            # Only the list the model is shown is needed here; the private
+            # names it excludes are re-resolved by the birth step, which is the
+            # one that has to refuse a call naming them.
+            _, tool_list = collected
             grace_ms = config.llm_completion_cancellation_grace_period
             request_timeout = _ms_to_seconds(
                 config.builtin_client_completion_timeout_in_ms,
@@ -3028,27 +3040,25 @@ class AgentSessionRunner:
             # blocks are present.
             message = self._run_middlewares("after_llm_response", message)
 
-            # Record the assistant message, create its executions, and (for a
-            # final answer) close the bracket ATOMICALLY — every session write
-            # for this round lands before the first yield, so a suspend can
-            # never strand a tool_use request without its ToolExecutions, nor
-            # leave a fully-answered bracket open to a duplicate LLM call.
+            # Record the assistant message, receive its executions, and (for a
+            # final answer) close the bracket ATOMICALLY — and atomically means
+            # NO AWAIT, not merely no yield: every session write for this round
+            # lands in one synchronous block, so nothing — a suspend, a crash,
+            # or a `post_message` arriving from an application's UI on this same
+            # event loop — can strand a tool_use request without its
+            # ToolExecutions or leave a fully-answered bracket open to a
+            # duplicate LLM call. Birth is deliberately NOT here: asking the
+            # registry is async, so it runs as its own step against the durable
+            # RECEIVED entries this wrote.
             # The round keys off the tool_calls themselves, not finish_reason:
             # a misclassifying provider can neither wedge the conversation
             # ("stop" + calls) nor loop it ("tool_use" + none).
             events = self._record_assistant(conversation_id, message, finish_reason, effective_cfg)
             if message.tool_calls:
-                events.extend(
-                    await self._create_executions(
-                        conversation_id,
-                        message,
-                        private_names,
-                        token,
-                    )
-                )
+                self._receive_executions(conversation_id, message)
                 for event in events:
                     yield event
-                continue  # → step 1 hands the fresh executions to decide()
+                continue  # → step 1a births them, then decide()
 
             # Final answer. Precedence at the close site: an unconsumed
             # cancel controls the close (the within-grace message stays
@@ -3504,17 +3514,19 @@ class AgentSessionRunner:
         return events
 
     def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
-        """Consume a `CancelRequested`: every still-PENDING execution in the
+        """Consume a `CancelRequested`: every undispatched execution in the
         open turn is stamped `cancel_signalled_at` and becomes CANCELLED —
-        resultless, errorless, approval state untouched. (A denied call was
-        already terminal REJECTED at decision time; an in-flight one was
-        settled by the grace machinery; an orphaned RUNNING one was recovered
-        at drive start.) Each cancelled execution passes through the outcome
-        middleware pair, the turn closes with the requested outcome, and the
-        `ToolExecuted` events return to the caller. All session writes happen
-        before any event is yielded."""
+        resultless, errorless, approval state untouched. RECEIVED ones included:
+        a cancel landing while the registry is being consulted must settle the
+        unborn too, or the turn closes over an execution no drive will ever
+        finish. (A denied call was already terminal REJECTED at decision time;
+        an in-flight one was settled by the grace machinery; an orphaned
+        RUNNING one was recovered at drive start.) Each cancelled execution
+        passes through the outcome middleware pair, the turn closes with the
+        requested outcome, and the `ToolExecuted` events return to the caller.
+        All session writes happen before any event is yielded."""
         events: list[AgentEvent] = []
-        for execution in self.ledger.open_turn_pending_executions(conversation_id):
+        for execution in self.ledger.open_turn_undispatched_executions(conversation_id):
             ts = self.now_ms()
             stamped = execution.model_copy(
                 update={
@@ -3570,82 +3582,148 @@ class AgentSessionRunner:
         events.append(FinishReason(conversation_id=conversation_id, finish_reason=finish_reason))
         return events
 
-    async def _create_executions(
-        self,
-        conversation_id: str,
-        message,
-        private_names: set[str],
-        token: CancellationToken,
-    ) -> list[AgentEvent]:
-        """Set-oriented birth: ask the registry for one draft per call in the
-        assistant response (concurrently — each call gets a deep-copied
-        `ToolCall`, so a draft can never alias the assistant message part),
-        then eagerly persist them in model-request order, always before any
-        decision. The registry owns the call-scoped facts (`raw_tool_call`,
-        `tool_spec`, the birth `status` — PENDING or terminal-at-birth —
-        `error`, `extras`); the runner re-stamps identity (`id`, `parent_id`,
-        `created_at`), `ended_at` for a terminal birth, `context_tokens`
-        (via `_append`), and `is_doom_loop_flagged`, and the ledger files the
-        spec and stamps `tool_spec_id`. Failures are isolated per call: a
-        raising `create_execution` (or a toolless runner) never breaks the
-        set — the runner synthesizes the draft itself, FAILED for a raise and
-        NOT_FOUND for the toolless case — preserving the invariant that every
-        tool call produces exactly one tool output. Terminal births
-        immediately run the outcome middleware pair.
+    def _receive_executions(self, conversation_id: str, message) -> None:
+        """Append one RECEIVED `ToolExecution` per tool call in the assistant
+        response — SYNCHRONOUSLY, in model-request order, inside the same
+        no-await block that appended the assistant message itself.
 
-        The cancellation race is PER CALL, inside `_birth_draft`, never around
-        this gather: killing the gather would lose every draft and break
-        one-output-per-call. A response with N tool calls yields N tool
-        executions even when a cancellation lands mid-batch."""
-        drafts = await asyncio.gather(
-            *(self._birth_draft(conversation_id, tc, private_names, token) for tc in message.tool_calls)
-        )
-        events: list[AgentEvent] = []
-        for tc, (draft, exception) in zip(message.tool_calls, drafts, strict=False):
-            # Doom-loop check runs before the append so it only sees
-            # previously-appended executions; parallel tool calls are
-            # evaluated in append order.
+        THIS IS THE TRANSACTION that keeps the path always projectable. An
+        assistant message carrying tool calls and the execution nodes that
+        answer them are written together, so nothing can be appended between a
+        `tool_call` and its output — not a `post_message` landing from an
+        application's UI, not a crash. Without it, any await between the two
+        appends leaves a path whose next projection puts a user message between
+        an assistant tool call and its tool result, which every provider
+        rejects.
+
+        Birth — the registry's `create_execution` — is async and
+        application-owned, so it CANNOT be part of this block. It runs as its
+        own drive step (`_birth_executions`) and folds its answer into these
+        entries in place.
+
+        Only what the runner already knows is recorded: identity, the
+        deep-copied `raw_tool_call` (so an entry can never alias the assistant
+        message part), and `is_doom_loop_flagged` — evaluated in append order,
+        seeing only previously-appended executions."""
+        for tc in message.tool_calls:
+            # Runs before the append so it only sees previously-appended
+            # executions; parallel tool calls are evaluated in append order.
             doom_flagged = self._is_doom_loop(conversation_id, tc)
-            # The spawn budget the tool list could not enforce: the list was
-            # fixed before the model call, so several spawn calls in ONE
-            # response can overrun it. Sequential by construction — calls
-            # 1…k-1 of this same message are already appended, so the count
-            # sees them as in-flight reservations.
-            refusal = self._spawn_budget_refusal(conversation_id, draft)
+            raw = ToolCall(
+                id=tc.id,
+                name=tc.name,
+                arguments=copy.deepcopy(tc.arguments),
+            )
 
             def build(
                 entry_id,
                 parent_id,
                 ts,
-                _draft=draft,
+                _raw=raw,
                 _d=doom_flagged,
-                _r=refusal,
             ) -> ToolExecution:
-                update = {
-                    "id": entry_id,
-                    "parent_id": parent_id,
-                    "created_at": ts,
-                    # Provenance, stamped here with the rest of the identity
-                    # set the runner owns. A registry must not set it.
-                    "conversation_id": conversation_id,
-                    "is_doom_loop_flagged": _d,
-                }
-                if _r is not None:
-                    update |= {"status": ExecutionStatus.REFUSED, "error": _r}
-                status = update.get("status", _draft.status)
-                update["ended_at"] = ts if status != ExecutionStatus.PENDING else None
-                return _draft.model_copy(update=update)
+                return ToolExecution(
+                    id=entry_id,
+                    parent_id=parent_id,
+                    created_at=ts,
+                    # Provenance, stamped with the rest of the identity set the
+                    # runner owns. A registry must not set it.
+                    conversation_id=conversation_id,
+                    tool_call_id=_raw.id,
+                    raw_tool_call=_raw,
+                    status=ExecutionStatus.RECEIVED,
+                    is_doom_loop_flagged=_d,
+                )
 
-            execution = self._append(conversation_id, build)
+            self._append(conversation_id, build)
+
+    async def _birth_executions(
+        self,
+        conversation_id: str,
+        received: list[ToolExecution],
+        token: CancellationToken,
+    ) -> list[AgentEvent]:
+        """THE `create_execution` CALL SITE: ask the registry for one draft per
+        RECEIVED execution (concurrently), then fold each answer into the entry
+        already on the path.
+
+        A DRIVE STEP rather than straight-line code, for the same reason
+        `decide` is one: its input is derived from durable state, so a run that
+        returned mid-round — or a reloaded session, or a process that died here
+        — re-enters and births exactly the executions still unborn. That is
+        what makes RECEIVED safe to persist rather than merely transient.
+
+        The registry owns the call-scoped facts (`raw_tool_call`, `tool_spec`,
+        the birth `status` — PENDING or terminal-at-birth — `error`, `extras`,
+        any approval state); the runner keeps the identity set and
+        `is_doom_loop_flagged`, stamps `ended_at` for a terminal birth, and the
+        ledger files the spec and stamps `tool_spec_id`. Failures are isolated
+        per call: a raising `create_execution` (or a toolless runner) never
+        breaks the set — the runner synthesizes the draft itself, FAILED for a
+        raise and NOT_FOUND for the toolless case — preserving the invariant
+        that every tool call produces exactly one tool output. Terminal births
+        immediately run the outcome middleware pair.
+
+        The specs are re-resolved here rather than carried over from the model
+        round: a resumed birth has no such round behind it, and the private
+        names are the only thing this step needs from them. Losing that race to
+        a cancel leaves every execution RECEIVED for the loop top to wind down.
+
+        The FOLD IS SEQUENTIAL even though the births are concurrent — the
+        spawn budget the tool list could not enforce is applied in it, and has
+        to see calls 1…k-1 of the same message as in-flight reservations.
+
+        The cancellation race is PER CALL, inside `_birth_draft`, never around
+        the gather: killing the gather would lose every draft and break
+        one-output-per-call. N unborn executions yield N born ones even when a
+        cancellation lands mid-batch."""
+        specs_task = asyncio.ensure_future(self.resolve_tool_specs(conversation_id))
+        resolved, specs, _ = await _race_cancellation(specs_task, token, 0, None)
+        if not resolved:
+            return []
+        # The names the model was NOT shown. A call naming one is refused
+        # rather than dispatched — see `_birth_draft`.
+        private_names = {spec.name for spec in specs if spec.is_private}
+        drafts = await asyncio.gather(
+            *(
+                self._birth_draft(conversation_id, execution.raw_tool_call, private_names, token)
+                for execution in received
+            )
+        )
+        events: list[AgentEvent] = []
+        for execution, (draft, exception) in zip(received, drafts, strict=False):
+            # The spawn budget the tool list could not enforce: the list was
+            # fixed before the model call, so several spawn calls in ONE
+            # response can overrun it.
+            refusal = self._spawn_budget_refusal(conversation_id, draft)
+            changes: dict = {
+                "raw_tool_call": draft.raw_tool_call,
+                "tool_spec": draft.tool_spec,
+                "extras": draft.extras,
+                "approval_status": draft.approval_status,
+                "approval_decisions": draft.approval_decisions,
+                "status": draft.status,
+                "error": draft.error,
+            }
+            if refusal is not None:
+                changes |= {"status": ExecutionStatus.REFUSED, "error": refusal}
+            if changes["status"] != ExecutionStatus.PENDING:  # terminal birth
+                changes["ended_at"] = self.now_ms()
+            # `_persist_entry`, NOT `_persist_execution`: birth completes an
+            # entry's creation rather than mutating it afterwards, so it leaves
+            # `updated_at` alone. A born execution is durably identical to the
+            # one a single append used to produce, and `updated_at` keeps
+            # meaning "changed after it was created".
+            born = self._persist_entry(conversation_id, execution, **changes)
             events.append(
                 ToolCallReceived(
                     conversation_id=conversation_id,
-                    tool_call_id=execution.tool_call_id,
-                    execution=execution.model_copy(deep=True),
+                    tool_call_id=born.tool_call_id,
+                    execution=born.model_copy(deep=True),
                 )
             )
-            if execution.status != ExecutionStatus.PENDING:  # terminal birth
-                _, event = self._finalize_undispatched(conversation_id, execution, exception)
+            if born.status != ExecutionStatus.PENDING:
+                _, event = self._finalize_undispatched(conversation_id, born, exception)
                 events.append(event)
         return events
 

@@ -58,19 +58,30 @@ from tests.agent.scenarios import (
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 
-# the three lifecycle snapshots of the standard one-tool-round turn. The spec
-# is filed in `session.tool_specs` by the ledger and referenced by
+# the lifecycle snapshots of the standard one-tool-round turn. The spec is
+# filed in `session.tool_specs` by the ledger and referenced by
 # `tool_spec_id`, so every persisted copy carries the id too.
-ADD_BIRTH = ToolExecution(
+#
+# RECEIVED comes first and is what a suspend at the tool-call boundary leaves
+# behind: the execution is appended with the assistant message that asked for
+# it, carrying only what the runner knew then. The registry has not been
+# consulted, so there is no spec to file yet.
+ADD_RECEIVED = ToolExecution(
     id="te1",
     conversation_id="c1",
     parent_id="a1",
     created_at=1000,
     tool_call_id="tc1",
     raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
-    tool_spec=ADD_SPEC,
-    tool_spec_id=ADD_SPEC.spec_id(),
-    status=ExecutionStatus.PENDING,
+    status=ExecutionStatus.RECEIVED,
+)
+# what the registry's birth folds it into, one drive step later
+ADD_BIRTH = ADD_RECEIVED.model_copy(
+    update={
+        "tool_spec": ADD_SPEC,
+        "tool_spec_id": ADD_SPEC.spec_id(),
+        "status": ExecutionStatus.PENDING,
+    }
 )
 ADD_RUNNING = ADD_BIRTH.model_copy(
     update={
@@ -114,9 +125,10 @@ TOOL_TURN_EVENTS = [
 ]
 
 # the same turn resumed after a suspend at the tool-call boundary: the
-# execution is already durable and undecided, so the resuming drive picks up at
-# decide → dispatch and the first two events are never re-emitted.
-RESUMED_TOOL_TURN_EVENTS = TOOL_TURN_EVENTS[2:]
+# execution is already durable but UNBORN, so the resuming drive picks up at
+# birth → decide → dispatch and only the assistant round's own event is never
+# re-emitted.
+RESUMED_TOOL_TURN_EVENTS = TOOL_TURN_EVENTS[1:]
 
 
 # ── lazy: creation is inert ──────────────────────────────────────────────────
@@ -487,10 +499,10 @@ async def test_break_suspends_with_derived_status_and_a_fresh_run_resumes():
             break  # suspend after the first event (FinishReason)
 
     # nothing new recorded by the exit; the status re-derived (no stale
-    # RUNNING) and record+create were atomic: the execution exists undecided
+    # RUNNING) and record+receive were atomic: the execution exists, unborn
     assert runner.busy()
     assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1"]
-    assert runner.session.entries["te1"] == ADD_BIRTH
+    assert runner.session.entries["te1"] == ADD_RECEIVED
 
     async with runner.run() as resumed:
         events = [event async for event in resumed]
@@ -540,10 +552,11 @@ async def test_suspended_session_cold_resumes_after_reload():
         now=1000,
     )
 
-    # the serialized session carries the spec ONCE, in `tool_specs`; the
-    # execution's inline copy is restored from `tool_spec_id` on load
-    assert resumed.session.tool_specs == {ADD_SPEC.spec_id(): ADD_SPEC}
-    assert resumed.session.entries["te1"] == ADD_BIRTH
+    # the suspend caught the round before the registry was consulted, so no
+    # spec has been resolved and none is filed; the reloaded execution is the
+    # unborn one, and the resuming drive is what births it
+    assert resumed.session.tool_specs == {}
+    assert resumed.session.entries["te1"] == ADD_RECEIVED
     assert resumed.busy()
 
     async with resumed.run() as run:

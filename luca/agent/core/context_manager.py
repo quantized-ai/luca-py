@@ -101,13 +101,13 @@ from typing import ClassVar
 from .compaction import CompactionPlan
 from .exceptions import AgentError
 from .models import (
+    NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
     ChildConversation,
     CompactionEntry,
     Entry,
     ExecutionResult,
-    ExecutionStatus,
     ImageContent,
     PrunedEntry,
     TextContent,
@@ -159,7 +159,7 @@ class ContextManager:
         new entry."""
         if not isinstance(entry, ToolExecution):
             raise AgentError(f"Cannot prune entry of type {entry.type!r}: only tool executions are prunable.")
-        if entry.status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
+        if entry.status in NONTERMINAL_STATUSES:
             raise AgentError(
                 f"Cannot prune ToolExecution {entry.id!r}: a nonterminal "
                 f"({entry.status.value}) execution is not prunable."

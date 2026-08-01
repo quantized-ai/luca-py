@@ -145,8 +145,8 @@ instead of producing invented content:
 
 - a conversation node missing from the entry store;
 - an entry type the projector doesn't know;
-- a `PENDING` or `RUNNING` tool execution (the runtime never calls the model
-  mid-execution);
+- a nonterminal (`RECEIVED`, `PENDING` or `RUNNING`) tool execution (the
+  runtime never calls the model mid-execution);
 - an UNRESOLVED `ChildConversation` — the same rule, for the same reason: a
   subagent that has not answered yet;
 - a `COMPLETED` execution without a result;
