@@ -20,6 +20,19 @@ def test_get_returns_known_record():
     assert info.context_window == 128000
 
 
+def test_get_returns_quantized_flagship_record():
+    assert catalog.get("quantized", "anthropic/claude-sonnet-4.6") == ModelInfo(
+        provider="quantized",
+        model="anthropic/claude-sonnet-4.6",
+        display_name="Claude Sonnet 4.6 (Quantized)",
+        context_window=1000000,
+        max_tokens=64000,
+        supports_image_input=True,
+        supports_tools=True,
+        supports_reasoning=True,
+    )
+
+
 def test_get_returns_none_for_unknown():
     assert catalog.get("openai", "definitely-not-a-real-model") is None
 

@@ -47,6 +47,11 @@ PROVIDERS: dict[str, type | ProviderConfig] = {
         "default_api_key_env_var": None,
         "default_transport_class": OpenAITransport,
     },
+    "quantized": {
+        "default_base_url": "https://api.quantized.us/v1",
+        "default_api_key_env_var": "QUANTIZED_API_KEY",
+        "default_transport_class": OpenAITransport,
+    },
 }
 
 

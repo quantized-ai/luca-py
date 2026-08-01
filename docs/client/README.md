@@ -1,7 +1,7 @@
 # `luca` — Documentation
 
 `luca` is a thin, unified Python SDK for talking to multiple LLM
-providers (OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, Ollama, …) through a
+providers (OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, Ollama, Quantized, …) through a
 single typed interface. Think of it as a smaller, simpler LiteLLM: no
 guardrails, no proxy server, no cross-provider message rewriting — just one
 canonical request DTO, one canonical response DTO, and per-vendor transport

@@ -38,6 +38,7 @@ scripts; the SDK itself reads `os.environ` directly.
 | `groq` | `GROQ_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `ollama` | (none — local) |
+| `quantized` | `QUANTIZED_API_KEY` |
 
 Per-call overrides always win: pass `api_key=` to a helper or construct a
 provider instance directly with `api_key="…"`.
