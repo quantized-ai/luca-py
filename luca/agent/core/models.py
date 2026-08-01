@@ -1099,9 +1099,15 @@ class ConversationStatus(str, Enum):
     | | the next `run()` | post a message? |
     |---|---|---|
     | `IDLE` | nothing — there is no work | yes |
-    | `BUSY` | work — the run can still be exhausted | no |
-    | `BLOCKED` | stop again immediately; you must act first | no |
+    | `BUSY` | work — the run can still be exhausted | yes — into the open turn (or queued behind a trailing message) |
+    | `BLOCKED` | stop again immediately; you must act first | yes — the message waits with the turn |
     | `CANCELLING` | flush the turn, not answer it | no |
+
+    The post column is the COMMON case, not the whole rule:
+    `AgentSessionRunner.post_message` owns the full acceptance matrix — an
+    open turn with unresolved subagents rejects even while BUSY/BLOCKED, an
+    open compaction bracket rejects, and archived or finished conversations
+    reject whatever they derive.
 
     **It says nothing about approvals**, deliberately. A gate can belong to a
     subagent, and its siblings may still be working — so the conversation is
@@ -1112,7 +1118,7 @@ class ConversationStatus(str, Enum):
     `BUSY` is still true after a crash: "can be advanced" survives the process
     dying, so unlike the old `RUNNING` it needs no self-healing rule."""
 
-    IDLE = "idle"  # nothing to do; the only postable state
+    IDLE = "idle"  # nothing to do
     BUSY = "busy"  # the run can still be exhausted
     BLOCKED = "blocked"  # nothing can advance; you must act first
     CANCELLING = "cancelling"  # unconsumed CancelRequested — the next drive flushes
@@ -1317,10 +1323,11 @@ class AgentSession(BaseModel):
 
         Two consequences, both deliberate. A failed turn derives `IDLE`, so
         recovering from one means posting a new message rather than re-driving
-        the identical request. And a trailing `UserMessage` derives `BUSY`, so
-        a second message cannot be queued behind a first — "let the user type
-        while the agent works" is an application-level input buffer that posts
-        on the next `IDLE`, not a fact the session represents.
+        the identical request. And a trailing `UserMessage` derives `BUSY`
+        (queued work) — further messages may still be posted behind it, and
+        the next turn answers them all; the status only says the next `run()`
+        has work to do, never whether input is accepted (that is
+        `AgentSessionRunner.post_message`'s matrix).
 
         Trailing CLOSED compaction brackets are transparent and skipped
         (repeatedly, if several stack), so a compaction that closed behind a

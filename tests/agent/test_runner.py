@@ -1808,27 +1808,6 @@ async def test_post_message_sets_pending():
     )
 
 
-async def test_post_message_refuses_to_queue_behind_an_unanswered_message():
-    # Message queueing is gone. A trailing UserMessage derives BUSY, and BUSY
-    # does not accept input — "let the user type while the agent works" is an
-    # application-level input buffer that posts on the next IDLE, not a fact
-    # the session represents.
-    session = make_session(
-        id="s_pm2",
-        conversations={"c1": conversation("c1", [], created_at=900, updated_at=900)},
-        main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-    runner = DeterministicRunner(session, ids=["u1"], now=1000)
-    runner.post_message("First")
-
-    with pytest.raises(AgentError, match="post_message requires an IDLE conversation"):
-        runner.post_message("Second")
-
-    assert runner.busy()
-    assert main_conversation(runner.session).nodes == ["u1"]
-
-
 async def test_post_message_accepts_a_part_list_and_keeps_its_order():
     session = make_session(
         id="s_pm_parts",

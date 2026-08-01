@@ -261,8 +261,15 @@ flush. It is the only conversation that knows the child exists.
 | its usage | its own row in `session.usages` ([11](11-context-and-usage.md)) |
 | its result | its last assistant message, turned into one `ExecutionResult` |
 
-A subagent never receives a user message after the seed: `post_message` is
-main-conversation only.
+The seed is the child's **first** user message, not its only one:
+`post_message("…", conversation_id=child_id)` appends into a live child's open
+turn exactly as it does for the main conversation ([04](04-runner.md)). A
+**finished** child rejects posts — its result is already resolved into the
+parent — and a conversation whose open turn has **unresolved subagents**
+rejects them too, with `SubagentsActiveError`: a mid-orchestration parent's
+next model call may be far away and its children never see its messages, so
+accepting would only pretend to steer. (The shipped TUI still routes input to
+the main conversation only — application policy, not a framework rule.)
 
 ## 8. Shared state is yours to key
 

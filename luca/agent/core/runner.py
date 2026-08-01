@@ -14,6 +14,12 @@ drives it by polling its status and supplying input:
             if runner.blocked():
                 ...                                    # resolve on the registry
 
+The sketch polls, but `post_message` is not IDLE-only: posting while the agent
+works (BUSY or BLOCKED) appends into the open turn, and the turn answers the
+message before it closes COMPLETED — see `post_message` for the full
+acceptance matrix (CANCELLING, an open compaction bracket, and a turn with
+unresolved subagents reject).
+
 A run is created by one of two methods, both returning an `AgentRun` handle:
 
 - `run()` — "Lazy: nothing happens until awaited or iterated; stopping
@@ -162,7 +168,9 @@ from .events import (
 from .exceptions import (
     AgentError,
     AlreadyCancellingError,
+    ConversationCancellingError,
     InvalidToolArguments,
+    SubagentsActiveError,
     ToolNotFound,
 )
 from .ledger import SessionLedger
@@ -196,6 +204,7 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    is_compaction_bracket,
     open_turn_executions,
     open_turn_unresolved_children,
 )
@@ -1117,7 +1126,7 @@ class AgentSessionRunner:
         return self.session.get_conversation_status(self.main_conversation_id).status
 
     def idle(self) -> bool:
-        """Nothing to do — the only state `post_message` accepts."""
+        """Nothing to do — post a message to give the next `run()` work."""
         return self.status == ConversationStatus.IDLE
 
     def busy(self) -> bool:
@@ -1134,38 +1143,95 @@ class AgentSessionRunner:
 
     # ── caller-facing mutations / queries ────────────────────────────────────
 
-    def post_message(self, content: str | list[ContentPart]) -> str:
-        """Append a user message to the MAIN conversation. Legal when it is
-        IDLE, and in no other state.
+    def post_message(
+        self,
+        content: str | list[ContentPart],
+        conversation_id: str | None = None,
+    ) -> str:
+        """Append a user message — to the MAIN conversation by default
+        (`conversation_id=None`, resolved at call time), or to any
+        conversation named. Returns the persisted entry's id.
 
-        `IDLE` is exactly "there is no work", so the one status answers the
-        whole question — no separate bracket check. An open turn derives
-        `BUSY` / `BLOCKED` / `CANCELLING` and rejects; so does an open
-        COMPACTION bracket, durably and across a reload, since a scheduled or
-        in-flight compaction must be driven before the session takes new input.
+        A post is accepted or rejected from the target's durable state at the
+        instant of the call; the method is synchronous, so that picture is
+        exact — nothing can change between the check and the append. The
+        rule: a conversation accepts a message whenever something will
+        eventually answer it — except while its subagents run.
 
-        Two things this deliberately no longer allows. A trailing user message
-        derives `BUSY`, so a second one cannot be QUEUED behind it — "let the
-        user type while the agent works" is an application-level input buffer
-        that posts on the next `IDLE`, not a fact the session represents. And a
-        failed turn derives `IDLE` rather than retry-ready, so recovering from
-        one means posting a new message rather than silently re-sending the
-        identical request.
+        ACCEPTED:
 
-        Only the main conversation ever takes input: a subagent's seed prompt
-        is written by the spawn handshake and nothing else appends to it.
+        - IDLE main conversation — the classic case; the next `run()` opens a
+          turn.
+        - BUSY with no open turn — a trailing message is already queued (the
+          next turn answers both), or a freshly-spawned subagent still
+          holding its seed (the post projects right behind it).
+        - Any OPEN conversational turn, BUSY or BLOCKED — the mid-turn
+          append, subagents included. The message lands inside the turn, the
+          model sees it on its next LLM call, and the turn does not close
+          COMPLETED until it has (the drive's close-site check loops for one
+          more round instead). Posting into a BLOCKED turn does not unblock
+          anything: the message waits with the turn.
+
+        REJECTED:
+
+        - CANCELLING → `ConversationCancellingError`. The turn is being
+          flushed; an append would be buried in the cancelled bracket. Catch,
+          keep the draft, retry after the flush. Durable: a reloaded
+          CANCELLING session refuses input the same way.
+        - An open COMPACTION bracket, scheduled or in flight → `AgentError`.
+          The compaction snapshot is built on "nothing is appended while the
+          bracket is open"; drive the compaction first.
+        - An open turn with unresolved subagents → `SubagentsActiveError`.
+          The children never see this conversation's messages and its next
+          LLM call may be far away, so an accepted message could not steer
+          the work in flight. Retry once they resolve — posting is legal
+          again within the same turn. Any conversation: a subagent
+          orchestrating its own children rejects too.
+        - An archived conversation (a compaction replaced it) or a finished
+          subagent → `AgentError`. Nothing will ever drive either again;
+          accepting would wedge the message forever.
+        - An unknown `conversation_id` → `AgentError`.
+
+        A message caught inside a turn that then closes CANCELLED / ERRORED /
+        TIMED_OUT is BURIED: that turn never answers it. Buried is not lost —
+        projection walks failed brackets, so it reaches the model with the
+        next engagement; late, not never.
 
         `content` is a bare string (the common case) or an ordered list of
         parts mixing text and images; `before_post_message` sees that list and
         returns the one that is persisted."""
-        if not self.idle():
-            raise AgentError(f"post_message requires an IDLE conversation (status={self.status.value}).")
+        target = self.main_conversation_id if conversation_id is None else conversation_id
+        conversation = self.ledger.conversation(target)  # unknown id raises
+        entries = self.session.entries
+        if self.ledger.open_turn_cancel_requested(target) is not None:
+            raise ConversationCancellingError(
+                f"conversation {target!r} is cancelling; the open turn is being flushed. Retry after the flush."
+            )
+        open_index = self.ledger.open_turn_index(target)
+        if open_index is not None and is_compaction_bracket(conversation.nodes, entries, open_index):
+            raise AgentError(
+                f"conversation {target!r} has a compaction scheduled or in flight; drive it before posting."
+            )
+        if _unresolved_children(self.session, target):
+            raise SubagentsActiveError(f"conversation {target!r} has subagents running; retry once they have resolved.")
+        # Archived-ness is identity, not status: a queued message compacted
+        # behind leaves the archived path deriving BUSY, and a status check
+        # would accept into a conversation nothing will ever drive.
+        if any(c.previous_conversation_id == target for c in self.session.conversations.values()):
+            raise AgentError(f"conversation {target!r} is archived (a compaction replaced it); post to its successor.")
+        if target != self.main_conversation_id and open_index is None:
+            status = self.session.get_conversation_status(target).status
+            if status is not ConversationStatus.BUSY:
+                raise AgentError(
+                    f"conversation {target!r} is a finished subagent; its result is "
+                    f"already resolved and nothing will ever drive it again."
+                )
         parts = self._run_middlewares(
             "before_post_message",
             _normalize_post_parts(content),
         )
         message = self._append(
-            self.main_conversation_id,
+            target,
             lambda entry_id, parent_id, ts: UserMessage(
                 id=entry_id,
                 parent_id=parent_id,
@@ -1188,9 +1254,10 @@ class AgentSessionRunner:
         The intent is therefore DURABLE: a process that dies before the drive
         leaves a session that still knows a compaction was asked for, and an
         open bracket already derives BUSY ("work is queued, call run()").
-        The price is that `post_message` — which requires a closed bracket —
-        raises until that drive has run, across a reload; this is exactly the
-        treatment every other open bracket already gets.
+        The price is that `post_message` — which refuses an open compaction
+        bracket — raises until that drive has run, across a reload; the
+        compaction snapshot is built on nothing being appended while its
+        bracket is open.
 
         Requires a CLOSED bracket. An open conversational turn (a resumable
         bracket, BLOCKED, CANCELLING) raises `AgentError`: the
@@ -2834,6 +2901,14 @@ class AgentSessionRunner:
             # Recorded instead of `llm_cfg`, so provenance names the model
             # that actually produced the turn.
             effective_cfg = self.effective_llm_config(llm_cfg, model_string)
+            # What this LLM call will have seen, fingerprinted by path length
+            # — exact because the path is append-only and nothing yields
+            # between this capture and the projection inside
+            # `prepare_llm_call`. Anything user-posted at or past this index
+            # when the final answer lands was NOT in the projection; the
+            # close-site check below loops one more round instead of closing
+            # over it.
+            seen = len(self.session.conversations[conversation_id].nodes)
             messages, system_message = self.prepare_llm_call(conversation_id)
             # `get_tools` is application code and may block indefinitely, so
             # the whole step is raced. A lost race produces no tool list and
@@ -2975,11 +3050,23 @@ class AgentSessionRunner:
                     yield event
                 continue  # → step 1 hands the fresh executions to decide()
 
-            # Final answer: an unconsumed cancel controls the close — the
-            # within-grace message stays recorded, the requested outcome wins.
+            # Final answer. Precedence at the close site: an unconsumed
+            # cancel controls the close (the within-grace message stays
+            # recorded, the requested outcome wins and buries any unseen
+            # post); next, a user message posted after `seen` means the model
+            # answered without it — record the premature final answer and
+            # loop for another round instead of closing, so a turn never
+            # closes COMPLETED over a message the model has not seen; else
+            # close COMPLETED. Both checks are synchronous inside the same
+            # no-yield window as the record and the close, so nothing can
+            # land between a check and the `TurnFinish`.
             cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
                 events.extend(await self._wind_down_async(conversation_id, cancel_entry))
+            elif self._has_unseen_user_message(conversation_id, seen):
+                for event in events:
+                    yield event
+                continue  # → the next projection carries answer + message
             else:
                 self._close_turn(conversation_id, TurnOutcome.COMPLETED)
             for event in events:
@@ -3057,10 +3144,11 @@ class AgentSessionRunner:
             updated_at=ts,
             depth=parent.depth + 1,
         )
-        # The seed. A child conversation never receives user messages after
-        # this: `post_message` is main-only, so the spawn handshake is the one
-        # and only thing that ever appends one here. The `TurnStart` is opened
-        # by the child's own drive, exactly like any other conversation's.
+        # The seed — the child's FIRST user message, not necessarily its only
+        # one: a live child accepts `post_message` like any conversation with
+        # an open turn (unless it has active subagents of its own). The
+        # `TurnStart` is opened by the child's own drive, exactly like any
+        # other conversation's.
         self._append(
             child_id,
             lambda entry_id, parent_id, stamp: UserMessage(
@@ -3135,11 +3223,11 @@ class AgentSessionRunner:
         """Derive a result for every subagent of this conversation whose turn
         bracket has closed.
 
-        "Its turn bracket closes" is the WHOLE signal — a child conversation
-        never receives user messages, so a closed bracket means finished, and a
-        child that failed or timed out is a finished child, not an exception
-        travelling upward. Whichever way it ended, the `ChildConversation`
-        resolves and the parent continues.
+        "Its turn bracket closes" is the WHOLE signal — a finished child
+        refuses further input (`post_message` rejects a finished subagent), so
+        a closed bracket means finished, and a child that failed or timed out
+        is a finished child, not an exception travelling upward. Whichever way
+        it ended, the `ChildConversation` resolves and the parent continues.
 
         The result is derived by a TOOL — the one the spawn payload named — run
         in the PARENT conversation through the ordinary lifecycle: birth,
@@ -4054,6 +4142,24 @@ class AgentSessionRunner:
         if len(subset) != lookback:
             return False
         return all(te.raw_tool_call.name == tc.name and te.raw_tool_call.arguments == tc.arguments for te in subset)
+
+    def _has_unseen_user_message(self, conversation_id: str, seen: int) -> bool:
+        """A `UserMessage` appended past `seen` — the path length captured in
+        the same sync region as the most recent projection. One loop-local
+        integer fingerprints exactly what that projection contained, because
+        the path is append-only; anything user-authored past it has never been
+        shown to the model.
+
+        Only the COMPLETED close consults this: a turn must not close
+        COMPLETED while its open span holds a message the model has not seen
+        (an in-flight final call is indistinguishable from any other in-flight
+        call, so the close site is the only place the decision can live). The
+        failure closes — CANCELLED, ERRORED, TIMED_OUT, the hard-step limit —
+        deliberately do not: they bury the message, and projection surfaces it
+        with the next engagement."""
+        entries = self.session.entries
+        nodes = self.session.conversations[conversation_id].nodes
+        return any(isinstance(entries.get(node_id), UserMessage) for node_id in nodes[seen:])
 
     def _close_turn(self, conversation_id: str, outcome: TurnOutcome, error: str | None = None) -> None:
         """The only TurnFinish writer that APPENDS — normal close, cancel

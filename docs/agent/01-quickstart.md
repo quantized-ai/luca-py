@@ -92,7 +92,9 @@ while True:
 
 Each `run()` advances as far as it can, then stops at the next point that needs
 you: the turn finished (`IDLE`) or nothing can advance until you answer a gate
-(`BLOCKED`). Drive first, prompt second — answering writes to your policy, and
+(`BLOCKED`). The sketch polls, but posting is not idle-only — a message posted
+*while* the agent works lands inside the open turn and is answered before the
+turn completes ([04](04-runner.md) has the acceptance rules). Drive first, prompt second — answering writes to your policy, and
 only a drive re-asks it. See [`04-runner.md`](04-runner.md) for the full status
 machine and [`../../main.py`](../../main.py) for a complete TUI.
 

@@ -64,8 +64,9 @@ await runner.run()                   # compacts, then drives if work is queued
 crash, and the conversation derives `BUSY` until it has been driven.
 
 > ⚠️ **`post_message` raises while a compaction is scheduled or in flight.**
-> It requires a closed bracket, and a compaction has one of its own — durably,
-> across a reload. Schedule immediately before driving.
+> The snapshot machinery assumes nothing is appended while a compaction
+> bracket is open, so the bracket rejects input — durably, across a reload.
+> Schedule immediately before driving.
 
 ## 3. Observe it
 

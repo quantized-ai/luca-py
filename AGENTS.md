@@ -15,14 +15,6 @@ Package boundaries are sharp and must stay that way: `luca/client` is the LLM cl
 
 This project is a library. We always have to think first about our developer users and give them the possibility to extend and customize the behavior. That's why Middleware and other architectural decisions are key. We don't know how our library will be used so we must always keep it extensible and open while keeping a very tight Data Model.
 
-## Non-goals (project-wide)
-
-- Server / proxy mode.
-- Guardrails / moderation pipelines.
-- Automatic retries, multi-model fallback, cross-provider message transformation.
-- Wrapping vendor SDKs.
-- Batch APIs, re-ranking.
-
 ## Repo layout (top level)
 
 ```
@@ -40,8 +32,6 @@ tests/
 ├── agent/                         # tests for luca.agent (contrib tests under tests/agent/contrib/)
 └── client/                        # mirrors luca/client/ layout
 main.py                            # runnable agent demo — launches the contrib TUI
-api_prd.md                         # client public API contract
-architecture.md                    # client internal design
 pyproject.toml                     # uv-managed
 ```
 
@@ -49,9 +39,9 @@ pyproject.toml                     # uv-managed
 
 | You're working on… | Read… |
 |---|---|
-| `luca/agent/` or `tests/agent/` | **[AGENTS.agent.md](AGENTS.agent.md)** |
-| `luca/client/` or `tests/client/` | **[AGENTS.client.md](AGENTS.client.md)** |
-| Writing or updating anything under `docs/` | **[docs/llm.txt](docs/llm.txt)** |
+| `luca/agent/` or `tests/agent/` | AGENTS.agent.md |
+| `luca/client/` or `tests/client/` | AGENTS.client.md |
+| Writing or updating anything under `docs/` | docs/llm.txt |
 
 Read the relevant layer file before making any changes to that layer.
 
@@ -84,20 +74,7 @@ Tests are declarative: precondition → one action → postcondition. No logic, 
 
 ## Running the agent demo
 
-Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual TUI in `luca/agent/contrib/tui` (streaming by default).
-
-```bash
-uv run python main.py                              # fresh session
-uv run python main.py --faux                       # offline scripted demo — no key, no network
-uv run python main.py --conversation <id>          # resume <id>.json
-uv run python main.py --conversation <id> --fork   # branch into a new session
-uv run python main.py --no-subagents               # stop it spawning parallel subagents
-uv run python main.py --subagents-max-depth 1      # no nesting (the demo default is 3)
-uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget (default: none)
-uv run python main.py --subagents-max-workers 3    # how many work at once (default: no cap)
-uv run python main.py --no-streaming               # block-level events instead of deltas
-uv run python main.py --model <id> --reasoning <level>  # override the session's LLMConfig
-```
+Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual TUI in `luca/agent/contrib/tui` (streaming by default). Run `uv run python --help` for more.
 
 The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `.env` — except with `--faux`. Sessions persist to `<session-id>.json` in the working directory.
 

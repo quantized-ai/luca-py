@@ -589,9 +589,10 @@ state.step_count    # assistant messages in the OPEN turn
 
 Two consequences, both deliberate. A **failed** turn derives `idle`, so
 recovering from one means posting a new message rather than re-driving the same
-request. And a trailing user message derives `busy`, so a second message cannot
-be queued behind a first — "let the user type while the agent works" is an
-application-level input buffer that posts on the next `idle`.
+request. And a trailing user message derives `busy` (queued work) — more
+messages may still be posted behind it, and posting into an open turn is legal
+too: the status says what the next `run()` will do, never whether input is
+accepted (that is `post_message`'s own acceptance matrix — [04](04-runner.md)).
 
 `blocked` is **subtree-aware**: a parent whose subagents are still working is
 `busy`, and flips to `blocked` only when every one of them is. That transition

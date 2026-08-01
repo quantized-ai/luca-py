@@ -5,6 +5,11 @@ base; `CancelledError` is raised by a `CancellationToken` (see
 `luca.agent.core.context`); `CompactionPlanError` is the one rejection the
 compaction step can produce (see `luca.agent.core.compaction`).
 
+`ConversationCancellingError` and `SubagentsActiveError` are the two
+`post_message` rejections an interactive application hits in normal operation
+and must handle gracefully (keep the draft, retry later); both are flat
+subclasses of `AgentError`, which stays correct for every other rejection.
+
 An approval pause is NOT an exception: when the permission strategy returns a
 PENDING decision the generator simply ends at the gate, and a later `run()`
 asks the strategy again.
@@ -25,6 +30,23 @@ class CancelledError(AgentError):
 class AlreadyCancellingError(AgentError):
     """cancel() while an unconsumed CancelRequested exists. The first call's
     outcome/error stand; this raise is diagnostic only."""
+
+
+class ConversationCancellingError(AgentError):
+    """post_message() on a CANCELLING conversation. The open turn is being
+    flushed, so an append would be buried in the cancelled bracket, silently
+    unanswered. Transient: catch it, keep the draft, retry after the flush.
+    Distinct from `CancelledError` (the token's raise), from
+    `AlreadyCancellingError` (the cancel()-twice diagnostic), and from
+    `asyncio.CancelledError` (task semantics)."""
+
+
+class SubagentsActiveError(AgentError):
+    """post_message() on a conversation whose open turn has unresolved
+    subagents. The children cannot see this conversation's messages and its
+    next LLM call may be far away, so an accepted message could not steer the
+    work in flight. Transient: catch it, keep the draft, retry once the
+    children have resolved."""
 
 
 class ToolNotFound(AgentError):

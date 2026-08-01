@@ -225,9 +225,14 @@ There is no `TurnFinished` event — `RunResult` is the completion signal. A flu
 | | the next `run()` | post a message? |
 |---|---|---|
 | `IDLE` | nothing — there is no work | yes |
-| `BUSY` | work — the run can still be exhausted | no |
-| `BLOCKED` | stop again immediately; you must act first | no |
+| `BUSY` | work — the run can still be exhausted | yes — into the open turn (or queued behind a trailing message) |
+| `BLOCKED` | stop again immediately; you must act first | yes — the message waits with the turn |
 | `CANCELLING` | flush the turn, not answer it | no |
+
+The post column is the common case, not the whole rule — `post_message` owns
+the full acceptance matrix (an open turn with unresolved subagents rejects
+even while BUSY/BLOCKED, an open compaction bracket rejects, archived and
+finished conversations reject whatever they derive).
 
 Derivation, in precedence order:
 - open turn with an unconsumed `CancelRequested` → `CANCELLING` — the next drive is the flush.
@@ -241,7 +246,7 @@ Derivation, in precedence order:
 
 A logical turn spans one `TurnStart`/`TurnFinish` bracket even across an approval pause. A `TurnStart` with no later `TurnFinish` means resume, not re-open.
 
-`post_message` requires **IDLE**, and nothing else — the bracket check is implied. Two behaviors are deliberately gone with it: **a failed turn no longer auto-retries** (a closed bracket is IDLE whatever its outcome, so recovery means posting a new message rather than silently re-sending the identical request), and **message queueing is gone** (a trailing `UserMessage` derives BUSY, and BUSY rejects input — "let the user type while the agent works" is an application-level buffer that posts on the next IDLE).
+`post_message(content, conversation_id=None)` accepts far more than IDLE. The rule: **a conversation accepts a message whenever something will eventually answer it** — an open conversational turn (BUSY or BLOCKED) takes the mid-turn append, a trailing message queues more behind it (one turn answers them all), and a live subagent accepts posts too (`conversation_id=`; its seed prompt is merely its first user message). Rejections: CANCELLING → dedicated `ConversationCancellingError`; an open COMPACTION bracket (bracket-shape check, never status) → `AgentError`; an open turn with **unresolved subagents** → dedicated `SubagentsActiveError` (the children never see the parent's messages, so accepting would pretend to steer work in flight — any conversation, not just main); a finished subagent or an archived predecessor (identity-checked — an archived path can derive BUSY) → `AgentError`. Two guarantees ride with the mid-turn append: **a turn never closes COMPLETED while its open span holds a user message the model has not seen** — the drive's close-site check records the premature final answer and runs one extra round instead (`hard_max_steps` still bounds it) — and a failure close (CANCELLED / ERRORED / TIMED_OUT, the hard step limit) **buries** the message: unanswered in that turn, but projection's flat walk carries it into the next request. **A failed turn still does not auto-retry** — a closed bracket is IDLE whatever its outcome, so recovery means posting a new message rather than silently re-sending the identical request.
 
 ### 12. Cancel is a pure signal
 
@@ -418,7 +423,7 @@ Two rules keep that from stranding anything, and both exist because `cancel()` i
 
 **Middleware stays conversation-blind** (§12 of the PRD, accepted): no hook receives a `conversation_id`, so an application middleware written for a single conversation gets wrong behavior with no error. Nothing in `luca/` implements a hook, so this is a missing capability rather than a broken one.
 
-Limits the implementation may rely on: a subagent is never compaction-checked (bound it with `subagent_hard_max_steps` instead), and `post_message` is main-conversation only — the spawn prompt is the one and only user message a child ever receives. Nesting is a real knob: `subagents_max_depth=N` means main plus N levels of subagents (default 1; the TUI opts into 3).
+Limits the implementation may rely on: a subagent is never compaction-checked (bound it with `subagent_hard_max_steps` instead). `post_message` reaches subagents too: a live child accepts posts into its open turn (the spawn prompt is its FIRST user message, not its only one), a finished child rejects them, and any conversation whose open turn has unresolved subagents rejects with `SubagentsActiveError` — posting to a mid-orchestration parent would pretend to steer work its children never see. Nesting is a real knob: `subagents_max_depth=N` means main plus N levels of subagents (default 1; the TUI opts into 3).
 
 ### Tool identity
 
@@ -627,7 +632,8 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_runner_lifecycle.py` | `AgentRun` handle: lazy/eager, suspend, `RunResult`, `on_event` |
 | `tests/agent/test_runner_approvals.py` | Gate / re-ask / allowed-sibling-dispatch / cold-resume / decide-failure scenarios |
 | `tests/agent/test_runner_cancellation.py` | Cancel / wind-down / flush / grace / `cancel_signalled_at`, plus the four registry-phase races (a hung `get_tools` / `create_execution` / `decide` / `prepare` each unblocked by `cancel()`), the CANCELLED-not-FAILED birth rule, and the identical durable shape of a dispatch-path vs wind-down cancellation |
-| `tests/agent/test_runner_failures.py` | The prepare/dispatch outcome table (every `prepare()` failure mode, the non-callable and non-awaitable guards, `started_at`/`dispatched`/`details["phase"]`), tool deadlines and their scope, crash recovery (orphaned RUNNING), LLM failure closes, `post_message` matrix |
+| `tests/agent/test_runner_failures.py` | The prepare/dispatch outcome table (every `prepare()` failure mode, the non-callable and non-awaitable guards, `started_at`/`dispatched`/`details["phase"]`), tool deadlines and their scope, crash recovery (orphaned RUNNING), LLM failure closes |
+| `tests/agent/test_runner_post_message.py` | The `post_message` acceptance matrix (accept/reject per state, both dedicated exceptions, the archived/finished rejections) + the mid-turn stories: the close-site unseen-message check and its extra round, burial and its projection, precedence (cancel, `hard_max_steps`), queued trailing messages |
 | `tests/agent/test_runner_projector.py` | The runner ↔ `ConversationProjector` seam: wire history, event/wire agreement, equality |
 | `tests/agent/test_runner_context.py` | The runner ↔ `ContextManager` seam: context stamping, middleware final say, processed tool output (session/event/wire agreement), prune-machinery composition, and `recalculate_context_tokens()` (every entry, archived and off-path included; construction changes nothing) |
 | `tests/agent/test_context_manager.py` | Default `ContextManager`: per-type context ownership, prune templates + refusals, identity tool-output, subclass overrides, model-aware counting, the non-membership of an entry during an append, and the compaction pair's base behavior (declines / raises) |
@@ -635,7 +641,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_runner_limits.py` | Hard/soft `max_steps`, doom-loop flagging, `tool_choice` restriction |
 | `tests/agent/test_private_tools.py` | `ToolSpec.is_private` end to end: the spec, the wire filter, the NOT_FOUND refusal of a guessed name, and the projection rules |
 | `tests/agent/test_runner_tree.py` | The `AgentRun` TREE as machinery: `children`/`child()`, event fan-in, the approvals stream, `notify()`, suspend cascading — no subagent tools |
-| `tests/agent/subagents/` | The end-to-end subagent stories (`test_spawn_handshake.py`, `test_parallel_and_control.py`): spawn, gate, parallelism, approvals, cancellation, resume — core + `contrib.subagents` only |
+| `tests/agent/subagents/` | The end-to-end subagent stories (`test_spawn_handshake.py`, `test_parallel_and_control.py`, `test_post_messages.py`): spawn, gate, parallelism, approvals, cancellation, resume, mid-turn posts across the tree — core + `contrib.subagents` only |
 | `tests/agent/contrib/test_subagents.py` | Self-scoped contrib tests: the two tools' specs and payloads, the gate predicate, the prompt part, the plugin surface — no runner |
 | `tests/agent/test_integration_full_stack.py` | ONE composed application (shell + memory + subagents + permissions, real tools, scripted transport) driven through every consumption form, ending in a declarative assertion over the whole catalog. A smoke test — it proves the pieces compose, not that any one is correct |
 | `tests/agent/test_child_conversation.py` | `ChildConversation` as pure DATA: projection (tagged synthetic user message; unresolved fails loud), context accounting, `pretty_print`, round-trip |

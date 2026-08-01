@@ -3,9 +3,9 @@ vs RuntimeConfig), the whole failure surface of the prepare/execute split
 (resolution fails → the body was never dispatched; the body raises → FAILED,
 whatever the exception type), a raising `get_tools` (propagates, the turn
 stays open, the next run asks again), crash recovery — of orphaned RUNNING
-executions and of a `prepare()` that never got to write one — the LLM
-catch/close/re-raise site (TIMED_OUT / ERRORED → status PENDING, retry-ready),
-and the §5.5 post_message matrix.
+executions and of a `prepare()` that never got to write one — and the LLM
+catch/close/re-raise site (TIMED_OUT / ERRORED → status PENDING, retry-ready).
+The post_message acceptance matrix lives in `test_runner_post_message.py`.
 
 House style: precondition → one action → full-object postcondition; never
 race two timed things — every deadline test pairs a real (small) timer with
@@ -62,14 +62,11 @@ from luca.client.testing import (
 from luca.client.types import TextBlock as LucaTextBlock, ToolMessage, UserMessage as LucaUserMessage
 from tests.agent.scenarios import (
     ADD_SPEC,
-    CANCEL_PARKED_SESSION,
     CLEARED_SESSION,
-    GATED_SESSION,
     MODEL,
     MULTIPLY_SPEC,
     POST_FAILURE_SESSION,
     RUNNING_ORPHAN_SESSION,
-    UNDECIDED_SESSION,
     AddTool,
     BinaryArgs,
     DeterministicRunner,
@@ -1778,55 +1775,4 @@ async def test_post_failure_session_reloads_cold_and_a_new_turn_reanswers():
     assert runner.idle()
 
 
-# ── the §5.5 post_message matrix ──────────────────────────────────────────────
-
-
-async def test_post_message_is_legal_after_a_failed_turn():
-    session = POST_FAILURE_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(session, ids=["u2"], now=2000)
-
-    runner.post_message("Take your time, retry.")
-
-    assert runner.busy()
-    assert main_conversation(runner.session).nodes == ["u1", "ts", "tf", "u2"]
-
-
-async def test_post_message_rejects_awaiting_approval():
-    session = GATED_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(
-        session,
-        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(),
-        now=1000,
-    )
-
-    with pytest.raises(AgentError):
-        runner.post_message("never mind")
-
-
-async def test_post_message_rejects_cancelling():
-    session = CANCEL_PARKED_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(
-        session,
-        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(),
-        now=1000,
-    )
-
-    with pytest.raises(AgentError):
-        runner.post_message("never mind")
-
-
-async def test_post_message_rejects_an_open_resumable_bracket():
-    # PENDING status alone is not enough — the bracket must be closed
-    session = UNDECIDED_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(
-        session,
-        tool_registry=FakeToolRegistry([AddTool()], decisions=[]),
-        provider=FauxProvider(),
-        now=1000,
-    )
-
-    assert runner.busy()
-    with pytest.raises(AgentError):
-        runner.post_message("also this")
+# The post_message acceptance matrix lives in `test_runner_post_message.py`.

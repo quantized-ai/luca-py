@@ -13,6 +13,12 @@ Escape while a run is live requests cancellation (`run.cancel()`); the
 wind-down renders live and the turn closes CANCELLED. Abandoning at the
 approval modal cancels the runner; the loop's next run is the flush.
 
+The prompt stays enabled while the agent works: submitting mid-turn posts
+into the open turn (rendered immediately, answered before the turn closes),
+and a rejection — cancelling, subagents active — surfaces as a notice with
+the draft preserved. Slash commands stay idle-only. A mid-turn post never
+starts a second drive; the live loop picks it up at its next LLM call.
+
 Construction wires the full demo agent via `wiring.build_runner` (shell +
 memory plugins, math tools, one shared permission strategy); `provider=` is
 the zero-logic passthrough tests use to inject a scripted `FauxProvider`.
@@ -36,7 +42,7 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header
 
-from luca.agent.core import AgentRun, AlreadyCancellingError
+from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
     ApprovalRequired,
     CompactionFinished,
@@ -153,6 +159,11 @@ class AgentApp(App):
         self._subagents = subagents
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
+        # True while the drive worker is alive. The worker group is
+        # `exclusive=True`, so starting a second drive would CANCEL the live
+        # run mid-turn — a mid-turn post must never start one (the live loop's
+        # next LLM call picks the message up on its own).
+        self._driving = False
         # KEYED BY CONVERSATION. With subagents, the main agent and several
         # children stream at once on ONE event stream; a single live-cell slot
         # would splice two conversations' text into the same cell.
@@ -191,26 +202,42 @@ class AgentApp(App):
     # ── input ──────────────────────────────────────────────────────────────────
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
-        if not self.runner.idle():
-            return
         text = event.value.strip()
-        if text.startswith("/") and await dispatch(self, text):
-            event.prompt_input.clear()
-            return
+        if text.startswith("/"):
+            # Commands mutate runner/session state and stay idle-only. The
+            # draft is preserved — input is never silently discarded.
+            if not self.runner.idle():
+                self.notify("Commands are available when the agent is idle.", severity="warning")
+                return
+            if await dispatch(self, text):
+                event.prompt_input.clear()
+                return
         parts: list[ContentPart] = [*self._pending_images]
         if text:
             parts.append(TextContent(text=text))
         if not parts:
             return
+        try:
+            self.runner.post_message(parts)
+        except AgentError as exc:
+            # The two transient rejections (cancelling, subagents active) and
+            # every other refusal alike: a brief notice, and the draft stays
+            # in the input for a later resubmit.
+            self.notify(str(exc), severity="warning")
+            return
         event.prompt_input.clear()
         self._pending_images = []
-        self.runner.post_message(parts)
+        # Rendered immediately; mid-turn it may interleave with streaming
+        # cells, which is correct — the message is answered after the current
+        # response completes.
         await self._mount_cell(UserCell(user_transcript_text(parts)))
-        self._start_drive()
+        if not self._driving:
+            self._start_drive()
 
     # ── the drive worker ───────────────────────────────────────────────────────
 
     def _start_drive(self) -> None:
+        self._driving = True
         self._set_busy(True)
         self.run_worker(self._drive(), group="drive", exclusive=True)
 
@@ -252,6 +279,7 @@ class AgentApp(App):
             save_session(runner.session, self._session_dir)
             self._refresh_status()
         finally:
+            self._driving = False
             self._set_busy(False)
 
     async def _resolve_approvals(self) -> None:
@@ -659,10 +687,12 @@ class AgentApp(App):
         await self._mount_cell(NoticeCell(text, error=error))
 
     def _set_busy(self, busy: bool) -> None:
-        prompt = self.query_one("#prompt", PromptInput)
-        prompt.disabled = busy
+        # The prompt stays ENABLED while the agent works — posting mid-turn is
+        # the feature, and a rejection surfaces as a notice with the draft
+        # preserved. Busy only refreshes the status line; going idle refocuses
+        # the input.
         if not busy:
-            prompt.focus()
+            self.query_one("#prompt", PromptInput).focus()
         self._refresh_status()
 
     def _refresh_status(self) -> None:

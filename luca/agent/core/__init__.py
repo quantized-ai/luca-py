@@ -25,8 +25,10 @@ from .exceptions import (
     AlreadyCancellingError,
     CancelledError,
     CompactionPlanError,
+    ConversationCancellingError,
     InvalidToolArguments,
     ProjectionError,
+    SubagentsActiveError,
     ToolNotFound,
 )
 from .middleware import AgentMiddlewareMixin
@@ -120,6 +122,7 @@ __all__ = [
     "ContentPart",
     "ContextManager",
     "Conversation",
+    "ConversationCancellingError",
     "ConversationProjector",
     "ConversationStatus",
     "DefaultSystemPromptAssembler",
@@ -145,6 +148,7 @@ __all__ = [
     "Seconds",
     "SessionConfig",
     "ConversationRuntimeStatus",
+    "SubagentsActiveError",
     "SystemPromptAssembler",
     "SystemPromptPart",
     "TextContent",

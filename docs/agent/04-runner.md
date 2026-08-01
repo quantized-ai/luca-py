@@ -44,6 +44,38 @@ runner.post_message([
 ])
 ```
 
+Posting is **not idle-only** — a conversation accepts a message whenever
+something will eventually answer it, including **mid-turn** while the agent
+works:
+
+```python
+run = runner.start()
+runner.post_message("Prefer the standard library, please.")  # lands INSIDE the open turn
+await run   # the model sees it on its next call, and the turn cannot close
+            # COMPLETED until it has been answered
+```
+
+| Target state | `post_message` |
+|---|---|
+| `IDLE` main conversation | accepts — the next `run()` opens a turn |
+| trailing message queued (`BUSY`, no open turn) | accepts — one turn answers all of them |
+| open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a gated turn keeps the message waiting with it |
+| open turn with unresolved subagents | raises `SubagentsActiveError` — the children never see it; retry once they resolve ([13](13-subagents.md)) |
+| `CANCELLING` | raises `ConversationCancellingError` — retry after the flush |
+| compaction scheduled / in flight | raises `AgentError` ([12](12-compaction.md)) |
+| finished subagent, archived conversation, unknown id | raises `AgentError` — nothing will ever drive them |
+
+`conversation_id=` targets any conversation — a live subagent included;
+`None` (the default) resolves to the main one at call time.
+
+> ⚠️ **A turn never closes `COMPLETED` over an unseen message.** A message
+> that lands during what turns out to be the final LLM call is answered by
+> one extra round in the same turn — the premature answer stays recorded. A
+> turn that closes `CANCELLED` / `ERRORED` / `TIMED_OUT` instead **buries**
+> the message: unanswered in that turn, but projected into the next request —
+> late, never lost. Catch the two dedicated exceptions to keep the user's
+> draft and resubmit.
+
 ## 1. Drive it: `run()`
 
 `run()` returns an **`AgentRun`** handle. It is **lazy** — nothing happens until
@@ -327,8 +359,9 @@ execution names the conversation it came from.
 
 Two consequences of the derivation, both deliberate: a **failed** turn is a
 closed turn and therefore `IDLE` (retry by posting, not by re-driving), and a
-trailing user message is `BUSY`, so a second message cannot be queued behind a
-first.
+trailing user message is `BUSY` — more can still be posted behind it. The
+status says what the next `run()` will do, never whether input is accepted;
+the acceptance table at the top of this page owns that.
 
 A **closed compaction bracket is transparent** to that derivation: it is
 skipped, and the leaf before it decides. That is what keeps a failed compaction

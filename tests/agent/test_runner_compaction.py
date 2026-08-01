@@ -2078,7 +2078,22 @@ def test_post_message_is_illegal_while_a_compaction_is_scheduled():
         now=1000,
     )
 
-    with pytest.raises(AgentError, match="post_message requires an IDLE conversation"):
+    with pytest.raises(AgentError, match="compaction scheduled or in flight"):
+        runner.post_message("meanwhile…")
+
+
+def test_post_message_is_illegal_while_a_compaction_is_in_flight():
+    # The check reads the bracket SHAPE, never the status — an in-flight
+    # compaction derives BUSY, and a status-based check would wrongly accept.
+    session = COMPACTION_INTERRUPTED_SESSION.model_copy(deep=True)
+    runner = DeterministicRunner(
+        session,
+        context_manager=FakeContextManager(),
+        ids=[],
+        now=1000,
+    )
+
+    with pytest.raises(AgentError, match="compaction scheduled or in flight"):
         runner.post_message("meanwhile…")
 
 
