@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import time
 
-from textual.widgets import Input
-
+from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.core.models import AgentSession, LLMConfig, RuntimeConfig
 from luca.agent.core.runner import AgentSessionRunner
 
@@ -24,8 +23,9 @@ def fresh_session(runtime_config: RuntimeConfig | None = None) -> AgentSession:
 
 
 async def submit(pilot, text: str) -> None:
-    pilot.app.query_one("#prompt", Input).value = text
-    pilot.app.query_one("#prompt", Input).focus()
+    prompt = pilot.app.query_one("#prompt", PromptInput)
+    prompt.load_text(text)
+    prompt.focus()
     await pilot.pause()
     await pilot.press("enter")
 
@@ -42,4 +42,4 @@ async def wait_until(pilot, condition, timeout: float = 8.0) -> None:
 
 def idle_again(app) -> bool:
     """The drive worker is done: runner idle and the prompt re-enabled."""
-    return app.runner.idle() and not app.query_one("#prompt", Input).disabled
+    return app.runner.idle() and not app.query_one("#prompt", PromptInput).disabled

@@ -14,8 +14,8 @@ Layering (the Textual-free modules are the unit-testable core):
                 `PromptOption`, `build_approval_prompts`): main-loop policy
                 translated to data the modal can display.
 - `render`    — pure text formatting for transcript cells.
-- `cells` / `screens` / `app` — the Textual widgets, the approval modal, and
-                `AgentApp` itself.
+- `cells` / `screens` / `prompt` / `app` — the Textual widgets, the approval
+                modal, the multiline prompt box, and `AgentApp` itself.
 - `cli`       — the argparse entry point (`python -m luca.agent.contrib.tui`).
 
 Requires the `tui` dependency group (`textual`). Importing this package root

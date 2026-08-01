@@ -7,8 +7,6 @@ cell state (`.text`, `.status`, …) plus the persisted session.
 
 import base64
 
-from textual.widgets import Input
-
 from luca.agent.contrib.tui import AgentApp, app as app_module
 from luca.agent.contrib.tui.cells import (
     AssistantCell,
@@ -19,6 +17,7 @@ from luca.agent.contrib.tui.cells import (
     UserCell,
 )
 from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
+from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.core.models import ConversationStatus, ExecutionStatus
@@ -194,7 +193,7 @@ async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
         await submit(pilot, "hi")
         await wait_until(
             pilot,
-            lambda: bool(app.query(NoticeCell)) and not app.query_one("#prompt", Input).disabled,
+            lambda: bool(app.query(NoticeCell)) and not app.query_one("#prompt", PromptInput).disabled,
         )
 
         [notice] = app.query(NoticeCell)

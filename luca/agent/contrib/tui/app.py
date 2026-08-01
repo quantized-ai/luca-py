@@ -34,8 +34,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
-from textual.suggester import SuggestFromList
-from textual.widgets import Footer, Header, Input
+from textual.widgets import Footer, Header
 
 from luca.agent.core import AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
@@ -92,6 +91,7 @@ from .cells import (
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .commands import COMMANDS, dispatch
 from .context_bar import ContextBar
+from .prompt import PromptInput
 from .render import (
     REDACTED_REASONING_MARKER,
     child_links,
@@ -173,13 +173,10 @@ class AgentApp(App):
         yield Header()
         yield VerticalScroll(id="transcript")
         yield ContextBar(id="context-bar")
-        yield Input(
-            placeholder="Message the agent — Enter to send, /help for commands",
+        yield PromptInput(
+            placeholder="Message the agent — Enter to send, Alt+Enter for a new line, /help for commands",
+            commands=[f"/{command.name}" for command in COMMANDS],
             id="prompt",
-            suggester=SuggestFromList(
-                [f"/{command.name}" for command in COMMANDS],
-                case_sensitive=False,
-            ),
         )
         yield Footer()
 
@@ -187,25 +184,25 @@ class AgentApp(App):
         self._refresh_status()
         await self._replay_history()
         if self.runner.idle():
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", PromptInput).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
 
     # ── input ──────────────────────────────────────────────────────────────────
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         if not self.runner.idle():
             return
         text = event.value.strip()
         if text.startswith("/") and await dispatch(self, text):
-            event.input.value = ""
+            event.prompt_input.clear()
             return
         parts: list[ContentPart] = [*self._pending_images]
         if text:
             parts.append(TextContent(text=text))
         if not parts:
             return
-        event.input.value = ""
+        event.prompt_input.clear()
         self._pending_images = []
         self.runner.post_message(parts)
         await self._mount_cell(UserCell(user_transcript_text(parts)))
@@ -638,7 +635,7 @@ class AgentApp(App):
         self._panels.clear()
         self._pending_images.clear()
         self._refresh_status()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptInput).focus()
 
     # ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -662,7 +659,7 @@ class AgentApp(App):
         await self._mount_cell(NoticeCell(text, error=error))
 
     def _set_busy(self, busy: bool) -> None:
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", PromptInput)
         prompt.disabled = busy
         if not busy:
             prompt.focus()

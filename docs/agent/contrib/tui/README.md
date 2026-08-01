@@ -66,7 +66,7 @@ the workspace can all live in a `luca.json` file instead of flags. See
 |---|---|
 | Transcript cells | One bordered cell per block: `you`, `assistant`, `thinking`, `tool` (call → running → result, clipped; `running` shows only once the body is dispatched, so a denied or unresolved call jumps straight to its status), `compacted` (a summary, subtitled with how many entries it replaced), `notice` (cancels, failures). Assistant and thinking cells render markdown (bold, lists, fenced code); tool-call argument values are clipped to a one-line preview so a large `write`/`edit` does not dump its whole payload |
 | Subagent panels | One indented `SubagentPanel` per subagent, titled with the task it was given and subtitled `waiting… / running… / done / failed` — `waiting…` while queued behind `--subagents-max-workers` or parked at a gate, driven by the subagent lifecycle events. Everything that subagent produces — its text, its reasoning, its own tool cells — is mounted **inside** its panel. See §2.1 |
-| Input box | Enabled while the runner is `IDLE`; Enter posts the message and starts the drive worker. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names |
+| Input box | A multiline `PromptInput` (grows with its content, capped at 10 rows), enabled while the runner is `IDLE`. Enter posts the message and starts the drive worker; Alt+Enter, Shift+Enter, Ctrl+J, or Enter after a trailing `\` insert a newline (the modified Enters need a terminal honoring the kitty keyboard protocol — under tmux, `extended-keys`); a multiline paste lands verbatim without sending. A line starting with a known `/command` runs that command instead of sending it, and typing `/` completes command names (Right accepts) |
 | Status line | The header shows `session <id> · <provider>:<model> · <status>` (plus the reasoning level when set), so the live model is always visible |
 | Context bar | A one-line gauge under the transcript showing context utilization (`▐████░░░░▌ 42% 84k/200k`), colored toward red as it nears the compaction threshold. Reads the `calculate_context_used` / `get_context_window_size` gauge from `contrib/simple_context_manager` |
 | `Ctrl+V` | Attaches the clipboard's image to the next message; the transcript shows `[image: pasted-1.png]` |
@@ -159,9 +159,9 @@ thin:
 | `sessions.py` | `<session-id>.json` load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
 | `render.py` | Pure formatting and session reads: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift), plus `is_runtime_plumbing`, `subagent_task` and `child_links` for the panels |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
-| `cells.py` / `screens.py` / `app.py` | Transcript widgets (incl. `SubagentPanel`, the one container), the modals (`ApprovalScreen`, `PickerScreen`), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
+| `cells.py` / `screens.py` / `prompt.py` / `app.py` | Transcript widgets (incl. `SubagentPanel`, the one container), the modals (`ApprovalScreen`, `PickerScreen`), `PromptInput` (the multiline prompt box), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `context_bar.py` | The context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
-| `commands.py` | Slash command registry + `dispatch` (called from `on_input_submitted` before the message is sent) |
+| `commands.py` | Slash command registry + `dispatch` (called from `on_prompt_input_submitted` before the message is sent) |
 | `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge) and the precedence resolvers, incl. `build_context_manager` — see [`config.md`](config.md) |
 | `cli.py` | argparse entry point; the `--pretty-print` transcript path (never builds an app), and loads `luca.json`, threading it (incl. the `SummarizingContextManager`) through the seams |
 
@@ -196,7 +196,7 @@ provider.set_responses([faux_assistant_message([faux_text("Hello!")])])
 app = AgentApp(session, provider=provider, workspace=tmp_path, session_dir=tmp_path)
 
 async with app.run_test() as pilot:
-    app.query_one("#prompt", Input).value = "hi"
+    app.query_one("#prompt", PromptInput).load_text("hi")
     await pilot.press("enter")
     ...
     assert [c.text for c in app.query(AssistantCell)] == ["Hello!"]
