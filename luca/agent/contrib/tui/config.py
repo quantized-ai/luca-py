@@ -1,11 +1,17 @@
 """`luca.json` — layered project + user configuration for the TUI.
 
-Two files are read and field-level deep-merged, project over home:
+By default two files are read and field-level deep-merged, project over home:
 `~/.config/luca/luca.json` (personal defaults) then `./luca.json` (repo policy).
 Everything is optional, validated with `extra="forbid"`, and applied with the
 precedence **CLI flag > luca.json > persisted session > built-in default** — so
 the file behaves like sticky CLI flags. It is pure data (no shell execution);
 a malformed file raises `LucaConfigError` with a readable message.
+
+Naming a file explicitly — `--config <path>`, or `LUCA_CONFIG_PATH` — REPLACES
+that discovery: the named file becomes the whole config and neither default
+location is read. A path that does not resolve is an error, unlike a missing
+discovered file (which is simply empty): naming a file is a statement that it
+exists.
 """
 
 from __future__ import annotations
@@ -138,11 +144,32 @@ class LucaConfig(BaseModel):
 
 # ── loading ──────────────────────────────────────────────────────────────────
 
+# Names a config file to use INSTEAD of the discovered pair. The `--config`
+# flag is the same channel and wins over it.
+ENV_CONFIG_PATH = "LUCA_CONFIG_PATH"
+
 
 def config_home() -> Path:
     """`$XDG_CONFIG_HOME/luca` or `~/.config/luca`."""
     base = os.environ.get("XDG_CONFIG_HOME")
     return (Path(base) if base else Path.home() / ".config") / "luca"
+
+
+def resolve_config_path(cli_path: str | None = None) -> Path | None:
+    """The explicitly named config file, or `None` to discover the usual pair.
+
+    The CLI flag wins over `LUCA_CONFIG_PATH`; `~` is expanded in both.
+
+    Reads the environment directly, exactly as `config_home()` does for
+    `XDG_CONFIG_HOME` — and is deliberately NOT called from inside
+    `load_luca_config`, which stays a pure function of its arguments. That
+    separation is what stops an ambient `LUCA_CONFIG_PATH` from silently
+    redirecting a caller that passed `cwd=` / `home=` precisely to control
+    where it reads from."""
+    for value in (cli_path, os.environ.get(ENV_CONFIG_PATH)):
+        if value:
+            return Path(value).expanduser()
+    return None
 
 
 def _read_json_object(path: Path) -> dict:
@@ -157,6 +184,19 @@ def _read_json_object(path: Path) -> dict:
     return data
 
 
+def _read_named_config(path: Path) -> dict:
+    """Read a config file the caller NAMED. Unlike a discovered file, a missing
+    one is an error: naming a path is a statement that it exists, and silently
+    falling back to an empty config would run the agent with settings the user
+    believes they overrode. Delegates the JSON and top-level-object checks to
+    `_read_json_object` so the wording of those two failures is identical
+    whichever way the file was found."""
+    if not path.is_file():
+        # "no such file" would be wrong for a directory, which does exist.
+        raise LucaConfigError(f"{path}: not a readable config file")
+    return _read_json_object(path)
+
+
 def _deep_merge(base: dict, over: dict) -> dict:
     """`over` wins per key; nested objects merge, scalars and lists replace."""
     merged = dict(base)
@@ -168,18 +208,35 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return merged
 
 
-def load_luca_config(*, cwd: Path | None = None, home: Path | None = None) -> LucaConfig:
-    """Read the home then project `luca.json`, deep-merge, validate."""
-    cwd = cwd or Path.cwd()
-    home = home if home is not None else config_home()
-    merged = _deep_merge(
-        _read_json_object(home / "luca.json"),
-        _read_json_object(cwd / "luca.json"),
-    )
+def load_luca_config(
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    path: Path | None = None,
+) -> LucaConfig:
+    """Read the home then project `luca.json`, deep-merge, validate.
+
+    `path` REPLACES that discovery: the named file becomes the whole config and
+    neither default location is read. Replacing rather than layering is the
+    point — "use this config" means this one, not this one plus whatever the
+    repo happens to carry. Resolve it with `resolve_config_path()`; this
+    function never reads the environment itself."""
+    if path is not None:
+        merged = _read_named_config(path)
+    else:
+        cwd = cwd or Path.cwd()
+        home = home if home is not None else config_home()
+        merged = _deep_merge(
+            _read_json_object(home / "luca.json"),
+            _read_json_object(cwd / "luca.json"),
+        )
     try:
         return LucaConfig.model_validate(merged)
     except ValidationError as exc:
-        raise LucaConfigError(f"luca.json is invalid:\n{exc}") from exc
+        # Name the file that was actually read: "luca.json is invalid" points
+        # at the wrong place when the config came from --config.
+        source = str(path) if path is not None else "luca.json"
+        raise LucaConfigError(f"{source} is invalid:\n{exc}") from exc
 
 
 # ── applying (precedence: cli > config > base/default) ───────────────────────

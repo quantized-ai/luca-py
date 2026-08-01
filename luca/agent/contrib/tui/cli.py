@@ -9,6 +9,7 @@
     uv run python -m luca.agent.contrib.tui --conversation <id> # resume <id>.json
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
+    uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
     uv run python -m luca.agent.contrib.tui \
@@ -16,11 +17,14 @@
 
 `--pretty-print` replaces the TUI entirely: it loads `<id>.json`, writes the
 `pretty_print` transcript to stdout and exits without starting the app, so it
-requires `--conversation` and ignores every other flag.
+requires `--conversation` and ignores every other flag — config included, since
+a transcript does not depend on it.
 
 Configuration layers, highest precedence first: CLI flags, then `./luca.json`
 (repo policy), then `~/.config/luca/luca.json` (personal defaults), then the
-persisted session, then built-in defaults. See `config.py` and the docs.
+persisted session, then built-in defaults. `--config <path>` (or the
+`LUCA_CONFIG_PATH` env var, which the flag overrides) REPLACES both file layers
+with the one named file. See `config.py` and the docs.
 
 Sessions persist to `<session-id>.json` in the working directory after every
 run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
@@ -49,6 +53,7 @@ from .config import (
     load_luca_config,
     pick,
     register_config_providers,
+    resolve_config_path,
     resolve_llm_config,
     resolve_runtime_config,
 )
@@ -59,6 +64,12 @@ from .wiring import build_faux_provider, default_model, faux_model
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
     parser.add_argument("--conversation", help="Session id to load (<id>.json).")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to a config file to use INSTEAD of ./luca.json and "
+        "~/.config/luca/luca.json. Also settable as LUCA_CONFIG_PATH; the flag wins.",
+    )
     parser.add_argument(
         "--fork",
         action="store_true",
@@ -205,7 +216,7 @@ def main(argv: list[str] | None = None) -> None:
         print(pretty_print(load_session(args.conversation)))
         return
     try:
-        config = load_luca_config()
+        config = load_luca_config(path=resolve_config_path(args.config))
         register_config_providers(config)
         session = build_session(args, config)
     except LucaConfigError as exc:

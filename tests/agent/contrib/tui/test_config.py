@@ -2,6 +2,7 @@
 config → objects mappings (providers, permission rules, compaction policy)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from luca.agent.contrib.resource_permissions import (
     ToolRule,
 )
 from luca.agent.contrib.tui.config import (
+    ENV_CONFIG_PATH,
     CompactionSettings,
     LucaConfig,
     LucaConfigError,
@@ -25,6 +27,7 @@ from luca.agent.contrib.tui.config import (
     load_luca_config,
     pick,
     register_config_providers,
+    resolve_config_path,
     resolve_llm_config,
     resolve_runtime_config,
 )
@@ -34,15 +37,6 @@ from luca.client.providers import PROVIDERS
 
 def _write(directory, payload):
     (directory / "luca.json").write_text(json.dumps(payload))
-
-
-@pytest.fixture(autouse=True)
-def _restore_providers():
-    """register_config_providers mutates the global PROVIDERS; snapshot it."""
-    saved = dict(PROVIDERS)
-    yield
-    PROVIDERS.clear()
-    PROVIDERS.update(saved)
 
 
 # ── validation ───────────────────────────────────────────────────────────────
@@ -101,6 +95,90 @@ def test_provider_maps_merge_per_key_but_rule_lists_are_replaced(tmp_path):
 
 def test_missing_files_give_an_empty_config(tmp_path):
     assert load_luca_config(cwd=tmp_path, home=tmp_path / "nope") == LucaConfig()
+
+
+# ── an explicitly named config file ──────────────────────────────────────────
+
+
+def test_an_explicit_path_replaces_both_discovered_files(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, {"model": {"model": "home"}, "streaming": False})
+    _write(tmp_path, {"model": {"model": "project"}, "workspace": "/repo"})
+    (tmp_path / "named.json").write_text(json.dumps({"model": {"model": "named"}}))
+
+    config = load_luca_config(cwd=tmp_path, home=home, path=tmp_path / "named.json")
+
+    assert config == LucaConfig(model=ModelConfig(model="named"))
+
+
+def test_an_explicit_path_that_does_not_exist_raises(tmp_path):
+    with pytest.raises(LucaConfigError, match="not a readable config file"):
+        load_luca_config(path=tmp_path / "nope.json")
+
+
+def test_an_explicit_path_that_is_a_directory_raises(tmp_path):
+    with pytest.raises(LucaConfigError, match="not a readable config file"):
+        load_luca_config(path=tmp_path)
+
+
+def test_an_explicit_non_json_path_raises_the_same_readable_error(tmp_path):
+    named = tmp_path / "named.json"
+    named.write_text("{ not json")
+    with pytest.raises(LucaConfigError, match="not valid JSON"):
+        load_luca_config(path=named)
+
+
+def test_an_invalid_explicit_config_names_the_file_it_read(tmp_path):
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"unknown_key": True}))
+    with pytest.raises(LucaConfigError, match=f"{named} is invalid"):
+        load_luca_config(path=named)
+
+
+# ── resolving which file to read (flag > env > discovery) ────────────────────
+
+
+def test_the_config_flag_wins_over_the_environment(monkeypatch):
+    monkeypatch.setenv(ENV_CONFIG_PATH, "/from/env.json")
+    assert resolve_config_path("/from/flag.json") == Path("/from/flag.json")
+
+
+def test_the_environment_is_used_when_no_flag_is_given(monkeypatch):
+    monkeypatch.setenv(ENV_CONFIG_PATH, "/from/env.json")
+    assert resolve_config_path(None) == Path("/from/env.json")
+
+
+def test_no_flag_and_no_environment_means_discovery(monkeypatch):
+    monkeypatch.delenv(ENV_CONFIG_PATH, raising=False)
+    assert resolve_config_path(None) is None
+
+
+def test_an_exported_but_empty_environment_variable_means_discovery(monkeypatch):
+    """`export LUCA_CONFIG_PATH=` is set-but-empty. Treating it as a path would
+    make every run fail on a config file named "" — it means "not configured"."""
+    monkeypatch.setenv(ENV_CONFIG_PATH, "")
+    assert resolve_config_path(None) is None
+
+
+def test_a_tilde_is_expanded_in_both_channels(monkeypatch):
+    monkeypatch.setenv(ENV_CONFIG_PATH, "~/env.json")
+    assert (resolve_config_path("~/flag.json"), resolve_config_path(None)) == (
+        Path.home() / "flag.json",
+        Path.home() / "env.json",
+    )
+
+
+def test_load_luca_config_never_reads_the_environment_itself(tmp_path, monkeypatch):
+    """The env var is resolved by `resolve_config_path`, deliberately not by
+    the loader — otherwise an ambient value would redirect a caller that
+    passed cwd/home precisely to control where it reads from."""
+    monkeypatch.setenv(ENV_CONFIG_PATH, str(tmp_path / "ambient.json"))
+    _write(tmp_path, {"model": {"model": "project"}})
+
+    config = load_luca_config(cwd=tmp_path, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="project"))
 
 
 # ── precedence (cli > config > base/default) ─────────────────────────────────

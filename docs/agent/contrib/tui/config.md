@@ -13,6 +13,35 @@ CLI flags: it overrides a resumed session's model, and a `--model` flag still
 overrides the file. Every field is optional; unknown keys are rejected, and a
 malformed file exits with a one-line error.
 
+## Naming a file directly
+
+`--config <path>` uses that file and **replaces both locations above** — neither
+`./luca.json` nor `~/.config/luca/luca.json` is read. It is not an extra layer:
+"use this config" means this one, not this one on top of whatever the repo
+carries.
+
+```bash
+uv run python main.py --config ./configs/ci.json
+LUCA_CONFIG_PATH=~/luca-profiles/review.json uv run python main.py
+```
+
+The `LUCA_CONFIG_PATH` environment variable is the same channel, and `--config`
+overrides it. `~` is expanded in both. CLI flags still win over whatever the
+named file says.
+
+Unlike the two discovered locations — which are simply empty when absent — a
+path you name that does not resolve is an error and exits `1`:
+
+```
+luca: /configs/ci.json: not a readable config file
+```
+
+That asymmetry is deliberate. Naming a file is a statement that it exists, and
+silently falling back to an empty config would run the agent with the settings
+you thought you had overridden.
+
+`--pretty-print` ignores config entirely (a transcript does not depend on it).
+
 Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 `$schema` key for autocomplete.
 

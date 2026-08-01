@@ -17,12 +17,16 @@ Usage:
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-streaming           # block-level rendering
+    uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
 except with `--faux`. Sessions persist to `<session-id>.json` in the current
 directory after every run. Requires the `tui` dependency group (installed by
 default with `uv sync`).
+
+Configuration comes from `./luca.json` over `~/.config/luca/luca.json`, unless
+`--config <path>` (or `LUCA_CONFIG_PATH`) names one file to use instead of both.
 """
 
 from dotenv import load_dotenv
