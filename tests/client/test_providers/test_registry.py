@@ -22,6 +22,12 @@ def test_resolve_provider_config_dict_entry_builds_generic_provider():
     assert p.name == "groq"
 
 
+def test_resolve_provider_quantized_builds_generic_provider():
+    p = resolve_provider("quantized", api_key="x")
+    assert isinstance(p, GenericProvider)
+    assert p.name == "quantized"
+
+
 def test_resolve_provider_unknown_raises():
     with pytest.raises(ProviderNotFoundError):
         resolve_provider("not-a-real-provider")

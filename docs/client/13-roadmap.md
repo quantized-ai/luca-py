@@ -40,7 +40,7 @@ nobody has to grep to find out whether a feature is real.
 
 **Providers**: `OpenAIProvider`, `AnthropicProvider`, `OpenRouterProvider`,
 `BedrockProvider`, `FauxProvider`, plus `GenericProvider`-backed entries for
-`groq`, `deepseek`, `ollama`.
+`groq`, `deepseek`, `ollama`, `quantized`.
 
 **Transports**: `OpenAIResponsesTransport` (provider `openai`),
 `OpenAITransport` (chat completions — every OpenAI-compatible host),
