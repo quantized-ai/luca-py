@@ -19,7 +19,10 @@ from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
-from tests.agent.scenarios import FakeContextManager
+from tests.agent.scenarios import (
+    FakeContextManager,
+    main_conversation,
+)
 
 from .helpers import fresh_session, idle_again, submit, wait_until
 
@@ -339,9 +342,10 @@ async def test_compact_schedules_a_compaction_and_drives_it(tmp_path):
         assert [cell.text for cell in app.query(CompactionCell)] == [
             "the story so far",
         ]
-        archived = app.runner.session.conversation_history[0]
         # the bracket stayed behind; only the summary carried over
-        assert app.runner.session.active_conversation.nodes == [archived.nodes[-2]]
+        installed = main_conversation(app.runner.session)
+        archived = app.runner.session.conversations[installed.previous_conversation_id]
+        assert installed.nodes == [archived.nodes[-2]]
 
 
 async def test_compact_with_a_manager_that_cannot_compact_reports_a_turn_failure(tmp_path):

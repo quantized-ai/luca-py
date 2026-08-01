@@ -75,12 +75,21 @@ class AgentMiddlewareMixin:
     def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,
         AssistantMessage, ToolExecution, TurnStart, TurnFinish,
-        CancelRequested, CompactionEntry) AND every update to the two MUTABLE
-        entry types: a `ToolExecution` (approval changes, the RUNNING
-        transition, cancellation stamps, terminal outcomes) and a
+        CancelRequested, CompactionEntry, ChildConversation) AND every update
+        to the three MUTABLE entry types: a `ToolExecution` (approval changes,
+        the RUNNING transition, cancellation stamps, terminal outcomes), a
         `CompactionEntry` (the `started_at` stamp, and the summary landing at
-        the commit point). Return the (possibly modified) entry — add
-        metadata, stamp external ids, mutate fields before persistence."""
+        the commit point), and a `ChildConversation` (its `execution_result`
+        landing once the subagent finishes — so this hook fires a second time
+        for that entry). Return the (possibly modified) entry — add metadata,
+        stamp external ids, mutate fields before persistence.
+
+        NOT conversation-scoped. This hook — like every per-LLM-call hook —
+        receives no `conversation_id`, so with subagents running it cannot tell
+        which conversation an entry belongs to. That is a missing capability,
+        not a failure, and it is safe for the library because nothing in
+        `luca/` implements a middleware hook. An APPLICATION that ships one and
+        assumed a single conversation gets no error, just wrong behavior."""
         return entry
 
     def before_llm_call(
@@ -134,7 +143,8 @@ class AgentMiddlewareMixin:
         `raw_tool_call` here to alter the effective call, which is what the
         registry's `prepare()` then resolves and validates from (the hook
         deliberately runs AHEAD of it). A terminal-at-birth call arrives with
-        NOT_FOUND / INVALID / FAILED already set, a denied call with REJECTED,
+        NOT_FOUND / INVALID / FAILED already set, a budget-refused call with
+        REFUSED, a denied call with REJECTED,
         a call cancelled before dispatch with CANCELLED. Not invoked again
         when a RUNNING call later reaches its terminal status. Return the
         (possibly modified) execution.

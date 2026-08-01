@@ -6,7 +6,7 @@ from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import default_model
-from luca.agent.core.models import LLMConfig
+from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
 from luca.agent.core.utils import pretty_print
 
 from .helpers import fresh_session
@@ -34,6 +34,58 @@ def test_default_args():
         None,
     )
     assert (args.workspace, args.mode) == (None, None)
+    assert args.subagents is True
+
+
+def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
+    on = build_session(arg_parser().parse_args([]))
+    off = build_session(arg_parser().parse_args(["--no-subagents"]))
+
+    assert on.session_config.runtime_config.subagents_enabled is True
+    assert off.session_config.runtime_config.subagents_enabled is False
+
+
+def test_the_subagent_limits_default_to_depth_three_and_no_caps():
+    runtime = build_session(arg_parser().parse_args([])).session_config.runtime_config
+
+    assert (
+        runtime.subagents_max_depth,
+        runtime.subagents_max_per_turn,
+        runtime.subagents_max_workers,
+    ) == (3, Inf, Inf)
+
+
+def test_an_invalid_limit_flag_value_fails_loudly():
+    # 0 is rejected by the RuntimeConfig validator; a plain attribute write
+    # would bypass it, wedge the first spawn, and poison the saved session
+    from luca.agent.contrib.tui.config import LucaConfigError
+
+    with pytest.raises(LucaConfigError, match="invalid subagent flag"):
+        build_session(arg_parser().parse_args(["--subagents-max-workers", "0"]))
+    with pytest.raises(LucaConfigError, match="invalid subagent flag"):
+        build_session(arg_parser().parse_args(["--subagents-max-per-turn", "0"]))
+
+
+def test_the_subagent_limit_flags_land_on_the_session():
+    session = build_session(
+        arg_parser().parse_args(
+            [
+                "--subagents-max-depth",
+                "2",
+                "--subagents-max-per-turn",
+                "5",
+                "--subagents-max-workers",
+                "3",
+            ]
+        )
+    )
+    runtime = session.session_config.runtime_config
+
+    assert (
+        runtime.subagents_max_depth,
+        runtime.subagents_max_per_turn,
+        runtime.subagents_max_workers,
+    ) == (2, 5, 3)
 
 
 def test_model_and_reasoning_override_the_fresh_session():
@@ -180,7 +232,9 @@ def test_pretty_print_without_a_conversation_exits_with_a_usage_error(capsys):
 
 def test_resume_and_fork(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    session = fresh_session()
+    # subagents on at depth 3 — the defaults every session the CLI builds
+    # gets, resumed ones included: the flags describe the run being started
+    session = fresh_session(RuntimeConfig(subagents_enabled=True, subagents_max_depth=3))
     save_session(session)
 
     resumed = build_session(

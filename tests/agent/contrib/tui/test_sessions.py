@@ -9,6 +9,9 @@ from luca.agent.contrib.tui.sessions import (
     save_session,
     session_path,
 )
+from tests.agent.scenarios import (
+    main_conversation,
+)
 
 from .helpers import fresh_session
 
@@ -31,7 +34,7 @@ def test_fork_gets_a_fresh_id_and_keeps_the_conversation():
     forked = fork_session(session)
 
     assert forked.id != session.id
-    assert forked.active_conversation == session.active_conversation
+    assert main_conversation(forked) == main_conversation(session)
     assert forked.entries == session.entries
 
 

@@ -3,7 +3,7 @@ summarization of the older span.
 
 Inherits core's per-entry accounting (`calculate_context`, `prune_entry`,
 `process_tool_output`) untouched and implements the compaction pair on top —
-`should_compact` measures the active conversation against the model's window,
+`should_compact` measures one conversation against the model's window,
 and `compact` summarizes the older span with the session's own model and folds
 it into a `CompactionEntry`, keeping a trailing tail.
 
@@ -28,7 +28,6 @@ from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.models import (
     AgentSession,
     CompactionEntry,
-    Conversation,
     TextContent,
     TurnStart,
     UserMessage,
@@ -60,15 +59,20 @@ DEFAULT_SUMMARY_REQUEST = "Summarize the conversation above per your instruction
 # ── the context gauge ─────────────────────────────────────────────────────────
 
 
-def calculate_context_used(session: AgentSession) -> int:
-    """Sum of intrinsic `context_tokens` over the active conversation path."""
+def calculate_context_used(session: AgentSession, conversation_id: str) -> int:
+    """Sum of intrinsic `context_tokens` over one conversation's path.
+
+    Takes the conversation because a session holds several — the main agent's
+    and one per subagent — and each has its own window to fill. A gauge that
+    summed "the" conversation would report a number with no single basis."""
     entries = session.entries
-    return sum(entries[node_id].context_tokens for node_id in session.active_conversation.nodes)
+    return sum(entries[node_id].context_tokens for node_id in session.conversations[conversation_id].nodes)
 
 
 def get_context_window_size(session: AgentSession, default: int = DEFAULT_WINDOW) -> int:
     """The model's window from the client catalog, or `default` when the model
-    (or the field) is missing."""
+    (or the field) is missing. Conversation-independent: the window is a fact
+    about the model, and every conversation in a session uses the same one."""
     cfg = session.session_config.llm_config
     info = catalog.get(cfg.provider, cfg.model)
     if info is not None and info.context_window:
@@ -76,12 +80,17 @@ def get_context_window_size(session: AgentSession, default: int = DEFAULT_WINDOW
     return default
 
 
-def calculate_utilization_ratio(session: AgentSession, *, default_window: int = DEFAULT_WINDOW) -> float:
-    """`used / window`, clamped to `[0, 1]`."""
+def calculate_utilization_ratio(
+    session: AgentSession,
+    conversation_id: str,
+    *,
+    default_window: int = DEFAULT_WINDOW,
+) -> float:
+    """`used / window` for one conversation, clamped to `[0, 1]`."""
     window = get_context_window_size(session, default_window)
     if window <= 0:
         return 0.0
-    return min(1.0, calculate_context_used(session) / window)
+    return min(1.0, calculate_context_used(session, conversation_id) / window)
 
 
 # ── the manager ───────────────────────────────────────────────────────────────
@@ -114,9 +123,14 @@ class SummarizingContextManager(ContextManager):
         self.enabled = enabled
         self.provider = provider
 
-    def should_compact(self, session: AgentSession) -> bool:
+    def should_compact(self, session: AgentSession, conversation_id: str) -> bool:
         return self.enabled and (
-            calculate_utilization_ratio(session, default_window=self.default_window) >= self.threshold
+            calculate_utilization_ratio(
+                session,
+                conversation_id,
+                default_window=self.default_window,
+            )
+            >= self.threshold
         )
 
     def select_keep(self, candidates: list[str], session: AgentSession) -> list[str]:
@@ -147,8 +161,7 @@ class SummarizingContextManager(ContextManager):
         session's own model, and return `(text, usage)`. Override to change the
         prompt, the model, or how the request is built."""
         cfg = session.session_config.llm_config
-        head = Conversation(id="_compaction_head", nodes=list(folded), created_at=0, updated_at=0)
-        messages = ConversationProjector().project(head, session.entries)
+        messages = ConversationProjector().project(folded, session.entries)
         messages = [*messages, ClientUserMessage(content=[TextBlock(text=DEFAULT_SUMMARY_REQUEST)])]
         response = await acompletion(
             model=f"{cfg.provider}:{cfg.model}",
@@ -162,6 +175,7 @@ class SummarizingContextManager(ContextManager):
     async def compact(
         self,
         session: AgentSession,
+        conversation_id: str,
         nodes: tuple[str, ...],
         entry: CompactionEntry,
     ) -> CompactionPlan | None:

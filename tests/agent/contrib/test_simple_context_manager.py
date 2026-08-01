@@ -20,8 +20,6 @@ from luca.agent.core.models import (
     AssistantMessage,
     CompactionEntry,
     CompactionSource,
-    Conversation,
-    ConversationStatus,
     LLMConfig,
     SessionConfig,
     TextContent,
@@ -30,7 +28,12 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
-from tests.agent.scenarios import MODEL as RICH_MODEL, RICH_IDLE_SESSION
+from tests.agent.scenarios import (
+    MODEL as RICH_MODEL,
+    RICH_IDLE_SESSION,
+    conversation,
+    main_conversation,
+)
 
 MODEL = LLMConfig(model="fake-model", provider="faux")
 
@@ -65,13 +68,15 @@ def two_turn_session() -> AgentSession:
             ),
             "tf2": TurnFinish(id="tf2", parent_id="a2", created_at=4),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2", "tf2"],
-            created_at=1,
-            updated_at=4,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2", "tf2"],
+                created_at=1,
+                updated_at=4,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -86,7 +91,7 @@ def pending_question_session() -> AgentSession:
         parts=[TextContent(text="Q3")],
         context_tokens=1,
     )
-    session.active_conversation.nodes.append("u3")
+    main_conversation(session).nodes.append("u3")
     return session
 
 
@@ -96,7 +101,7 @@ def _entry() -> CompactionEntry:
 
 def _offered(session: AgentSession) -> tuple[str, ...]:
     # the path the runner offers: the active nodes, ending with the compaction entry
-    return (*session.active_conversation.nodes, "cmp")
+    return (*main_conversation(session).nodes, "cmp")
 
 
 def _faux(summary: str) -> FauxProvider:
@@ -116,7 +121,7 @@ class FixedSummary(SummarizingContextManager):
 
 
 def test_calculate_context_used_sums_context_tokens_over_the_active_path():
-    assert calculate_context_used(two_turn_session()) == 4
+    assert calculate_context_used(two_turn_session(), "c1") == 4
 
 
 def test_get_context_window_size_falls_back_to_default_for_an_unknown_model():
@@ -124,21 +129,21 @@ def test_get_context_window_size_falls_back_to_default_for_an_unknown_model():
 
 
 def test_calculate_utilization_ratio_is_used_over_window():
-    assert calculate_utilization_ratio(two_turn_session(), default_window=8) == 0.5
+    assert calculate_utilization_ratio(two_turn_session(), "c1", default_window=8) == 0.5
 
 
 def test_should_compact_is_true_once_utilization_reaches_the_threshold():
-    assert SummarizingContextManager(default_window=8, threshold=0.4).should_compact(two_turn_session()) is True
+    assert SummarizingContextManager(default_window=8, threshold=0.4).should_compact(two_turn_session(), "c1") is True
 
 
 def test_should_compact_is_false_below_the_threshold():
-    assert SummarizingContextManager(default_window=8, threshold=0.9).should_compact(two_turn_session()) is False
+    assert SummarizingContextManager(default_window=8, threshold=0.9).should_compact(two_turn_session(), "c1") is False
 
 
 def test_should_compact_is_false_when_disabled_however_full_the_window_is():
     manager = SummarizingContextManager(default_window=8, threshold=0.4, enabled=False)
 
-    assert manager.should_compact(two_turn_session()) is False
+    assert manager.should_compact(two_turn_session(), "c1") is False
 
 
 # ── select_keep (the keep_turns split) ───────────────────────────────────────
@@ -146,13 +151,13 @@ def test_should_compact_is_false_when_disabled_however_full_the_window_is():
 
 def test_keep_turns_zero_keeps_nothing():
     session = two_turn_session()
-    assert SummarizingContextManager(keep_turns=0).select_keep(list(session.active_conversation.nodes), session) == []
+    assert SummarizingContextManager(keep_turns=0).select_keep(list(main_conversation(session).nodes), session) == []
 
 
 def test_keep_turns_one_keeps_the_last_exchange_including_its_user_message():
     session = two_turn_session()
     assert SummarizingContextManager(keep_turns=1).select_keep(
-        list(session.active_conversation.nodes),
+        list(main_conversation(session).nodes),
         session,
     ) == ["u2", "ts2", "a2", "tf2"]
 
@@ -164,7 +169,7 @@ def test_the_cut_lands_on_an_exchange_boundary_and_never_strands_a_tool_call():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
 
     assert SummarizingContextManager(keep_turns=1).select_keep(
-        list(session.active_conversation.nodes),
+        list(main_conversation(session).nodes),
         session,
     ) == ["u3", "ts3", "a3", "te3", "cr1", "tf3"]
 
@@ -176,7 +181,7 @@ async def test_full_summary_folds_the_whole_span_into_one_node():
     session = two_turn_session()
     manager = SummarizingContextManager(provider=_faux("THE SUMMARY"))
 
-    plan = await manager.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, "c1", _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -196,7 +201,7 @@ async def test_keep_turns_keeps_the_tail_and_folds_the_head():
     session = two_turn_session()
     manager = SummarizingContextManager(keep_turns=1, provider=_faux("HEAD SUMMARY"))
 
-    plan = await manager.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, "c1", _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -218,7 +223,7 @@ async def test_a_trailing_unanswered_user_message_is_never_folded():
     session = pending_question_session()
     manager = SummarizingContextManager(provider=_faux("SUMMARY"))  # full summary
 
-    plan = await manager.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, "c1", _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -241,7 +246,7 @@ async def test_a_tool_bearing_span_folds_through_the_projected_summary_call():
     session = RICH_IDLE_SESSION.model_copy(deep=True)
     manager = SummarizingContextManager(keep_turns=1, provider=_faux("EARLIER WORK"))
 
-    plan = await manager.compact(session, _offered(session), _entry())
+    plan = await manager.compact(session, "c1", _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(
@@ -274,13 +279,13 @@ async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     session = two_turn_session()
     manager = SummarizingContextManager(keep_turns=5, provider=_faux("x"))
 
-    assert await manager.compact(session, _offered(session), _entry()) is None
+    assert await manager.compact(session, "c1", _offered(session), _entry()) is None
 
 
 async def test_a_subclass_can_override_the_summarize_seam():
     session = two_turn_session()
 
-    plan = await FixedSummary().compact(session, _offered(session), _entry())
+    plan = await FixedSummary().compact(session, "c1", _offered(session), _entry())
 
     assert plan == CompactionPlan(
         entry=_entry().model_copy(

@@ -3,13 +3,22 @@
 Two in-memory capabilities, each backed by a store the plugin owns and hands
 to its tool pair (so a write is immediately visible to the next read):
 
-- **Scratchpad** — one shared string; each write fully replaces the content.
-- **Todo list** — a list of `{"content", "status"}` items; `update_todos`
-  replaces the whole list in one call (the model re-sends every item,
-  including the unchanged ones).
+- **Scratchpad** — one string per conversation; each write fully replaces the
+  content.
+- **Todo list** — a list of `{"content", "status"}` items per conversation;
+  `update_todos` replaces the whole list in one call (the model re-sends every
+  item, including the unchanged ones).
 
-One plugin instance = one scratchpad + one todo list; the stores live on the
-plugin, not the session — nothing here persists or serializes.
+Each store is keyed BY CONVERSATION. A plugin instance is shared by the main
+agent and every subagent, so one flat dict would mean the parent and its
+children writing over each other's todo list — private working memory that
+silently stops being private the moment a second conversation exists. Tool
+dispatch within one conversation is sequential, so a per-conversation slot
+needs no lock.
+
+One plugin instance = one scratchpad + one todo list PER CONVERSATION; the
+stores live on the plugin, not the session — nothing here persists or
+serializes.
 """
 
 from __future__ import annotations
@@ -59,10 +68,11 @@ class ReadScratchPadTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
-        return self.store.get("content", "")
+        return self.store.get(conversation_id, {}).get("content", "")
 
 
 class WriteScratchPadTool(Tool):
@@ -82,10 +92,11 @@ class WriteScratchPadTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
-        self.store["content"] = args["content"]
+        self.store.setdefault(conversation_id, {})["content"] = args["content"]
         return "Scratchpad updated successfully"
 
 
@@ -118,10 +129,11 @@ class ReadTodoTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
-        return repr(self.store.get("todos", []))
+        return repr(self.store.get(conversation_id, {}).get("todos", []))
 
 
 class UpdateTodosTool(Tool):
@@ -143,12 +155,13 @@ class UpdateTodosTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         # Store JSON-clean dicts: the validated args carry TodoStatus members,
         # which would repr() as enums on the next read_todo.
-        self.store["todos"] = [
+        self.store.setdefault(conversation_id, {})["todos"] = [
             {"content": item["content"], "status": TodoStatus(item["status"]).value} for item in args["todos"]
         ]
         return "Todo list updated successfully"

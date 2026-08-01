@@ -180,6 +180,7 @@ request:
 | Field | What it holds |
 |---|---|
 | `tool_call_id` | the correlation key back to the `tool_call` part |
+| `conversation_id` | provenance: the conversation this call was born in (§7). It is on this entry and no other, because an execution is the only entry a consumer receives **detached from a path** — handed to a registry, to middleware, carried inside the tool events |
 | `raw_tool_call` | the request being executed — starts as the model's, middleware may swap it ([07](07-middleware.md)) |
 | `tool_spec_id` | the durable reference to the resolved tool — a key into `session.tool_specs` (§7); `None` if it never resolved |
 | `tool_spec` | the resolved tool itself (`name`, `description`, `input_schema`, optional `output_schema`, kind, version, declared `timeout_in_ms`) — a cache restored from `tool_spec_id`, never the durable truth (§7) |
@@ -201,6 +202,7 @@ The lifecycle (`ExecutionStatus`):
 | `not_found` | no such tool |
 | `invalid` | arguments failed validation |
 | `rejected` | the registry's decide() denied it |
+| `refused` | a framework runtime limit refused the call before dispatch (e.g. the spawn budget, [13](13-subagents.md)) |
 | `cancelled` | cancellation prevented the body from starting |
 | `interrupted` | a started body didn't finish (crash, orphan recovery) |
 | `timed_out` | the framework-enforced deadline on the body expired |
@@ -217,7 +219,7 @@ dispatch leaves it `None`:
 | `dispatched` | Statuses |
 |---|---|
 | `True` | `running`, `completed`, `timed_out`, `interrupted`, and a `failed` raised by the tool body |
-| `False` | `pending`, `rejected`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
+| `False` | `pending`, `rejected`, `refused`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
 
 Every tool call yields **exactly one** tool output for the model — even a
 denied, cancelled, or malformed one (error text is derived from `status` +
@@ -238,9 +240,10 @@ assistant
 tool_execution  call_2 · delete_file → pending    approval=pending   # ⏸ run pauses
 ```
 
-No `turn_finish` — the turn is left **open** and the session is awaiting
-approval. The application resolves the decision out of band and calls `run()`
-again ([05](05-permissions.md)); the same execution then advances in place:
+No `turn_finish` — the turn is left **open** and the conversation derives
+`blocked` (§10). The application resolves the decision out of band and calls
+`run()` again ([05](05-permissions.md)); the same execution then advances in
+place:
 
 ```
 tool_execution  call_2 · delete_file → completed  approval=allowed
@@ -353,8 +356,8 @@ the log as a list. Two fields, and keeping them distinct is the core idea:
 ```python
 from luca.agent.core import AgentSession
 
-session.entries                     # dict[str, AnyEntry] — flat store, keyed by id
-session.active_conversation.nodes   # list[str] — ordered entry ids: THE conversation
+session.entries                                     # dict[str, AnyEntry] — flat store, keyed by id
+session.conversations[session.main_conversation_id].nodes   # list[str] — ordered ids: THE conversation
 ```
 
 `entries` is an append-only **bag** of everything that ever happened. `nodes`
@@ -397,9 +400,57 @@ The full container:
 | `entries` | the append-only bag |
 | `tool_specs` | normalized spec store `spec_id → ToolSpec`, append-only: one row per distinct tool definition ever *called* |
 | `usages` | provider-usage records, `conversation_id → entry_id → Usage` ([11](11-context-and-usage.md)) |
-| `active_conversation` | `Conversation`: `id`, `nodes`, `status`, timestamps |
-| `conversation_history` | prior `Conversation` paths kept alongside the active one |
+| `conversations` | the CATALOG: `dict[str, Conversation]` — every path over the bag, live or archived |
+| `main_conversation_id` | which one the user is talking to |
 | `session_config` | `LLMConfig` + `RuntimeConfig` (§10) |
+
+A `Conversation` is a path and its bookkeeping — `id`, `nodes`, `created_at`,
+`updated_at`, `previous_conversation_id` (the one a compaction replaced, §9) and
+`depth` (0 for the main conversation, 1 for a subagent's). **It stores no
+status**: status is derived from the entries on every read (§10).
+
+The catalog is flat, not a tree, and there is no parent pointer — parent → child
+is the only direction anything traverses, through the entry below. That is
+exactly why `depth` is stored rather than computed.
+
+### Subagents: more than one conversation at a time
+
+A subagent is a second conversation in the same session, advancing at the same
+time as the main one and linked into its parent's path by a
+**`child_conversation`** entry:
+
+```
+main conversation c1                     subagent conversation c2 (depth 1)
+──────────────────────────────           ───────────────────────────────────
+user   "summarize alpha and beta"
+turn_start
+assistant
+ └─ tool_call  call_9 · spawn_subagent
+tool_execution     call_9 → completed
+child_conversation  → c2  ─────────────▶ user   "Read alpha.txt and report back"
+                                         turn_start
+                                         assistant … tool_execution …
+                                         assistant "alpha is a shopping list"
+                                         turn_finish  outcome=completed
+tool_execution  call_10 · <result tool>
+child_conversation  → c2  ◀────────────  execution_result "alpha is a shopping list"
+assistant  "alpha is a shopping list…"
+turn_finish     outcome=completed
+```
+
+`child_conversation` is the **third mutable entry type**: it is appended
+unresolved when the child is spawned and gains its `execution_result` when the
+child's turn closes.
+
+| Field | What it holds |
+|---|---|
+| `conversation_id` | the child conversation in `session.conversations` |
+| `tool_execution_id` | the spawning execution — the durable record that this spawn was handled, so a reload never spawns it twice |
+| `execution_result` | the child's answer, `None` until its turn closes |
+
+The parent's turn cannot end while a link is unresolved: projecting one raises
+([10](10-projection.md)), and the answer is not in yet. What spawns children,
+who drives them, and how they are cancelled is [13](13-subagents.md).
 
 An execution names its tool by `tool_spec_id`; the spec is stored once, under an
 id derived from its own content:
@@ -461,10 +512,10 @@ bag keeps everything (append-only, nothing is deleted); compaction **archives
 the conversation and opens a new one** over the path that survives:
 
 ```
-before:  active c1 = A → B → C → D → E → F
+before:  main c1 = A → B → C → D → E → F
 
-after:   active  c1 → [A, B, C, D, E, F, ts, S, tf]   ← archived, intact
-         active  c2 → [S, E, F]                       ← the new view
+after:   c1 → [A, B, C, D, E, F, ts, S, tf]   ← archived, intact
+         c2 → [S, E, F]                       ← the new main conversation
 
 S  compaction
    ├─ source           "user" | "policy"    # who asked
@@ -474,13 +525,18 @@ S  compaction
    └─ started_at / ended_at
 ```
 
+Both conversations stay in the catalog; `main_conversation_id` moves to `c2` and
+`c2.previous_conversation_id` names `c1`, so the chain back through every
+compaction is walkable one hop at a time.
+
 `compacted_nodes` makes the entry self-describing — you can always recover what
 it replaced, because those entries are still in the bag and the whole
-pre-compaction path is in `conversation_history`. The model sees `parts` as a
+pre-compaction path is still a conversation in the catalog. The model sees `parts` as a
 user message ([10](10-projection.md)); who triggers it and what it says is a
 `ContextManager`'s job ([12](12-compaction.md)).
 
-`compaction` is the **second mutable entry type**: it is written the moment a
+`compaction` is a **mutable entry type** (the second of three, with
+`tool_execution` and `child_conversation`): it is written the moment a
 compaction is intended, mutated as it progresses, and left in its terminal
 state whether it succeeded or not. It carries no `status` field — the turn
 bracket around it owns how the attempt ended, and these fields own what it
@@ -512,22 +568,38 @@ Who produces pruned entries and when is a strategy concern —
 
 ## 10. Status and config
 
+Status is **never stored**. There is one door, and it recomputes from the nodes
+on every call:
+
 ```python
-session.status                   # ConversationStatus — a persisted cache
-session.session_runtime_status   # recomputed from the entries on every access
+from luca.agent.core import ConversationStatus
+
+state = session.get_conversation_status(session.main_conversation_id)
+state.status        # ConversationStatus
+state.turn_count    # conversational turns in this conversation
+state.step_count    # assistant messages in the OPEN turn
 ```
 
-| `status` | Meaning |
+| `status` | Derived when |
 |---|---|
-| `idle` | nothing queued; awaiting a user message |
-| `pending` | work queued — call `run()` |
-| `running` | a run is actively driving (crash-recovery marker) |
-| `awaiting_approval` | paused at a tool-approval gate (§4) |
-| `cancelling` | an unconsumed `cancel_requested` exists (§6) |
+| `cancelling` | the open turn holds an unconsumed `cancel_requested` (§6) |
+| `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued |
+| `blocked` | the open turn has nothing runnable: every execution is waiting on an approval, or every subagent is |
+| `idle` | anything else, INCLUDING a closed `turn_finish` whatever its outcome |
 
-> ⚠️ **Never trust a persisted status.** `status` is a cache the runner
-> maintains; the entries are the truth. A session that crashed mid-`running`
-> self-heals when a runner takes ownership and re-derives it.
+Two consequences, both deliberate. A **failed** turn derives `idle`, so
+recovering from one means posting a new message rather than re-driving the same
+request. And a trailing user message derives `busy`, so a second message cannot
+be queued behind a first — "let the user type while the agent works" is an
+application-level input buffer that posts on the next `idle`.
+
+`blocked` is **subtree-aware**: a parent whose subagents are still working is
+`busy`, and flips to `blocked` only when every one of them is. That transition
+is triggered by a *sibling* finishing, with nothing in the parent's own entries
+changing at all — which is exactly why nothing can cache it.
+
+> ⚠️ **A crashed session self-heals for free.** Nothing persists a "running"
+> marker to go stale, because the entries were always the truth.
 
 `session_config` holds the `LLMConfig` for the *next* turn plus the
 `RuntimeConfig` knobs ([08](08-runtime-config.md)). What is **not** on the
@@ -546,8 +618,8 @@ runner = AgentSessionRunner(session, tool_registry=registry)
 
 Loading is just deserializing; resuming is constructing a runner around the
 loaded session and supplying the collaborators again. An open turn resumes
-(§5), a stale status self-heals (§10), a pending approval is still pending
-(§4).
+(§5), status re-derives itself (§10), a pending approval is still pending (§4),
+and an unresolved subagent is picked up where it stopped (§7).
 
 Tool specs go out normalized and come back restored. Two calls to the same tool
 are one stored spec and two references — the inline `tool_spec` is not written
@@ -595,6 +667,7 @@ rather than degrade quietly:
 | `turn_start` | — | no |
 | `turn_finish` | `outcome`, `error` | no |
 | `cancel_requested` | requested `outcome`, `error` | no |
+| `child_conversation` | the link to one subagent and its result (§7) | **yes** |
 | `compaction` | `source`, `parts`, `compacted_nodes`, `llm_config`, timestamps (§9) | **yes** |
 | `pruned` | replacement `content` for one original entry (§9) | no |
 
@@ -610,13 +683,16 @@ same door files the spec and stamps the id (§7).
 
 ## 13. Read a saved session
 
-`pretty_print` renders the active conversation as a plain-text transcript —
-the way to inspect a `<session-id>.json` without loading it into an app.
+`pretty_print` renders one conversation as a plain-text transcript — the way to
+inspect a `<session-id>.json` without loading it into an app. No argument means
+the main one; pass an id for a subagent's.
 
 ```python
 from luca.agent.core import pretty_print
 
-print(pretty_print(AgentSession.model_validate_json(text)))
+session = AgentSession.model_validate_json(text)
+print(pretty_print(session))                     # the main conversation
+print(pretty_print(session, child_id))           # one subagent's, header + depth
 ```
 
 ```
@@ -656,7 +732,9 @@ It reads the durable session, not the wire view ([10](10-projection.md)): a
 tool node shows the stored `ExecutionResult` or `ToolExecutionError`, the
 approval line comes from `approval_status` plus the last decision's
 provenance, and the token counts come from `usages` for **this** conversation
-(§7). Reasoning renders as a marker, tool output clips, and a node id missing
+(§7). The status line is derived like everywhere else (§10), and a subagent
+link renders as a `Subagent · <id>` node with its result — print that id to see
+the child's own transcript. Reasoning renders as a marker, tool output clips, and a node id missing
 from the store prints as `[missing entry <id>]` instead of raising — a
 debugging view of a broken session still has to print.
 

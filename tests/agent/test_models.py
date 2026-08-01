@@ -66,6 +66,7 @@ from tests.agent.scenarios import (
     EMPTY_SCHEMA,
     MODEL,
     READ_FILE_SPEC,
+    conversation,
     make_session,
 )
 
@@ -76,6 +77,7 @@ REPEATED_CALL_SESSION = make_session(
     entries={
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -88,6 +90,7 @@ REPEATED_CALL_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=600,
             tool_call_id="tc2",
@@ -100,12 +103,15 @@ REPEATED_CALL_SESSION = make_session(
             updated_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["te1", "te2"],
-        created_at=500,
-        updated_at=600,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["te1", "te2"],
+            created_at=500,
+            updated_at=600,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -226,7 +232,7 @@ def test_spec_id_is_the_sha256_hex_of_the_canonical_json():
     canonical = (
         '{"description":"Run a shell command.",'
         '"input_schema":{"properties":{},"type":"object"},'
-        '"metadata":null,"name":"bash","namespace":null,'
+        '"is_private":false,"metadata":null,"name":"bash","namespace":null,'
         '"output_schema":null,"timeout_in_ms":null,'
         '"tool_kind":"execute","version":null}'
     )
@@ -388,11 +394,13 @@ def test_tool_execution_error_forbids_unknown_fields():
 def test_tool_execution_defaults_to_birth_state():
     assert ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1}),
     ) == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id=None,
         created_at=1,
         type="tool_execution",
@@ -436,12 +444,14 @@ def test_tool_execution_requires_raw_tool_call():
 def test_tool_execution_dispatched_and_duration_are_derived():
     undispatched = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
     )
     settled = ToolExecution(
         id="te2",
+        conversation_id="c1",
         created_at=1,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="add"),
@@ -462,6 +472,7 @@ def test_tool_execution_does_not_enforce_cross_field_invariants():
     # combinations must construct (the application owns the consequences)
     unusual = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -476,6 +487,7 @@ def test_tool_execution_does_not_enforce_cross_field_invariants():
 def test_versioned_tool_execution_round_trips_through_json():
     execution = ToolExecution(
         id="caf0ab9ac",
+        conversation_id="c1",
         parent_id="d4e5f6a7",
         created_at=1780495331220,
         tool_call_id="toolu_01Tg",
@@ -519,6 +531,7 @@ def test_versioned_tool_execution_round_trips_through_json():
 def test_failed_tool_execution_round_trips_with_structured_error():
     execution = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1780495331220,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(
@@ -567,6 +580,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
         "type": "tool_execution",
         "context_tokens": 0,
         "tool_call_id": "tc1",
+        "conversation_id": "c1",
         "raw_tool_call": {
             "type": "tool_call",
             "id": "tc1",
@@ -610,6 +624,7 @@ def test_structured_content_survives_a_session_round_trip():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=500,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="get_weather", arguments={"city": "Berlin"}),
@@ -624,7 +639,8 @@ def test_structured_content_survives_a_session_round_trip():
                 updated_at=500,
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["te1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -634,6 +650,7 @@ def test_structured_content_survives_a_session_round_trip():
 def test_a_standalone_tool_execution_still_serializes_its_spec_inline():
     execution = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=500,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -660,6 +677,7 @@ def test_a_dangling_tool_spec_id_refuses_to_load():
             entries={
                 "te1": ToolExecution(
                     id="te1",
+                    conversation_id="c1",
                     created_at=500,
                     tool_call_id="tc1",
                     raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -667,12 +685,15 @@ def test_a_dangling_tool_spec_id_refuses_to_load():
                 ),
             },
             tool_specs={},
-            active_conversation=Conversation(
-                id="c1",
-                nodes=["te1"],
-                created_at=500,
-                updated_at=500,
-            ),
+            conversations={
+                "c1": conversation(
+                    "c1",
+                    ["te1"],
+                    created_at=500,
+                    updated_at=500,
+                )
+            },
+            main_conversation_id="c1",
             session_config=SessionConfig(llm_config=MODEL),
         )
 
@@ -686,18 +707,22 @@ def test_a_pre_normalization_session_refuses_to_load():
             entries={
                 "te1": ToolExecution(
                     id="te1",
+                    conversation_id="c1",
                     created_at=500,
                     tool_call_id="tc1",
                     raw_tool_call=ToolCall(id="tc1", name="add"),
                     tool_spec=ADD_SPEC,
                 ),
             },
-            active_conversation=Conversation(
-                id="c1",
-                nodes=["te1"],
-                created_at=500,
-                updated_at=500,
-            ),
+            conversations={
+                "c1": conversation(
+                    "c1",
+                    ["te1"],
+                    created_at=500,
+                    updated_at=500,
+                )
+            },
+            main_conversation_id="c1",
             session_config=SessionConfig(llm_config=MODEL),
         )
 
@@ -708,6 +733,7 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=500,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -720,6 +746,7 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
             ),
             "te2": ToolExecution(
                 id="te2",
+                conversation_id="c1",
                 parent_id="te1",
                 created_at=600,
                 tool_call_id="tc2",
@@ -732,12 +759,15 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
                 updated_at=600,
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["te1", "te2"],
-            created_at=500,
-            updated_at=600,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["te1", "te2"],
+                created_at=500,
+                updated_at=600,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -769,6 +799,7 @@ def test_execution_status_members():
         "NOT_FOUND": "not_found",
         "INVALID": "invalid",
         "REJECTED": "rejected",
+        "REFUSED": "refused",
         "CANCELLED": "cancelled",
         "INTERRUPTED": "interrupted",
         "TIMED_OUT": "timed_out",
@@ -843,13 +874,74 @@ def test_runtime_config_defaults_are_infinite_and_zero_grace():
         doom_loop_threshold=Inf,
         limit_tool_choice_on_soft_max_steps_reached=True,
         limit_tool_choice_on_doom_loop_flagged=True,
+        subagents_enabled=False,
+        subagents_max_depth=1,
+        subagents_max_per_turn=Inf,
+        subagents_max_workers=Inf,
+        subagent_soft_max_steps=None,
+        subagent_hard_max_steps=None,
         extras={},
     )
+
+
+def test_subagents_are_off_by_default():
+    # so existing sessions and tests are unaffected: with this False the
+    # registry withholds the spawn tool and the runner raises if one comes
+    # back anyway
+    assert RuntimeConfig().subagents_enabled is False
+    assert RuntimeConfig().subagents_max_depth == 1
+
+
+def test_subagent_step_limits_default_to_none_not_inf():
+    # None means "fall back to the main conversation's limit", which is a
+    # different fact from Inf ("no limit")
+    config = RuntimeConfig(hard_max_steps=20)
+
+    assert config.subagent_hard_max_steps is None
+    assert config.hard_max_steps == 20
+
+
+def test_subagent_step_limits_accept_inf_and_a_natural():
+    config = RuntimeConfig(subagent_soft_max_steps=Inf, subagent_hard_max_steps=8)
+
+    assert (config.subagent_soft_max_steps, config.subagent_hard_max_steps) == (Inf, 8)
 
 
 def test_runtime_config_rejects_below_inf():
     with pytest.raises(ValidationError):
         RuntimeConfig(tool_execution_timeout_in_ms=-2)
+
+
+def test_subagent_step_limits_reject_below_inf():
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagent_hard_max_steps=-2)
+
+
+def test_subagents_max_depth_rejects_below_inf():
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_depth=-2)
+
+
+def test_subagents_max_per_turn_is_inf_or_positive():
+    # 0 is not "disabled" — it would mean no subagent may ever exist, which is
+    # subagents_enabled=False spelled incorrectly
+    assert RuntimeConfig(subagents_max_per_turn=Inf).subagents_max_per_turn == Inf
+    assert RuntimeConfig(subagents_max_per_turn=1).subagents_max_per_turn == 1
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_per_turn=0)
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_per_turn=-2)
+
+
+def test_subagents_max_workers_is_inf_or_positive():
+    # 0 is not "disabled" — it would mean no subagent may ever run, which is
+    # subagents_enabled=False spelled incorrectly
+    assert RuntimeConfig(subagents_max_workers=Inf).subagents_max_workers == Inf
+    assert RuntimeConfig(subagents_max_workers=1).subagents_max_workers == 1
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_workers=0)
+    with pytest.raises(ValidationError):
+        RuntimeConfig(subagents_max_workers=-2)
 
 
 def test_runtime_config_round_trips_with_extras():
@@ -928,6 +1020,7 @@ def test_pruned_entry_round_trips_inside_a_session():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=1,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
@@ -956,12 +1049,15 @@ def test_pruned_entry_round_trips_inside_a_session():
                 ),
             },
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["p1"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["p1"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -1147,12 +1243,15 @@ def test_a_signature_survives_a_whole_session_round_trip():
                 stop_reason="stop",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["a1"],
-            created_at=1000,
-            updated_at=1000,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["a1"],
+                created_at=1000,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -1232,12 +1331,15 @@ def test_a_committed_compaction_round_trips_inside_a_session():
                 context_tokens=1_004,
             ),
         },
-        active_conversation=Conversation(
-            id="c2",
-            nodes=["cmp"],
-            created_at=1000,
-            updated_at=1000,
-        ),
+        conversations={
+            "c2": conversation(
+                "c2",
+                ["cmp"],
+                created_at=1000,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c2",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -1342,18 +1444,21 @@ def test_turn_count_counts_conversational_brackets_including_the_open_one():
             ),
             "ts3": TurnStart(id="ts3", parent_id="tf2", created_at=1000),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts1", "tf1", "ts2", "tf2", "ts3"],
-            created_at=1000,
-            updated_at=1000,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts1", "tf1", "ts2", "tf2", "ts3"],
+                created_at=1000,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
     # a failed bracket counts, and so does the open one before its first
     # assistant message lands
-    assert session.session_runtime_status.turn_count == 3
+    assert session.get_conversation_status(session.main_conversation_id).turn_count == 3
 
 
 def test_turn_count_excludes_compaction_brackets():
@@ -1371,21 +1476,24 @@ def test_turn_count_excludes_compaction_brackets():
             ),
             "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=1000),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts1", "tf1", "ts_c", "cmp", "tf_c"],
-            created_at=1000,
-            updated_at=1000,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts1", "tf1", "ts_c", "cmp", "tf_c"],
+                created_at=1000,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
-    assert session.session_runtime_status.turn_count == 1
+    assert session.get_conversation_status(session.main_conversation_id).turn_count == 1
 
 
-def test_turn_count_is_scoped_to_the_active_conversation():
+def test_turn_count_is_scoped_to_one_conversation():
     # entries outlive their conversation, so counting the store would include
-    # every archived turn
+    # every archived turn — and archived conversations sit in the SAME dict
     session = AgentSession(
         id="s_turns_archived",
         entries={
@@ -1401,21 +1509,20 @@ def test_turn_count_is_scoped_to_the_active_conversation():
             "ts1": TurnStart(id="ts1", parent_id="cmp", created_at=1000),
             "tf1": TurnFinish(id="tf1", parent_id="ts1", created_at=1000),
         },
-        active_conversation=Conversation(
-            id="c2",
-            nodes=["cmp", "ts1", "tf1"],
-            created_at=1000,
-            updated_at=1000,
-        ),
-        conversation_history=[
-            Conversation(
-                id="c1",
-                nodes=["ts0", "tf0"],
-                created_at=900,
-                updated_at=900,
+        conversations={
+            "c2": conversation(
+                "c2",
+                ["cmp", "ts1", "tf1"],
+                created_at=1000,
+                updated_at=1000,
+                previous_conversation_id="c1",
             ),
-        ],
+            "c1": conversation("c1", ["ts0", "tf0"], created_at=900, updated_at=900),
+        },
+        main_conversation_id="c2",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
-    assert session.session_runtime_status.turn_count == 1
+    assert session.get_conversation_status("c2").turn_count == 1
+    # and the archived one still answers for its own path
+    assert session.get_conversation_status("c1").turn_count == 1

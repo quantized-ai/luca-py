@@ -54,7 +54,13 @@ the *application's* rules shouldn't ship a registry at all — expose the tools
 and let the app compose them.
 
 > ⚠️ **Construction-time only.** Hooks run once. Per-call dynamism belongs in
-> a registry's `async get_tools(session)`, [middleware](../../07-middleware.md),
-> or a callable prompt part.
+> a registry's `async get_tools(session, conversation_id)`,
+> [middleware](../../07-middleware.md), or a callable prompt part — which is
+> also the only place a plugin can vary per conversation, since the hooks run
+> long before any subagent exists ([`13-subagents.md`](../../13-subagents.md)).
+
+> ⚠️ **One plugin instance serves the whole tree.** Any state it holds — a
+> store, a cache, a tracker — is shared by the main agent and every subagent, so
+> key it by `conversation_id`. `MemoryPlugin` and `ShellAccessPlugin` both do.
 
 Next: [`resource_permissions/README.md`](../resource_permissions/README.md).

@@ -2,7 +2,7 @@
 
 A flat, data-driven registry: one `SlashCommand` per command, so `/help`
 renders itself and nothing drifts. `dispatch` is the single entry point the
-app calls from `on_input_submitted`; it returns True when it handled a
+app calls from `on_prompt_input_submitted`; it returns True when it handled a
 command and False when the text was not a command, so the caller can send it
 to the agent as a normal message.
 

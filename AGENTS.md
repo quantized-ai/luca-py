@@ -6,12 +6,12 @@
 
 It has two layers:
 
-- **`luca.agent`** — the primary product. A full-featured, durable agent: a single serializable `AgentSession` that records the whole conversation, an async agent loop that drives it, a permission model for tool approvals, and an event API for rendering.
+- **`luca.agent`** — the primary product. A full-featured, durable agent: a single serializable `AgentSession` that records every conversation in it (the main one plus any parallel subagents), an async agent loop that drives them, a permission model for tool approvals, and an event API for rendering.
 - **`luca.client`** — a supporting package. A thin, unified LLM SDK ("small, simple LiteLLM") that gives the agent one API across providers (OpenAI, Anthropic, OpenRouter, …). Deliberately minimal and stable; exists to serve the agent. Only runtime deps: `httpx` + `pydantic`.
 
 Most new feature work happens in `luca.agent`. Changes to `luca.client` are usually in service of an agent need.
 
-Package boundaries are sharp and must stay that way: `luca/client` is the LLM client; `luca/agent/core` is the core of the agent (data model, main runner, main abstractions); **everything else goes in `luca/agent/contrib`** — optional packages that consume only core's public surface, exactly like application code would. Core never imports from contrib. Contrib→contrib dependencies ARE allowed (e.g. `contrib/plugins` builds on `contrib/simple_tool_registry`).
+Package boundaries are sharp and must stay that way: `luca/client` is the LLM client; `luca/agent/core` is the core of the agent (data model, main runner, main abstractions); **everything else goes in `luca/agent/contrib`** — optional packages that consume only core's public surface, exactly like application code would. Core never imports from contrib. Contrib→contrib dependencies ARE allowed (e.g. `contrib/plugins` builds on `contrib/simple_tool_registry`, and `contrib/subagents` — the spawn + result tools behind the parallel-subagent capability — builds on both).
 
 This project is a library. We always have to think first about our developer users and give them the possibility to extend and customize the behavior. That's why Middleware and other architectural decisions are key. We don't know how our library will be used so we must always keep it extensible and open while keeping a very tight Data Model.
 
@@ -91,6 +91,10 @@ uv run python main.py                              # fresh session
 uv run python main.py --faux                       # offline scripted demo — no key, no network
 uv run python main.py --conversation <id>          # resume <id>.json
 uv run python main.py --conversation <id> --fork   # branch into a new session
+uv run python main.py --no-subagents               # stop it spawning parallel subagents
+uv run python main.py --subagents-max-depth 1      # no nesting (the demo default is 3)
+uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget (default: none)
+uv run python main.py --subagents-max-workers 3    # how many work at once (default: no cap)
 uv run python main.py --no-streaming               # block-level events instead of deltas
 uv run python main.py --model <id> --reasoning <level>  # override the session's LLMConfig
 ```

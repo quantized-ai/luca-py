@@ -16,12 +16,15 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.core import (
     AgentSession,
     ApprovalOption,
-    Conversation,
     ExecutionStatus,
     LLMConfig,
     SessionConfig,
     ToolCall,
     ToolExecution,
+)
+from tests.agent.scenarios import (
+    conversation,
+    main_conversation,
 )
 
 
@@ -40,6 +43,7 @@ def execution_for(plugin, name, args, session) -> ToolExecution:
     requests = target.build_permission_requests(
         target.Args.model_validate(args).model_dump(),
         session,
+        main_conversation(session).id,
     )
     return ToolExecution(
         id="x_1",
@@ -58,7 +62,8 @@ def execution_for(plugin, name, args, session) -> ToolExecution:
 
 SESSION = AgentSession(
     id="s_plugin",
-    active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+    conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=LLMConfig(model="test-model", provider="faux")),
 )
 
@@ -102,7 +107,7 @@ async def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path)
     registry = plugin.get_tool_registry(SESSION)
 
     assert isinstance(registry, SimpleToolRegistry)
-    assert [spec.name for spec in await registry.get_tools(SESSION)] == [
+    assert [spec.name for spec in await registry.get_tools(SESSION, main_conversation(SESSION).id)] == [
         "read",
         "glob",
         "grep",

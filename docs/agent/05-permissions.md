@@ -17,16 +17,32 @@ from luca.agent.core import (
 
 ```python
 class ToolRegistry:
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]: ...
-    async def create_execution(self, session: AgentSession, call: ToolCall) -> ToolExecution: ...
-    async def decide(self, session: AgentSession, tool_execution: ToolExecution) -> ApprovalDecision: ...
-    async def prepare(self, session: AgentSession, tool_execution: ToolExecution) -> PreparedTool: ...
+    async def get_tools(self, session: AgentSession, conversation_id: str) -> list[ToolSpec]: ...
+    async def create_execution(
+        self, session: AgentSession, conversation_id: str, call: ToolCall
+    ) -> ToolExecution: ...
+    async def decide(
+        self, session: AgentSession, conversation_id: str, tool_execution: ToolExecution
+    ) -> ApprovalDecision: ...
+    async def prepare(
+        self, session: AgentSession, conversation_id: str, tool_execution: ToolExecution
+    ) -> PreparedTool: ...
 ```
 
-All four are async and take the live `AgentSession` first; none receives the
-cancellation token — the runner races each call against it instead. Treat the
-session and the passed `tool_execution` as **read-only**: the runner owns every
-session write.
+All four are async and take the live `AgentSession` first and the conversation
+they are answering for second; none receives the cancellation token — the runner
+races each call against it instead. Treat the session and the passed
+`tool_execution` as **read-only**: the runner owns every session write.
+
+A session can hold several conversations advancing at once
+([13](13-subagents.md)), and one registry instance serves all of them:
+
+| Rule | Why |
+|---|---|
+| No per-call state on `self` | two conversations call the same method concurrently; a field written in `get_tools` and read in `prepare` is a race, silently |
+| State keyed by `conversation_id` needs no lock | dispatch within one conversation is sequential |
+| Deliberately shared state needs an `asyncio.Lock` around the **mutation**, never around the I/O | locking the I/O serializes the parallelism you asked for |
+| `asyncio.to_thread` is real parallelism | two bodies genuinely run at once; process-global resources (a chdir, an env var) are scoped per conversation, not mutexed |
 
 | Method | Owns | Notes |
 |---|---|---|
@@ -115,6 +131,11 @@ class PermissionPolicy:
     async def decide(self, session: AgentSession, tool_execution: ToolExecution) -> ApprovalDecision: ...
 ```
 
+It takes no `conversation_id`: the execution already carries one
+(`tool_execution.conversation_id`), which is precisely why that field is on the
+one entry type a consumer receives detached from a path. A policy that answers
+differently inside a subagent reads it there.
+
 ```python
 ApprovalOption.ALLOW    # run the tool
 ApprovalOption.DENY     # never run it → terminal REJECTED on the spot
@@ -142,31 +163,46 @@ Returning `PENDING` is how you ask a human (or any out-of-band system). The
 sequence:
 
 1. Your `decide()` returns `PENDING`.
-2. The runner pauses: status → `AWAITING_APPROVAL`, emits `ApprovalRequired`, ends
-   the run.
+2. The call parks and `ApprovalRequired` is emitted. Once nothing else in the
+   conversation's subtree can advance, the run ends and the status derives
+   `BLOCKED`.
 3. You read the awaiting calls, get an answer, and **record it on your policy**.
-4. You call `run()` again. The runner re-asks `decide()`, which now returns
-   `ALLOW`/`DENY` from the recorded state.
+4. You cause `decide()` to be re-asked.
+
+**The runner is not a mailbox** — no answer ever travels through it. There are
+two ways to trigger the re-ask, and they differ only in *when*:
+
+| | Use it when | What it does |
+|---|---|---|
+| the next `runner.run()` | the run has ended (the ordinary case) | every undecided call is re-asked at the top of the drive |
+| `run.notify(execution)` | the run is still going — a subagent gated while its siblings work | marks that execution's conversation for a re-check immediately, and restarts its drive if it had already parked |
 
 ```python
-while True:
-    if runner.awaiting_approval():
-        for execution in runner.pending_approvals():
-            answer = ask_user(execution)                 # your UI
-            policy.record(execution.id, answer)          # store it ON the policy
+while not runner.idle():
     async with runner.run() as run:                      # re-asks decide(); now resolves
         async for event in run:
             render(event)
+    if runner.blocked():
+        for execution in runner.pending_approvals():     # subtree-scoped: subagents included
+            policy.record(execution.id, ask_user(execution))
 ```
 
-**The runner is not a mailbox** — you never post the answer back through it. The
-session stays `AWAITING_APPROVAL` until the next `run()` asks your registry again.
+`pending_approvals(conversation_id=None)` returns every gated execution in that
+conversation's **subtree**, and each one names its own conversation
+(`execution.conversation_id`) — so an interactive app can say "subagent B is
+asking" with no wrapper type. Answering from inside a live run instead:
+
+```python
+async for execution in run.approvals:      # gates as they are raised, at-least-once
+    policy.record(execution.id, ask_user(execution))
+    run.notify(execution)                  # look again NOW
+```
 
 ## 4. Idempotency — the one rule that matters
 
-Because the runner **re-invokes `decide()` on every `run()`** for any still-
-unresolved call, `decide()` must be an *idempotent query of your own state*, not
-a one-shot notification. Record answers somewhere on the policy; return them when
+Because the runner **re-invokes `decide()` on every `run()`** (and on every
+`notify()`) for any still-unresolved call, `decide()` must be an *idempotent
+query of your own state*, not a one-shot notification. Record answers somewhere on the policy; return them when
 asked:
 
 ```python

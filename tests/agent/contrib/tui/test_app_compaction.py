@@ -7,6 +7,9 @@ from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.cells import CompactionCell, NoticeCell
 from luca.agent.core.models import CompactionEntry, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
+from tests.agent.scenarios import (
+    main_conversation,
+)
 
 from .helpers import fresh_session, idle_again, submit, wait_until
 
@@ -19,7 +22,7 @@ def scripted(*responses) -> FauxProvider:
 
 def _active_first_entry(app) -> object:
     session = app.runner.session
-    return session.entries[session.active_conversation.nodes[0]]
+    return session.entries[main_conversation(session).nodes[0]]
 
 
 async def test_manual_compact_archives_the_old_conversation_and_leads_with_the_summary(tmp_path):
@@ -43,7 +46,7 @@ async def test_manual_compact_archives_the_old_conversation_and_leads_with_the_s
         await submit(pilot, "/compact")
         await wait_until(
             pilot,
-            lambda: idle_again(app) and len(app.runner.session.conversation_history) == 1,
+            lambda: idle_again(app) and main_conversation(app.runner.session).previous_conversation_id is not None,
         )
 
         session = app.runner.session

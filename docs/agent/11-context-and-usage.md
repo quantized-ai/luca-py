@@ -18,7 +18,7 @@ Two measurements the framework keeps strictly apart:
 Both are plain session data — no API, no methods:
 
 ```python
-conv = session.active_conversation
+conv = session.conversations[session.main_conversation_id]
 
 # context: sum the entries on the path
 total_context = sum(session.entries[i].context_tokens for i in conv.nodes)
@@ -27,6 +27,11 @@ total_context = sum(session.entries[i].context_tokens for i in conv.nodes)
 for record in session.usages.get(conv.id, {}).values():
     print(record.entry_id, record.input, record.output, record.total_tokens)
 ```
+
+Both are **per conversation**. A session holds a catalog of them — archived
+compaction predecessors, and one per subagent ([13](13-subagents.md)) — each
+with its own window to fill, so "the context used" is only a question you can
+ask about one of them.
 
 Aggregates (per turn, per entry type) are deliberately **not** in the core —
 they're two-line loops over data you already hold, and which totals matter is
@@ -54,8 +59,14 @@ Five hooks; the runner calls them at fixed points:
 | `calculate_context(session, entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
 | `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
 | `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
-| `should_compact(session) -> bool` | at the top of every drive, and at `start()` (hence sync) | `False` — never compacts |
-| `compact(session, nodes, entry)` | once `should_compact` says yes, or after `schedule_compaction()` | raises `NotImplementedError` |
+| `should_compact(session, conversation_id) -> bool` | at the top of every drive, and at `start()` (hence sync) | `False` — never compacts |
+| `compact(session, conversation_id, nodes, entry)` | once `should_compact` says yes, or after `schedule_compaction()` | raises `NotImplementedError` |
+
+Only the compaction pair names a conversation. The other three are given the
+entry, the execution, or the result they are measuring — objects that already
+carry everything they need, and whose answer must be the same for every
+conversation that references them (`context_tokens` is intrinsic; a tool output
+does not change meaning because a subagent produced it).
 
 The last two are compaction, covered on its own page —
 [12](12-compaction.md). They live here because the collaborator that measures
@@ -208,8 +219,9 @@ conversation's path.
 
 A compaction's own summarization call is recorded the same way, under the
 **pre-compaction** conversation — where the request was actually made, with
-that conversation's context as its input ([12](12-compaction.md)). So a
-session's total cost means walking `conversation_history` too:
+that conversation's context as its input ([12](12-compaction.md)). A subagent's
+calls land under its own conversation. So a session's total cost means summing
+the whole catalog:
 
 ```python
 spent = sum(
@@ -264,6 +276,9 @@ entry stays in `session.entries` untouched.
 > executions, with one fixed marker, and *when* to prune is entirely
 > undecided. A real strategy — thresholds, which entries, budgets — is
 > application policy you build on this seam.
+
+A `ChildConversation` is sized by its result, and only once it has one: an
+unresolved link contributes `0`, exactly like a nonterminal execution.
 
 Next: [`12-compaction.md`](12-compaction.md) — the other half of the context
 story: when pruning single entries is not enough, replace the whole older span

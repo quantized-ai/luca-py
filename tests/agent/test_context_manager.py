@@ -40,8 +40,6 @@ from luca.agent.core.models import (
     CancelRequested,
     CompactionEntry,
     CompactionSource,
-    Conversation,
-    ConversationStatus,
     Entry,
     ExecutionResult,
     ExecutionStatus,
@@ -64,6 +62,7 @@ from tests.agent.scenarios import (
     MODEL,
     MULTIPLY_SPEC,
     DeterministicRunner,
+    conversation,
     make_session,
 )
 
@@ -73,13 +72,15 @@ CM = ContextManager()
 # shipped character estimate reads nothing off it.
 SESSION = make_session(
     id="s_ctx",
-    active_conversation=Conversation(
-        id="c1",
-        nodes=[],
-        created_at=500,
-        updated_at=500,
-        status=ConversationStatus.IDLE,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            [],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -97,6 +98,7 @@ CHEAP_SESSION = SESSION.model_copy(
 # dispatched, no result attached yet.
 RUNNING_ADD = ToolExecution(
     id="te1",
+    conversation_id="c1",
     created_at=500,
     tool_call_id="tc1",
     raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -120,6 +122,7 @@ SCHEDULED_COMPACTION = CompactionEntry(
 
 RUNNING_MULTIPLY = ToolExecution(
     id="te2",
+    conversation_id="c1",
     created_at=500,
     tool_call_id="tc2",
     raw_tool_call=ToolCall(id="tc2", name="multiply", arguments={"a": 3, "b": 4}),
@@ -166,6 +169,7 @@ def test_completed_execution_counts_only_its_result_content():
     # execution owns only the model-facing outcome
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -186,6 +190,7 @@ def test_structured_content_is_not_counted_toward_context():
     # estimate
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -204,6 +209,7 @@ def test_structured_content_is_not_counted_toward_context():
 def test_failed_execution_counts_its_structured_error_message():
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
@@ -223,6 +229,7 @@ def test_failed_execution_counts_its_structured_error_message():
 def test_nonterminal_execution_counts_zero():
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -237,6 +244,7 @@ def test_resultless_errorless_terminal_execution_counts_zero():
     # stored outcome content of their own
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
@@ -368,13 +376,15 @@ def test_calculate_context_runs_before_the_appended_entry_joins_the_store():
     runner = DeterministicRunner(
         make_session(
             id="s_append",
-            active_conversation=Conversation(
-                id="c1",
-                nodes=[],
-                created_at=500,
-                updated_at=500,
-                status=ConversationStatus.IDLE,
-            ),
+            conversations={
+                "c1": conversation(
+                    "c1",
+                    [],
+                    created_at=500,
+                    updated_at=500,
+                )
+            },
+            main_conversation_id="c1",
             session_config=SessionConfig(llm_config=MODEL),
         ),
         context_manager=probe,
@@ -393,6 +403,7 @@ def test_calculate_context_runs_before_the_appended_entry_joins_the_store():
 def test_prune_entry_builds_a_template_for_a_terminal_execution():
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
@@ -426,6 +437,7 @@ def test_prune_entry_rejects_a_non_execution_entry():
 def test_prune_entry_rejects_a_nonterminal_execution():
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
@@ -472,6 +484,7 @@ def test_subclass_can_change_the_pruned_output_marker():
 
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
@@ -581,6 +594,7 @@ def test_non_user_entries_have_no_media_contribution():
 def test_tool_result_images_are_counted():
     entry = ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
@@ -616,20 +630,20 @@ def test_pruned_entry_images_are_counted():
 
 
 def test_the_default_manager_never_compacts():
-    assert CM.should_compact(SESSION) is False
+    assert CM.should_compact(SESSION, "c1") is False
 
 
 async def test_the_default_manager_has_no_compact_implementation():
     with pytest.raises(NotImplementedError):
-        await CM.compact(SESSION, ("u1", "c1"), SCHEDULED_COMPACTION)
+        await CM.compact(SESSION, "c1", ("u1", "c1"), SCHEDULED_COMPACTION)
 
 
 async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
     class Folding(ContextManager):
-        def should_compact(self, session):
+        def should_compact(self, session, conversation_id):
             return True
 
-        async def compact(self, session, nodes, entry):
+        async def compact(self, session, conversation_id, nodes, entry):
             return CompactionPlan(
                 entry=entry.model_copy(update={"parts": SUMMARY, "llm_config": CHEAP}),
                 nodes=[entry.id],
@@ -640,11 +654,12 @@ async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
 
     plan = await manager.compact(
         SESSION,
+        "c1",
         ("u1", "c1"),
         SCHEDULED_COMPACTION.model_copy(deep=True),
     )
 
-    assert manager.should_compact(SESSION) is True
+    assert manager.should_compact(SESSION, "c1") is True
     assert plan == CompactionPlan(
         entry=SCHEDULED_COMPACTION.model_copy(update={"parts": SUMMARY, "llm_config": CHEAP}),
         nodes=["c1"],

@@ -39,27 +39,35 @@ from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
     AgentSession,
     ApprovalOption,
-    Conversation,
     ExecutionStatus,
     SessionConfig,
     ToolCall,
     ToolExecution,
     ToolKind,
 )
-from tests.agent.scenarios import MODEL, spec
+from tests.agent.scenarios import (
+    MODEL,
+    conversation,
+    main_conversation,
+    spec,
+)
 
 # The session handed to every entry point. Inert by design — nothing in the
 # package reads it — so it stays one shared literal rather than a per-test one.
 SESSION = AgentSession(
     id="s_permissions",
-    active_conversation=Conversation(
-        id="c1",
-        nodes=[],
-        created_at=500,
-        updated_at=500,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            [],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
+CONVERSATION = main_conversation(SESSION).id
 
 
 # ── execution literals (created_at=500, matching tests/agent/scenarios.py) ────
@@ -1205,6 +1213,7 @@ class StubReadTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1234,6 +1243,7 @@ class StubSwapTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1261,6 +1271,7 @@ class NoOptionsTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         return [
             PermissionRequest(
@@ -1295,6 +1306,7 @@ class SessionCapturingTool(ResourcePermissionToolMixin, Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
     ) -> list[PermissionRequest]:
         self.seen.append((args, session))
         self.threads.append(threading.get_ident())
@@ -1311,6 +1323,7 @@ async def test_mixin_serializes_the_typed_requests_to_the_wire_dict():
     context = await StubReadTool().get_approval_context(
         {"path": "/etc/hosts"},
         SESSION,
+        CONVERSATION,
     )
     assert context == {
         "requests": [
@@ -1332,7 +1345,7 @@ async def test_mixin_serializes_the_typed_requests_to_the_wire_dict():
 
 async def test_mixin_hands_the_arguments_and_the_live_session_to_the_tool():
     tool = SessionCapturingTool()
-    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION)
+    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION, CONVERSATION)
     assert tool.seen == [({"path": "/etc/hosts"}, SESSION)]
 
 
@@ -1344,7 +1357,7 @@ async def test_mixin_runs_the_override_point_off_the_event_loop_thread():
     # cancellation, so the synchronous override point runs in a worker thread.
     tool = SessionCapturingTool()
 
-    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION)
+    await tool.get_approval_context({"path": "/etc/hosts"}, SESSION, CONVERSATION)
 
     assert len(tool.threads) == 1
     assert tool.threads[0] != threading.get_ident()
@@ -1354,6 +1367,7 @@ async def test_mixin_preserves_the_request_order():
     context = await StubSwapTool().get_approval_context(
         {"source": "/src/a.py", "target": "/src/b.py"},
         SESSION,
+        CONVERSATION,
     )
     assert [request["metadata"]["preview"] for request in context["requests"]] == [
         "Read /src/a.py",
@@ -1365,6 +1379,7 @@ async def test_mixin_defaults_answer_options_and_metadata_in_the_dump():
     context = await NoOptionsTool().get_approval_context(
         {"path": "/srv"},
         SESSION,
+        CONVERSATION,
     )
     assert context == {
         "requests": [
@@ -1382,6 +1397,7 @@ async def test_mixin_without_build_permission_requests_raises():
         await UnimplementedTool().get_approval_context(
             {"path": "/etc/hosts"},
             SESSION,
+            CONVERSATION,
         )
 
 
@@ -1389,6 +1405,7 @@ async def test_mixin_output_hydrates_and_drives_the_strategy():
     context = await StubSwapTool().get_approval_context(
         {"source": "/src/a.py", "target": "/src/b.py"},
         SESSION,
+        CONVERSATION,
     )
     execution = ToolExecution(
         id="x_mixin",
@@ -1418,6 +1435,7 @@ async def test_mixin_output_hydrates_and_drives_the_strategy():
     assert strategy.permission_requests(execution) == StubSwapTool().build_permission_requests(
         {"source": "/src/a.py", "target": "/src/b.py"},
         SESSION,
+        CONVERSATION,
     )
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,

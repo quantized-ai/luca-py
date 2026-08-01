@@ -5,7 +5,7 @@ split the same way:
 
 | Folder | Layer | Start here |
 |---|---|---|
-| [**`agent/`**](agent/README.md) | The agent framework — durable `AgentSession`, the async runner, tools, permissions, prompts, middleware. **The primary product.** | [`agent/README.md`](agent/README.md) |
+| [**`agent/`**](agent/README.md) | The agent framework — durable `AgentSession`, the async runner, tools, permissions, prompts, middleware, parallel subagents. **The primary product.** | [`agent/README.md`](agent/README.md) |
 | [**`client/`**](client/README.md) | The supporting LLM SDK — one typed API (`completion`/`acompletion`) across OpenAI, Anthropic, OpenRouter, … Only deps: `httpx` + `pydantic`. | [`client/README.md`](client/README.md) |
 
 Most application work lives in the **agent** layer; it uses the **client**

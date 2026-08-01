@@ -28,6 +28,9 @@ from luca.agent.core.models import (
     ToolSpec,
 )
 from luca.agent.core.runner import AgentSessionRunner
+from tests.agent.scenarios import (
+    main_conversation,
+)
 
 # A tool is handed the LIVE session, so the invariant every test sets up is a
 # real one built the way an application builds it.
@@ -35,6 +38,7 @@ SESSION = AgentSessionRunner.new_session(
     LLMConfig(model="faux-model", provider="faux"),
     session_id="s1",
 )
+CONVERSATION = main_conversation(SESSION).id
 
 
 class PathArgs(BaseModel):
@@ -89,16 +93,16 @@ WEATHER_REPORT_SCHEMA = {
 }
 
 
-async def list_files(args: dict, session: AgentSession) -> str:
+async def list_files(args: dict, session: AgentSession, conversation_id: str) -> str:
     return f"listed {args['path']}"
 
 
-async def describe_call(args: dict, session: AgentSession) -> dict:
+async def describe_call(args: dict, session: AgentSession, conversation_id: str) -> dict:
     return {"resources": [args["path"]], "preview": f"List {args['path']}"}
 
 
 class StaticApprovalMixin:
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession, conversation_id: str) -> dict:
         return {"resources": ["from-mixin"]}
 
 
@@ -115,6 +119,7 @@ class EchoTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -141,6 +146,7 @@ class WeatherTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -163,6 +169,7 @@ class CapturingTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -217,6 +224,7 @@ async def test_a_tool_may_return_structured_content_alongside_its_text():
     result = await WeatherTool().execute(
         {"path": "Berlin"},
         SESSION,
+        CONVERSATION,
         cancellation_token=CancellationToken(),
     )
 
@@ -232,6 +240,7 @@ async def test_execute_wraps_the_simple_text_path():
     result = await EchoTool().execute(
         {"path": "src"},
         SESSION,
+        CONVERSATION,
         cancellation_token=CancellationToken(),
     )
 
@@ -247,7 +256,7 @@ async def test_execute_threads_the_session_and_token_to_the_body():
     instance = CapturingTool()
     token = CancellationToken()
 
-    await instance.execute({"path": "."}, SESSION, cancellation_token=token)
+    await instance.execute({"path": "."}, SESSION, CONVERSATION, cancellation_token=token)
 
     assert instance.calls == [({"path": "."}, SESSION, token)]
 
@@ -421,6 +430,7 @@ async def test_execute_runs_the_wired_callable():
     result = await instance.execute(
         {"path": "src"},
         SESSION,
+        CONVERSATION,
         cancellation_token=CancellationToken(),
     )
 
@@ -453,7 +463,7 @@ async def test_explicit_approval_context_callable_is_used():
         get_approval_context=describe_call,
     )
 
-    assert await instance.get_approval_context({"path": "src"}, SESSION) == {
+    assert await instance.get_approval_context({"path": "src"}, SESSION, CONVERSATION) == {
         "resources": ["src"],
         "preview": "List src",
     }
@@ -471,6 +481,7 @@ async def test_a_tool_with_an_approval_context_still_executes():
     result = await instance.execute(
         {"path": "src"},
         SESSION,
+        CONVERSATION,
         cancellation_token=CancellationToken(),
     )
 
@@ -490,7 +501,7 @@ async def test_mixin_in_bases_provides_approval_context():
         bases=(StaticApprovalMixin, Tool),
     )
 
-    assert await instance.get_approval_context({"path": "."}, SESSION) == {
+    assert await instance.get_approval_context({"path": "."}, SESSION, CONVERSATION) == {
         "resources": ["from-mixin"],
     }
 
@@ -505,7 +516,7 @@ async def test_explicit_approval_context_beats_mixin():
         bases=(StaticApprovalMixin, Tool),
     )
 
-    assert await instance.get_approval_context({"path": "src"}, SESSION) == {
+    assert await instance.get_approval_context({"path": "src"}, SESSION, CONVERSATION) == {
         "resources": ["src"],
         "preview": "List src",
     }

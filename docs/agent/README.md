@@ -39,7 +39,7 @@ class AddTool(Tool):
     description = "Add two numbers and return the sum."
     Args = AddArgs
     async def _execute(
-        self, args: dict, session: AgentSession,
+        self, args: dict, session: AgentSession, conversation_id: str,
         *, cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -68,7 +68,7 @@ Read top to bottom; each page starts simple and deepens.
 | Page | Topic |
 |---|---|
 | [`01-quickstart.md`](01-quickstart.md) | A full runnable agent + the drive loop |
-| [`02-data-model.md`](02-data-model.md) | `AgentSession`, entries, turns, serialize / resume / fork |
+| [`02-data-model.md`](02-data-model.md) | `AgentSession`, entries, turns, conversations, serialize / resume / fork |
 | [`03-tools.md`](03-tools.md) | `ToolSpec`, the core's tool contract — and the contrib `Tool` class that mints one |
 | [`04-runner.md`](04-runner.md) | `run()`/`start()`, events, streaming, async, cancel, the status machine |
 | [`05-permissions.md`](05-permissions.md) | The `ToolRegistry` contract — approval as a registry concern |
@@ -79,6 +79,7 @@ Read top to bottom; each page starts simple and deepens.
 | [`10-projection.md`](10-projection.md) | `ConversationProjector` — own the LLM message history and tool-output wording |
 | [`11-context-and-usage.md`](11-context-and-usage.md) | `context_tokens`, the usage store, pruning — and the `ContextManager` seam to improve them |
 | [`12-compaction.md`](12-compaction.md) | `ContextManager.compact` — summarize the older span and keep going, without losing anything |
+| [`13-subagents.md`](13-subagents.md) | Parallel subagents — spawning, driving, approvals, cancellation |
 | [`contrib/`](contrib/README.md) | Optional packages built on the core — registries, plugins, rule-based resource permissions |
 
 The agent talks to models through [`luca.client`](../client/README.md); you never

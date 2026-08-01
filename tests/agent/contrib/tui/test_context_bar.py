@@ -2,10 +2,9 @@
 level, followed by the percentage and token readout, left-aligned to the input.
 """
 
-from textual.widgets import Input
-
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.context_bar import ContextBar, render_context_bar
+from luca.agent.contrib.tui.prompt import PromptInput
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 
 from .helpers import fresh_session, idle_again, submit, wait_until
@@ -60,4 +59,4 @@ async def test_the_context_bar_sits_just_left_of_the_input_text(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         bar = app.query_one("#context-bar", ContextBar)
-        assert bar.content_region.x < app.query_one("#prompt", Input).content_region.x
+        assert bar.content_region.x < app.query_one("#prompt", PromptInput).content_region.x

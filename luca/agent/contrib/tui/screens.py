@@ -52,6 +52,11 @@ class ApprovalScreen(ModalScreen[PromptOption]):
     def compose(self) -> ComposeResult:
         prompt = self.prompt
         title = f"Approval needed: {prompt.tool_name}"
+        if prompt.conversation_id is not None:
+            # The task if the caller named it, the id if nobody did — a gate
+            # you cannot attribute is worse than one attributed by key.
+            who = prompt.conversation_label or prompt.conversation_id
+            title += f"  [subagent · {who}]"
         if prompt.total_steps > 1:
             title += f"  (step {prompt.step}/{prompt.total_steps})"
         with Container(id="approval-dialog"):

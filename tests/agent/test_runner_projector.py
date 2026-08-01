@@ -13,7 +13,6 @@ configuration equality.
 
 from luca.agent.core.events import ToolExecuted
 from luca.agent.core.models import (
-    Conversation,
     ExecutionResult,
     ExecutionStatus,
     SessionConfig,
@@ -34,6 +33,7 @@ from tests.agent.scenarios import (
     AddTool,
     DeterministicRunner,
     FakeToolRegistry,
+    conversation,
     make_session,
 )
 
@@ -64,17 +64,18 @@ class StatusWordingProjector(ConversationProjector):
 class PrefixingProjector(ConversationProjector):
     """Injects synthetic history — full `project()` override policy."""
 
-    def project(self, conversation, entries):
+    def project(self, nodes, entries):
         return [
             LucaUserMessage(content=[LucaTextBlock(text="[SYNTHETIC PREAMBLE]")]),
-            *super().project(conversation, entries),
+            *super().project(nodes, entries),
         ]
 
 
 def test_runner_defaults_to_a_fresh_conversation_projector():
     session = make_session(
         id="s_default_projector",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -95,7 +96,8 @@ async def test_supplied_projector_owns_the_llm_message_history():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -131,7 +133,8 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -157,6 +160,7 @@ async def test_custom_tool_projection_reaches_event_and_wire_identically():
     # the event presents exactly what the model is told; the carried snapshot is
     # the durable execution the runner settled, which this test only references
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=runner.session.entries["te1"],
         result_text="[tool output redacted]",
@@ -191,7 +195,8 @@ async def test_undispatched_call_is_presented_by_the_projector_too():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -214,6 +219,7 @@ async def test_undispatched_call_is_presented_by_the_projector_too():
         "finish_reason",
     ]
     assert events[2] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=runner.session.entries["te1"],
         result_text="[not_found]",
@@ -229,7 +235,8 @@ async def test_undispatched_call_is_presented_by_the_projector_too():
 def test_projector_participates_in_runner_equality():
     session = make_session(
         id="s_projector_eq",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 

@@ -33,8 +33,16 @@ runner = AgentSessionRunner(session, tool_registry=registry)
 ```
 
 Every unresolved call now flows through `strategy.decide()`. Uncovered calls
-come back `PENDING` in ASK mode, so the run pauses (`AWAITING_APPROVAL`), you
-prompt your user, record the answers (§5), and `run()` again.
+come back `PENDING` in ASK mode, so the call parks (and the conversation derives
+`BLOCKED` once nothing else can advance), you prompt your user, record the
+answers (§5), and `run()` again.
+
+One strategy instance serves every conversation in the session — the main
+agent's and every subagent's ([`13-subagents.md`](../../13-subagents.md)). That
+is deliberate: a rule an ALWAYS answer wrote is the *application's* policy, not
+one conversation's, so approving "write files under /repo" once covers the next
+subagent too. Its per-execution verdicts are keyed by execution id, which is
+already unique across conversations.
 
 ## 2. The vocabulary — `ResourcePermission`
 
@@ -122,8 +130,8 @@ suggestions; custom-built options are legal and nothing validates membership.
 | `DENY` | ephemeral DENY verdict | DENY `ToolRule` per pair |
 
 ```python
-if runner.awaiting_approval():
-    for execution in runner.pending_approvals():
+if runner.blocked():
+    for execution in runner.pending_approvals():            # subtree-scoped
         requests = strategy.pending_requests(execution)     # only uncovered steps
         answers = ask_user(execution, requests)             # your UI, any verdicts
         strategy.apply_answer(execution, answers)
@@ -131,6 +139,9 @@ async with runner.run() as run:                             # re-asks decide()
     async for event in run:
         render(event)
 ```
+
+`execution.conversation_id` says which conversation is asking — the main agent's
+gates and a subagent's arrive in the same flat list, and nothing wraps them.
 
 Two hydration queries, one difference: `permission_requests(execution)`
 returns every stored request; `pending_requests(execution)` filters them to
@@ -152,18 +163,20 @@ later switch to STRICT.
 > cleared by new rules; only answered calls are pinned.
 
 > ⚠️ **The approval loop.** Recording answers does not advance the runner —
-> the session stays `AWAITING_APPROVAL` until the next `run()` asks
-> `decide()` again. An answer that doesn't cover every required pair (e.g. a
-> glob that doesn't match) leaves the call `PENDING` and you'll be asked
-> again — the failure mode is a re-ask, never a false approval.
+> the call stays `PENDING` until a drive asks `decide()` again, which is either
+> the next `run()` or `run.notify(execution)` from inside a live one
+> ([`05-permissions.md`](../../05-permissions.md) §3). An answer that doesn't
+> cover every required pair (e.g. a glob that doesn't match) leaves the call
+> `PENDING` and you'll be asked again — the failure mode is a re-ask, never a
+> false approval.
 
 ## 6. The tool side — `ResourcePermissionToolMixin`
 
 Tools declare *what they need* and *what they suggest*: mix in the mixin and
 return an ordered list of `PermissionRequest`s from the one override point,
-`build_permission_requests(args, session)` — it receives the validated args
-and the live session, read-only like every other tool-side hook. Most tools
-return one request:
+`build_permission_requests(args, session, conversation_id)` — it receives the
+validated args, the live session and the calling conversation, read-only like
+every other tool-side hook. Most tools return one request:
 
 ```python
 from luca.agent.contrib.tools import Tool
@@ -174,7 +187,7 @@ class ReadFileTool(ResourcePermissionToolMixin, Tool):
     Args = ReadFileArgs
     tool_kind = ToolKind.READ
 
-    def build_permission_requests(self, args, session):
+    def build_permission_requests(self, args, session, conversation_id):
         return [PermissionRequest(
             resources=[ResourcePermission(permission="read", resource=args["path"])],
             answer_options=[
@@ -197,7 +210,7 @@ action, in presentation order — but requests are presentation grouping only:
 is never read by the strategy. `ResourcePermission` itself carries no
 metadata, so rules stay free of UX baggage and pair equality is pure.
 
-The mixin's `async get_approval_context(args, session) -> dict` — the
+The mixin's `async get_approval_context(args, session, conversation_id) -> dict` — the
 duck-typed convention `SimpleToolRegistry` awaits (`Tool` itself declares no
 such method) — serializes the requests to the wire dict stored under
 `extras["approval_context"]`:
@@ -234,7 +247,8 @@ author's responsibility to emit options that cover their own requirements.
 ## 7. How `decide()` resolves a call
 
 `async decide(session, tool_execution)` is a pure query of the strategy's own
-state. For each required pair (every request's pairs flattened; a request with
+state. It takes no `conversation_id` — the execution carries one, and reading it
+there is how a policy answers differently inside a subagent. For each required pair (every request's pairs flattened; a request with
 empty `resources` — or a call with no requests — contributes the implicit
 resource-less pair):
 

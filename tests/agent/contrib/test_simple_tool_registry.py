@@ -26,7 +26,6 @@ from luca.agent.core import (
     ApprovalDecision,
     ApprovalOption,
     CancellationToken,
-    Conversation,
     ExecutionResult,
     ExecutionStatus,
     InvalidToolArguments,
@@ -39,14 +38,20 @@ from luca.agent.core import (
     ToolNotFound,
     ToolSpec,
 )
+from tests.agent.scenarios import (
+    conversation,
+    main_conversation,
+)
 
 MODEL = LLMConfig(model="test-model", provider="faux")
 
 SESSION = AgentSession(
     id="s_registry",
-    active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+    conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
+CONVERSATION = main_conversation(SESSION).id
 
 
 # ── tool doubles ──────────────────────────────────────────────────────────────
@@ -72,6 +77,7 @@ class AddTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -88,6 +94,7 @@ class MultiplyTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -102,7 +109,7 @@ class ReadFileTool(Tool):
     description = "Read a file."
     Args = PathArgs
 
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession, conversation_id: str) -> dict:
         return {
             "resources": [args["path"]],
             "preview": f"Read {args['path']}",
@@ -113,6 +120,7 @@ class ReadFileTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -122,7 +130,7 @@ class ReadFileTool(Tool):
 class BrokenContextTool(ReadFileTool):
     name = "broken_context"
 
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(self, args: dict, session: AgentSession, conversation_id: str) -> dict:
         raise RuntimeError("context exploded")
 
 
@@ -140,6 +148,7 @@ class CapturingTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -229,7 +238,7 @@ async def test_get_tools_returns_a_spec_per_tool_in_order():
         permission_policy=YoloPermissionPolicy(),
     )
 
-    specs = await registry.get_tools(SESSION)
+    specs = await registry.get_tools(SESSION, CONVERSATION)
 
     assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
@@ -244,7 +253,7 @@ async def test_unknown_tool_births_a_not_found_draft():
     )
     call = ToolCall(id="tc1", name="nope", arguments={"x": 1})
 
-    draft = await registry.create_execution(SESSION, call)
+    draft = await registry.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -269,7 +278,7 @@ async def test_invalid_arguments_birth_an_invalid_draft():
     )
     call = ToolCall(id="tc1", name="add", arguments={"a": 1})
 
-    draft = await registry.create_execution(SESSION, call)
+    draft = await registry.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -304,7 +313,7 @@ async def test_raising_approval_context_births_a_failed_draft():
     )
     call = ToolCall(id="tc1", name="broken_context", arguments={"path": "/etc"})
 
-    draft = await registry.create_execution(SESSION, call)
+    draft = await registry.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -330,7 +339,7 @@ async def test_healthy_call_births_a_pending_draft_with_approval_context():
     )
     call = ToolCall(id="tc1", name="read_file", arguments={"path": "/etc/hosts"})
 
-    draft = await registry.create_execution(SESSION, call)
+    draft = await registry.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -357,7 +366,7 @@ async def test_plain_tool_births_a_pending_draft_with_empty_extras():
     )
     call = ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
 
-    draft = await registry.create_execution(SESSION, call)
+    draft = await registry.create_execution(SESSION, CONVERSATION, call)
 
     # the declared deadline rides on the birth spec
     assert draft == ToolExecution(
@@ -381,11 +390,12 @@ async def test_decide_delegates_the_session_and_execution_to_the_policy():
     execution = stamped(
         await registry.create_execution(
             SESSION,
+            CONVERSATION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         )
     )
 
-    decision = await registry.decide(SESSION, execution)
+    decision = await registry.decide(SESSION, CONVERSATION, execution)
 
     assert decision == ApprovalDecision(
         decision=ApprovalOption.ALLOW,
@@ -421,11 +431,12 @@ async def test_prepare_returns_a_callable_without_running_the_body():
     execution = stamped(
         await registry.create_execution(
             SESSION,
+            CONVERSATION,
             ToolCall(id="tc1", name="capture", arguments={"a": 1, "b": 2}),
         )
     )
 
-    prepared = await registry.prepare(SESSION, execution)
+    prepared = await registry.prepare(SESSION, CONVERSATION, execution)
 
     assert callable(prepared)
     assert tool.calls == []
@@ -441,10 +452,11 @@ async def test_the_prepared_callable_runs_the_body_with_the_bound_arguments():
     execution = stamped(
         await registry.create_execution(
             SESSION,
+            CONVERSATION,
             ToolCall(id="tc1", name="capture", arguments={"a": 1, "b": 2}),
         )
     )
-    prepared = await registry.prepare(SESSION, execution)
+    prepared = await registry.prepare(SESSION, CONVERSATION, execution)
 
     result = await prepared(cancellation_token=token)
 
@@ -462,6 +474,7 @@ async def test_prepare_resolves_by_the_effective_call_name():
     execution = stamped(
         await registry.create_execution(
             SESSION,
+            CONVERSATION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         )
     ).model_copy(
@@ -471,7 +484,7 @@ async def test_prepare_resolves_by_the_effective_call_name():
     )
 
     with pytest.raises(ToolNotFound, match="Unknown tool: 'renamed'"):
-        await registry.prepare(SESSION, execution)
+        await registry.prepare(SESSION, CONVERSATION, execution)
 
 
 async def test_prepare_wraps_validation_failures_in_invalid_tool_arguments():
@@ -482,6 +495,7 @@ async def test_prepare_wraps_validation_failures_in_invalid_tool_arguments():
     execution = stamped(
         await registry.create_execution(
             SESSION,
+            CONVERSATION,
             ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         )
     ).model_copy(
@@ -491,7 +505,7 @@ async def test_prepare_wraps_validation_failures_in_invalid_tool_arguments():
     )
 
     with pytest.raises(InvalidToolArguments) as excinfo:
-        await registry.prepare(SESSION, execution)
+        await registry.prepare(SESSION, CONVERSATION, execution)
 
     assert excinfo.value.errors == [
         {
@@ -509,7 +523,7 @@ async def test_prepare_wraps_validation_failures_in_invalid_tool_arguments():
 async def test_proxy_get_tools_concatenates_children_in_order():
     proxy = ProxyToolRegistry(child(AddTool(), MultiplyTool()), child(ReadFileTool()))
 
-    specs = await proxy.get_tools(SESSION)
+    specs = await proxy.get_tools(SESSION, CONVERSATION)
 
     assert specs == [ADD_SPEC, MULTIPLY_SPEC, READ_FILE_SPEC]
 
@@ -518,17 +532,17 @@ async def test_proxy_get_tools_rejects_duplicate_names():
     proxy = ProxyToolRegistry(child(AddTool()), child(AddTool()))
 
     with pytest.raises(ValueError, match="Duplicate tool name across registries"):
-        await proxy.get_tools(SESSION)
+        await proxy.get_tools(SESSION, CONVERSATION)
 
 
 async def test_proxy_get_tools_recomputes_the_route():
     # a dynamic child may change its answer between calls; each get_tools
     # rebuilds the cache from scratch
     proxy = ProxyToolRegistry(child(AddTool()))
-    await proxy.get_tools(SESSION)
+    await proxy.get_tools(SESSION, CONVERSATION)
     proxy.add_registry(child(MultiplyTool()))
 
-    specs = await proxy.get_tools(SESSION)
+    specs = await proxy.get_tools(SESSION, CONVERSATION)
 
     assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
@@ -538,10 +552,10 @@ async def test_proxy_get_tools_recomputes_the_route():
 
 async def test_proxy_create_execution_routes_to_the_owning_child():
     proxy = ProxyToolRegistry(child(AddTool()), child(MultiplyTool()))
-    await proxy.get_tools(SESSION)  # warm the route
+    await proxy.get_tools(SESSION, CONVERSATION)  # warm the route
     call = ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
 
-    draft = await proxy.create_execution(SESSION, call)
+    draft = await proxy.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -561,7 +575,7 @@ async def test_proxy_create_execution_births_not_found_on_a_cold_route():
     proxy = ProxyToolRegistry(child(AddTool()))
     call = ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})
 
-    draft = await proxy.create_execution(SESSION, call)
+    draft = await proxy.create_execution(SESSION, CONVERSATION, call)
 
     assert draft == ToolExecution(
         id=None,
@@ -591,7 +605,7 @@ async def test_proxy_decide_gates_a_cold_route_through_the_owning_childs_policy(
         ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
     )
 
-    decision = await proxy.decide(SESSION, execution)
+    decision = await proxy.decide(SESSION, CONVERSATION, execution)
 
     assert decision == ApprovalDecision(
         decision=ApprovalOption.ALLOW,
@@ -606,7 +620,7 @@ async def test_proxy_prepare_binds_a_cold_route_to_the_owning_childs_tool():
     execution = cold_execution(
         ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4}),
     )
-    prepared = await proxy.prepare(SESSION, execution)
+    prepared = await proxy.prepare(SESSION, CONVERSATION, execution)
 
     result = await prepared(cancellation_token=CancellationToken())
 
@@ -622,7 +636,7 @@ async def test_proxy_decide_allows_a_name_no_child_owns():
     )
     execution = cold_execution(ToolCall(id="tc1", name="nope", arguments={}))
 
-    decision = await proxy.decide(SESSION, execution)
+    decision = await proxy.decide(SESSION, CONVERSATION, execution)
 
     # `created_at` is `ApprovalDecision`'s wall-clock default — noise this
     # test does not own.
@@ -638,7 +652,7 @@ async def test_proxy_prepare_raises_tool_not_found_for_a_name_no_child_owns():
     execution = cold_execution(ToolCall(id="tc1", name="nope", arguments={}))
 
     with pytest.raises(ToolNotFound, match="Unknown tool: 'nope'"):
-        await proxy.prepare(SESSION, execution)
+        await proxy.prepare(SESSION, CONVERSATION, execution)
 
 
 async def test_nested_proxies_list_transparently():
@@ -647,7 +661,7 @@ async def test_nested_proxies_list_transparently():
         child(MultiplyTool()),
     )
 
-    specs = await outer.get_tools(SESSION)
+    specs = await outer.get_tools(SESSION, CONVERSATION)
 
     assert specs == [ADD_SPEC, MULTIPLY_SPEC]
 
@@ -660,7 +674,7 @@ async def test_nested_proxies_prepare_a_cold_route_through_the_inner_proxy():
     execution = cold_execution(
         ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
     )
-    prepared = await outer.prepare(SESSION, execution)
+    prepared = await outer.prepare(SESSION, CONVERSATION, execution)
 
     result = await prepared(cancellation_token=CancellationToken())
 

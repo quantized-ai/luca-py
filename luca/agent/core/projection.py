@@ -1,7 +1,7 @@
 """Conversation projection: durable entries → canonical luca.client messages.
 
 `ConversationProjector` is the public strategy that derives the LLM message
-history from a `Conversation`. It is a first-class runner collaborator (passed
+history from a conversation's path. It is a first-class runner collaborator (passed
 as `conversation_projector=`, never middleware, never serialized) and a
 CONCRETE class with complete default behavior: instantiate it directly,
 subclass it and override selected methods, or supply another object with the
@@ -9,10 +9,17 @@ same behavior. Policies like dropping history, injecting synthetic messages,
 redacting content, or changing tool-execution output all belong in a custom
 projector.
 
+`project()` takes the PATH — an ordered list of entry ids — rather than a
+`Conversation` object. Two reasons: a `Conversation` is live and mutable (the
+runner appends to its `nodes` while a projector holds it), and every other
+scoped signature in the framework passes an id or plain data; and a caller
+that wants to project a SPAN it invented — `SummarizingContextManager`
+projecting the nodes it is about to fold — has no conversation to hand over.
+
 Projection is deterministic, read-only derivation:
 
-- Walk `conversation.nodes` in order; resolve each id in `entries`; the path
-  is the sole ordering authority (`parent_id` is never traversed).
+- Walk `nodes` in order; resolve each id in `entries`; the path is the sole
+  ordering authority (`parent_id` is never traversed).
 - One path-level rule lives on `project()` itself, because it cannot be
   decided from a single entry: a COMPACTION BRACKET (`ts_c cmp [cr] tf_c`,
   whatever its outcome) projects as nothing, while a `CompactionEntry` outside
@@ -42,6 +49,12 @@ Tool executions project by `ExecutionStatus`:
 - every other terminal status projects derived error content with
   `is_error=True`, worded from the class-level defaults below.
 
+A PRIVATE execution (`tool_spec.is_private`) is dispatched to
+`project_private_execution` instead, which projects nothing — see there for why
+the `ToolMessage` channel is closed to it by protocol rather than by policy.
+`project_tool_execution` is still called directly for the `ToolExecuted` event's
+presentation fields, so a private execution's event stays self-describing.
+
 `project_tool_execution` has two consumers that must agree: the `ToolMessage`
 in the next LLM request and the presentation fields on the `ToolExecuted`
 event. It must therefore stay deterministic for the same durable execution —
@@ -56,7 +69,7 @@ subclass without touching the runner.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
 from luca.client.types import (
@@ -78,8 +91,8 @@ from .models import (
     AnyEntry,
     AssistantMessage,
     CancelRequested,
+    ChildConversation,
     CompactionEntry,
-    Conversation,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
@@ -107,10 +120,19 @@ class ConversationProjector:
 
     CANCELLED_TURN_MARKER: ClassVar[str] = CANCELLED_TURN_MARKER
 
+    # How a finished subagent's result reaches the parent's model. One
+    # synthetic USER message per child, tagged with the tool call that spawned
+    # it so the model can correlate the answer with its own request. Change
+    # this — or override `project_child_conversation` outright — to include
+    # more of a child's transcript, or to batch several children into one
+    # message; both are projector policy, not framework behavior.
+    CHILD_TASK_TEMPLATE: ClassVar[str] = "<task id={task_id}>\n{content}\n</task>"
+
     # Derived tool output for the terminal statuses that are complete
     # lifecycle facts on their own (no ToolExecutionError to elaborate with).
     STATUS_ONLY_OUTPUTS: ClassVar[dict[ExecutionStatus, str]] = {
         ExecutionStatus.REJECTED: "[tool execution rejected]",
+        ExecutionStatus.REFUSED: "[tool execution refused]",
         ExecutionStatus.CANCELLED: "[tool execution cancelled]",
         ExecutionStatus.INTERRUPTED: "[tool execution interrupted]",
         ExecutionStatus.TIMED_OUT: "[tool execution timed_out]",
@@ -118,10 +140,10 @@ class ConversationProjector:
 
     def project(
         self,
-        conversation: Conversation,
+        nodes: Sequence[str],
         entries: Mapping[str, AnyEntry],
     ) -> list[Message]:
-        """Project the ordered conversation path to canonical client messages.
+        """Project an ordered path of entry ids to canonical client messages.
 
         One path-level rule lives here, and it is POSITIONAL: a compaction
         bracket — the whole span `ts_c cmp [cr] tf_c`, whatever the outcome —
@@ -136,7 +158,6 @@ class ConversationProjector:
         happens here — a custom projector implements such policy by overriding
         this method. Both inputs are read-only."""
         messages: list[Message] = []
-        nodes = conversation.nodes
         index = 0
         while index < len(nodes):
             entry = self._node(nodes[index], entries)
@@ -155,7 +176,7 @@ class ConversationProjector:
 
     def _skip_compaction_bracket(
         self,
-        nodes: list[str],
+        nodes: Sequence[str],
         entries: Mapping[str, AnyEntry],
         start: int,
     ) -> int:
@@ -198,9 +219,13 @@ class ConversationProjector:
         if isinstance(entry, AssistantMessage):
             return self.project_assistant_message(entry, entries)
         if isinstance(entry, ToolExecution):
+            if entry.tool_spec is not None and entry.tool_spec.is_private:
+                return self.project_private_execution(entry, entries)
             return self.project_tool_execution(entry, entries)
         if isinstance(entry, CompactionEntry):
             return self.project_compaction(entry, entries)
+        if isinstance(entry, ChildConversation):
+            return self.project_child_conversation(entry, entries)
         if isinstance(entry, PrunedEntry):
             return self.project_pruned(entry, entries)
         if isinstance(entry, TurnFinish):
@@ -299,6 +324,30 @@ class ConversationProjector:
             is_error=True,
         )
 
+    def project_private_execution(
+        self,
+        entry: ToolExecution,
+        entries: Mapping[str, AnyEntry],
+    ) -> Message | None:
+        """A PRIVATE tool's execution. Projects as NOTHING by default.
+
+        That it never projects as a `ToolMessage` is FORCED, not policy: a
+        private tool is invoked by the runtime, so no `ToolCall` for it exists
+        in any `AssistantMessage` on the path, and a tool result carrying a
+        `tool_call_id` the provider never issued is a protocol violation every
+        provider rejects. There is no projector setting that makes that legal.
+
+        Whether it projects as anything ELSE is policy, and V0's answer is no —
+        for one specific reason: its output already reaches the model through
+        the entry that owns it (a subagent result travels on
+        `ChildConversation.execution_result`), so projecting it again would
+        duplicate the content rather than add it. Override this to render
+        private work some other way; a synthetic USER message is the shape this
+        framework already uses for framework-authored content, and it is
+        available. The `ToolMessage` channel is closed; the entry is not
+        structurally invisible."""
+        return None
+
     def project_compaction(
         self,
         entry: CompactionEntry,
@@ -316,6 +365,49 @@ class ConversationProjector:
         return ClientUserMessage(
             content=[self._content_block(part) for part in entry.parts],
         )
+
+    def project_child_conversation(
+        self,
+        entry: ChildConversation,
+        entries: Mapping[str, AnyEntry],
+    ) -> ClientUserMessage:
+        """A finished subagent's result, as a synthetic user message.
+
+        A synthetic USER message is the established shape for framework-authored
+        content in this framework — `project_compaction` and the cancelled-turn
+        marker both use it — and it is the only legal shape here: the spawn tool
+        already got its own `ToolMessage`, and a second one correlating to the
+        same `tool_call_id` would be a protocol violation.
+
+        An UNRESOLVED child raises. That is the same fail-loud rule a PENDING
+        `ToolExecution` gets, for the same reason: the runtime must never call
+        the model while a child is still working, and inventing a placeholder
+        would tell the model a subagent answered when it has not. The runner's
+        drive blocks on its children precisely so this is unreachable in
+        practice."""
+        if entry.execution_result is None:
+            raise ProjectionError(
+                f"ChildConversation {entry.id!r} has no execution_result; an unresolved subagent is not projectable."
+            )
+        execution = entries.get(entry.tool_execution_id)
+        if not isinstance(execution, ToolExecution):
+            raise ProjectionError(
+                f"ChildConversation {entry.id!r} references tool execution "
+                f"{entry.tool_execution_id!r}, which is missing from the entry "
+                "store."
+            )
+        blocks = [self._content_block(part) for part in entry.execution_result.content]
+        text = "".join(block.text for block in blocks if isinstance(block, TextBlock))
+        wrapped: list = [
+            TextBlock(
+                text=self.CHILD_TASK_TEMPLATE.format(
+                    task_id=execution.tool_call_id,
+                    content=text,
+                ),
+            ),
+        ]
+        wrapped += [block for block in blocks if not isinstance(block, TextBlock)]
+        return ClientUserMessage(content=wrapped)
 
     def project_pruned(
         self,
@@ -420,6 +512,10 @@ class ConversationProjector:
             if error is not None:
                 return f"Tool execution failed: {error.error_type}: {error.error_message}"
             return "[tool execution failed]"
+        if entry.status == ExecutionStatus.REFUSED and error is not None:
+            # the limit's own wording, verbatim — the model must read the real
+            # reason ("Spawn limit reached (3/3)…"), not a placeholder
+            return error.error_message
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
     def _content_block(self, part) -> TextBlock | ClientImageBlock:

@@ -51,7 +51,7 @@ Domain failures (missing file, ambiguous edit, non-zero exit) come back as
 ## 3. The two-step permission model
 
 Every call declares two ordered approval steps through
-`build_permission_requests(args, session)`:
+`build_permission_requests(args, session, conversation_id)`:
 
 ```
 access_directory <directory the call touches>   # step 1
@@ -83,13 +83,15 @@ Each `access_directory` step suggests one answer option per directory —
 
 > ⚠️ **A gate, not a sandbox.** Approval is the only containment: an
 > approved `bash` command can touch any path regardless of its workdir, and
-> YOLO mode is full-disk for all seven tools.
+> YOLO mode is full-disk for all seven tools. A `bash` call also runs with the
+> process's own cwd and environment, which every conversation shares — with
+> subagents running in parallel, one `cd` is not a private one.
 
 ## 4. Modes
 
-`mode="ask"` (default) — anything the rules don't cover comes back PENDING
-and pauses the runner for your approval prompt. `mode="yolo"` — everything
-is allowed (explicit DENY rules added to the strategy still block).
+`mode="ask"` (default) — anything the rules don't cover comes back PENDING and
+parks the call for your approval prompt. `mode="yolo"` — everything is allowed
+(explicit DENY rules added to the strategy still block).
 
 ## 5. The read-first contract
 
@@ -105,5 +107,20 @@ from luca.agent.contrib.shell import EditTool, FileReadTracker, ReadTool
 tracker = FileReadTracker()
 tools = [ReadTool(workdir="/ws", tracker=tracker), EditTool(workdir="/ws", tracker=tracker)]
 ```
+
+The tracker is keyed **by conversation**, and that is a safety property rather
+than tidiness: one plugin instance serves the main agent and every subagent
+([`13-subagents.md`](../../13-subagents.md)), so unkeyed, subagent A reading
+`main.py` would satisfy the guard for subagent B, which never read it.
+
+```python
+tracker.was_read("c_main", "/ws/main.py")     # True  — the main agent read it
+tracker.was_read("c_child", "/ws/main.py")    # False — this subagent did not
+```
+
+> ⚠️ **Two subagents can write the same file at the same time.** The tools take
+> a per-path lock around the write itself, so neither sees a half-written file —
+> but "who wins" is still whoever went last. The permission gate is per pair,
+> not per conversation; if a task must not be done twice, do not spawn it twice.
 
 Next: [`tui/README.md`](../tui/README.md).

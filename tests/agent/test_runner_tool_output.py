@@ -44,8 +44,6 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
-    Conversation,
-    ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
@@ -64,6 +62,9 @@ from luca.agent.core.models import (
 from luca.agent.core.runner import AgentSessionRunner
 from luca.agent.core.tool_registry import PreparedTool, ToolRegistry
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text, faux_tool_call
+from tests.agent.scenarios import (
+    conversation,
+)
 
 
 class InlineTool:
@@ -90,6 +91,7 @@ class InlineTool:
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -99,12 +101,14 @@ class InlineTool:
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         output = await self._execute(
             args,
             session,
+            conversation_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -125,6 +129,7 @@ class AddTool(InlineTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -147,6 +152,7 @@ class SleepForeverTool(InlineTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -166,6 +172,7 @@ class SlowTool(InlineTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -188,6 +195,7 @@ class CooperativeSleepTool(InlineTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -215,6 +223,7 @@ class LoudTool(InlineTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -251,12 +260,13 @@ class InlineToolRegistry(ToolRegistry):
     def __init__(self, tools: list[InlineTool]) -> None:
         self.tools_by_name = {tool.name: tool for tool in tools}
 
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+    async def get_tools(self, session: AgentSession, conversation_id: str) -> list[ToolSpec]:
         return [tool.get_tool_spec() for tool in self.tools_by_name.values()]
 
     async def create_execution(
         self,
         session: AgentSession,
+        conversation_id: str,
         call: ToolCall,
     ) -> ToolExecution:
         return ToolExecution(
@@ -268,6 +278,7 @@ class InlineToolRegistry(ToolRegistry):
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         return ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
@@ -275,6 +286,7 @@ class InlineToolRegistry(ToolRegistry):
     async def prepare(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> PreparedTool:
         tool = self.tools_by_name[tool_execution.raw_tool_call.name]
@@ -285,6 +297,7 @@ class InlineToolRegistry(ToolRegistry):
             return await tool.execute(
                 payload,
                 session,
+                conversation_id,
                 cancellation_token=cancellation_token,
             )
 
@@ -347,7 +360,8 @@ async def test_successful_tool_call_full_session_shape():
     session = AgentSession(
         id="s1",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -374,11 +388,13 @@ async def test_successful_tool_call_full_session_shape():
     # `ToolExecuted.result_text` / `is_error` are the projection the model
     # sees.
     assert events == [
-        FinishReason(finish_reason="tool_use"),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
         ToolCallReceived(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -400,9 +416,11 @@ async def test_successful_tool_call_full_session_shape():
             ),
         ),
         ToolExecutionStarted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -426,9 +444,11 @@ async def test_successful_tool_call_full_session_shape():
             ),
         ),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -457,8 +477,8 @@ async def test_successful_tool_call_full_session_shape():
             result_text="3",
             is_error=False,
         ),
-        TextBlock(text="It's 3."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="It's 3."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
     assert runner.session == AgentSession(
         id="s1",
@@ -482,6 +502,7 @@ async def test_successful_tool_call_full_session_shape():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -525,13 +546,15 @@ async def test_successful_tool_call_full_session_shape():
                 "a2": Usage(conversation_id="c1", entry_id="a2"),
             }
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "a2", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -559,7 +582,8 @@ async def test_interrupted_tool_call_full_session_shape():
     session = AgentSession(
         id="s1",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -586,11 +610,13 @@ async def test_interrupted_tool_call_full_session_shape():
     # (persisted before the grace window ran), `ended_at`. The model would see
     # the derived placeholder output.
     assert events == [
-        FinishReason(finish_reason="tool_use"),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
         ToolCallReceived(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -612,9 +638,11 @@ async def test_interrupted_tool_call_full_session_shape():
             ),
         ),
         ToolExecutionStarted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -638,9 +666,11 @@ async def test_interrupted_tool_call_full_session_shape():
             ),
         ),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -688,6 +718,7 @@ async def test_interrupted_tool_call_full_session_shape():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -730,13 +761,15 @@ async def test_interrupted_tool_call_full_session_shape():
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
             }
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "cr", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "cr", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -762,7 +795,8 @@ async def test_cooperative_cancellation_returns_a_real_result():
     session = AgentSession(
         id="s1",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
             runtime_config=RuntimeConfig(tool_cancellation_grace_period=1000),
@@ -792,9 +826,11 @@ async def test_cooperative_cancellation_returns_a_real_result():
     # TURN is still cancelled: the CancelRequested closes it with
     # outcome=CANCELLED and the LLM is never called a second time.
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=1000,
             tool_call_id="tc1",
@@ -845,6 +881,7 @@ async def test_cooperative_cancellation_returns_a_real_result():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -891,13 +928,15 @@ async def test_cooperative_cancellation_returns_a_real_result():
                 "a1": Usage(conversation_id="c1", entry_id="a1"),
             }
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "cr", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "cr", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
             runtime_config=RuntimeConfig(tool_cancellation_grace_period=1000),
@@ -926,7 +965,8 @@ async def test_timed_out_tool_call_full_session_shape():
     session = AgentSession(
         id="s1",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -949,9 +989,11 @@ async def test_timed_out_tool_call_full_session_shape():
     # derived placeholder output — and, unlike a cancel, the turn runs to
     # completion.
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=1000,
             tool_call_id="tc1",
@@ -976,8 +1018,8 @@ async def test_timed_out_tool_call_full_session_shape():
         result_text="[tool execution timed_out]",
         is_error=True,
     )
-    assert events[4] == TextBlock(text="It timed out.")
-    assert events[5] == FinishReason(finish_reason="stop")
+    assert events[4] == TextBlock(conversation_id="c1", text="It timed out.")
+    assert events[5] == FinishReason(conversation_id="c1", finish_reason="stop")
     assert runner.session == AgentSession(
         id="s1",
         entries={
@@ -1000,6 +1042,7 @@ async def test_timed_out_tool_call_full_session_shape():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -1039,13 +1082,15 @@ async def test_timed_out_tool_call_full_session_shape():
                 "a2": Usage(conversation_id="c1", entry_id="a2"),
             }
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "a2", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "a2", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -1077,7 +1122,8 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
     session = AgentSession(
         id="s1",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),
@@ -1127,6 +1173,7 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
             ),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="a1",
                 created_at=1000,
                 tool_call_id="tc1",
@@ -1154,6 +1201,7 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
             ),
             "te2": ToolExecution(
                 id="te2",
+                conversation_id="c1",
                 parent_id="te1",
                 created_at=1000,
                 tool_call_id="tc2",
@@ -1197,13 +1245,15 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
                 "a2": Usage(conversation_id="c1", entry_id="a2"),
             }
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
-            created_at=500,
-            updated_at=1000,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+                created_at=500,
+                updated_at=1000,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=LLMConfig(model="test-model", provider="faux"),
         ),

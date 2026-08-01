@@ -45,7 +45,6 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
-    Conversation,
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
@@ -85,6 +84,8 @@ from tests.agent.scenarios import (
     FakeTool,
     FakeToolRegistry,
     MultiplyTool,
+    conversation,
+    main_conversation,
     make_session,
 )
 
@@ -114,6 +115,7 @@ class HangingTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -140,6 +142,7 @@ class CooperativeTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -163,6 +166,7 @@ class TimeoutRaisingTool(FakeTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -183,6 +187,7 @@ class RecordingAddTool(AddTool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -223,6 +228,7 @@ class CancellingDecideRegistry(FakeToolRegistry):
     async def decide(
         self,
         session: AgentSession,
+        conversation_id: str,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
         self.seen.append(tool_execution)
@@ -237,7 +243,7 @@ class HangingGetToolsRegistry(FakeToolRegistry):
         super().__init__(tools)
         self.started = asyncio.Event()
 
-    async def get_tools(self, session: AgentSession):
+    async def get_tools(self, session: AgentSession, conversation_id: str):
         self.started.set()
         await asyncio.Event().wait()
 
@@ -249,7 +255,7 @@ class HangingBirthRegistry(FakeToolRegistry):
         super().__init__(tools)
         self.started = asyncio.Event()
 
-    async def create_execution(self, session: AgentSession, call: ToolCall):
+    async def create_execution(self, session: AgentSession, conversation_id: str, call: ToolCall):
         self.started.set()
         await asyncio.Event().wait()
 
@@ -261,7 +267,7 @@ class HangingDecideRegistry(FakeToolRegistry):
         super().__init__(tools)
         self.started = asyncio.Event()
 
-    async def decide(self, session: AgentSession, tool_execution: ToolExecution):
+    async def decide(self, session: AgentSession, conversation_id: str, tool_execution: ToolExecution):
         self.seen.append(tool_execution)
         self.started.set()
         await asyncio.Event().wait()
@@ -274,7 +280,7 @@ class HangingPrepareRegistry(FakeToolRegistry):
         super().__init__(tools)
         self.started = asyncio.Event()
 
-    async def prepare(self, session: AgentSession, tool_execution: ToolExecution):
+    async def prepare(self, session: AgentSession, conversation_id: str, tool_execution: ToolExecution):
         self.started.set()
         await asyncio.Event().wait()
 
@@ -287,9 +293,9 @@ class CancellingPrepareRegistry(FakeToolRegistry):
 
     runner = None
 
-    async def prepare(self, session: AgentSession, tool_execution: ToolExecution):
+    async def prepare(self, session: AgentSession, conversation_id: str, tool_execution: ToolExecution):
         self.runner.cancel()
-        return await super().prepare(session, tool_execution)
+        return await super().prepare(session, conversation_id, tool_execution)
 
 
 class CancelOnFirstBirthRegistry(FakeToolRegistry):
@@ -299,11 +305,11 @@ class CancelOnFirstBirthRegistry(FakeToolRegistry):
 
     runner = None
 
-    async def create_execution(self, session: AgentSession, call: ToolCall):
+    async def create_execution(self, session: AgentSession, conversation_id: str, call: ToolCall):
         if call.name != "add":
             await asyncio.Event().wait()  # parks forever — never returns
         self.runner.cancel()
-        return await super().create_execution(session, call)
+        return await super().create_execution(session, conversation_id, call)
 
 
 class TracedResource:
@@ -331,7 +337,7 @@ class ResourceHoldingRegistry(FakeToolRegistry):
         self.trace = trace if trace is not None else []
         self.started = asyncio.Event()
 
-    async def create_execution(self, session: AgentSession, call: ToolCall):
+    async def create_execution(self, session: AgentSession, conversation_id: str, call: ToolCall):
         async with TracedResource(self.trace):
             self.started.set()
             await asyncio.Event().wait()
@@ -377,9 +383,8 @@ UNDECIDED_PARKED_SESSION.entries["cr"] = CancelRequested(
     parent_id="te1",
     created_at=600,
 )
-UNDECIDED_PARKED_SESSION.active_conversation.nodes.append("cr")
-UNDECIDED_PARKED_SESSION.active_conversation.updated_at = 600
-UNDECIDED_PARKED_SESSION.active_conversation.status = ConversationStatus.CANCELLING
+main_conversation(UNDECIDED_PARKED_SESSION).nodes.append("cr")
+main_conversation(UNDECIDED_PARKED_SESSION).updated_at = 600
 
 # Two approved-but-unrun calls from one assistant response: the batch
 # precondition. Neither has been dispatched, so a cancel landing during the
@@ -406,6 +411,7 @@ TWO_CLEARED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=500,
             tool_call_id="tc1",
@@ -418,6 +424,7 @@ TWO_CLEARED_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=500,
             tool_call_id="tc2",
@@ -433,13 +440,15 @@ TWO_CLEARED_SESSION = make_session(
             updated_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "te2"],
-        created_at=500,
-        updated_at=600,
-        status=ConversationStatus.PENDING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2"],
+            created_at=500,
+            updated_at=600,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -456,12 +465,15 @@ def one_user_message_session(
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1"],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1"],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=runtime_config or RuntimeConfig(),
@@ -475,7 +487,8 @@ def one_user_message_session(
 async def test_cancel_on_idle_session_is_a_noop():
     session = make_session(
         id="s_idle",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=900, updated_at=900),
+        conversations={"c1": conversation("c1", [], created_at=900, updated_at=900)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(session, now=1000)
@@ -498,7 +511,8 @@ async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -510,8 +524,8 @@ async def test_cancel_on_fresh_pending_is_a_noop_and_the_turn_runs_normally():
 
     runner.cancel()  # no open turn yet — cancel targets the turn, not the handle
 
-    assert runner.pending()
-    assert runner.session.active_conversation.nodes == ["u1"]
+    assert runner.busy()
+    assert main_conversation(runner.session).nodes == ["u1"]
     result = await runner.run()
     assert result.outcome == TurnOutcome.COMPLETED
 
@@ -558,7 +572,7 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
     runner.cancel()  # abandon the turn — not DENY: deny would feed the model
 
     assert runner.cancelling()
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "u1",
         "ts",
         "a1",
@@ -571,6 +585,7 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
 
     cancelled = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -587,6 +602,7 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
     )
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=cancelled,
             result_text="[tool execution cancelled]",
@@ -671,12 +687,12 @@ async def test_cancel_after_the_flush_completed_is_a_noop():
         now=1000,
     )
     await runner.run()  # the flush
-    nodes_after_flush = list(runner.session.active_conversation.nodes)
+    nodes_after_flush = list(main_conversation(runner.session).nodes)
 
     runner.cancel()  # IDLE again — branch 3
 
     assert runner.idle()
-    assert runner.session.active_conversation.nodes == nodes_after_flush
+    assert main_conversation(runner.session).nodes == nodes_after_flush
 
 
 async def test_flush_leaves_an_already_terminal_execution_untouched():
@@ -697,8 +713,7 @@ async def test_flush_leaves_an_already_terminal_execution_untouched():
         }
     )
     session.entries["cr"] = CancelRequested(id="cr", parent_id="te1", created_at=600)
-    session.active_conversation.nodes.append("cr")
-    session.active_conversation.status = ConversationStatus.CANCELLING
+    main_conversation(session).nodes.append("cr")
     rejected_before_flush = session.entries["te1"].model_copy(deep=True)
     runner = DeterministicRunner(
         session,
@@ -753,6 +768,7 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
     assert tool.hard_cancelled is True  # grace 0 → straight to hard cancel
     interrupted = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -784,6 +800,7 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
         "tool_executed",
     ]
     assert events[3] == ToolExecuted(
+        conversation_id="c1",
         tool_call_id="tc1",
         execution=interrupted,
         result_text="[tool execution interrupted]",
@@ -825,6 +842,7 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
     # it RETURNED — a real COMPLETED result, keeping cancel_signalled_at
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -887,6 +905,7 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
     assert result.outcome == TurnOutcome.CANCELLED
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -905,6 +924,7 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
     )
     assert runner.session.entries["te2"] == ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=1000,
         tool_call_id="tc2",
@@ -969,6 +989,7 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
     assert events[2].result_text == "[tool execution cancelled]"
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1024,6 +1045,7 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
     assert events[2].result_text == "[tool execution cancelled]"
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",
@@ -1060,7 +1082,8 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1075,17 +1098,17 @@ async def test_mid_stream_cancel_drops_the_partial_assistant_message():
         events = []
         async for event in run:
             events.append(event)
-            if event == ReasoningDelta(text="Thinking…"):
+            if event == ReasoningDelta(conversation_id="c1", text="Thinking…"):
                 run.cancel()  # the stream is parked mid-generation
 
-    assert events == [ReasoningStart(), ReasoningDelta(text="Thinking…")]
+    assert events == [ReasoningStart(conversation_id="c1"), ReasoningDelta(conversation_id="c1", text="Thinking…")]
     assert run.result == RunResult(
         status=ConversationStatus.IDLE,
         outcome=TurnOutcome.CANCELLED,
         pending_approvals=[],
     )
     # the partial assistant message was dropped — only bookkeeping landed
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "cr", "tf"]
     assert runner.session.entries["tf"] == TurnFinish(
         id="tf",
         parent_id="cr",
@@ -1126,7 +1149,7 @@ async def test_cancel_during_get_tools_unblocks_the_run_and_closes_cancelled():
         pending_approvals=[],
     )
     assert faux.requests == []  # no tool list → no LLM call
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "cr", "tf"]
     assert runner.session.entries["tf"] == TurnFinish(
         id="tf",
         parent_id="cr",
@@ -1169,6 +1192,7 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
     )
     born = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="cr",
         created_at=1000,
         tool_call_id="tc1",
@@ -1188,9 +1212,10 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
     async with run:
         events = [event async for event in run]
     assert events == [
-        FinishReason(finish_reason="tool_use"),
-        ToolCallReceived(tool_call_id="tc1", execution=born),
+        FinishReason(conversation_id="c1", finish_reason="tool_use"),
+        ToolCallReceived(conversation_id="c1", tool_call_id="tc1", execution=born),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=cancelled,
             result_text="[tool execution cancelled]",
@@ -1232,6 +1257,7 @@ async def test_cancel_during_decide_records_no_decision_and_closes_cancelled():
     ]
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1280,6 +1306,7 @@ async def test_cancel_during_prepare_records_cancelled_without_dispatching():
     )
     cancelled = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1301,6 +1328,7 @@ async def test_cancel_during_prepare_records_cancelled_without_dispatching():
     # no ToolExecutionStarted: it is emitted iff the body was dispatched
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=cancelled,
             result_text="[tool execution cancelled]",
@@ -1332,6 +1360,7 @@ async def test_cancel_after_prepare_returned_records_cancelled_and_never_runs_th
     assert tool.calls == []  # the grace window never starts new work
     cancelled = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1350,6 +1379,7 @@ async def test_cancel_after_prepare_returned_records_cancelled_and_never_runs_th
     )
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=cancelled,
             result_text="[tool execution cancelled]",
@@ -1396,6 +1426,7 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
     # two calls → two executions, whichever births the cancel reached
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="cr",
         created_at=1000,
         tool_call_id="tc1",
@@ -1414,6 +1445,7 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
     )
     assert runner.session.entries["te2"] == ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=1000,
         tool_call_id="tc2",
@@ -1476,6 +1508,7 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
     # produce the same record
     first = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1494,6 +1527,7 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
     )
     second = ToolExecution(
         id="te2",
+        conversation_id="c1",
         parent_id="te1",
         created_at=500,
         tool_call_id="tc2",
@@ -1520,12 +1554,14 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
         events = [event async for event in run]
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=first,
             result_text="[tool execution cancelled]",
             is_error=True,
         ),
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc2",
             execution=second,
             result_text="[tool execution cancelled]",
@@ -1594,6 +1630,7 @@ async def test_a_pending_cancellation_fires_no_before_permission_check():
     assert recorder.trace == [("before_tool_execution", "te1")]
     cancelled = ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=500,
         tool_call_id="tc1",
@@ -1612,6 +1649,7 @@ async def test_a_pending_cancellation_fires_no_before_permission_check():
     )
     assert events == [
         ToolExecuted(
+            conversation_id="c1",
             tool_call_id="tc1",
             execution=cancelled,
             result_text="[tool execution cancelled]",
@@ -1637,7 +1675,8 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             # huge grace — never expires; the faux answers the instant the
@@ -1680,7 +1719,7 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
         created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
-    assert runner.session.active_conversation.nodes == [
+    assert main_conversation(runner.session).nodes == [
         "u1",
         "ts",
         "cr",
@@ -1691,8 +1730,8 @@ async def test_llm_answer_within_grace_is_recorded_but_the_cancel_still_wins():
     async with run:
         events = [event async for event in run]
     assert events == [
-        TextBlock(text="Here you go."),
-        FinishReason(finish_reason="stop"),
+        TextBlock(conversation_id="c1", text="Here you go."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
     ]
 
 
@@ -1711,7 +1750,8 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(
             llm_config=MODEL,
             runtime_config=RuntimeConfig(llm_completion_cancellation_grace_period=30_000),
@@ -1743,7 +1783,7 @@ async def test_llm_failure_within_grace_closes_cancelled_and_returns_normally():
         outcome=TurnOutcome.CANCELLED,
         error="user abandoned the turn",
     )
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "cr", "tf"]
     assert runner.idle()
 
 
@@ -1759,7 +1799,8 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
         entries={
             "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=500, updated_at=500),
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     runner = DeterministicRunner(
@@ -1785,7 +1826,7 @@ async def test_eager_cancel_before_the_first_tick_flushes_without_an_llm_call():
         created_at=1000,
         outcome=TurnOutcome.CANCELLED,
     )
-    assert runner.session.active_conversation.nodes == ["u1", "ts", "cr", "tf"]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "cr", "tf"]
     assert runner.idle()
 
 
@@ -1821,6 +1862,7 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
     # the tool FAILED — it was not interrupted by the grace machinery
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         parent_id="a1",
         created_at=1000,
         tool_call_id="tc1",

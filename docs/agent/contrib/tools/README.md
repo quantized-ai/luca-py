@@ -30,7 +30,7 @@ class ReadFileTool(Tool):
     Args = ReadFileArgs
 
     async def _execute(
-        self, args: dict, session: AgentSession,
+        self, args: dict, session: AgentSession, conversation_id: str,
         *, cancellation_token: CancellationToken,
     ) -> str:
         with open(args["path"]) as f:
@@ -56,7 +56,23 @@ the core never does that for anyone.
 |---|---|
 | `args` | the **validated** arguments, dumped from `Args` to a plain dict |
 | `session` | the live `AgentSession` — read `session.id`, `session.session_config.llm_config` |
-| `cancellation_token` | keyword-only, always passed — see §7 |
+| `conversation_id` | which conversation is calling. One tool instance serves the whole tree, so per-conversation state is keyed by this ([`13-subagents.md`](../../13-subagents.md)) |
+| `cancellation_token` | keyword-only, always passed — see §8 |
+
+```python
+class NoteTool(Tool):
+    def __init__(self) -> None:
+        self.notes: dict[str, str] = {}          # keyed by conversation, never flat
+
+    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+        self.notes[conversation_id] = args["text"]
+        return "noted"
+```
+
+> ⚠️ **Unkeyed state is a bug that only appears with subagents.** One instance
+> is shared by the main agent and every subagent running in parallel; a flat
+> dict means they overwrite each other, silently. Dispatch within one
+> conversation is sequential, so a per-conversation slot needs no lock.
 
 > ⚠️ **The session is read-only.** The runner owns every write to session
 > state; a tool that mutates what it was handed corrupts the ledger. Per-run
@@ -77,7 +93,9 @@ policy.
 ```python
 class ReadFileTool(Tool):
     ...
-    async def get_approval_context(self, args: dict, session: AgentSession) -> dict:
+    async def get_approval_context(
+        self, args: dict, session: AgentSession, conversation_id: str
+    ) -> dict:
         return {
             "resources": [args["path"]],
             "preview": f"Read file {args['path']}",
@@ -111,7 +129,7 @@ class RunSqlTool(Tool):
     Args = SqlArgs
 
     async def execute(
-        self, args: dict, session: AgentSession,
+        self, args: dict, session: AgentSession, conversation_id: str,
         *, cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
@@ -161,8 +179,9 @@ class ReadFileTool(Tool):
     tool_kind = ToolKind.READ           # read | search | web_fetch | edit | move | delete | execute | switch_mode | other
     namespace = "builtin.fs"            # optional owning group
     version = "1.0.0"                   # optional
-    timeout_in_ms = 30_000              # optional per-tool deadline — see §7
+    timeout_in_ms = 30_000              # optional per-tool deadline — see §8
     output_schema = ReadFileResult      # optional output model — see §6
+    is_private = False                  # optional — keep it off the wire, see §7
 ```
 
 A spec must stay a pure function of the tool *definition*: it is stored once
@@ -202,7 +221,7 @@ class GetWeatherTool(Tool):
     tool_kind = ToolKind.WEB_FETCH
 
     async def execute(                     # produces the payload
-        self, args: dict, session: AgentSession,
+        self, args: dict, session: AgentSession, conversation_id: str,
         *, cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         reading: WeatherReport = await fetch_weather(args["city"])
@@ -270,7 +289,22 @@ an MCP server, a web UI — `ex.tool_spec.output_schema` is the contract.
 > (`Args → input_schema` differ in name because they differ in type; these
 > don't.)
 
-## 7. Cancellation and timeouts
+## 7. Private tools
+
+`is_private = True` keeps a tool off the wire: the model never sees it and
+cannot call it, while the runtime still can
+([`03-tools.md`](../../03-tools.md) §6). Everything else — approval, dispatch,
+the durable `ToolExecution` — is unchanged.
+
+```python
+class SummarizeChildTool(Tool):
+    name = "summarize_child"
+    description = "Turn a finished subagent's transcript into one result."
+    Args = ChildArgs
+    is_private = True
+```
+
+## 8. Cancellation and timeouts
 
 The runner races the body against the run's cancellation token and an optional
 deadline — `timeout_in_ms`, else `RuntimeConfig.tool_execution_timeout_in_ms`
@@ -287,7 +321,7 @@ cancellation grace window (`RuntimeConfig.tool_cancellation_grace_period`,
 default 0) — whatever it returns becomes its real result:
 
 ```python
-    async def _execute(self, args, session, *, cancellation_token):
+    async def _execute(self, args, session, conversation_id, *, cancellation_token):
         for chunk in stream:
             if cancellation_token.cancelled:
                 return "…cut short by cancellation."
@@ -299,13 +333,13 @@ Tools that spawn processes **must** kill their process group on
 cancel is identical for cancellation and timeout; blocking sync work belongs in
 `asyncio.to_thread`.
 
-## 8. `tool()` / `tool_class()` — tools built at runtime
+## 9. `tool()` / `tool_class()` — tools built at runtime
 
 Build a `Tool` from plain callables when the tool is assembled at runtime.
 `tool()` returns an instance ready for a registry, `tool_class()` the class:
 
 ```python
-async def list_files(args: dict, session: AgentSession) -> str:
+async def list_files(args: dict, session: AgentSession, conversation_id: str) -> str:
     return "\n".join(os.listdir(args["path"]))
 
 ls = tool(
@@ -321,9 +355,10 @@ ls = tool(
 | Parameter | Notes |
 |---|---|
 | `arguments` | a `BaseModel` subclass used as `Args` as-is, or a `create_model` field spec compiled into an `extra="forbid"` model |
-| `execute` | becomes `_execute`, the simple text path: async `(args, session) -> str`; per-instance configuration goes in the closure |
+| `execute` | becomes `_execute`, the simple text path: async `(args, session, conversation_id) -> str`; per-instance configuration goes in the closure |
 | `output` | optional — becomes `output_schema` (§6). Same two forms as `arguments`; a dict is a field spec here too, never a raw JSON Schema |
-| `get_approval_context` | optional async `(args, session) -> dict`; overrides an inherited one — passing both is almost certainly a mistake |
+| `get_approval_context` | optional async `(args, session, conversation_id) -> dict`; overrides an inherited one — passing both is almost certainly a mistake |
+| `is_private` | optional — keeps the tool off the wire (§7) |
 | `bases` | must contain a `Tool` subclass; MRO order is yours (mixins before `Tool`) |
 | `class_attrs` | extra class attributes — mixin requirements, or the remaining ClassVars (`namespace`, `version`, `timeout_in_ms`); colliding with a factory-managed name raises |
 

@@ -35,13 +35,13 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Conversation,
+    ConversationRuntimeStatus,
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
     PrunedEntry,
     SessionConfig,
-    SessionRuntimeStatus,
     TextContent,
     ToolCall,
     ToolExecution,
@@ -51,7 +51,13 @@ from luca.agent.core.models import (
     Usage,
     UserMessage,
 )
-from tests.agent.scenarios import MODEL, make_session, spec
+from tests.agent.scenarios import (
+    MODEL,
+    conversation,
+    main_conversation,
+    make_session,
+    spec,
+)
 
 PENDING_1000 = ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
@@ -74,12 +80,13 @@ MULTIPLY_SPEC_ID = MULTIPLY_SPEC.spec_id()
 def test_open_turn_index_is_none_on_empty_path():
     session = AgentSession(
         id="s",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_index() is None
+    assert ledger.open_turn_index("c1") is None
 
 
 def test_open_turn_index_is_none_after_turn_finish():
@@ -90,17 +97,20 @@ def test_open_turn_index_is_none_after_turn_finish():
             "ts": TurnStart(id="ts", created_at=1),
             "tf": TurnFinish(id="tf", created_at=2),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "tf"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_index() is None
+    assert ledger.open_turn_index("c1") is None
 
 
 def test_open_turn_index_finds_unclosed_turn_start():
@@ -113,17 +123,20 @@ def test_open_turn_index_finds_unclosed_turn_start():
             "u2": UserMessage(id="u2", created_at=3, parts=[TextContent(text="go")]),
             "ts2": TurnStart(id="ts2", created_at=4),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts1", "tf1", "u2", "ts2"],
-            created_at=0,
-            updated_at=4,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts1", "tf1", "u2", "ts2"],
+                created_at=0,
+                updated_at=4,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_index() == 4
+    assert ledger.open_turn_index("c1") == 4
 
 
 # ── derive_status ──────────────────────────────────────────────────────────────
@@ -132,12 +145,11 @@ def test_open_turn_index_finds_unclosed_turn_start():
 def test_derive_status_idle_on_empty_session():
     session = AgentSession(
         id="s",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_derive_status_pending_with_trailing_user_message():
@@ -146,12 +158,11 @@ def test_derive_status_pending_with_trailing_user_message():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["u1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_pending_with_open_turn_and_no_executions():
@@ -161,17 +172,18 @@ def test_derive_status_pending_with_open_turn_and_no_executions():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "ts": TurnStart(id="ts", created_at=1),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts"],
-            created_at=0,
-            updated_at=1,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_awaiting_when_approval_status_is_pending():
@@ -181,6 +193,7 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -190,17 +203,18 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
                 approval_decisions=[PENDING_1000],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.AWAITING_APPROVAL
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
 
 
 def test_derive_status_pending_when_execution_was_never_processed():
@@ -212,6 +226,7 @@ def test_derive_status_pending_when_execution_was_never_processed():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -221,17 +236,18 @@ def test_derive_status_pending_when_execution_was_never_processed():
                 approval_decisions=[],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_pending_when_execution_is_allowed_but_unrun():
@@ -241,6 +257,7 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -250,17 +267,18 @@ def test_derive_status_pending_when_execution_is_allowed_but_unrun():
                 approval_decisions=[PENDING_1000, ALLOW_1000],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_pending_with_orphaned_running_execution():
@@ -272,6 +290,7 @@ def test_derive_status_pending_with_orphaned_running_execution():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -282,17 +301,18 @@ def test_derive_status_pending_with_orphaned_running_execution():
                 started_at=3,
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1"],
-            created_at=0,
-            updated_at=3,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1"],
+                created_at=0,
+                updated_at=3,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_idle_after_closed_turn():
@@ -303,17 +323,18 @@ def test_derive_status_idle_after_closed_turn():
             "ts": TurnStart(id="ts", created_at=1),
             "tf": TurnFinish(id="tf", created_at=2),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "tf"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_derive_status_cancelling_beats_awaiting_approval():
@@ -325,6 +346,7 @@ def test_derive_status_cancelling_beats_awaiting_approval():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -335,21 +357,24 @@ def test_derive_status_cancelling_beats_awaiting_approval():
             ),
             "cr": CancelRequested(id="cr", created_at=3),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1", "cr"],
-            created_at=0,
-            updated_at=3,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1", "cr"],
+                created_at=0,
+                updated_at=3,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.CANCELLING
+    assert session.get_conversation_status("c1").status == ConversationStatus.CANCELLING
 
 
-def test_derive_status_pending_after_timed_out_turn():
-    # a failed close is retry-ready, not idle: run() opens a new bracket.
+def test_derive_status_idle_after_timed_out_turn():
+    # A closed bracket is IDLE whatever its outcome. A failed turn is no longer
+    # retry-ready: recovering means posting a new message, not silently
+    # re-sending the identical request.
     session = AgentSession(
         id="s",
         entries={
@@ -362,20 +387,21 @@ def test_derive_status_pending_after_timed_out_turn():
                 error="client timeout",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "tf"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
-def test_derive_status_pending_after_errored_turn():
+def test_derive_status_idle_after_errored_turn():
     session = AgentSession(
         id="s",
         entries={
@@ -388,17 +414,18 @@ def test_derive_status_pending_after_errored_turn():
                 error="boom",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "tf"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_derive_status_idle_after_cancelled_turn():
@@ -416,17 +443,18 @@ def test_derive_status_idle_after_cancelled_turn():
                 outcome=TurnOutcome.CANCELLED,
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "cr", "tf"],
-            created_at=0,
-            updated_at=3,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "cr", "tf"],
+                created_at=0,
+                updated_at=3,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 # ── the execution-subset matrix ────────────────────────────────────────────────
@@ -442,6 +470,7 @@ MATRIX_SESSION = make_session(
         "ts": TurnStart(id="ts", created_at=1),
         "te_done": ToolExecution(
             id="te_done",
+            conversation_id="c1",
             created_at=2,
             tool_call_id="tc0",
             raw_tool_call=ToolCall(id="tc0", name="add", arguments={"a": 1, "b": 2}),
@@ -455,6 +484,7 @@ MATRIX_SESSION = make_session(
         ),
         "te_undecided": ToolExecution(
             id="te_undecided",
+            conversation_id="c1",
             created_at=4,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -465,6 +495,7 @@ MATRIX_SESSION = make_session(
         ),
         "te_awaiting": ToolExecution(
             id="te_awaiting",
+            conversation_id="c1",
             created_at=5,
             tool_call_id="tc2",
             raw_tool_call=ToolCall(id="tc2", name="multiply"),
@@ -475,6 +506,7 @@ MATRIX_SESSION = make_session(
         ),
         "te_ready": ToolExecution(
             id="te_ready",
+            conversation_id="c1",
             created_at=6,
             tool_call_id="tc3",
             raw_tool_call=ToolCall(id="tc3", name="subtract"),
@@ -485,6 +517,7 @@ MATRIX_SESSION = make_session(
         ),
         "te_running": ToolExecution(
             id="te_running",
+            conversation_id="c1",
             created_at=7,
             tool_call_id="tc4",
             raw_tool_call=ToolCall(id="tc4", name="add"),
@@ -495,12 +528,15 @@ MATRIX_SESSION = make_session(
             started_at=8,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["ts", "te_done", "te_undecided", "te_awaiting", "te_ready", "te_running"],
-        created_at=0,
-        updated_at=8,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["ts", "te_done", "te_undecided", "te_awaiting", "te_ready", "te_running"],
+            created_at=0,
+            updated_at=8,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -509,32 +545,32 @@ def test_execution_subsets_partition_by_status_and_approval():
     session = MATRIX_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_executions() == [
+    assert ledger.open_turn_executions("c1") == [
         session.entries["te_done"],
         session.entries["te_undecided"],
         session.entries["te_awaiting"],
         session.entries["te_ready"],
         session.entries["te_running"],
     ]
-    assert ledger.open_turn_pending_executions() == [
+    assert ledger.open_turn_pending_executions("c1") == [
         session.entries["te_undecided"],
         session.entries["te_awaiting"],
         session.entries["te_ready"],
     ]
-    assert ledger.open_turn_undecided_executions() == [
+    assert ledger.open_turn_undecided_executions("c1") == [
         session.entries["te_undecided"],
         session.entries["te_awaiting"],
     ]
-    assert ledger.open_turn_awaiting_executions() == [
+    assert ledger.open_turn_awaiting_executions("c1") == [
         session.entries["te_awaiting"],
     ]
-    assert ledger.open_turn_ready_executions() == [
+    assert ledger.open_turn_ready_executions("c1") == [
         session.entries["te_ready"],
     ]
-    assert ledger.open_turn_running_executions() == [
+    assert ledger.open_turn_running_executions("c1") == [
         session.entries["te_running"],
     ]
-    assert ledger.has_awaiting_approval() is True
+    assert ledger.has_awaiting_approval("c1") is True
 
 
 def test_execution_subsets_are_empty_without_open_turn():
@@ -544,23 +580,26 @@ def test_execution_subsets_are_empty_without_open_turn():
             "ts": TurnStart(id="ts", created_at=1),
             "tf": TurnFinish(id="tf", created_at=2),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "tf"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_executions() == []
-    assert ledger.open_turn_pending_executions() == []
-    assert ledger.open_turn_undecided_executions() == []
-    assert ledger.open_turn_awaiting_executions() == []
-    assert ledger.open_turn_ready_executions() == []
-    assert ledger.open_turn_running_executions() == []
-    assert ledger.has_awaiting_approval() is False
+    assert ledger.open_turn_executions("c1") == []
+    assert ledger.open_turn_pending_executions("c1") == []
+    assert ledger.open_turn_undecided_executions("c1") == []
+    assert ledger.open_turn_awaiting_executions("c1") == []
+    assert ledger.open_turn_ready_executions("c1") == []
+    assert ledger.open_turn_running_executions("c1") == []
+    assert ledger.has_awaiting_approval("c1") is False
 
 
 def test_approval_state_is_read_from_approval_status_not_the_log():
@@ -572,6 +611,7 @@ def test_approval_state_is_read_from_approval_status_not_the_log():
             "ts": TurnStart(id="ts", created_at=1),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=2,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -581,19 +621,22 @@ def test_approval_state_is_read_from_approval_status_not_the_log():
                 approval_decisions=[PENDING_1000],
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "te1"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "te1"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_ready_executions() == [session.entries["te1"]]
-    assert ledger.open_turn_awaiting_executions() == []
-    assert ledger.open_turn_undecided_executions() == []
+    assert ledger.open_turn_ready_executions("c1") == [session.entries["te1"]]
+    assert ledger.open_turn_awaiting_executions("c1") == []
+    assert ledger.open_turn_undecided_executions("c1") == []
 
 
 # ── open_turn_cancel_requested ─────────────────────────────────────────────────
@@ -606,17 +649,20 @@ def test_open_turn_cancel_requested_finds_the_unconsumed_entry():
             "ts": TurnStart(id="ts", created_at=1),
             "cr": CancelRequested(id="cr", created_at=2, error="user hit ESC"),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "cr"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "cr"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_cancel_requested() == CancelRequested(
+    assert ledger.open_turn_cancel_requested("c1") == CancelRequested(
         id="cr",
         created_at=2,
         outcome=TurnOutcome.CANCELLED,
@@ -640,17 +686,20 @@ def test_open_turn_cancel_requested_ignores_consumed_instances():
             "u2": UserMessage(id="u2", created_at=4, parts=[TextContent(text="go")]),
             "ts2": TurnStart(id="ts2", created_at=5),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts1", "cr", "tf1", "u2", "ts2"],
-            created_at=0,
-            updated_at=5,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts1", "cr", "tf1", "u2", "ts2"],
+                created_at=0,
+                updated_at=5,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_cancel_requested() is None
+    assert ledger.open_turn_cancel_requested("c1") is None
 
 
 def test_open_turn_cancel_requested_is_none_without_open_turn():
@@ -665,17 +714,20 @@ def test_open_turn_cancel_requested_is_none_without_open_turn():
                 outcome=TurnOutcome.CANCELLED,
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["ts", "cr", "tf"],
-            created_at=0,
-            updated_at=3,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "cr", "tf"],
+                created_at=0,
+                updated_at=3,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_turn_cancel_requested() is None
+    assert ledger.open_turn_cancel_requested("c1") is None
 
 
 # ── record_usage: the single write door onto AgentSession.usages ──────────────
@@ -693,17 +745,21 @@ def test_record_usage_builds_the_record_and_indexes_it_by_conversation():
                 stop_reason="stop",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["a1"],
-            created_at=0,
-            updated_at=1,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["a1"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     record = ledger.record_usage(
+        "c1",
         "a1",
         input=10,
         output=5,
@@ -735,18 +791,21 @@ def test_record_usage_replaces_the_pair_record_on_re_record():
                 stop_reason="stop",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["a1"],
-            created_at=0,
-            updated_at=1,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["a1"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-    ledger.record_usage("a1", input=10, total_tokens=10)
+    ledger.record_usage("c1", "a1", input=10, total_tokens=10)
 
-    ledger.record_usage("a1", input=20, total_tokens=20)
+    ledger.record_usage("c1", "a1", input=20, total_tokens=20)
 
     assert session.usages == {
         "c1": {
@@ -763,18 +822,21 @@ def test_record_usage_replaces_the_pair_record_on_re_record():
 def test_record_usage_rejects_a_missing_entry():
     session = AgentSession(
         id="s",
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=0,
-            updated_at=0,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=0,
+                updated_at=0,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     with pytest.raises(AgentError, match="no such entry"):
-        ledger.record_usage("ghost", input=10)
+        ledger.record_usage("c1", "ghost", input=10)
 
 
 def test_record_usage_rejects_an_entry_outside_the_conversation_path():
@@ -789,18 +851,21 @@ def test_record_usage_rejects_an_entry_outside_the_conversation_path():
                 stop_reason="stop",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=0,
-            updated_at=0,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=0,
+                updated_at=0,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     with pytest.raises(AgentError, match="not on conversation"):
-        ledger.record_usage("a1", input=10)
+        ledger.record_usage("c1", "a1", input=10)
 
 
 # ── append / put bookkeeping ───────────────────────────────────────────────────
@@ -812,23 +877,25 @@ def test_append_links_parent_extends_path_and_stamps_updated_at():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["u1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "ts")
 
     entry = ledger.append(
+        "c1",
         lambda entry_id, parent_id, ts: TurnStart(
             id=entry_id,
             parent_id=parent_id,
             created_at=ts,
-        )
+        ),
     )
 
     assert entry == TurnStart(id="ts", parent_id="u1", created_at=1000)
     assert session.entries["ts"] == entry
-    assert session.active_conversation.nodes == ["u1", "ts"]
-    assert session.active_conversation.updated_at == 1000
+    assert main_conversation(session).nodes == ["u1", "ts"]
+    assert main_conversation(session).updated_at == 1000
 
 
 def test_put_entry_stores_the_replacement_and_touches_conversation():
@@ -837,6 +904,7 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -844,7 +912,8 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
                 status=ExecutionStatus.PENDING,
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -858,11 +927,12 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         },
     )
 
-    stored = ledger.put_entry(replacement)
+    stored = ledger.put_entry("c1", replacement)
 
     assert stored is replacement
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -874,7 +944,7 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         ended_at=1000,
         updated_at=1000,
     )
-    assert session.active_conversation.updated_at == 1000
+    assert main_conversation(session).updated_at == 1000
 
 
 # ── refresh_entry: the derived-field door ─────────────────────────────────────
@@ -891,7 +961,8 @@ def test_refresh_entry_stores_the_replacement_without_touching_the_conversation(
                 context_tokens=3,
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["u1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -908,7 +979,7 @@ def test_refresh_entry_stores_the_replacement_without_touching_the_conversation(
     )
     # re-deriving a stored estimate is not a mutation of the conversation:
     # unlike put_entry, this door leaves `updated_at` exactly where it was.
-    assert session.active_conversation == Conversation(
+    assert main_conversation(session) == Conversation(
         id="c1",
         nodes=["u1"],
         created_at=0,
@@ -920,7 +991,8 @@ def test_refresh_entry_refuses_an_uncommitted_entry():
     session = AgentSession(
         id="s",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -935,7 +1007,8 @@ def test_refresh_entry_refuses_to_create_an_unknown_entry():
     session = AgentSession(
         id="s",
         entries={},
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -964,12 +1037,14 @@ def test_append_files_the_tool_spec_and_stamps_the_reference():
     session = AgentSession(
         id="s",
         entries={"ts": TurnStart(id="ts", created_at=0)},
-        active_conversation=Conversation(id="c1", nodes=["ts"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["ts"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te1")
 
     appended = ledger.append(
+        "c1",
         lambda entry_id, parent_id, ts: ToolExecution(
             id=entry_id,
             parent_id=parent_id,
@@ -977,9 +1052,11 @@ def test_append_files_the_tool_spec_and_stamps_the_reference():
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
             tool_spec=spec("add"),
-        )
+        ),
     )
 
+    # `conversation_id` stays None: the LEDGER never stamps it. It is part of
+    # the identity set the RUNNER owns, alongside id / parent_id / created_at.
     assert appended == ToolExecution(
         id="te1",
         parent_id="ts",
@@ -998,12 +1075,14 @@ def test_append_leaves_an_unresolved_execution_with_no_spec_reference():
     session = AgentSession(
         id="s",
         entries={"ts": TurnStart(id="ts", created_at=0)},
-        active_conversation=Conversation(id="c1", nodes=["ts"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["ts"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te1")
 
     appended = ledger.append(
+        "c1",
         lambda entry_id, parent_id, ts: ToolExecution(
             id=entry_id,
             parent_id=parent_id,
@@ -1011,9 +1090,11 @@ def test_append_leaves_an_unresolved_execution_with_no_spec_reference():
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="ghost"),
             status=ExecutionStatus.NOT_FOUND,
-        )
+        ),
     )
 
+    # `conversation_id` stays None: the LEDGER never stamps it. It is part of
+    # the identity set the RUNNER owns, alongside id / parent_id / created_at.
     assert appended == ToolExecution(
         id="te1",
         parent_id="ts",
@@ -1035,18 +1116,21 @@ def test_the_same_spec_written_twice_is_stored_once():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=spec("add"),
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "te2")
 
     appended = ledger.append(
+        "c1",
         lambda entry_id, parent_id, ts: ToolExecution(
             id=entry_id,
             parent_id=parent_id,
@@ -1054,7 +1138,7 @@ def test_the_same_spec_written_twice_is_stored_once():
             tool_call_id="tc2",
             raw_tool_call=ToolCall(id="tc2", name="add"),
             tool_spec=spec("add"),
-        )
+        ),
     )
 
     assert appended == ToolExecution(
@@ -1080,13 +1164,15 @@ def test_put_entry_re_stamps_a_spec_replaced_between_writes():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=spec("add"),
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -1094,10 +1180,11 @@ def test_put_entry_re_stamps_a_spec_replaced_between_writes():
         update={"tool_spec": REVISED_ADD_SPEC, "updated_at": 1000},
     )
 
-    ledger.put_entry(replacement)
+    ledger.put_entry("c1", replacement)
 
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1121,22 +1208,25 @@ def test_put_entry_drops_the_reference_when_the_spec_is_removed():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=spec("add"),
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
     replacement = session.entries["te1"].model_copy(update={"tool_spec": None})
 
-    ledger.put_entry(replacement)
+    ledger.put_entry("c1", replacement)
 
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1152,12 +1242,14 @@ def test_refresh_entry_files_a_spec_that_arrives_late():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
@@ -1169,6 +1261,7 @@ def test_refresh_entry_files_a_spec_that_arrives_late():
 
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1189,6 +1282,7 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 parent_id="u1",
                 created_at=1,
                 tool_call_id="tc1",
@@ -1208,17 +1302,21 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
                 stop_reason="stop",
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "te1", "a2"],
-            created_at=0,
-            updated_at=2,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "te1", "a2"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     pruned = ledger.prune(
+        "c1",
         "te1",
         lambda entry_id, parent_id, ts: PrunedEntry(
             id=entry_id,
@@ -1242,8 +1340,8 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
         context_tokens=2,
     )
     assert session.entries["p1"] == pruned
-    assert session.active_conversation.nodes == ["u1", "p1", "a2"]
-    assert session.active_conversation.updated_at == 1000
+    assert main_conversation(session).nodes == ["u1", "p1", "a2"]
+    assert main_conversation(session).updated_at == 1000
     # the original is untouched and remains in the store
     assert session.entries["te1"].status == ExecutionStatus.COMPLETED
 
@@ -1257,6 +1355,7 @@ def test_prune_is_not_a_tool_spec_door():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1267,12 +1366,14 @@ def test_prune_is_not_a_tool_spec_door():
                 ended_at=0,
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     ledger.prune(
+        "c1",
         "te1",
         lambda entry_id, parent_id, ts: PrunedEntry(
             id=entry_id,
@@ -1287,6 +1388,7 @@ def test_prune_is_not_a_tool_spec_door():
     assert session.tool_specs == {ADD_SPEC_ID: ADD_SPEC}
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=0,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1302,13 +1404,14 @@ def test_prune_is_not_a_tool_spec_door():
 def test_prune_rejects_a_missing_entry():
     session = AgentSession(
         id="s",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     with pytest.raises(AgentError, match="no such entry"):
-        ledger.prune("ghost", lambda entry_id, parent_id, ts: None)
+        ledger.prune("c1", "ghost", lambda entry_id, parent_id, ts: None)
 
 
 def test_prune_rejects_an_entry_outside_the_active_path():
@@ -1317,13 +1420,14 @@ def test_prune_rejects_an_entry_outside_the_active_path():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     with pytest.raises(AgentError, match="not on conversation"):
-        ledger.prune("u1", lambda entry_id, parent_id, ts: None)
+        ledger.prune("c1", "u1", lambda entry_id, parent_id, ts: None)
 
 
 def test_prune_rejects_a_replacement_referencing_a_different_entry():
@@ -1332,13 +1436,15 @@ def test_prune_rejects_a_replacement_referencing_a_different_entry():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["u1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     with pytest.raises(AgentError, match="replacing"):
         ledger.prune(
+            "c1",
             "u1",
             lambda entry_id, parent_id, ts: PrunedEntry(
                 id=entry_id,
@@ -1357,13 +1463,15 @@ def test_prune_rejects_a_mismatched_pruned_entry_type():
         entries={
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
         },
-        active_conversation=Conversation(id="c1", nodes=["u1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["u1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     with pytest.raises(AgentError, match="pruned_entry_type"):
         ledger.prune(
+            "c1",
             "u1",
             lambda entry_id, parent_id, ts: PrunedEntry(
                 id=entry_id,
@@ -1382,6 +1490,7 @@ def test_prune_rejects_a_nonterminal_execution():
         entries={
             "te1": ToolExecution(
                 id="te1",
+                conversation_id="c1",
                 created_at=0,
                 tool_call_id="tc1",
                 raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1390,13 +1499,15 @@ def test_prune_rejects_a_nonterminal_execution():
                 started_at=0,
             ),
         },
-        active_conversation=Conversation(id="c1", nodes=["te1"], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "p1")
 
     with pytest.raises(AgentError, match="nonterminal"):
         ledger.prune(
+            "c1",
             "te1",
             lambda entry_id, parent_id, ts: PrunedEntry(
                 id=entry_id,
@@ -1409,9 +1520,9 @@ def test_prune_rejects_a_nonterminal_execution():
         )
 
 
-# ── SessionRuntimeStatus.get_runtime_status_from_agent_session ────────────────
+# ── ConversationRuntimeStatus.get_runtime_status_from_agent_session ────────────────
 #
-# Known AgentSession assembled from entry literals → exact SessionRuntimeStatus.
+# Known AgentSession assembled from entry literals → exact ConversationRuntimeStatus.
 # No runner, no provider — pure derivation from entries.
 
 _LLM = LLMConfig(model="test-model", provider="faux")
@@ -1427,10 +1538,11 @@ _AM = AssistantMessage(
 def test_runtime_status_empty_session():
     session = AgentSession(
         id="s",
-        active_conversation=Conversation(id="c1", nodes=[], created_at=0, updated_at=0),
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
         status=ConversationStatus.IDLE, turn_count=0, step_count=0
     )
 
@@ -1442,17 +1554,19 @@ def test_runtime_status_open_turn_no_steps():
             "u1": UserMessage(id="u1", created_at=0, parts=[TextContent(text="hi")]),
             "ts": TurnStart(id="ts", created_at=1),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts"],
-            created_at=0,
-            updated_at=1,
-            status=ConversationStatus.RUNNING,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
-        status=ConversationStatus.RUNNING, turn_count=1, step_count=0
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
+        status=ConversationStatus.BUSY, turn_count=1, step_count=0
     )
 
 
@@ -1464,17 +1578,19 @@ def test_runtime_status_open_turn_one_step():
             "ts": TurnStart(id="ts", created_at=1),
             "a1": _AM,
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1"],
-            created_at=0,
-            updated_at=1,
-            status=ConversationStatus.RUNNING,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
-        status=ConversationStatus.RUNNING, turn_count=1, step_count=1
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
+        status=ConversationStatus.BUSY, turn_count=1, step_count=1
     )
 
 
@@ -1494,17 +1610,19 @@ def test_runtime_status_open_turn_two_steps():
             "a1": _AM,
             "a2": a2,
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "a2"],
-            created_at=0,
-            updated_at=2,
-            status=ConversationStatus.RUNNING,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "a2"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
-        status=ConversationStatus.RUNNING, turn_count=1, step_count=2
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
+        status=ConversationStatus.BUSY, turn_count=1, step_count=2
     )
 
 
@@ -1517,17 +1635,19 @@ def test_runtime_status_closed_turn_no_open_turn():
             "a1": _AM,
             "tf": TurnFinish(id="tf", created_at=2, outcome=TurnOutcome.COMPLETED),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts", "a1", "tf"],
-            created_at=0,
-            updated_at=2,
-            status=ConversationStatus.IDLE,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts", "a1", "tf"],
+                created_at=0,
+                updated_at=2,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
     # Closed turn: step_count=0 (no open turn), turn_count=1
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
         status=ConversationStatus.IDLE, turn_count=1, step_count=0
     )
 
@@ -1543,18 +1663,20 @@ def test_runtime_status_second_open_turn():
             "u2": UserMessage(id="u2", created_at=3, parts=[TextContent(text="second")]),
             "ts2": TurnStart(id="ts2", created_at=4),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2"],
-            created_at=0,
-            updated_at=4,
-            status=ConversationStatus.RUNNING,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts1", "a1", "tf1", "u2", "ts2"],
+                created_at=0,
+                updated_at=4,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
     # Second open turn with no steps yet; turn_count=2 (two TurnStarts)
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
-        status=ConversationStatus.RUNNING, turn_count=2, step_count=0
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
+        status=ConversationStatus.BUSY, turn_count=2, step_count=0
     )
 
 
@@ -1577,18 +1699,20 @@ def test_runtime_status_second_open_turn_with_steps():
             "ts2": TurnStart(id="ts2", created_at=4),
             "a2": a2,
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2"],
-            created_at=0,
-            updated_at=5,
-            status=ConversationStatus.RUNNING,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["u1", "ts1", "a1", "tf1", "u2", "ts2", "a2"],
+                created_at=0,
+                updated_at=5,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=_LLM),
     )
     # step_count counts only AssistantMessages in the CURRENT (second) open turn
-    assert SessionRuntimeStatus.get_runtime_status_from_agent_session(session) == SessionRuntimeStatus(
-        status=ConversationStatus.RUNNING, turn_count=2, step_count=1
+    assert session.get_conversation_status("c1") == ConversationRuntimeStatus(
+        status=ConversationStatus.BUSY, turn_count=2, step_count=1
     )
 
 
@@ -1602,18 +1726,21 @@ def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
                 source=CompactionSource.USER,
             ),
         },
-        active_conversation=Conversation(
-            id="c1",
-            nodes=["cmp"],
-            created_at=0,
-            updated_at=0,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["cmp"],
+                created_at=0,
+                updated_at=0,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
     replacement = session.entries["cmp"].model_copy(update={"started_at": 1000})
 
-    ledger.put_entry(replacement)
+    ledger.put_entry("c1", replacement)
 
     assert session.entries["cmp"] == CompactionEntry(
         id="cmp",
@@ -1621,26 +1748,29 @@ def test_put_entry_updates_a_compaction_entry_as_readily_as_an_execution():
         source=CompactionSource.USER,
         started_at=1000,
     )
-    assert session.active_conversation.nodes == ["cmp"]
-    assert session.active_conversation.updated_at == 1000
+    assert main_conversation(session).nodes == ["cmp"]
+    assert main_conversation(session).updated_at == 1000
 
 
 def test_put_entry_refuses_an_uncommitted_entry():
     session = AgentSession(
         id="s",
         entries={},
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=0,
-            updated_at=0,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=0,
+                updated_at=0,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     with pytest.raises(AgentError, match="Cannot store an uncommitted entry"):
-        ledger.put_entry(CompactionEntry(source=CompactionSource.USER))
+        ledger.put_entry("c1", CompactionEntry(source=CompactionSource.USER))
 
     assert session.entries == {}
 
@@ -1649,18 +1779,22 @@ def test_put_entry_refuses_to_create_an_unknown_entry():
     session = AgentSession(
         id="s",
         entries={},
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=0,
-            updated_at=0,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=0,
+                updated_at=0,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
     with pytest.raises(AgentError, match="Cannot update entry 'nope': no such entry"):
         ledger.put_entry(
+            "c1",
             CompactionEntry(
                 id="nope",
                 created_at=0,
@@ -1705,13 +1839,15 @@ TRANSITION_SESSION = AgentSession(
             started_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
-        created_at=500,
-        updated_at=600,
-        status=ConversationStatus.RUNNING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp"],
+            created_at=500,
+            updated_at=600,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -1735,6 +1871,7 @@ def test_transition_archives_the_outgoing_path_and_installs_the_new_one():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     installed = ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1742,32 +1879,35 @@ def test_transition_archives_the_outgoing_path_and_installs_the_new_one():
         ts=1000,
     )
 
-    assert installed is session.active_conversation
-    assert session.conversation_history == [
-        Conversation(
+    # The name moved; the outgoing conversation did NOT move — it stays a
+    # first-class row, now reachable backwards from its successor.
+    assert installed is main_conversation(session)
+    assert session.main_conversation_id == "c2"
+    assert session.conversations == {
+        "c1": Conversation(
             id="c1",
             nodes=["u1", "ts1", "a1", "tf1", "u2", "ts_c", "cmp", "tf_c"],
             created_at=500,
             updated_at=1000,
-            status=ConversationStatus.IDLE,
         ),
-    ]
-    assert session.active_conversation == Conversation(
-        id="c2",
-        nodes=["cmp", "u2"],
-        created_at=1000,
-        updated_at=1000,
-        status=ConversationStatus.PENDING,
-    )
+        "c2": Conversation(
+            id="c2",
+            nodes=["cmp", "u2"],
+            created_at=1000,
+            updated_at=1000,
+            previous_conversation_id="c1",
+        ),
+    }
     assert session.entries["cmp"] == SUMMARIZED
     assert session.entries["tf_c"] == CLOSING
 
 
-def test_the_same_conversation_is_never_both_active_and_archived():
+def test_the_outgoing_conversation_is_never_the_installed_one():
     session = TRANSITION_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1775,7 +1915,7 @@ def test_the_same_conversation_is_never_both_active_and_archived():
         ts=1000,
     )
 
-    assert session.conversation_history[-1] is not session.active_conversation
+    assert session.conversations["c1"] is not main_conversation(session)
 
 
 def test_transition_stores_created_entries():
@@ -1788,6 +1928,7 @@ def test_transition_stores_created_entries():
     )
     execution = ToolExecution(
         id="new2",
+        conversation_id="c1",
         parent_id="new1",
         created_at=1000,
         tool_call_id="tcX",
@@ -1799,6 +1940,7 @@ def test_transition_stores_created_entries():
     )
 
     ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[framing, execution],
         closing=CLOSING.model_copy(deep=True),
@@ -1815,6 +1957,7 @@ def test_transition_without_a_closing_marker_archives_the_path_as_it_stands():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     ledger.transition_conversation(
+        "c1",
         updates=[],
         created=[],
         closing=None,
@@ -1822,7 +1965,7 @@ def test_transition_without_a_closing_marker_archives_the_path_as_it_stands():
         ts=1000,
     )
 
-    assert session.conversation_history[-1].nodes == [
+    assert session.conversations["c1"].nodes == [
         "u1",
         "ts1",
         "a1",
@@ -1838,6 +1981,7 @@ def test_the_new_conversation_derives_idle_from_a_carried_completed_turn():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     installed = ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1845,14 +1989,15 @@ def test_the_new_conversation_derives_idle_from_a_carried_completed_turn():
         ts=1000,
     )
 
-    assert installed.status == ConversationStatus.IDLE
+    assert session.get_conversation_status(installed.id).status == ConversationStatus.IDLE
 
 
-def test_the_new_conversation_derives_pending_from_a_carried_user_message():
+def test_the_new_conversation_derives_busy_from_a_carried_user_message():
     session = TRANSITION_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     installed = ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1860,10 +2005,10 @@ def test_the_new_conversation_derives_pending_from_a_carried_user_message():
         ts=1000,
     )
 
-    assert installed.status == ConversationStatus.PENDING
+    assert session.get_conversation_status(installed.id).status == ConversationStatus.BUSY
 
 
-def test_the_new_conversation_derives_pending_from_a_carried_failed_turn():
+def test_the_new_conversation_derives_idle_from_a_carried_failed_turn():
     session = TRANSITION_SESSION.model_copy(deep=True)
     session.entries["tf1"] = session.entries["tf1"].model_copy(
         update={"outcome": TurnOutcome.ERRORED, "error": "boom"},
@@ -1871,6 +2016,7 @@ def test_the_new_conversation_derives_pending_from_a_carried_failed_turn():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     installed = ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1878,7 +2024,7 @@ def test_the_new_conversation_derives_pending_from_a_carried_failed_turn():
         ts=1000,
     )
 
-    assert installed.status == ConversationStatus.PENDING
+    assert session.get_conversation_status(installed.id).status == ConversationStatus.IDLE
 
 
 def test_the_new_conversation_derives_idle_when_the_summary_is_the_leaf():
@@ -1886,6 +2032,7 @@ def test_the_new_conversation_derives_idle_when_the_summary_is_the_leaf():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
 
     installed = ledger.transition_conversation(
+        "c1",
         updates=[SUMMARIZED.model_copy(deep=True)],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -1893,7 +2040,7 @@ def test_the_new_conversation_derives_idle_when_the_summary_is_the_leaf():
         ts=1000,
     )
 
-    assert installed.status == ConversationStatus.IDLE
+    assert session.get_conversation_status(installed.id).status == ConversationStatus.IDLE
 
 
 def test_an_unknown_update_id_raises_before_anything_is_written():
@@ -1903,6 +2050,7 @@ def test_an_unknown_update_id_raises_before_anything_is_written():
 
     with pytest.raises(AgentError, match="Cannot update entry 'ghost'"):
         ledger.transition_conversation(
+            "c1",
             updates=[
                 SUMMARIZED.model_copy(deep=True, update={"id": "ghost"}),
             ],
@@ -1922,6 +2070,7 @@ def test_a_created_id_that_already_exists_raises_before_anything_is_written():
 
     with pytest.raises(AgentError, match="Cannot create entry 'u1'"):
         ledger.transition_conversation(
+            "c1",
             updates=[],
             created=[
                 UserMessage(
@@ -1945,6 +2094,7 @@ def test_a_created_entry_with_no_id_raises_before_anything_is_written():
 
     with pytest.raises(AgentError, match="Cannot create an entry with no id"):
         ledger.transition_conversation(
+            "c1",
             updates=[],
             created=[UserMessage(parts=[TextContent(text="template")])],
             closing=None,
@@ -1967,6 +2117,7 @@ TRANSITION_TOOL_SESSION = make_session(
     entries={
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             created_at=500,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -1985,13 +2136,15 @@ TRANSITION_TOOL_SESSION = make_session(
             started_at=600,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["te1", "ts_c", "cmp"],
-        created_at=500,
-        updated_at=600,
-        status=ConversationStatus.RUNNING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["te1", "ts_c", "cmp"],
+            created_at=500,
+            updated_at=600,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -2004,6 +2157,7 @@ def test_transition_files_the_spec_of_an_updated_execution():
     )
 
     ledger.transition_conversation(
+        "c1",
         updates=[rewritten],
         created=[],
         closing=CLOSING.model_copy(deep=True),
@@ -2013,6 +2167,7 @@ def test_transition_files_the_spec_of_an_updated_execution():
 
     assert session.entries["te1"] == ToolExecution(
         id="te1",
+        conversation_id="c1",
         created_at=500,
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add"),
@@ -2034,6 +2189,7 @@ def test_transition_files_the_spec_of_a_created_execution():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
     minted = ToolExecution(
         id="te2",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="multiply"),
@@ -2045,6 +2201,7 @@ def test_transition_files_the_spec_of_a_created_execution():
     )
 
     ledger.transition_conversation(
+        "c1",
         updates=[],
         created=[minted],
         closing=CLOSING.model_copy(deep=True),
@@ -2054,6 +2211,7 @@ def test_transition_files_the_spec_of_a_created_execution():
 
     assert session.entries["te2"] == ToolExecution(
         id="te2",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="multiply"),
@@ -2078,6 +2236,7 @@ def test_transition_files_the_spec_of_a_closing_execution():
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "c2")
     closing = ToolExecution(
         id="te2",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="multiply"),
@@ -2089,6 +2248,7 @@ def test_transition_files_the_spec_of_a_closing_execution():
     )
 
     ledger.transition_conversation(
+        "c1",
         updates=[],
         created=[],
         closing=closing,
@@ -2098,6 +2258,7 @@ def test_transition_files_the_spec_of_a_closing_execution():
 
     assert session.entries["te2"] == ToolExecution(
         id="te2",
+        conversation_id="c1",
         created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="multiply"),
@@ -2112,7 +2273,7 @@ def test_transition_files_the_spec_of_a_closing_execution():
         ADD_SPEC_ID: ADD_SPEC,
         MULTIPLY_SPEC_ID: MULTIPLY_SPEC,
     }
-    assert session.conversation_history[-1].nodes == ["te1", "ts_c", "cmp", "te2"]
+    assert session.conversations["c1"].nodes == ["te1", "ts_c", "cmp", "te2"]
 
 
 # ── open_compaction_entry: is there a compaction to RESUME? ───────────────────
@@ -2153,12 +2314,15 @@ RESUME_SESSION = AgentSession(
         "cr": CancelRequested(id="cr", parent_id="cmp", created_at=700),
         "tf_c": TurnFinish(id="tf_c", parent_id="cmp", created_at=700),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=[],
-        created_at=500,
-        updated_at=700,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            [],
+            created_at=500,
+            updated_at=700,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -2167,47 +2331,47 @@ def test_no_compaction_to_resume_on_an_empty_path():
     session = RESUME_SESSION.model_copy(deep=True)
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is None
+    assert ledger.open_compaction_entry("c1") is None
 
 
 def test_no_compaction_to_resume_inside_a_bare_open_conversational_turn():
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts"]
+    main_conversation(session).nodes = ["u1", "ts"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is None
+    assert ledger.open_compaction_entry("c1") is None
 
 
 def test_no_compaction_to_resume_inside_an_open_conversational_turn():
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts", "a1"]
+    main_conversation(session).nodes = ["u1", "ts", "a1"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is None
+    assert ledger.open_compaction_entry("c1") is None
 
 
 def test_an_open_compaction_bracket_offers_its_entry():
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts_c", "cmp"]
+    main_conversation(session).nodes = ["u1", "ts_c", "cmp"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is session.entries["cmp"]
+    assert ledger.open_compaction_entry("c1") is session.entries["cmp"]
 
 
 def test_a_parked_cancel_inside_the_bracket_still_offers_the_entry():
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts_c", "cmp", "cr"]
+    main_conversation(session).nodes = ["u1", "ts_c", "cmp", "cr"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is session.entries["cmp"]
+    assert ledger.open_compaction_entry("c1") is session.entries["cmp"]
 
 
 def test_a_closed_compaction_bracket_offers_nothing():
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts_c", "cmp", "tf_c"]
+    main_conversation(session).nodes = ["u1", "ts_c", "cmp", "tf_c"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is None
+    assert ledger.open_compaction_entry("c1") is None
 
 
 def test_an_open_bracket_around_a_committed_entry_offers_nothing():
@@ -2215,10 +2379,10 @@ def test_an_open_bracket_around_a_committed_entry_offers_nothing():
     # cannot counterfeit a committed entry's content. Resuming this would
     # re-run compact() over finished work and overwrite `compacted_nodes`.
     session = RESUME_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u1", "ts_c", "cmp_done"]
+    main_conversation(session).nodes = ["u1", "ts_c", "cmp_done"]
     ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
 
-    assert ledger.open_compaction_entry() is None
+    assert ledger.open_compaction_entry("c1") is None
 
 
 # ── derive_status: a closed compaction bracket is transparent ─────────────────
@@ -2292,70 +2456,61 @@ STATUS_MATRIX_SESSION = AgentSession(
             parts=[TextContent(text="still there?")],
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=[],
-        created_at=500,
-        updated_at=900,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            [],
+            created_at=500,
+            updated_at=900,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
 
 def test_a_completed_compaction_does_not_bury_a_queued_question():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "tf_c_ok"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["u3", "ts_c", "cmp", "tf_c_ok"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_a_cancelled_compaction_does_not_drop_the_queued_question():
     # the user cancelled the COMPACTION, not their question
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "tf_c_cancelled"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["u3", "ts_c", "cmp", "tf_c_cancelled"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_a_failed_compaction_over_a_finished_turn_is_idle_not_retry_ready():
     # without the skip rule tf_c(ERRORED) reads as a retry-ready turn and a
     # `while not runner.idle()` loop opens a fresh bracket every drive
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_err"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    main_conversation(session).nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_err"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_a_timed_out_compaction_over_a_finished_turn_is_idle():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_timeout"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    main_conversation(session).nodes = ["tf2_ok", "ts_c", "cmp", "tf_c_timeout"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
-def test_a_completed_compaction_over_a_failed_turn_stays_retry_ready():
+def test_a_completed_compaction_over_a_failed_turn_derives_idle():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["tf2_err", "ts_c", "cmp", "tf_c_ok"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["tf2_err", "ts_c", "cmp", "tf_c_ok"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_a_compaction_on_an_otherwise_empty_path_is_idle():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["ts_c", "cmp", "tf_c_ok"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.IDLE
+    main_conversation(session).nodes = ["ts_c", "cmp", "tf_c_ok"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_two_stacked_closed_compaction_brackets_are_both_skipped():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = [
+    main_conversation(session).nodes = [
         "u3",
         "ts_c",
         "cmp",
@@ -2364,59 +2519,47 @@ def test_two_stacked_closed_compaction_brackets_are_both_skipped():
         "cmp2",
         "tf_c2",
     ]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_a_scheduled_compaction_derives_pending():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts_c", "cmp"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["u3", "ts_c", "cmp"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_an_interrupted_compaction_derives_pending():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts_c", "cmp_started"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["u3", "ts_c", "cmp_started"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_an_unconsumed_cancel_inside_a_compaction_bracket_derives_cancelling():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts_c", "cmp", "cr"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.CANCELLING
+    main_conversation(session).nodes = ["u3", "ts_c", "cmp", "cr"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.CANCELLING
 
 
 def test_a_node_after_the_bracket_ends_the_skip():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["ts_c", "cmp", "tf_c_ok", "u5"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["ts_c", "cmp", "tf_c_ok", "u5"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_a_closed_conversational_bracket_is_never_skipped():
-    # the regression guard: only a TurnStart whose next node is the compaction
-    # entry opens a compaction bracket
+    # The regression guard: only a TurnStart whose next node is the compaction
+    # entry opens a compaction bracket. The conversational bracket therefore
+    # stays the leaf and derives IDLE from its own close — if it were skipped,
+    # `u3` would resurface and derive BUSY.
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["u3", "ts2", "tf2_err"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["u3", "ts2", "tf2_err"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
 
 
 def test_a_carried_turn_finish_with_no_opener_stops_the_skip():
-    # a policy carried tf2_err without its TurnStart: the ordinary
-    # closed-turn rules apply, so the failed turn is still retry-ready rather
-    # than swallowing the whole path into IDLE
+    # A policy carried tf2_err without its TurnStart: it is NOT a compaction
+    # bracket, so the skip stops there and the ordinary closed-turn rules
+    # apply to it rather than swallowing the whole path.
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
-    session.active_conversation.nodes = ["cmp", "u3", "tf2_err"]
-    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
-
-    assert ledger.derive_status() == ConversationStatus.PENDING
+    main_conversation(session).nodes = ["cmp", "u3", "tf2_err"]
+    assert session.get_conversation_status("c1").status == ConversationStatus.IDLE

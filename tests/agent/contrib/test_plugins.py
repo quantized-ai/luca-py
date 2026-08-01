@@ -26,12 +26,15 @@ from luca.agent.core import (
     AgentSession,
     AgentSessionRunner,
     CancellationToken,
-    Conversation,
     LLMConfig,
     SessionConfig,
     SystemPromptPart,
     ToolRegistry,
     ToolSpec,
+)
+from tests.agent.scenarios import (
+    conversation,
+    main_conversation,
 )
 
 MODEL = LLMConfig(model="test-model", provider="faux")
@@ -40,12 +43,15 @@ MODEL = LLMConfig(model="test-model", provider="faux")
 def make_session() -> AgentSession:
     return AgentSession(
         id="s_plugins",
-        active_conversation=Conversation(
-            id="c1",
-            nodes=[],
-            created_at=500,
-            updated_at=500,
-        ),
+        conversations={
+            "c1": conversation(
+                "c1",
+                [],
+                created_at=500,
+                updated_at=500,
+            )
+        },
+        main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
 
@@ -71,6 +77,7 @@ class PingTool(Tool):
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
@@ -109,7 +116,7 @@ class RemoteToolRegistry(ToolRegistry):
     Only `get_tools` is reached at composition time — the three lifecycle
     methods stay the base's `NotImplementedError`."""
 
-    async def get_tools(self, session: AgentSession) -> list[ToolSpec]:
+    async def get_tools(self, session: AgentSession, conversation_id: str) -> list[ToolSpec]:
         return [REMOTE_SPEC]
 
 
@@ -198,7 +205,7 @@ async def test_the_composed_proxy_lists_every_contributed_registrys_tools():
         plugins=[FullPlugin(), RemotePlugin()],
     )
 
-    specs = await runner.tool_registry.get_tools(session)
+    specs = await runner.tool_registry.get_tools(session, main_conversation(session).id)
 
     assert specs == [ECHO_SPEC, PING_SPEC, REMOTE_SPEC]
 

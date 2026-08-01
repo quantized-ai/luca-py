@@ -12,10 +12,10 @@ Each item in the list can be:
 | `str` | `SystemPromptPart(text=...)` |
 | `dict` — `text` + optional `priority`, `source` | `SystemPromptPart(**d)` (validated strictly) |
 | `SystemPromptPart` | itself |
-| callable `(session_config, runtime_status) -> ` any of the above | invoked per model call, its return coerced the same way |
+| callable `(session, conversation_id) -> ` any of the above, or `None` | invoked per model call, its return coerced the same way; `None` contributes nothing |
 
 Static parts are validated at construction; callables run per call, so their
-part can reflect the current runtime status.
+part can reflect the live session — and the conversation it is being built for.
 
 ```python
 from luca.agent.core import SystemPromptAssembler, SystemPromptPart
@@ -61,22 +61,36 @@ bookkeeping (default `"model"`).
 
 ## 4. Dynamic — a callable part
 
-A callable receives the live `SessionConfig` and a freshly computed
-`SessionRuntimeStatus` (`step_count`, `turn_count`, `status`) on every model
-call and returns a part in any static form — so the prompt can adapt as the
-turn progresses, e.g. nudge the model to wrap up as steps pile up:
+A callable receives the live `AgentSession` and the id of the conversation the
+prompt is for, on every model call, and returns a part in any static form — so
+the prompt can adapt as the turn progresses, e.g. nudge the model to wrap up as
+steps pile up:
 
 ```python
-def wrap_up_nudge(session_config, runtime_status):
-    if runtime_status.step_count > 8:
+def wrap_up_nudge(session, conversation_id):
+    if session.get_conversation_status(conversation_id).step_count > 8:
         return {"text": "You've taken many steps — converge to a final answer.", "priority": 99}
-    return ""   # an empty part costs only a blank line in the joined prompt
+    return None   # contribute nothing
 
 runner = AgentSessionRunner(
     session, tool_registry=registry,
     system_prompt_parts=[SystemPromptPart(text=BASE, priority=0), wrap_up_nudge],
 )
 ```
+
+It is the **conversation**, not the session, that a part is built for — which is
+what lets one part say different things to the main agent and to a subagent:
+
+```python
+def spawning_guidance(session, conversation_id):
+    if session.conversations[conversation_id].depth:
+        return None            # a subagent at the cap: never mention spawning
+    return "Delegate independent work to parallel subagents."
+```
+
+> ⚠️ **Derive the prompt and the tool list from ONE predicate.** A static part
+> that tells a subagent it can spawn while the registry withholds the spawn tool
+> makes the model try something that is not there ([13](13-subagents.md)).
 
 ## 5. A custom assembler
 

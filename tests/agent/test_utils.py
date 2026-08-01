@@ -24,8 +24,6 @@ from luca.agent.core.models import (
     CancelRequested,
     CompactionEntry,
     CompactionSource,
-    Conversation,
-    ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -44,7 +42,12 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.utils import pretty_print
-from tests.agent.scenarios import MODEL, make_session, spec
+from tests.agent.scenarios import (
+    MODEL,
+    conversation,
+    make_session,
+    spec,
+)
 
 T = 1_700_000_000_000
 STAMP = datetime.fromtimestamp(T / 1000).strftime("%Y-%m-%d %H:%M:%S")
@@ -85,12 +88,15 @@ ANSWERED_SESSION = AgentSession(
             ),
         },
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "tf"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "tf"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -128,6 +134,7 @@ TOOLS_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -151,6 +158,7 @@ TOOLS_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=T,
             tool_call_id="tc2",
@@ -203,12 +211,15 @@ TOOLS_SESSION = make_session(
             ),
         },
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(
         llm_config=MODEL.model_copy(update={"reasoning": "medium"}),
     ),
@@ -232,6 +243,7 @@ FAILED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -258,13 +270,15 @@ FAILED_SESSION = make_session(
         # bracket with no TurnStart of its own until the next run.
         "u2": UserMessage(id="u2", created_at=T, parts=[TextContent(text="again")]),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "tf", "u2"],
-        created_at=T,
-        updated_at=T,
-        status=ConversationStatus.PENDING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "tf", "u2"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -294,6 +308,7 @@ UNRESOLVED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -308,6 +323,7 @@ UNRESOLVED_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=T,
             tool_call_id="tc2",
@@ -343,12 +359,15 @@ UNRESOLVED_SESSION = make_session(
         ),
         "tf": TurnFinish(id="tf", parent_id="a2", created_at=T),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2", "a2", "tf"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -383,6 +402,7 @@ CANCELLED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -400,6 +420,7 @@ CANCELLED_SESSION = make_session(
         ),
         "te2": ToolExecution(
             id="te2",
+            conversation_id="c1",
             parent_id="te1",
             created_at=T,
             tool_call_id="tc2",
@@ -421,12 +442,15 @@ CANCELLED_SESSION = make_session(
             outcome=TurnOutcome.CANCELLED,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "te2", "cr", "tf"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2", "cr", "tf"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -447,6 +471,7 @@ OPEN_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -464,13 +489,15 @@ OPEN_SESSION = make_session(
         ),
         "cr": CancelRequested(id="cr", parent_id="te1", created_at=T),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["u1", "ts", "a1", "te1", "cr"],
-        created_at=T,
-        updated_at=T,
-        status=ConversationStatus.CANCELLING,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "cr"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -496,6 +523,7 @@ COMPACTED_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             created_at=T,
             tool_call_id="tc1",
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
@@ -515,12 +543,15 @@ COMPACTED_SESSION = make_session(
         ),
         "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="thanks")]),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["cp", "pr", "u1", "missing"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["cp", "pr", "u1", "missing"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -543,6 +574,7 @@ BIG_OUTPUT_SESSION = make_session(
         ),
         "te1": ToolExecution(
             id="te1",
+            conversation_id="c1",
             parent_id="a1",
             created_at=T,
             tool_call_id="tc1",
@@ -555,12 +587,15 @@ BIG_OUTPUT_SESSION = make_session(
             ended_at=T + 1,
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["a1", "te1"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["a1", "te1"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -586,18 +621,29 @@ GHOST_CALL_SESSION = AgentSession(
             stop_reason="tool_use",
         ),
     },
-    active_conversation=Conversation(
-        id="c1",
-        nodes=["a1"],
-        created_at=T,
-        updated_at=T,
-    ),
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["a1"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
 EMPTY_SESSION = AgentSession(
     id="s_empty",
-    active_conversation=Conversation(id="c1", created_at=T, updated_at=T),
+    conversations={
+        "c1": conversation(
+            "c1",
+            [],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
     session_config=SessionConfig(llm_config=MODEL),
 )
 
@@ -673,7 +719,7 @@ def test_a_failure_shows_the_structured_error_and_the_queued_retry_message():
         pretty_print(FAILED_SESSION)
         == f"""\
 LUCA SESSION s_failed
-Conversation c1 · pending · 1 turn
+Conversation c1 · busy · 1 turn
 Default: faux/test-model
 {RULE}
 

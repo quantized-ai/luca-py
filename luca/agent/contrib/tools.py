@@ -29,10 +29,25 @@ Subclassing `Tool` with an `Args` model stays the recommended mechanism.
 
 WHAT A TOOL RECEIVES. `execute` / `_execute` / the duck-typed
 `get_approval_context` take the live `AgentSession` — read `session.id` and
-`session.session_config.llm_config`. Treat it as READ-ONLY: the runner owns
-every write to session state. Per-run application state is not the framework's
-concern; a tool is application code and can hold its own references or read a
+`session.session_config.llm_config` — and the `conversation_id` the call
+belongs to. Treat the session as READ-ONLY: the runner owns every write to
+session state. Per-run application state is not the framework's concern; a tool
+is application code and can hold its own references or read a
 `contextvars.ContextVar`.
+
+WHY A TOOL GETS A CONVERSATION. A session can hold several conversations at
+once — the main agent's and one per subagent — and a tool instance is SHARED by
+all of them. Without the id a body cannot tell whether it is running for the
+main agent or for subagent B, so any per-conversation state it keeps
+(a scratchpad, a todo list, a read-before-edit ledger) silently becomes shared
+and the conversations overwrite each other. Key such state by
+`conversation_id`; tool dispatch within one conversation is sequential, so a
+per-conversation slot needs no lock. State deliberately shared ACROSS
+conversations does — see rule 13 in `luca.agent.core.tool_registry`.
+
+The conversation reaches the body through the CLOSURE the registry builds in
+`prepare()`, not through a new core parameter: `PreparedTool` still takes only
+the cancellation token, so the core still depends on no Python tool class.
 
 WHAT A TOOL RETURNS. `_execute` is the simple text path. `execute` is the rich
 one, and the only place a tool can set `structured_content` — the
@@ -104,6 +119,12 @@ class Tool:
     # `ExecutionResult`; nothing validates one against the other.
     output_schema: ClassVar[type[BaseModel] | None] = None
 
+    # Never advertised to the model. The RUNTIME still resolves, prepares and
+    # dispatches it — `get_tools()` returns it exactly like any other tool —
+    # but the runner omits it from the wire list, and a model call naming it
+    # records NOT_FOUND. Write a private tool exactly like any other.
+    is_private: ClassVar[bool] = False
+
     tool_kind: ClassVar[ToolKind] = ToolKind.OTHER
     namespace: ClassVar[str | None] = None
     version: ClassVar[str | None] = None
@@ -136,6 +157,7 @@ class Tool:
             description=self.description,
             input_schema=self.Args.model_json_schema(),
             output_schema=(self.output_schema.model_json_schema() if self.output_schema is not None else None),
+            is_private=self.is_private,
             tool_kind=self.tool_kind,
             namespace=self.namespace,
             version=self.version,
@@ -146,18 +168,22 @@ class Tool:
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
         """The simple override point: do the work, return text for the LLM.
-        `session` is the live session — read-only; the `cancellation_token`
-        may be checked cooperatively (V1 tools may ignore it)."""
+        `session` is the live session — read-only; `conversation_id` is the
+        conversation this call belongs to (key any per-conversation state by
+        it); the `cancellation_token` may be checked cooperatively (V1 tools
+        may ignore it)."""
         raise NotImplementedError
 
     async def execute(
         self,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
@@ -167,6 +193,7 @@ class Tool:
         output = await self._execute(
             args,
             session,
+            conversation_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -177,10 +204,11 @@ def tool_class(
     name: str,
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
-    execute: Callable[[dict, AgentSession], Awaitable[str]],
+    execute: Callable[[dict, AgentSession, str], Awaitable[str]],
     output: type[BaseModel] | dict[str, Any] | None = None,
+    is_private: bool = False,
     tool_kind: ToolKind = ToolKind.OTHER,
-    get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
+    get_approval_context: Callable[[dict, AgentSession, str], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
     class_attrs: dict[str, Any] | None = None,
 ) -> type[Tool]:
@@ -195,8 +223,8 @@ def tool_class(
       or a `create_model` field spec — `{"path": (str, Field(default="."))}` —
       compiled into an `extra="forbid"` model.
     - `execute` becomes `_execute`, the simple text path: an async
-      `(args, session) -> str`. Per-instance configuration belongs in the
-      callable's closure, not on the class.
+      `(args, session, conversation_id) -> str`. Per-instance configuration
+      belongs in the callable's closure, not on the class.
     - `output`, when given, becomes `output_schema` and takes the same two
       forms as `arguments` — a ready `BaseModel` class used as-is, or a
       `create_model` field spec compiled into an `extra="forbid"` model. A
@@ -206,6 +234,9 @@ def tool_class(
       DECLARE an output schema but cannot populate `structured_content` —
       that needs an `execute` override. Hand-write the class, or pass a
       `bases=` mixin that overrides `execute`, when you need both.
+    - `is_private`, when True, keeps the tool off the wire: the runtime still
+      resolves and dispatches it, but the model is never shown it and a call
+      naming it records NOT_FOUND.
     - `get_approval_context`, when given, overrides any inherited one —
       including a `bases` mixin's (class dict beats MRO); passing both is
       almost certainly a mistake.
@@ -252,10 +283,11 @@ def tool_class(
         self: Tool,
         args: dict,
         session: AgentSession,
+        conversation_id: str,
         *,
         cancellation_token: CancellationToken,
     ) -> str:
-        return await execute(args, session)
+        return await execute(args, session, conversation_id)
 
     # `output_schema` goes in UNCONDITIONALLY (None when not given, which is
     # what the base class declares anyway) so it takes part in the collision
@@ -266,6 +298,7 @@ def tool_class(
         "description": description,
         "Args": args_model,
         "output_schema": output_model,
+        "is_private": is_private,
         "tool_kind": tool_kind,
         "_execute": _execute,
     }
@@ -275,8 +308,9 @@ def tool_class(
             self: Tool,
             args: dict,
             session: AgentSession,
+            conversation_id: str,
         ) -> dict:
-            return await get_approval_context(args, session)
+            return await get_approval_context(args, session, conversation_id)
 
         ns["get_approval_context"] = _get_approval_context
 
@@ -295,10 +329,11 @@ def tool(
     name: str,
     description: str,
     arguments: type[BaseModel] | dict[str, Any],
-    execute: Callable[[dict, AgentSession], Awaitable[str]],
+    execute: Callable[[dict, AgentSession, str], Awaitable[str]],
     output: type[BaseModel] | dict[str, Any] | None = None,
+    is_private: bool = False,
     tool_kind: ToolKind = ToolKind.OTHER,
-    get_approval_context: Callable[[dict, AgentSession], Awaitable[dict]] | None = None,
+    get_approval_context: Callable[[dict, AgentSession, str], Awaitable[dict]] | None = None,
     bases: tuple[type, ...] = (Tool,),
     class_attrs: dict[str, Any] | None = None,
 ) -> Tool:
@@ -310,6 +345,7 @@ def tool(
         arguments=arguments,
         execute=execute,
         output=output,
+        is_private=is_private,
         tool_kind=tool_kind,
         get_approval_context=get_approval_context,
         bases=bases,
