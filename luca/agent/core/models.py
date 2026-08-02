@@ -705,17 +705,29 @@ class ChildConversation(Entry):
     - `execution_result` is the child's outcome, derived once its turn bracket
       closes — WHATEVER the outcome. A child that failed or timed out is a
       finished child whose result says so, not an exception travelling upward.
-      `None` means unresolved; the parent cannot call the model until every
-      `ChildConversation` in its open turn has one.
+      `None` means unresolved; the parent's turn cannot CLOSE until every
+      `ChildConversation` in its open turn has one (the model may be called
+      mid-orchestration — resolved results project as task updates while the
+      rest keep running).
+    - `result_execution_id` names the result-tool execution that produced
+      `execution_result`, stamped in the same write. It is what lets the
+      projector render the result at the POSITION the resolution happened —
+      after the assistant messages that predate it — instead of rewriting an
+      earlier message in place. `None` with `execution_result` set means the
+      link was resolved WITHOUT the result tool (a cancel wind-down or a
+      hard-limit settle); only then does the link itself render.
 
     `context_tokens` is the size of what this contributes to the PARENT — its
-    result. The child's own conversation does not count against the parent's
-    window; that separation is the main reason subagents are useful."""
+    result, and only when the link itself renders it (`result_execution_id is
+    None`); otherwise the result execution's own count covers the content. The
+    child's own conversation does not count against the parent's window; that
+    separation is the main reason subagents are useful."""
 
     type: Literal["child_conversation"] = "child_conversation"
     conversation_id: str
     tool_execution_id: str
     execution_result: ExecutionResult | None = None
+    result_execution_id: str | None = None
 
 
 # ── pruning ───────────────────────────────────────────────────────────────────
@@ -931,8 +943,9 @@ def open_turn_unresolved_children(
 ) -> list[ChildConversation]:
     """The subagents spawned in the open turn that have not produced a result.
 
-    These are what a parent's turn is BLOCKED on: it cannot call the model
-    again until every one has resolved."""
+    These are what keeps a parent's turn OPEN: it cannot close until every one
+    has resolved (the model may still be called mid-orchestration — see
+    `open_turn_unseen_material`)."""
     index = open_turn_index(nodes, entries)
     if index is None:
         return []
@@ -943,36 +956,199 @@ def open_turn_unresolved_children(
     ]
 
 
+def open_turn_has_advanceable_executions(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Is any execution in the open turn still the DRIVE's to move? A
+    `RECEIVED` execution has not reached the registry yet, so the next drive
+    births it; a persisted `RUNNING` execution is an orphan the next drive
+    recovers; a `PENDING` execution the policy has not resolved (or has
+    ALLOWED) is decidable or dispatchable. A gated (`approval_status` PENDING)
+    execution is deliberately NOT advanceable — the application must act."""
+    for execution in open_turn_executions(nodes, entries):
+        if execution.status in (ExecutionStatus.RECEIVED, ExecutionStatus.RUNNING):
+            return True
+        if execution.status == ExecutionStatus.PENDING and execution.approval_status in (
+            None,
+            ApprovalStatus.ALLOWED,
+        ):
+            return True
+    return False
+
+
+def open_turn_has_awaiting_executions(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Is any execution in the open turn gated — PENDING with an explicitly
+    deferred approval the application must answer out of band?"""
+    return any(
+        execution.status == ExecutionStatus.PENDING and execution.approval_status == ApprovalStatus.PENDING
+        for execution in open_turn_executions(nodes, entries)
+    )
+
+
 def open_turn_is_runnable(
     nodes: Sequence[str],
     entries: Mapping[str, AnyEntry],
 ) -> bool:
     """Can this open turn be advanced by a drive, LOOKING ONLY AT THIS PATH?
 
-    In precedence order: a `RECEIVED` execution has not reached the registry
-    yet, so the next drive births it; a persisted `RUNNING` execution is an
-    orphan the next drive recovers; a `PENDING` execution the policy has not
-    resolved (or has ALLOWED) is decidable or dispatchable; anything else still
-    `PENDING` is a gate the application must answer out of band, and with only
-    those left nothing can advance; and once every execution is terminal the
-    model can be called.
+    Either an execution is still the drive's to move
+    (`open_turn_has_advanceable_executions`), or every execution is terminal
+    and the model can be called. Anything still `PENDING` past the first check
+    is a gate the application must answer out of band, and with only those
+    left nothing can advance.
 
     UNRESOLVED SUBAGENTS ARE NOT CONSIDERED HERE — a path cannot see another
     conversation's entries. `AgentSession.get_conversation_status` handles that
     term, because it is the thing that can reach the child."""
-    executions = open_turn_executions(nodes, entries)
-    if any(execution.status == ExecutionStatus.RECEIVED for execution in executions):
-        return True
-    if any(execution.status == ExecutionStatus.RUNNING for execution in executions):
-        return True
-    if any(
-        execution.status == ExecutionStatus.PENDING and execution.approval_status in (None, ApprovalStatus.ALLOWED)
-        for execution in executions
-    ):
+    if open_turn_has_advanceable_executions(nodes, entries):
         return True
     # Anything still PENDING here is gated: with only those left, nothing in
     # this conversation can advance until the application answers.
-    return not any(execution.status == ExecutionStatus.PENDING for execution in executions)
+    return not any(execution.status == ExecutionStatus.PENDING for execution in open_turn_executions(nodes, entries))
+
+
+def open_turn_unseen_material(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Does the open turn hold model-facing content recorded AFTER its last
+    `AssistantMessage` — the durable signal that a parent parked on its
+    subagents must call the model again rather than keep waiting?
+
+    Material is: a `UserMessage` (a mid-turn post), or a TERMINAL
+    `ToolExecution` of a tool that does not declare spawning — an ordinary
+    tool result, a runtime-minted subagent-result execution (the durable
+    record that a child resolved), a stop execution, a REJECTED or failed
+    call. A spawn-DECLARING call's outcome — spawned, declined, refused or
+    failed — is deliberately NOT material, whatever it settled to: the spawn
+    round's own answers must not wake the model by themselves (they travel
+    with the first real update), and keying on the declaration rather than
+    the settled payload keeps a mixed all-spawn round from waking on its
+    refusals while its committed siblings are still starting. A nonterminal
+    execution is the ordinary loop's business, never a reason to wake.
+
+    One documented blind spot: a message posted while an LLM call is in
+    flight lands BEFORE the recorded assistant entry, so this predicate cannot
+    see it and the durable state is indistinguishable from an answered post.
+    The live drive covers that window with its `seen` fingerprint; a session
+    reloaded from exactly that window answers the message on the next
+    material instead of immediately."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return False
+    last_assistant = None
+    for i in range(len(nodes) - 1, index - 1, -1):
+        if isinstance(entries.get(nodes[i]), AssistantMessage):
+            last_assistant = i
+            break
+    if last_assistant is None:
+        return False
+    for node_id in nodes[last_assistant + 1 :]:
+        entry = entries.get(node_id)
+        if isinstance(entry, UserMessage):
+            return True
+        if (
+            isinstance(entry, ToolExecution)
+            and entry.status not in NONTERMINAL_STATUSES
+            and (entry.tool_spec is None or not declares_spawn(entry.tool_spec))
+        ):
+            return True
+    return False
+
+
+# ── the subagent handshakes (pure reads over the data model) ──────────────────
+#
+# The names the spawn and stop conventions settle. The core matches on the
+# FIELD NAME, never on a tool name and never on a core type contrib has to
+# import — that is what keeps "what a spawn looks like" owned by the plugin.
+# `luca.agent` core never imports from contrib, so contrib's `SubagentSpawn` /
+# `SubagentStop` are the plugin's guarantees about the payloads it emits, not
+# something the core can or should validate against.
+
+SPAWN_MARKER = "is_subagent_spawn"
+SPAWN_REQUIRED_KEYS = ("task_id", "prompt", "description", "process_subagent_result_tool_name")
+STOP_MARKER = "is_subagent_stop"
+
+
+def declares_spawn(spec: ToolSpec) -> bool:
+    """Does this SPEC declare that it can spawn? A shape check on the published
+    output schema, read BEFORE the model call — there is no value to check yet.
+
+    The asymmetry with the handshake is deliberate and is what the flag buys:
+    `is_subagent_spawn` is a `bool`, not a constant, so a spawn tool that
+    decides at runtime NOT to spawn (a rejected task, a failed validation, a
+    request it answered inline) returns the payload with `False` and no child
+    is created. It is still GATED, because the gate reads the declaration."""
+    schema = spec.output_schema
+    return isinstance(schema, dict) and SPAWN_MARKER in (schema.get("properties") or {})
+
+
+def spawn_payload(execution: ToolExecution) -> dict | None:
+    """The handshake payload of a COMPLETED execution that claims it spawned,
+    or None. Value check, after the fact — the other half of `declares_spawn`."""
+    if execution.status != ExecutionStatus.COMPLETED or execution.result is None:
+        return None
+    payload = execution.result.structured_content
+    if not isinstance(payload, dict) or payload.get(SPAWN_MARKER) is not True:
+        return None
+    return payload
+
+
+def stop_payload(execution: ToolExecution) -> dict | None:
+    """The payload of a COMPLETED execution that asks for a subagent to be
+    stopped, or None. Value-side only — unlike the spawn contract there is no
+    declaration half, because stopping bypasses no cap: the runner acts on the
+    payload wherever it appears."""
+    if execution.status != ExecutionStatus.COMPLETED or execution.result is None:
+        return None
+    payload = execution.result.structured_content
+    if not isinstance(payload, dict) or payload.get(STOP_MARKER) is not True:
+        return None
+    return payload
+
+
+def spawns_committed(
+    session: AgentSession,
+    conversation_id: str,
+    *,
+    exclude: str | None = None,
+) -> int:
+    """Subagents this conversation's OPEN TURN has already committed to.
+
+    The number both halves of the per-turn budget count — the gate that
+    withholds the spawn tool and the runner's born-REFUSED fallback — so it is
+    a pure read over durable entries and rebuilds correctly after a reload.
+
+    Counting rules, and why:
+    - only spawn-DECLARING executions count; the budget is about subagents,
+      not tool calls
+    - a settled call counts only if it actually spawned — a spawn tool may
+      return `is_subagent_spawn=False`, and a refusal is not a subagent
+    - a call still in flight (PENDING / RUNNING) counts as ONE, reserved: it
+      is about to become a child, and the budget must hold before the fact.
+      If it ends up not spawning, the reservation is released simply by it
+      becoming settled-and-not-spawned.
+
+    `exclude` drops one execution id from the count. `_spawn_one` needs it:
+    converting a settled spawn re-checks the gate at a point where that
+    execution is already counted, and the question there is "was there room
+    for this one?", not "is there room for another?"."""
+    conversation = session.conversations[conversation_id]
+    count = 0
+    for execution in open_turn_executions(conversation.nodes, session.entries):
+        if execution.id == exclude:
+            continue
+        if execution.tool_spec is None or not declares_spawn(execution.tool_spec):
+            continue
+        if execution.status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
+            count += 1  # in flight — reserved
+        elif spawn_payload(execution) is not None:
+            count += 1  # settled, and it spawned
+    return count
 
 
 # ── runtime context ───────────────────────────────────────────────────────────
@@ -1122,9 +1298,10 @@ class ConversationStatus(str, Enum):
 
     The post column is the COMMON case, not the whole rule:
     `AgentSessionRunner.post_message` owns the full acceptance matrix — an
-    open turn with unresolved subagents rejects even while BUSY/BLOCKED, an
     open compaction bracket rejects, and archived or finished conversations
-    reject whatever they derive.
+    reject whatever they derive. An open turn with unresolved subagents
+    ACCEPTS: the message is material, and a parent parked on its children is
+    woken to show it to the model.
 
     **It says nothing about approvals**, deliberately. A gate can belong to a
     subagent, and its siblings may still be working — so the conversation is
@@ -1372,15 +1549,26 @@ class AgentSession(BaseModel):
             if children:
                 # SUBTREE-AWARE, and it has to be: a parent is BUSY while its
                 # children work, and a `Conversation` on its own cannot see
-                # another conversation's entries. This term is what makes the
-                # BUSY → BLOCKED flip land at the right instant — it is
-                # triggered by a child's SIBLINGS finishing, with nothing in
-                # the parent's own entries changing at all.
+                # another conversation's entries. In precedence order:
                 #
-                # A BUSY child is working; an IDLE one has finished and this
-                # conversation can resolve it; a CANCELLING one is winding
-                # down. Only when every child is BLOCKED does the parent become
-                # BLOCKED too.
+                # 1. An execution the drive itself can still move → BUSY. A
+                #    wake round's calls advance regardless of what the
+                #    children are doing.
+                # 2. A BUSY child is working; an IDLE one has finished and
+                #    this conversation can resolve it; a CANCELLING one is
+                #    winding down → BUSY.
+                # 3. A gated execution with nothing above it → BLOCKED. The
+                #    application must act first — ranked ABOVE the material
+                #    term, because a drive parks at the gate before it could
+                #    ever reach the model, and BUSY here would hot-loop every
+                #    poll-for-BLOCKED consumer.
+                # 4. Unseen material (a resolved child's result, a mid-turn
+                #    post, a non-spawn tool result) → BUSY: the next run()
+                #    calls the model with it.
+                # 5. Otherwise every child is BLOCKED and there is nothing new
+                #    to show the model → BLOCKED.
+                if open_turn_has_advanceable_executions(nodes, entries):
+                    return ConversationStatus.BUSY
                 if any(
                     self.get_conversation_status(child.conversation_id).status
                     in (
@@ -1391,6 +1579,10 @@ class AgentSession(BaseModel):
                     for child in children
                     if child.conversation_id in self.conversations
                 ):
+                    return ConversationStatus.BUSY
+                if open_turn_has_awaiting_executions(nodes, entries):
+                    return ConversationStatus.BLOCKED
+                if open_turn_unseen_material(nodes, entries):
                     return ConversationStatus.BUSY
                 return ConversationStatus.BLOCKED
             if open_turn_is_runnable(nodes, entries):

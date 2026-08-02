@@ -14,10 +14,15 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from luca.agent.contrib.subagents import (
+    LIST_TOOL_NAME,
     RESULT_TOOL_NAME,
     SPAWN_TOOL_NAME,
+    STOP_TOOL_NAME,
     CreateConversationResult,
+    ListSubagents,
     SpawnSubagent,
+    StopSubagent,
+    open_turn_children,
 )
 from luca.agent.core import (
     AgentSession,
@@ -105,11 +110,16 @@ class SubagentRegistry(ToolRegistry):
         from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
 
         self.subagent_tools = SimpleToolRegistry(
-            tools=[SpawnSubagent(result_tool_name=result_tool_name), CreateConversationResult()],
+            tools=[
+                SpawnSubagent(result_tool_name=result_tool_name),
+                CreateConversationResult(),
+                StopSubagent(),
+                ListSubagents(),
+            ],
             permission_policy=YoloPermissionPolicy(),
         )
         self.other = FakeToolRegistry(tools)
-        self._subagent_names = {SPAWN_TOOL_NAME, result_tool_name}
+        self._subagent_names = {SPAWN_TOOL_NAME, result_tool_name, STOP_TOOL_NAME, LIST_TOOL_NAME}
 
     def _for(self, name: str):
         return self.subagent_tools if name in self._subagent_names else self.other
@@ -120,6 +130,8 @@ class SubagentRegistry(ToolRegistry):
         specs = await self.subagent_tools.get_tools(session, conversation_id)
         if not spawn_gate_open(session, conversation_id):
             specs = [spec for spec in specs if not declares_spawn(spec)]
+        if not open_turn_children(session, conversation_id):
+            specs = [spec for spec in specs if spec.name not in {STOP_TOOL_NAME, LIST_TOOL_NAME}]
         return [*specs, *await self.other.get_tools(session, conversation_id)]
 
     async def create_execution(self, session, conversation_id, call):

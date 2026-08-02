@@ -80,9 +80,10 @@ class AgentMiddlewareMixin:
         the RUNNING transition, cancellation stamps, terminal outcomes), a
         `CompactionEntry` (the `started_at` stamp, and the summary landing at
         the commit point), and a `ChildConversation` (its `execution_result`
-        landing once the subagent finishes — so this hook fires a second time
-        for that entry). Return the (possibly modified) entry — add metadata,
-        stamp external ids, mutate fields before persistence.
+        and `result_execution_id` landing together once the subagent finishes
+        — so this hook fires a second time for that entry). Return the
+        (possibly modified) entry — add metadata, stamp external ids, mutate
+        fields before persistence.
 
         NOT conversation-scoped. This hook — like every per-LLM-call hook —
         receives no `conversation_id`, so with subagents running it cannot tell

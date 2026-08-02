@@ -1,25 +1,38 @@
 """Mid-turn user messages across a LIVE subagent tree, end to end.
 
-The cold-loaded acceptance matrix (including the reload-durability of the
-subagents-active rejection) lives in `tests/agent/test_runner_post_message.py`;
-these stories prove the same rules during a real drive: a post to the parent
-while its children work is refused, a live subagent accepts posts into its own
-open turn and answers them before it closes, and the parent accepts posts
-again the moment its last child resolves — with the close-site check then
-forcing the extra round that answers them.
+The cold-loaded acceptance matrix lives in
+`tests/agent/test_runner_post_message.py`; these stories prove the rules
+during a real drive: a post to the parent while its children work WAKES it —
+the model sees the message promptly and can steer, including stopping a
+subagent — a live subagent accepts posts into its own open turn and answers
+them before it closes, a post landing under a wake round's own in-flight LLM
+call is answered immediately (the `last_seen` fingerprint, not the durable
+material predicate, is what catches it), and the parent's turn still cannot
+close COMPLETED before its last child resolves.
 
 Posting "during" the run is simulated deterministically: a tool body posts
 (the child-side probes), or an `after_llm_response` middleware posts during a
-specific LLM response. Never a timing trick.
+specific LLM response. Never a timing trick. The steering stories keep the
+FIFO faux provider deterministic by construction: the child posts and then
+HANGS in its tool body, so every subsequent request is the parent's until the
+stop lands.
 """
+
+import asyncio
 
 from pydantic import BaseModel, ConfigDict
 
-from luca.agent.core import SubagentsActiveError, TurnOutcome
-from luca.agent.core.models import TextContent
+from luca.agent.core import TurnOutcome
+from luca.agent.core.events import SubagentFinished
+from luca.agent.core.models import ExecutionStatus, TextContent
 from luca.client.testing import faux_assistant_message, faux_text, faux_tool_call
 from tests.agent.scenarios import DeterministicRunner, FakeTool
-from tests.agent.subagents.conftest import SubagentRegistry, spawn_call, subagent_session
+from tests.agent.subagents.conftest import (
+    STOP_TOOL_NAME,
+    SubagentRegistry,
+    spawn_call,
+    subagent_session,
+)
 
 IDS = [f"x{n}" for n in range(80)]
 
@@ -28,25 +41,24 @@ class _NoArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class UpwardPostingTool(FakeTool):
-    """A child-side tool that posts to the MAIN conversation while it — the
-    child — is the very reason that conversation is mid-orchestration. The
-    runner must refuse: the parent's open turn has an unresolved child."""
+class PostingHangTool(FakeTool):
+    """A child-side tool that posts a steering message to the MAIN
+    conversation and then hangs — the deterministic stand-in for a user typing
+    while a subagent grinds. The hang is what keeps the FIFO script exact: the
+    child makes no further LLM calls, so every later response is the parent's,
+    until a stop cancels the body (INTERRUPTED under the default zero grace)."""
 
     name = "probe"
-    description = "Posts upward."
+    description = "Posts upward, then hangs."
     Args = _NoArgs
 
     def __init__(self) -> None:
         self.post = None  # wired by the test to runner.post_message
-        self.raised: list[type] = []
 
     async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
-        try:
-            self.post()
-        except Exception as exc:  # the recorded TYPE is the assertion
-            self.raised.append(type(exc))
-        return "probed"
+        self.post()
+        await asyncio.sleep(3600)
+        return "unreachable"
 
 
 class SelfPostingTool(FakeTool):
@@ -83,23 +95,31 @@ class PostOnCall:
         return message
 
 
-async def test_a_post_to_the_parent_while_children_work_raises_live(faux):
-    # Call order with a single child is deterministic: parent spawn → child
-    # tool round (the probe posts upward HERE, while the parent is parked on
-    # its unresolved link) → child final → parent final.
+async def test_a_post_while_children_work_wakes_the_parent_which_stops_the_task(faux):
+    # THE STEERING STORY, end to end. The child posts to main and hangs; the
+    # parent — parked on its unresolved link — is woken, sees the message,
+    # stops the task with `stop_subagent`, acknowledges, and gets the
+    # cancelled child's final report as a task update before answering.
     faux.set_responses(
         [
             faux_assistant_message(
                 [spawn_call("Research A", "research A", call_id="tc1")],
                 finish_reason="tool_use",
             ),
-            faux_assistant_message([faux_tool_call("probe", {}, id="tc2")], finish_reason="tool_use"),
-            faux_assistant_message([faux_text("A done")], finish_reason="stop"),
-            faux_assistant_message([faux_text("all done")], finish_reason="stop"),
+            faux_assistant_message(
+                [faux_text("Starting research..."), faux_tool_call("probe", {}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call(STOP_TOOL_NAME, {"task_id": "t1", "reason": "user asked to stop"}, id="tc3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Stopping the research task.")], finish_reason="stop"),
+            faux_assistant_message([faux_text("Research stopped; nothing else to do.")], finish_reason="stop"),
         ]
     )
     session = subagent_session()
-    probe = UpwardPostingTool()
+    probe = PostingHangTool()
     runner = DeterministicRunner(
         session,
         tool_registry=SubagentRegistry([probe]),
@@ -107,13 +127,109 @@ async def test_a_post_to_the_parent_while_children_work_raises_live(faux):
         ids=list(IDS),
         now=1000,
     )
-    probe.post = lambda: runner.post_message("hurry up")
+    probe.post = lambda: runner.post_message("Please stop the research, it is taking too long")
+    runner.post_message("go")
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert runner.idle()
+    # The parent's path tells the whole story in order: the post landed inside
+    # the turn, the stop round and its ack are ordinary assistant steps, and
+    # the child's resolution (the private result execution) lands after them.
+    assert [type(session.entries[n]).__name__ for n in session.conversations["c1"].nodes] == [
+        "UserMessage",  # go
+        "TurnStart",
+        "AssistantMessage",  # spawn round
+        "ToolExecution",  # the spawn call
+        "ChildConversation",  # resolved, in the end, as stopped
+        "UserMessage",  # the steering post — accepted mid-orchestration
+        "AssistantMessage",  # the wake round: stop_subagent
+        "ToolExecution",  # the stop call
+        "AssistantMessage",  # the ack round
+        "ToolExecution",  # the private result tool
+        "AssistantMessage",  # the final answer
+        "TurnFinish",
+    ]
+    # the wake round SAW the steering message, and was offered the control
+    # tools (children exist, so stop/list are on the list)
+    assert faux.requests[2].messages[-1].content[0].text == "Please stop the research, it is taking too long"
+    assert {tool.name for tool in faux.requests[2].tools} >= {"stop_subagent", "list_subagents"}
+    # the ack round saw the stop tool's own result
+    assert faux.requests[3].messages[-1].content[0].text == (
+        "Stop signal received for task t1. Reason: user asked to stop"
+    )
+    # the final round saw the stopped child's report as a task update, AFTER
+    # the parent's own ack — append-only, never a rewrite of earlier history
+    assert faux.requests[4].messages[-1].content[0].text == (
+        "Subagent task update:\n"
+        '<task id=t1 status=failed completed_at="1970-01-01T00:00:01Z">\n'
+        "The subagent was cancelled before finishing. Its last message:\n\nStarting research...\n"
+        "</task>"
+    )
+    # the child was cancelled: its hanging body INTERRUPTED, its link resolved
+    # with the stopped report, and its ending announced as CANCELLED
+    child_id = next(cid for cid, c in session.conversations.items() if c.depth == 1)
+    child_executions = [
+        session.entries[n] for n in session.conversations[child_id].nodes if session.entries[n].type == "tool_execution"
+    ]
+    assert [execution.status for execution in child_executions] == [ExecutionStatus.INTERRUPTED]
+    link = next(e for e in session.entries.values() if e.type == "child_conversation")
+    assert link.execution_result.is_error is True
+    assert link.result_execution_id is not None
+    assert SubagentFinished(conversation_id=child_id, outcome=TurnOutcome.CANCELLED) in events
+
+
+async def test_a_post_during_a_wake_rounds_call_is_answered_immediately(faux):
+    # The `last_seen` regression: a message posted while the wake round's OWN
+    # LLM call is in flight lands BEFORE the recorded assistant entry, where
+    # the durable material predicate cannot see it. The live drive must run
+    # another round immediately rather than parking until the next child
+    # resolution.
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [spawn_call("Research A", "research A", call_id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_text("Working..."), faux_tool_call("probe", {}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Still working on it.")], finish_reason="stop"),
+            faux_assistant_message(
+                [faux_tool_call(STOP_TOOL_NAME, {"task_id": "t1"}, id="tc3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Stopping.")], finish_reason="stop"),
+            faux_assistant_message([faux_text("Stopped everything.")], finish_reason="stop"),
+        ]
+    )
+    session = subagent_session()
+    probe = PostingHangTool()
+    mw = PostOnCall(3, "actually just stop it")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=SubagentRegistry([probe]),
+        provider=faux,
+        ids=list(IDS),
+        now=1000,
+        middleware=[mw],
+    )
+    probe.post = lambda: runner.post_message("how is it going?")
+    mw.post = runner.post_message
     runner.post_message("go")
 
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert probe.raised == [SubagentsActiveError]
+    # the extra round ran IMMEDIATELY: its projection ends with the mid-call
+    # post and the premature answer, exactly like v1's close-race round
+    assert [m.content[0].text for m in faux.requests[3].messages[-2:]] == [
+        "actually just stop it",
+        "Still working on it.",
+    ]
+    assert len(faux.requests) == 6
     assert runner.idle()
 
 
@@ -163,9 +279,9 @@ async def test_a_post_to_a_live_subagent_is_answered_within_its_turn(faux):
 
 
 async def test_the_parent_accepts_mid_turn_posts_once_children_resolved(faux):
-    # Call order: parent spawn → child final → parent "final" (the middleware
-    # posts during THIS response — the link is already resolved, so the post
-    # is accepted) → the extra round the close-site check forces.
+    # Call order: parent spawn → child final → the resolution wake round (the
+    # middleware posts during THIS response) → the extra round the close-site
+    # check forces to answer the post.
     faux.set_responses(
         [
             faux_assistant_message(

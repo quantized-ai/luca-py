@@ -242,7 +242,9 @@ async def test_nesting_does_not_deadlock_at_cap_one(faux):
     # the parent released its slot when it parked on the leaf — the whole rule
     assert sorted(c.depth for c in session.conversations.values()) == [0, 1, 2]
     assert all(session.get_conversation_status(cid).status is ConversationStatus.IDLE for cid in session.conversations)
-    assert faux.requests[-2].messages[-1].content[0].text == "<task id=tc2>\nleaf done\n</task>"
+    assert faux.requests[-2].messages[-1].content[0].text == (
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:01Z">\nleaf done\n</task>'
+    )
     assert runner.idle()
 
 
@@ -295,7 +297,9 @@ def gated_first_script(faux):
         [
             spawns(2),
             faux_assistant_message([faux_tool_call("add", {"a": 1, "b": 2}, id="tcA")], finish_reason="tool_use"),
-            *texts("second done"),
+            # the sibling's resolution wakes the parent for one update round
+            # before it parks on the still-gated first child
+            *texts("second done", "waiting on the first task"),
         ]
     )
 
@@ -353,9 +357,10 @@ async def test_cancelling_a_parked_subtree_never_grants_its_queued_child(faux):
     # One scenario, four claims: a parked parent whose re-acquire is pending
     # still consumes its cancel (T11); its queued child is never granted a
     # slot and closes seeded-cancelled-settled (T10); the wind-down needs no
-    # slot while an unrelated subagent keeps working (T9); and the cancelled
-    # parent announces Finished(CANCELLED) while the never-started child stays
-    # silent (T24/T27).
+    # slot while an unrelated subagent keeps working (T9); and BOTH endings
+    # are announced — the cancelled parent's Finished(CANCELLED), and the
+    # never-started child's, whose Finished with no Started reads "cancelled
+    # before admission".
     faux.set_responses(
         [
             faux_assistant_message(
@@ -367,7 +372,9 @@ async def test_cancelling_a_parked_subtree_never_grants_its_queued_child(faux):
             ),
             faux_assistant_message([spawn_call("leaf work", "leaf", call_id="tcL")], finish_reason="tool_use"),
             faux_assistant_message([faux_tool_call("slow", {}, id="tcS")], finish_reason="tool_use"),
-            *texts("slow child done", "only the slow one came back"),
+            # the cancelled subtree resolves while the slow sibling still
+            # works, so the parent takes a wake round with that first update
+            *texts("noted the cancellation", "slow child done", "only the slow one came back"),
         ]
     )
     session = subagent_session(max_depth=2, subagents_max_workers=1)
@@ -380,9 +387,11 @@ async def test_cancelling_a_parked_subtree_never_grants_its_queued_child(faux):
     )
     runner.post_message("go")
     nested_id = ""
+    events = []
 
     async with runner.run() as run:
         async for event in run:
+            events.append(event)
             if isinstance(event, SubagentsSpawned) and event.conversation_id == "c1":
                 nested_id = event.conversation_ids[0]
             if isinstance(event, SubagentsSpawned) and event.conversation_id == nested_id:
@@ -399,6 +408,9 @@ async def test_cancelling_a_parked_subtree_never_grants_its_queued_child(faux):
         "cancel_requested",
         "turn_finish",
     ]
+    # …and its flush announced the ending: Finished(CANCELLED) with no Started
+    assert SubagentFinished(conversation_id=leaf_id, outcome=TurnOutcome.CANCELLED) in events
+    assert not any(isinstance(e, SubagentStarted) and e.conversation_id == leaf_id for e in events)
     # the cancelled subtree resolved with an error result; the sibling's is real
     assert all(link.execution_result is not None for link in links(session))
     nested_link = next(link for link in links(session) if link.conversation_id == nested_id)
@@ -473,7 +485,8 @@ async def test_cancelling_a_queued_grandchild_wakes_the_flushing_parent(faux):
     # The deadlock regression: a queued child has no drive and no token, so
     # cancel() must wake the PARENT — the only conversation that will flush
     # it. Without that, the parent parks forever on a CANCELLING child while
-    # the pool sits empty.
+    # the pool sits empty. The slow sibling is what keeps the leaf QUEUED long
+    # enough for the cancel to land before any admission.
     faux.set_responses(
         [
             faux_assistant_message(
@@ -485,7 +498,10 @@ async def test_cancelling_a_queued_grandchild_wakes_the_flushing_parent(faux):
             ),
             faux_assistant_message([spawn_call("leaf work", "leaf", call_id="tcL")], finish_reason="tool_use"),
             faux_assistant_message([faux_tool_call("slow", {}, id="tcS")], finish_reason="tool_use"),
-            *texts("slow child done", "nested done", "all done"),
+            # the slow sibling resolves first → the main conversation's wake
+            # round; the nested parent then re-acquires the freed slot,
+            # flushes its cancelled leaf and takes its own wake round
+            *texts("slow child done", "waiting on the nested task", "the leaf was cancelled", "all done"),
         ]
     )
     session = subagent_session(max_depth=2, subagents_max_workers=1)
@@ -533,7 +549,9 @@ async def test_awaiting_a_queued_handle_survives_its_cancellation(faux):
                 finish_reason="tool_use",
             ),
             faux_assistant_message([faux_tool_call("slow", {}, id="tcS")], finish_reason="tool_use"),
-            *texts("first done", "only the first came back"),
+            # the abandoned child is flushed and resolved while the slow one
+            # still works — the parent takes a wake round with that update
+            *texts("doomed is gone", "first done", "only the first came back"),
         ]
     )
     session = subagent_session(subagents_max_workers=1)

@@ -68,7 +68,14 @@ def links(session: AgentSession, conversation_id: str = "c1") -> list[ChildConve
 # ── parallelism ───────────────────────────────────────────────────────────────
 
 
-async def test_the_parent_cannot_answer_until_every_child_resolves(faux):
+async def test_children_resolving_together_coalesce_into_one_wake_round(faux):
+    # Both children finish before the parent's woken pass runs, so ONE loop
+    # pass resolves both links and ONE wake round — here also the final round
+    # — carries both task updates, each at its own resolution's position. The
+    # 4-response script is the proof: a second wake round would pop a fifth
+    # response and fail loudly. (Staggered resolutions — a wake round per
+    # result — are pinned in test_wake_rounds.py, where the pending sibling is
+    # held deterministically.)
     faux.set_responses(
         [
             two_spawns(),
@@ -86,7 +93,10 @@ async def test_the_parent_cannot_answer_until_every_child_resolves(faux):
 
     # the parent's final model call happened LAST, after both children answered
     assert [link.execution_result.content[0].text for link in links(session)] == ["A done", "B done"]
-    assert faux.requests[-1].messages[-1].content[0].text.startswith("<task id=tc2>")
+    assert [m.content[0].text for m in faux.requests[-1].messages[-2:]] == [
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:01Z">\nA done\n</task>',
+        'Subagent task update:\n<task id=t2 status=completed completed_at="1970-01-01T00:00:01Z">\nB done\n</task>',
+    ]
     assert runner.idle()
 
 
@@ -232,7 +242,11 @@ async def test_a_child_with_no_final_message_resolves_with_a_transcript(faux):
 
     [link] = links(session)
     assert link.execution_result.is_error is True
-    assert "finished without a final message" in link.execution_result.content[0].text
+    # the child hit its hard step limit, so the fallback names the outcome
+    # alongside the transcript
+    assert link.execution_result.content[0].text.startswith(
+        "The subagent was errored before finishing and left no final message. Transcript:"
+    )
 
 
 # ── §9.3: cancellation cascades ──────────────────────────────────────────────
@@ -245,11 +259,18 @@ async def test_cancelling_the_parent_cascades_and_resolves_every_child(faux):
     runner.post_message("go")
 
     run = runner.run(autostart_subagents=False)
+    events = []
     async with run:
         async for event in run:
+            events.append(event)
             if isinstance(event, SubagentsSpawned):
                 run.cancel()
 
+    # UNDER `False` NO LIFECYCLE EVENTS EXIST — the flush announces its
+    # closes only where the framework owns the children, so the never-driven
+    # children stay silent here (no Started, Paused OR Finished).
+    lifecycle = [e for e in events if type(e).__name__.startswith("Subagent")]
+    assert [type(e).__name__ for e in lifecycle] == ["SubagentsSpawned"]
     # EVERY LINK RESOLVED. That is the invariant that matters: an unresolved
     # child on a CLOSED turn is unprojectable, so leaving one would wedge the
     # parent permanently. The wind-down writes the cancellation result itself,
@@ -411,6 +432,9 @@ async def test_a_gate_in_one_subagent_does_not_stop_its_sibling(faux):
                 [faux_tool_call("add", {"a": 1, "b": 2}, id="tcB")],
                 finish_reason="tool_use",
             ),
+            # A's resolution is material, so the parent runs a wake round
+            # before parking on the still-gated B
+            faux_assistant_message([faux_text("waiting on B")], finish_reason="stop"),
         ]
     )
     session = subagent_session()
@@ -537,6 +561,9 @@ async def test_notify_restarts_a_parked_subagent_inside_the_same_run(faux):
             faux_assistant_message([faux_tool_call("add", {"a": 1, "b": 2}, id="tcA")], finish_reason="tool_use"),
             faux_assistant_message([faux_tool_call("slow", {}, id="tcB")], finish_reason="tool_use"),
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
+            # the restarted child resolves while its sibling's slow body still
+            # runs, so the parent takes a wake round with that first update
+            faux_assistant_message([faux_text("still waiting on B")], finish_reason="stop"),
             faux_assistant_message([faux_text("done")], finish_reason="stop"),
             faux_assistant_message([faux_text("both")], finish_reason="stop"),
         ]

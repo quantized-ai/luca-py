@@ -53,8 +53,12 @@ async def test_a_grandchild_spawns_and_results_flow_leaf_to_root(faux):
     # answer reached the MAIN conversation's — one hop per level
     child_final = faux.requests[-2].messages[-1].content[0].text
     main_final = faux.requests[-1].messages[-1].content[0].text
-    assert child_final == "<task id=tc2>\nleaf done\n</task>"
-    assert main_final == "<task id=tc1>\nchild done\n</task>"
+    assert child_final == (
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:01Z">\nleaf done\n</task>'
+    )
+    assert main_final == (
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:01Z">\nchild done\n</task>'
+    )
     assert all(session.get_conversation_status(cid).status is ConversationStatus.IDLE for cid in session.conversations)
     assert runner.idle()
 

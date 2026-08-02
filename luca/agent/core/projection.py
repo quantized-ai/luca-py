@@ -51,9 +51,14 @@ Tool executions project by `ExecutionStatus`:
 
 A PRIVATE execution (`tool_spec.is_private`) is dispatched to
 `project_private_execution` instead, which projects nothing — see there for why
-the `ToolMessage` channel is closed to it by protocol rather than by policy.
-`project_tool_execution` is still called directly for the `ToolExecuted` event's
-presentation fields, so a private execution's event stays self-describing.
+the `ToolMessage` channel is closed to it by protocol rather than by policy —
+with ONE path-level carve-out: an execution named by some
+`ChildConversation.result_execution_id` is a subagent resolution, and
+`project()` renders it as that link's task update at its own position
+(`project_child_update`), which is what keeps the projected history
+append-only while the link mutates in place. `project_tool_execution` is still
+called directly for the `ToolExecuted` event's presentation fields, so a
+private execution's event stays self-describing.
 
 `project_tool_execution` has two consumers that must agree: the `ToolMessage`
 in the next LLM request and the presentation fields on the `ToolExecuted`
@@ -70,6 +75,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from luca.client.types import (
@@ -109,6 +115,8 @@ from .models import (
     TurnStart,
     UserMessage,
     is_compaction_bracket,
+    open_turn_index,
+    spawn_payload,
 )
 
 # The synthetic user-role text a CANCELLED TurnFinish projects as — the model's
@@ -121,13 +129,19 @@ class ConversationProjector:
 
     CANCELLED_TURN_MARKER: ClassVar[str] = CANCELLED_TURN_MARKER
 
-    # How a finished subagent's result reaches the parent's model. One
-    # synthetic USER message per child, tagged with the tool call that spawned
-    # it so the model can correlate the answer with its own request. Change
-    # this — or override `project_child_conversation` outright — to include
-    # more of a child's transcript, or to batch several children into one
-    # message; both are projector policy, not framework behavior.
-    CHILD_TASK_TEMPLATE: ClassVar[str] = "<task id={task_id}>\n{content}\n</task>"
+    # How a subagent's result reaches the parent's model: one synthetic USER
+    # message per RESOLUTION, rendered at the path position of the result-tool
+    # execution that produced it (`ChildConversation.result_execution_id`) —
+    # after the assistant messages that predate it, so a re-awakened model
+    # always finds the update BELOW its own last reply and no earlier message
+    # is ever rewritten. The tag's `id` is the spawn payload's `task_id` — the
+    # same identifier the spawn confirmation, `list_subagents` and
+    # `stop_subagent` speak. Override `project_child_update` /
+    # `project_child_conversation` (or just these templates) to change the
+    # rendering; all of it is projector policy, not framework behavior.
+    CHILD_UPDATE_PREAMBLE: ClassVar[str] = "Subagent task update:\n"
+    CHILD_UPDATE_TEMPLATE: ClassVar[str] = "<task id={task_id} status={status}{completed_at}>\n{content}\n</task>"
+    CHILD_COMPLETED_AT_TEMPLATE: ClassVar[str] = ' completed_at="{iso}"'
 
     # Derived tool output for the terminal statuses that are complete
     # lifecycle facts on their own (no ToolExecutionError to elaborate with).
@@ -155,9 +169,30 @@ class ConversationProjector:
         originals. Deciding that needs the path, which the per-entry methods
         deliberately do not receive.
 
+        Two more path-level rules live here, both about subagents, both
+        positional:
+
+        - a `ToolExecution` named by some `ChildConversation`'s
+          `result_execution_id` projects that link's TASK UPDATE
+          (`project_child_update`) — the resolution renders where it HAPPENED,
+          after every assistant message that predates it, which is what keeps
+          the projected history append-only while links mutate in place;
+        - an UNRESOLVED `ChildConversation` outside the open turn raises. No
+          close may leave an unresolved child, so this state is a framework
+          bug or hand-authored corruption — the same fail-loud stance a
+          nonterminal execution gets. Inside the open turn it is legal and
+          renders nothing (the model tracks its tasks through the spawn
+          confirmations, the updates, and `list_subagents`).
+
         No adjacent-message merging, role folding, trimming, or token counting
         happens here — a custom projector implements such policy by overriding
         this method. Both inputs are read-only."""
+        links_by_result = {
+            entry.result_execution_id: entry
+            for entry in entries.values()
+            if isinstance(entry, ChildConversation) and entry.result_execution_id is not None
+        }
+        open_turn = open_turn_index(nodes, entries)
         messages: list[Message] = []
         index = 0
         while index < len(nodes):
@@ -169,6 +204,21 @@ class ConversationProjector:
             ):
                 index = self._skip_compaction_bracket(nodes, entries, index)
                 continue
+            if isinstance(entry, ToolExecution) and (link := links_by_result.get(entry.id)) is not None:
+                message = self.project_child_update(link, entry, entries)
+                if message is not None:
+                    messages.append(message)
+                index += 1
+                continue
+            if (
+                isinstance(entry, ChildConversation)
+                and entry.execution_result is None
+                and (open_turn is None or index < open_turn)
+            ):
+                raise ProjectionError(
+                    f"ChildConversation {entry.id!r} is unresolved outside the open "
+                    "turn; no close may leave an unresolved subagent behind."
+                )
             message = self.project_entry(entry, entries)
             if message is not None:
                 messages.append(message)
@@ -338,15 +388,16 @@ class ConversationProjector:
         `tool_call_id` the provider never issued is a protocol violation every
         provider rejects. There is no projector setting that makes that legal.
 
-        Whether it projects as anything ELSE is policy, and V0's answer is no —
-        for one specific reason: its output already reaches the model through
-        the entry that owns it (a subagent result travels on
-        `ChildConversation.execution_result`), so projecting it again would
-        duplicate the content rather than add it. Override this to render
-        private work some other way; a synthetic USER message is the shape this
-        framework already uses for framework-authored content, and it is
-        available. The `ToolMessage` channel is closed; the entry is not
-        structurally invisible."""
+        Whether it projects as anything ELSE is policy, and the default answer
+        is no — with one carve-out that does not pass through here: a private
+        execution named by some `ChildConversation.result_execution_id` is a
+        subagent resolution, and `project()`'s path rule renders it as that
+        link's task update (`project_child_update`) before this method is ever
+        consulted. Every other private execution projects nothing. Override
+        this to render private work some other way; a synthetic USER message
+        is the shape this framework already uses for framework-authored
+        content, and it is available. The `ToolMessage` channel is closed; the
+        entry is not structurally invisible."""
         return None
 
     def project_compaction(
@@ -371,38 +422,97 @@ class ConversationProjector:
         self,
         entry: ChildConversation,
         entries: Mapping[str, AnyEntry],
+    ) -> ClientUserMessage | None:
+        """A `ChildConversation` link at its OWN path position. Projects
+        nothing in the two ordinary states:
+
+        - UNRESOLVED — the child is still working; the model already saw the
+          spawn confirmation, and its result will render when it arrives.
+          (`project()` separately refuses this state outside the open turn.)
+        - resolved WITH a `result_execution_id` — that execution's position
+          owns the rendering (`project_child_update`); rendering here too
+          would say it twice, at a position that predates the wake rounds.
+
+        The one state the link itself renders is resolved WITHOUT a result
+        execution — the cancel wind-down and the hard-limit settle write the
+        result directly, appending nothing — so the outcome still reaches the
+        model, at the link's position, without a timestamp. Those resolutions
+        only happen inside FAILING brackets, and the placement is knowingly
+        early: wake rounds recorded while the child was still alive sit after
+        the link on the path, so the next turn's projection shows the
+        cancellation notice before them. Accepted — the whole bracket already
+        reads as a failure, and the alternative (appending a synthetic entry
+        from a close path) would put content authorship inside the
+        wind-down."""
+        if entry.execution_result is None or entry.result_execution_id is not None:
+            return None
+        return self._child_task_message(entry, entries, completed_at_ms=None)
+
+    def project_child_update(
+        self,
+        link: ChildConversation,
+        execution: ToolExecution,
+        entries: Mapping[str, AnyEntry],
+    ) -> ClientUserMessage | None:
+        """A subagent's resolution, rendered as a synthetic user message at
+        the RESULT EXECUTION's path position — dispatched by `project()`'s
+        path rule, never by `project_entry`.
+
+        A synthetic USER message is the established shape for
+        framework-authored content (`project_compaction` and the
+        cancelled-turn marker both use it), and it is the only legal shape
+        here: the result tool is private, so no `ToolCall` for it exists in
+        any assistant message and a `ToolMessage` would be a protocol
+        violation. Rendering at the resolution's own position is what makes a
+        re-awakened model always find the update AFTER its last reply, and
+        what keeps every earlier projected message byte-stable while the
+        orchestration is still running."""
+        if link.execution_result is None:  # unreachable: stamped atomically
+            return None
+        return self._child_task_message(link, entries, completed_at_ms=execution.ended_at)
+
+    def _child_task_message(
+        self,
+        link: ChildConversation,
+        entries: Mapping[str, AnyEntry],
+        *,
+        completed_at_ms: int | None,
     ) -> ClientUserMessage:
-        """A finished subagent's result, as a synthetic user message.
+        """The task-update message for one resolved link: the preamble plus a
+        `<task>` tag wrapping the result's text, non-text blocks following.
 
-        A synthetic USER message is the established shape for framework-authored
-        content in this framework — `project_compaction` and the cancelled-turn
-        marker both use it — and it is the only legal shape here: the spawn tool
-        already got its own `ToolMessage`, and a second one correlating to the
-        same `tool_call_id` would be a protocol violation.
-
-        An UNRESOLVED child raises. That is the same fail-loud rule a PENDING
-        `ToolExecution` gets, for the same reason: the runtime must never call
-        the model while a child is still working, and inventing a placeholder
-        would tell the model a subagent answered when it has not. The runner's
-        drive blocks on its children precisely so this is unreachable in
-        practice."""
-        if entry.execution_result is None:
+        The tag's `id` is the spawn payload's `task_id` — the identifier the
+        model already met in the spawn confirmation and can hand to
+        `stop_subagent`. `status` is the result's own verdict
+        (completed / failed); `completed_at` renders only when the resolution
+        has a timestamp to report, as absolute UTC — deterministic for the
+        same durable state, unlike a relative "10 seconds ago"."""
+        spawn = entries.get(link.tool_execution_id)
+        if not isinstance(spawn, ToolExecution):
             raise ProjectionError(
-                f"ChildConversation {entry.id!r} has no execution_result; an unresolved subagent is not projectable."
-            )
-        execution = entries.get(entry.tool_execution_id)
-        if not isinstance(execution, ToolExecution):
-            raise ProjectionError(
-                f"ChildConversation {entry.id!r} references tool execution "
-                f"{entry.tool_execution_id!r}, which is missing from the entry "
+                f"ChildConversation {link.id!r} references tool execution "
+                f"{link.tool_execution_id!r}, which is missing from the entry "
                 "store."
             )
-        blocks = [self._content_block(part) for part in entry.execution_result.content]
+        payload = spawn_payload(spawn)
+        if payload is None:
+            raise ProjectionError(
+                f"ChildConversation {link.id!r}'s spawn execution {spawn.id!r} carries no spawn payload."
+            )
+        completed_at = (
+            self.CHILD_COMPLETED_AT_TEMPLATE.format(iso=_iso_utc(completed_at_ms))
+            if completed_at_ms is not None
+            else ""
+        )
+        blocks = [self._content_block(part) for part in link.execution_result.content]
         text = "".join(block.text for block in blocks if isinstance(block, TextBlock))
         wrapped: list = [
             TextBlock(
-                text=self.CHILD_TASK_TEMPLATE.format(
-                    task_id=execution.tool_call_id,
+                text=self.CHILD_UPDATE_PREAMBLE
+                + self.CHILD_UPDATE_TEMPLATE.format(
+                    task_id=payload["task_id"],
+                    status="failed" if link.execution_result.is_error else "completed",
+                    completed_at=completed_at,
                     content=text,
                 ),
             ),
@@ -439,6 +549,13 @@ class ConversationProjector:
             )
         content = [self._content_block(part) for part in entry.content]
         if isinstance(original, ToolExecution):
+            if original.tool_spec is not None and original.tool_spec.is_private:
+                # A private execution's ToolMessage channel is closed by
+                # protocol (no ToolCall for it exists), and a runner-minted
+                # correlation id on the wire would be rejected by every
+                # provider. Pruning one — a subagent-result execution is the
+                # natural target — simply removes its contribution.
+                return None
             return ToolMessage(
                 tool_call_id=original.tool_call_id,
                 content=content,
@@ -560,6 +677,12 @@ class ConversationProjector:
 # not a class var: `tool_message_text` is a free function, so a projector
 # subclass cannot change it.
 IMAGE_BLOCK_MARKER = "[image]"
+
+
+def _iso_utc(ms: int) -> str:
+    """Unix ms → an absolute UTC ISO-8601 second stamp — deterministic for the
+    same durable state, which relative wording ("10 seconds ago") cannot be."""
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def tool_message_text(message: ToolMessage) -> str:

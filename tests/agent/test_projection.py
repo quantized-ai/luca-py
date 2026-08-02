@@ -1378,3 +1378,35 @@ def test_the_producing_model_is_projected_as_provenance():
             model="claude-sonnet-5",
         ),
     ]
+
+
+def test_a_pruned_private_execution_projects_nothing():
+    # the ToolMessage channel is closed to a private execution by protocol —
+    # no ToolCall for it exists in any assistant message, and a runner-minted
+    # correlation id on the wire would be rejected by every provider. Pruning
+    # one (a subagent-result execution is the natural target) simply drops its
+    # contribution.
+    entries = {
+        "te1": ToolExecution(
+            id="te1",
+            conversation_id="c1",
+            created_at=1000,
+            tool_call_id="rtc1",
+            raw_tool_call=ToolCall(id="rtc1", name="create_conversation_result"),
+            tool_spec=spec("create_conversation_result", is_private=True),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="A done")]),
+            started_at=1000,
+            ended_at=1000,
+        ),
+        "p1": PrunedEntry(
+            id="p1",
+            created_at=2000,
+            pruned_entry_type="tool_execution",
+            pruned_entry_id="te1",
+            content=[TextContent(text="[tool output has been pruned to reduce context]")],
+        ),
+    }
+
+    assert PROJECTOR.project_pruned(entries["p1"], entries) is None
+    assert PROJECTOR.project(["p1"], entries) == []

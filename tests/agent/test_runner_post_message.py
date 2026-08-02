@@ -2,11 +2,11 @@
 
 The matrix tests load a known session cold and assert one post's verdict —
 accept (the entry lands exactly where the path says) or reject (the dedicated
-exception for the two transient rejections, plain `AgentError` for the
-persistent ones). The stories drive the runner end to end: a post between tool
-rounds, the close race (a message landing during the final LLM call forces one
-extra round instead of a COMPLETED close), the burial rules, and precedence at
-the close site.
+exception for the one transient rejection, CANCELLING; plain `AgentError` for
+the persistent ones). The stories drive the runner end to end: a post between
+tool rounds, the close race (a message landing during the final LLM call
+forces one extra round instead of a COMPLETED close), the burial rules, and
+precedence at the close site.
 
 House style: precondition → one action → full-object postcondition, through
 `DeterministicRunner` + `FauxProvider`. Posting *during* a drive is simulated
@@ -21,7 +21,6 @@ import pytest
 from luca.agent.core.exceptions import (
     AgentError,
     ConversationCancellingError,
-    SubagentsActiveError,
 )
 from luca.agent.core.models import (
     AgentSession,
@@ -110,8 +109,8 @@ _SPAWN_CALL = ToolCall(
 # A parent mid-orchestration, exactly as it sits on disk: the spawn execution
 # completed with its handshake payload, the `ChildConversation` link is
 # unresolved, and the child's own turn is open. Loading it cold is what proves
-# the D13 rejection holds across a reload — the predicate reads only durable
-# entries.
+# the acceptance (and the BUSY derivation behind it) holds across a reload —
+# every predicate reads only durable entries.
 SUBAGENTS_ACTIVE_SESSION = make_session(
     id="s_subagents_active",
     entries={
@@ -457,17 +456,19 @@ async def test_post_message_rejects_an_unknown_conversation():
         runner.post_message("hi", conversation_id="nope")
 
 
-async def test_post_message_rejects_while_subagents_are_active():
-    # The D13 rejection, loaded cold — the predicate reads the durable
-    # `ChildConversation` links, so it holds across a reload exactly like
-    # CANCELLING does.
+async def test_post_message_accepts_a_parent_with_active_subagents():
+    # The mid-ORCHESTRATION append, loaded cold: the parent's open turn holds
+    # an unresolved child and the post is accepted anyway — the message is
+    # material, and the conversation derives BUSY so the next run() shows it
+    # to the model, which can steer (answer, spawn more, stop a task).
     session = SUBAGENTS_ACTIVE_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(session, now=1000)
+    runner = DeterministicRunner(session, ids=["um"], now=1000)
 
-    with pytest.raises(SubagentsActiveError):
-        runner.post_message("change of plans")
+    msg_id = runner.post_message("change of plans")
 
-    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "ch1"]
+    assert msg_id == "um"
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "ch1", "um"]
+    assert runner.busy()
 
 
 async def test_post_message_targets_a_live_subagents_open_turn():
@@ -521,9 +522,10 @@ async def test_post_message_accepts_a_seeded_undriven_child():
     assert runner.session.conversations["c2"].nodes == ["u_seed", "um"]
 
 
-async def test_cancelling_outranks_the_subagents_check():
-    # A cancelled parent mid-wind-down raises the cancellation rejection, not
-    # the subagents one — "retry after the flush" is the actionable answer.
+async def test_cancelling_rejects_even_with_subagents_active():
+    # A cancelled parent mid-wind-down still refuses input — an accepted
+    # message would be buried in the cancelled bracket. "Retry after the
+    # flush" is the actionable answer; active subagents change nothing.
     session = CANCELLING_PARENT_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(session, now=1000)
 

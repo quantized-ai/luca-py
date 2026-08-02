@@ -33,8 +33,8 @@ it has no business reading.
 | `UserMessage` | client `UserMessage`, content in order — text and image blocks |
 | `AssistantMessage` | client `AssistantMessage` — text / thinking / tool-call blocks in order, plus the producing model as `provider` / `model` |
 | `ToolExecution` (terminal) | one correlated client `ToolMessage` (below) |
-| `ToolExecution` whose spec is **private** | nothing — `project_private_execution` (§8) |
-| `ChildConversation` (resolved) | a synthetic user message carrying the subagent's result (§8) |
+| `ToolExecution` whose spec is **private** | nothing — `project_private_execution` (§8) — unless it is a subagent's RESULT execution, which renders that link's task update at its own position (§8) |
+| `ChildConversation` | nothing — its result renders at the result execution's position; a link resolved *without* one (a cancel wind-down, a hard-limit settle) renders its task update in place, and an unresolved link renders nothing inside the open turn (§8) |
 | `CompactionEntry` | a synthetic user message carrying the summary |
 | `PrunedEntry` | its replacement content, under the *original* entry's role and correlation ([11](11-context-and-usage.md)) |
 | `TurnFinish(CANCELLED)` | a synthetic user message: `[Request interrupted by user]` |
@@ -147,8 +147,10 @@ instead of producing invented content:
 - an entry type the projector doesn't know;
 - a nonterminal (`RECEIVED`, `PENDING` or `RUNNING`) tool execution (the
   runtime never calls the model mid-execution);
-- an UNRESOLVED `ChildConversation` — the same rule, for the same reason: a
-  subagent that has not answered yet;
+- an UNRESOLVED `ChildConversation` **outside the open turn** — no close may
+  leave an unresolved subagent behind, so that state is corruption; inside
+  the open turn it is legal and renders nothing (the orchestration is simply
+  still running);
 - a `COMPLETED` execution without a result;
 - a `PrunedEntry` whose referent is missing, whose `pruned_entry_type`
   disagrees with the referent, or whose referent has no pruned projection.
@@ -189,26 +191,46 @@ per-entry method keeps its signature. See [`12-compaction.md`](12-compaction.md)
 ## 8. Subagents on the wire
 
 A parent conversation holds two extra kinds of entry once it spawns
-([13](13-subagents.md)), and each has its own override point:
+([13](13-subagents.md)), and their rendering has its own override points:
 
 ```python
 class MyProjector(ConversationProjector):
-    CHILD_TASK_TEMPLATE = "<task id={task_id}>\n{content}\n</task>"   # the default
+    CHILD_UPDATE_PREAMBLE = "Subagent task update:\n"                              # the defaults
+    CHILD_UPDATE_TEMPLATE = "<task id={task_id} status={status}{completed_at}>\n{content}\n</task>"
+    CHILD_COMPLETED_AT_TEMPLATE = ' completed_at="{iso}"'
 
-    def project_child_conversation(self, entry, entries): ...   # the child's result
-    def project_private_execution(self, entry, entries): ...    # → None
+    def project_child_update(self, link, execution, entries): ...   # the resolution, at its position
+    def project_child_conversation(self, entry, entries): ...       # the link itself → None, almost always
+    def project_private_execution(self, entry, entries): ...        # → None
 ```
 
-`project_child_conversation` renders the finished child's result as a
-**synthetic user message**, tagged with the spawning call's id so the model can
-tell several children apart. It is the only legal shape: the spawn tool already
-got its own `ToolMessage`, and a second one correlating to the same
+A subagent's result renders as a **synthetic user message at the RESULT
+EXECUTION's path position** — the private execution
+`ChildConversation.result_execution_id` names. Position is the point: the
+link is appended at spawn time and mutated in place at resolution, so
+rendering there would rewrite mid-history on every resolution; the result
+execution is appended WHEN the child resolved, so the update always lands
+below the parent's last reply and the projected history stays append-only —
+exactly what a re-awakened model needs to see ([13](13-subagents.md) §2). The
+tag's `id` is the spawn payload's `task_id` (the identifier `stop_subagent`
+takes), `status` is `completed` / `failed` from the result's own verdict, and
+`completed_at` is absolute UTC — deterministic, unlike relative wording. A
+synthetic user message is the only legal shape: the spawn tool already got
+its own `ToolMessage`, and a second one correlating to the same
 `tool_call_id` would be a protocol violation.
 
-`project_private_execution` returns `None` — for the same reason. A private tool
-was never advertised, so the model never made that call, and a `ToolMessage`
-correlating to a call the model did not make is malformed. `project_tool_execution`
-is still called directly for the `ToolExecuted` event, so a private execution's
-event stays self-describing even though its wire projection is nothing.
+`project_child_conversation` — the link at its OWN position — renders nothing,
+with one exception: a link resolved *without* a result execution
+(`result_execution_id is None` — the cancel wind-down and the hard-limit
+settle write the result directly) renders its tag in place, timestamp-less,
+inside what is by construction a failing bracket.
+
+`project_private_execution` returns `None` — a private tool was never
+advertised, so the model never made that call, and a `ToolMessage`
+correlating to a call the model did not make is malformed. (The same is true
+of a PRUNED private execution: `project_pruned` renders it as nothing.)
+`project_tool_execution` is still called directly for the `ToolExecuted`
+event, so a private execution's event stays self-describing even though its
+wire projection is nothing.
 
 Next: [`11-context-and-usage.md`](11-context-and-usage.md).

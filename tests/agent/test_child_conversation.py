@@ -2,9 +2,11 @@
 `pretty_print`, mutability and serialization.
 
 Nothing here drives a subagent — no runner, no spawn handshake. This is the
-entry on its own: what it contributes to its PARENT's wire history, what it
-costs its parent's window, and how it renders. The runtime that produces one
-is covered under `tests/agent/subagents/`.
+entry on its own: how its result reaches its PARENT's wire history (a task
+update rendered at the RESULT EXECUTION's path position, so the projected
+history stays append-only while the link mutates in place), what it costs the
+parent's window, and how it renders. The runtime that produces one is covered
+under `tests/agent/subagents/`.
 """
 
 import pytest
@@ -30,14 +32,21 @@ from luca.agent.core.models import (
 from luca.agent.core.projection import ConversationProjector
 from luca.agent.core.utils import pretty_print
 from luca.client.types import TextBlock as LucaTextBlock, UserMessage as LucaUserMessage
-from tests.agent.scenarios import ADD_SPEC, MODEL, conversation, make_session
+from tests.agent.scenarios import MODEL, conversation, make_session, spec
 
 PROJECTOR = ConversationProjector()
 CM = ContextManager()
 
-# The spawn execution the child hangs off. Its `tool_call_id` is what the
-# projection tags the result with — the model correlates the answer with the
-# request IT made, which is the tool call, not an internal entry id.
+SPAWN_SPEC = spec(
+    "spawn_subagent",
+    output_schema={"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}},
+)
+RESULT_SPEC = spec("create_conversation_result", is_private=True)
+
+# The spawn execution the child hangs off. Its PAYLOAD task id is what the
+# projection tags the result with — the same identifier the spawn
+# confirmation, `list_subagents` and `stop_subagent` speak, so the model can
+# correlate all four.
 SPAWN = ToolExecution(
     id="te1",
     created_at=500,
@@ -48,12 +57,38 @@ SPAWN = ToolExecution(
         name="spawn_subagent",
         arguments={"prompt": "Research A", "description": "research A", "task_id": "t1"},
     ),
-    tool_spec=ADD_SPEC,
+    tool_spec=SPAWN_SPEC,
     status=ExecutionStatus.COMPLETED,
-    result=ExecutionResult(content=[TextContent(text="Spawned subagent with id t1: research A")]),
+    result=ExecutionResult(
+        content=[TextContent(text="Spawned subagent with id t1: research A")],
+        structured_content={
+            "is_subagent_spawn": True,
+            "task_id": "t1",
+            "prompt": "Research A",
+            "description": "research A",
+            "process_subagent_result_tool_name": "create_conversation_result",
+        },
+    ),
     started_at=500,
     ended_at=500,
 )
+
+# The runtime-minted result execution whose path position carries the update.
+RESULT_EXEC = ToolExecution(
+    id="ter1",
+    created_at=700,
+    conversation_id="c1",
+    tool_call_id="rtc1",
+    raw_tool_call=ToolCall(id="rtc1", name="create_conversation_result"),
+    tool_spec=RESULT_SPEC,
+    status=ExecutionStatus.COMPLETED,
+    result=ExecutionResult(content=[TextContent(text="A is fine.")]),
+    started_at=700,
+    ended_at=700,
+)
+
+TS = TurnStart(id="ts", created_at=500)
+TF = TurnFinish(id="tf", created_at=800)
 
 
 def child(**over) -> ChildConversation:
@@ -70,133 +105,167 @@ def child(**over) -> ChildConversation:
 
 RESOLVED = child(
     execution_result=ExecutionResult(content=[TextContent(text="A is fine.")]),
+    result_execution_id="ter1",
 )
+
+ENTRIES = {"ts": TS, "te1": SPAWN, "cc1": RESOLVED, "ter1": RESULT_EXEC, "tf": TF}
 
 
 # ── projection ────────────────────────────────────────────────────────────────
 
 
-def test_the_spawn_output_and_the_child_result_are_two_separate_messages():
-    # the spawn call completes immediately and projects its own status line as
-    # a ToolMessage; the child's ANSWER arrives later, separately, as a
-    # synthetic user message. Two channels, deliberately.
-    messages = PROJECTOR.project(["te1", "cc1"], {"te1": SPAWN, "cc1": RESOLVED})
+def test_the_update_renders_at_the_result_executions_position():
+    # the spawn call projects its own status line as a ToolMessage where it
+    # sits; the child's ANSWER renders where its RESOLUTION happened — at the
+    # private result execution's position, after everything that predates it.
+    # The link itself projects nothing: rendering at ITS position would
+    # rewrite mid-history on every resolution.
+    messages = PROJECTOR.project(["ts", "te1", "cc1", "ter1"], ENTRIES)
 
     assert [type(m).__name__ for m in messages] == ["ToolMessage", "UserMessage"]
     assert messages[0].content[0].text == "Spawned subagent with id t1: research A"
-    assert messages[1].content[0].text == "<task id=tc1>\nA is fine.\n</task>"
-
-
-def test_the_child_result_is_tagged_with_the_spawning_tool_call():
-    [message] = PROJECTOR.project(["cc1"], {"te1": SPAWN, "cc1": RESOLVED})
-
-    assert message == LucaUserMessage(
-        content=[LucaTextBlock(text="<task id=tc1>\nA is fine.\n</task>")],
+    assert messages[1] == LucaUserMessage(
+        content=[
+            LucaTextBlock(
+                text=(
+                    "Subagent task update:\n"
+                    '<task id=t1 status=completed completed_at="1970-01-01T00:00:00Z">\nA is fine.\n</task>'
+                ),
+            ),
+        ],
     )
 
 
-def test_two_children_project_as_two_messages_in_path_order():
-    second = child(
-        id="cc2",
-        conversation_id="c3",
-        tool_execution_id="te2",
-        execution_result=ExecutionResult(content=[TextContent(text="B is broken.")]),
+def test_a_failed_result_renders_status_failed():
+    resolved = child(
+        execution_result=ExecutionResult(content=[TextContent(text="[subagent cancelled]")], is_error=True),
+        result_execution_id="ter1",
     )
-    spawn_b = SPAWN.model_copy(
-        update={
-            "id": "te2",
-            "tool_call_id": "tc2",
-            "raw_tool_call": ToolCall(id="tc2", name="spawn_subagent"),
-        },
+    entries = {**ENTRIES, "cc1": resolved}
+
+    messages = PROJECTOR.project(["ts", "te1", "cc1", "ter1"], entries)
+
+    assert messages[1].content[0].text == (
+        "Subagent task update:\n"
+        '<task id=t1 status=failed completed_at="1970-01-01T00:00:00Z">\n[subagent cancelled]\n</task>'
     )
-    entries = {"te1": SPAWN, "te2": spawn_b, "cc1": RESOLVED, "cc2": second}
-
-    messages = PROJECTOR.project(["cc1", "cc2"], entries)
-
-    assert [m.content[0].text for m in messages] == [
-        "<task id=tc1>\nA is fine.\n</task>",
-        "<task id=tc2>\nB is broken.\n</task>",
-    ]
 
 
-def test_an_unresolved_child_fails_loud():
-    # the same rule a PENDING ToolExecution gets: the runtime must never call
-    # the model while a subagent is still working, and a placeholder would tell
-    # the model a subagent answered when it has not
-    with pytest.raises(ProjectionError, match="unresolved subagent is not projectable"):
-        PROJECTOR.project(["cc1"], {"te1": SPAWN, "cc1": child()})
+def test_a_link_resolved_without_a_result_execution_renders_in_place():
+    # the cancel wind-down and the hard-limit settle resolve links directly,
+    # appending nothing — only then does the link itself render, without a
+    # timestamp, inside what is by construction a failing bracket
+    resolved = child(
+        execution_result=ExecutionResult(content=[TextContent(text="[subagent cancelled]")], is_error=True),
+    )
+    entries = {"ts": TS, "te1": SPAWN, "cc1": resolved, "tf": TF}
+
+    messages = PROJECTOR.project(["ts", "te1", "cc1", "tf"], entries)
+
+    assert [m.content[0].text for m in messages][-1] == (
+        "Subagent task update:\n<task id=t1 status=failed>\n[subagent cancelled]\n</task>"
+    )
+
+
+def test_an_unresolved_child_in_the_open_turn_renders_nothing():
+    # mid-orchestration the model tracks its tasks through the spawn
+    # confirmations, the updates and list_subagents — the link is silent
+    messages = PROJECTOR.project(["ts", "te1", "cc1"], {"ts": TS, "te1": SPAWN, "cc1": child()})
+
+    assert [type(m).__name__ for m in messages] == ["ToolMessage"]
+
+
+def test_an_unresolved_child_outside_the_open_turn_fails_loud():
+    # no close may leave an unresolved child behind: this state is a framework
+    # bug or hand-authored corruption, and silence would project a task
+    # nothing will ever finish — the same fail-loud stance a nonterminal
+    # execution gets
+    with pytest.raises(ProjectionError, match="unresolved outside the open turn"):
+        PROJECTOR.project(["ts", "te1", "cc1", "tf"], {"ts": TS, "te1": SPAWN, "cc1": child(), "tf": TF})
 
 
 def test_a_child_whose_spawn_execution_is_missing_fails_loud():
     with pytest.raises(ProjectionError, match="missing from the entry store"):
-        PROJECTOR.project(["cc1"], {"cc1": RESOLVED})
+        PROJECTOR.project(["ts", "cc1", "ter1"], {"ts": TS, "cc1": RESOLVED, "ter1": RESULT_EXEC})
+
+
+def test_a_spawn_execution_without_a_payload_fails_loud():
+    # a child cannot exist without a validated spawn payload; state that says
+    # otherwise is corruption, not a task with defaults
+    stripped = SPAWN.model_copy(update={"result": ExecutionResult(content=[TextContent(text="spawned")])})
+    entries = {**ENTRIES, "te1": stripped}
+
+    with pytest.raises(ProjectionError, match="no spawn payload"):
+        PROJECTOR.project(["ts", "te1", "cc1", "ter1"], entries)
 
 
 def test_a_non_text_part_of_a_child_result_survives_beside_the_tag():
     image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
     resolved = child(
         execution_result=ExecutionResult(content=[TextContent(text="see this"), image]),
+        result_execution_id="ter1",
+    )
+    entries = {**ENTRIES, "cc1": resolved}
+
+    messages = PROJECTOR.project(["ts", "te1", "cc1", "ter1"], entries)
+
+    update = messages[-1]
+    assert [type(block).__name__ for block in update.content] == ["TextBlock", "ImageBlock"]
+    assert update.content[0].text == (
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:00Z">\nsee this\n</task>'
     )
 
-    [message] = PROJECTOR.project(["cc1"], {"te1": SPAWN, "cc1": resolved})
 
-    assert [type(block).__name__ for block in message.content] == ["TextBlock", "ImageBlock"]
-    assert message.content[0].text == "<task id=tc1>\nsee this\n</task>"
-
-
-def test_a_subclass_can_replace_the_child_rendering_wholesale():
+def test_a_subclass_can_replace_the_update_rendering_wholesale():
     class Terse(ConversationProjector):
-        CHILD_TASK_TEMPLATE = "[subagent {task_id}] {content}"
+        CHILD_UPDATE_PREAMBLE = ""
+        CHILD_UPDATE_TEMPLATE = "[subagent {task_id}] {content}"
 
-    [message] = Terse().project(["cc1"], {"te1": SPAWN, "cc1": RESOLVED})
+    messages = Terse().project(["ts", "te1", "cc1", "ter1"], ENTRIES)
 
-    assert message.content[0].text == "[subagent tc1] A is fine."
+    assert messages[-1].content[0].text == "[subagent t1] A is fine."
 
 
 # ── context accounting ────────────────────────────────────────────────────────
 
 
+def _session() -> AgentSession:
+    return make_session(
+        id="s",
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+
 def test_an_unresolved_child_costs_its_parent_nothing():
     # a child's own conversation does not count against its parent's window —
     # that separation is the main reason subagents are useful
-    session = make_session(
-        id="s",
-        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
-        main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-
-    assert CM.calculate_context(session, child()) == 0
+    assert CM.calculate_context(_session(), child()) == 0
 
 
-def test_a_resolved_child_costs_exactly_its_result():
-    session = make_session(
-        id="s",
-        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
-        main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+def test_a_link_whose_result_execution_carries_the_content_costs_nothing():
+    # the result execution's own context_tokens already cover the content;
+    # counting the link too would double every subagent result
+    assert CM.calculate_context(_session(), RESOLVED) == 0
+
+
+def test_a_link_that_renders_its_own_result_costs_exactly_that_result():
     resolved = child(
         execution_result=ExecutionResult(content=[TextContent(text="x" * 40)]),
     )
 
-    assert CM.calculate_context(session, resolved) == 10  # 40 chars // 4
+    assert CM.calculate_context(_session(), resolved) == 10  # 40 chars // 4
 
 
-def test_an_image_in_a_child_result_is_counted_as_media():
-    session = make_session(
-        id="s",
-        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
-        main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
-    )
+def test_an_image_in_a_link_rendered_result_is_counted_as_media():
     resolved = child(
         execution_result=ExecutionResult(
             content=[ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))],
         ),
     )
 
-    assert CM.calculate_context(session, resolved) == CM.IMAGE_TOKENS
+    assert CM.calculate_context(_session(), resolved) == CM.IMAGE_TOKENS
 
 
 # ── the durable entry ─────────────────────────────────────────────────────────
@@ -205,8 +274,14 @@ def test_an_image_in_a_child_result_is_counted_as_media():
 def test_a_child_conversation_round_trips_through_json():
     session = make_session(
         id="s_child_roundtrip",
-        entries={"te1": SPAWN, "cc1": RESOLVED},
-        conversations={"c1": conversation("c1", ["te1", "cc1"], created_at=500, updated_at=500)},
+        # deep copies: make_session stamps `tool_spec_id` on what it is given,
+        # and the module constants serve every test in this file
+        entries={
+            "te1": SPAWN.model_copy(deep=True),
+            "cc1": RESOLVED.model_copy(deep=True),
+            "ter1": RESULT_EXEC.model_copy(deep=True),
+        },
+        conversations={"c1": conversation("c1", ["te1", "cc1", "ter1"], created_at=500, updated_at=500)},
         main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
     )
@@ -214,20 +289,28 @@ def test_a_child_conversation_round_trips_through_json():
     reloaded = AgentSession.model_validate_json(session.model_dump_json())
 
     assert reloaded == session
-    assert reloaded.entries["cc1"] == RESOLVED
+    assert reloaded.entries["cc1"].result_execution_id == "ter1"
+    assert reloaded.entries["cc1"].execution_result == RESOLVED.execution_result
 
 
 def test_resolving_a_child_is_an_in_place_mutation():
-    # the THIRD mutable entry type: `execution_result` lands after the entry is
-    # already durable, which is why `before_entry_written` fires twice for it
+    # the THIRD mutable entry type: `execution_result` and the
+    # `result_execution_id` naming where it came from land together, after the
+    # entry is already durable — which is why `before_entry_written` fires
+    # twice for it
     unresolved = child()
     resolved = unresolved.model_copy(
-        update={"execution_result": ExecutionResult(content=[TextContent(text="done")])},
+        update={
+            "execution_result": ExecutionResult(content=[TextContent(text="done")]),
+            "result_execution_id": "ter1",
+        },
     )
 
     assert unresolved.execution_result is None
+    assert unresolved.result_execution_id is None
     assert resolved.id == unresolved.id
     assert resolved.execution_result.content == [TextContent(text="done")]
+    assert resolved.result_execution_id == "ter1"
 
 
 # ── pretty_print ──────────────────────────────────────────────────────────────
@@ -247,11 +330,12 @@ def test_pretty_print_renders_a_resolved_child():
                 llm_config=MODEL,
                 stop_reason="stop",
             ),
-            "cc1": RESOLVED.model_copy(update={"parent_id": "a1"}),
-            "tf": TurnFinish(id="tf", parent_id="cc1", created_at=500),
+            "cc1": RESOLVED.model_copy(deep=True, update={"parent_id": "a1"}),
+            "ter1": RESULT_EXEC.model_copy(deep=True, update={"parent_id": "cc1"}),
+            "tf": TurnFinish(id="tf", parent_id="ter1", created_at=500),
         },
         conversations={
-            "c1": conversation("c1", ["u1", "ts", "a1", "cc1", "tf"], created_at=500, updated_at=500),
+            "c1": conversation("c1", ["u1", "ts", "a1", "cc1", "ter1", "tf"], created_at=500, updated_at=500),
             "c2": conversation("c2", [], created_at=500, updated_at=500, depth=1),
         },
         main_conversation_id="c1",

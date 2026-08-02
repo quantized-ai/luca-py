@@ -221,9 +221,9 @@ class AgentApp(App):
         try:
             self.runner.post_message(parts)
         except AgentError as exc:
-            # The two transient rejections (cancelling, subagents active) and
-            # every other refusal alike: a brief notice, and the draft stays
-            # in the input for a later resubmit.
+            # The transient rejection (cancelling) and every other refusal
+            # alike: a brief notice, and the draft stays in the input for a
+            # later resubmit.
             self.notify(str(exc), severity="warning")
             return
         event.prompt_input.clear()

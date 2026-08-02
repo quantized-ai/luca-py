@@ -79,7 +79,7 @@ Read top to bottom; each page starts simple and deepens.
 | [`10-projection.md`](10-projection.md) | `ConversationProjector` — own the LLM message history and tool-output wording |
 | [`11-context-and-usage.md`](11-context-and-usage.md) | `context_tokens`, the usage store, pruning — and the `ContextManager` seam to improve them |
 | [`12-compaction.md`](12-compaction.md) | `ContextManager.compact` — summarize the older span and keep going, without losing anything |
-| [`13-subagents.md`](13-subagents.md) | Parallel subagents — spawning, driving, approvals, cancellation |
+| [`13-subagents.md`](13-subagents.md) | Parallel subagents — spawning, driving, wake rounds, steering, stopping, approvals, cancellation |
 | [`contrib/`](contrib/README.md) | Optional packages built on the core — registries, plugins, rule-based resource permissions |
 
 The agent talks to models through [`luca.client`](../client/README.md); you never

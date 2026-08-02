@@ -28,7 +28,6 @@ from .exceptions import (
     ConversationCancellingError,
     InvalidToolArguments,
     ProjectionError,
-    SubagentsActiveError,
     ToolNotFound,
 )
 from .middleware import AgentMiddlewareMixin
@@ -77,7 +76,14 @@ from .models import (
     TurnStart,
     Usage,
     UserMessage,
+    declares_spawn,
     open_turn_executions,
+    open_turn_index,
+    open_turn_unresolved_children,
+    open_turn_unseen_material,
+    spawn_payload,
+    spawns_committed,
+    stop_payload,
 )
 from .projection import (
     CANCELLED_TURN_MARKER,
@@ -88,9 +94,6 @@ from .runner import (
     AgentRun,
     AgentSessionRunner,
     RunResult,
-    declares_spawn,
-    spawn_payload,
-    spawns_committed,
 )
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import PreparedTool, ToolRegistry
@@ -148,7 +151,6 @@ __all__ = [
     "Seconds",
     "SessionConfig",
     "ConversationRuntimeStatus",
-    "SubagentsActiveError",
     "SystemPromptAssembler",
     "SystemPromptPart",
     "TextContent",
@@ -168,7 +170,11 @@ __all__ = [
     "UserMessage",
     "declares_spawn",
     "open_turn_executions",
+    "open_turn_index",
+    "open_turn_unresolved_children",
+    "open_turn_unseen_material",
     "pretty_print",
     "spawn_payload",
     "spawns_committed",
+    "stop_payload",
 ]

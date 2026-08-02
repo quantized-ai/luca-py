@@ -1,7 +1,7 @@
 """Mid-turn input: the prompt stays enabled while the agent works, a submit
-posts into the open turn and renders immediately, and every rejection —
-subagents active, a slash command mid-turn — keeps the draft in the input.
-Input is never silently discarded."""
+posts into the open turn and renders immediately — subagents running included,
+where the post wakes the parked parent — and a rejection (a slash command
+mid-turn) keeps the draft in the input. Input is never silently discarded."""
 
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME
 from luca.agent.contrib.tui import AgentApp
@@ -67,18 +67,21 @@ async def test_typing_mid_run_posts_into_the_open_turn(tmp_path):
         await wait_until(pilot, lambda: idle_again(app))
 
 
-async def test_a_post_while_subagents_run_is_rejected_and_the_draft_kept(tmp_path):
+async def test_a_post_while_subagents_run_is_accepted_and_wakes_the_parent(tmp_path):
+    provider = scripted(
+        faux_assistant_message(
+            [
+                faux_text("Delegating."),
+                spawn("read alpha.txt", "Read alpha.txt.", call_id="c1", task_id="t1"),
+            ]
+        ),
+        faux_assistant_message([faux_hang()]),  # the child hangs mid-work
+        # the accepted post wakes the parked parent for one round
+        faux_assistant_message([faux_text("Noted — still waiting on the task.")]),
+    )
     app = AgentApp(
         fresh_session(SUBAGENTS),
-        provider=scripted(
-            faux_assistant_message(
-                [
-                    faux_text("Delegating."),
-                    spawn("read alpha.txt", "Read alpha.txt.", call_id="c1", task_id="t1"),
-                ]
-            ),
-            faux_assistant_message([faux_hang()]),  # the child hangs mid-work
-        ),
+        provider=provider,
         workspace=tmp_path,
         session_dir=tmp_path,
     )
@@ -90,12 +93,17 @@ async def test_a_post_while_subagents_run_is_rejected_and_the_draft_kept(tmp_pat
         await submit(pilot, "hurry up")
         await pilot.pause()
 
-        # rejected: no new message anywhere, the draft still in the input
+        # accepted: the message landed in the parent's open turn, rendered
+        # immediately, and the input cleared for the next message
         session = app.runner.session
         posted = [entry.parts[0].text for entry in session.entries.values() if isinstance(entry, UserMessage)]
-        assert "hurry up" not in posted
-        assert [cell.text for cell in app.query(UserCell)] == ["go"]
-        assert app.query_one("#prompt", PromptInput).text == "hurry up"
+        assert "hurry up" in posted
+        assert [cell.text for cell in app.query(UserCell)] == ["go", "hurry up"]
+        assert app.query_one("#prompt", PromptInput).text == ""
+
+        # …and the woken parent's next call SAW it, while the child kept going
+        await wait_until(pilot, lambda: len(provider.requests) >= 3)
+        assert provider.requests[-1].messages[-1].content[0].text == "hurry up"
 
         await pilot.press("escape")  # unwind the hung child; everything settles
         await wait_until(pilot, lambda: idle_again(app))

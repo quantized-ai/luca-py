@@ -60,6 +60,7 @@ from luca.agent.core.models import (
     Usage,
     UserMessage,
     is_compaction_bracket,
+    open_turn_unseen_material,
 )
 from tests.agent.scenarios import (
     ADD_SPEC,
@@ -1527,3 +1528,126 @@ def test_turn_count_is_scoped_to_one_conversation():
     assert session.get_conversation_status("c2").turn_count == 1
     # and the archived one still answers for its own path
     assert session.get_conversation_status("c1").turn_count == 1
+
+
+# ── open_turn_unseen_material ─────────────────────────────────────────────────
+#
+# The durable half of the subagent wake condition: is there model-facing
+# content AFTER the open turn's last assistant message? Pure over
+# (nodes, entries), like every path derivation.
+
+_SPAWN_DECLARING = ToolSpec(
+    name="spawn_subagent",
+    description="spawns",
+    input_schema=EMPTY_SCHEMA,
+    output_schema={"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}},
+)
+
+
+def _material_entries() -> dict:
+    return {
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[TextContent(text="on it")],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+
+
+def _execution(entry_id: str, *, status: ExecutionStatus, tool_spec: ToolSpec | None, result=None) -> ToolExecution:
+    return ToolExecution(
+        id=entry_id,
+        created_at=600,
+        conversation_id="c1",
+        tool_call_id=f"tc_{entry_id}",
+        raw_tool_call=ToolCall(id=f"tc_{entry_id}", name="something"),
+        tool_spec=tool_spec,
+        status=status,
+        result=result,
+    )
+
+
+def test_material_needs_an_assistant_message_in_the_open_turn():
+    entries = {
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "u2": UserMessage(id="u2", parent_id="ts", created_at=600, parts=[TextContent(text="more")]),
+    }
+
+    assert open_turn_unseen_material(["u1", "ts", "u2"], entries) is False
+
+
+def test_a_user_message_after_the_last_assistant_is_material():
+    entries = _material_entries()
+    entries["u2"] = UserMessage(id="u2", parent_id="a1", created_at=600, parts=[TextContent(text="steer")])
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "u2"], entries) is True
+    # …and one BEFORE it is not: the model already saw everything up to its
+    # own last reply
+    assert open_turn_unseen_material(["u1", "ts", "u2", "a1"], entries) is False
+
+
+def test_a_terminal_non_spawn_execution_is_material():
+    entries = _material_entries()
+    entries["te1"] = _execution(
+        "te1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=ADD_SPEC,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+    )
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True
+
+
+def test_a_spawn_declaring_executions_outcome_is_never_material():
+    # keyed on the DECLARATION, not the settled payload: a spawn round's own
+    # answers — spawned, declined, refused — must not wake the model by
+    # themselves; they travel with the first real update
+    entries = _material_entries()
+    entries["te1"] = _execution(
+        "te1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=_SPAWN_DECLARING,
+        result=ExecutionResult(
+            content=[TextContent(text="spawned")],
+            structured_content={"is_subagent_spawn": True, "task_id": "t1"},
+        ),
+    )
+    entries["te2"] = _execution("te2", status=ExecutionStatus.REFUSED, tool_spec=_SPAWN_DECLARING)
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1", "te2"], entries) is False
+
+
+def test_a_nonterminal_execution_is_not_material():
+    # the ordinary loop's business — never a reason to wake
+    entries = _material_entries()
+    entries["te1"] = _execution("te1", status=ExecutionStatus.RECEIVED, tool_spec=None)
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is False
+
+
+def test_a_closed_turn_holds_no_material():
+    entries = _material_entries()
+    entries["u2"] = UserMessage(id="u2", parent_id="a1", created_at=600, parts=[TextContent(text="steer")])
+    entries["tf"] = TurnFinish(id="tf", parent_id="u2", created_at=700)
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "u2", "tf"], entries) is False
+
+
+def test_a_rejected_or_unresolved_tool_execution_is_material():
+    # a DENIED gated call and a call whose tool never resolved are both
+    # answers the model must see — the BLOCKED→BUSY transition after an
+    # out-of-band denial rides on exactly this
+    entries = _material_entries()
+    entries["te1"] = _execution("te1", status=ExecutionStatus.REJECTED, tool_spec=ADD_SPEC)
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True
+
+    entries["te1"] = _execution("te1", status=ExecutionStatus.NOT_FOUND, tool_spec=None)
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True

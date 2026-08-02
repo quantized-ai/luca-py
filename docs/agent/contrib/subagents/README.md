@@ -1,10 +1,11 @@
 # Subagents
 
-`luca.agent.contrib.subagents` is the two tools that make parallel subagents
+`luca.agent.contrib.subagents` is the four tools that make parallel subagents
 usable, plus the plugin that installs them. The mechanism — child conversations,
-the tree of runs, approvals, cancellation — is core and is documented in
-[`13-subagents.md`](../../13-subagents.md); this package is the *policy*: what
-the model is offered, and how a finished child becomes an answer.
+the tree of runs, wake rounds, approvals, cancellation — is core and is
+documented in [`13-subagents.md`](../../13-subagents.md); this package is the
+*policy*: what the model is offered, how a finished child becomes an answer,
+and how the model manages the tasks it started.
 
 ```python
 from luca.agent.contrib.subagents import SubagentsPlugin
@@ -33,15 +34,19 @@ runner = PluginAgentSessionRunner(session, plugins=[SubagentsPlugin(), *others])
 |---|---|
 | `SpawnSubagent` (`spawn_subagent`) | starts one subagent. Args: `prompt` (self-contained instructions), `description` (for the user), optional `task_id` |
 | `CreateConversationResult` (`create_conversation_result`) | **private** — the runtime calls it when a child finishes, to turn that conversation into one result |
-| `SPAWNING_PROMPT` | the system-prompt text that teaches spawning, contributed as a **callable** part |
-| `SubagentToolRegistry` | `SimpleToolRegistry` + the gate (enabled, depth, spawn budget) |
-| `spawn_gate_open(session, conversation_id, *, exclude=None)` | the one predicate everything derives from |
+| `StopSubagent` (`stop_subagent`) | asks the runner to cancel one of this turn's tasks. Args: `task_id` (must match), optional `reason`. Best effort — the child reports back one final time as stopped |
+| `ListSubagents` (`list_subagents`) | read-only roster of the turn's tasks: id, status (`pending` / `cancelling` / `completed` / `failed`), description, prompt |
+| `SPAWNING_PROMPT` / `CONTROL_PROMPT` | the system-prompt texts that teach spawning and task management, each contributed as a **callable** part |
+| `SubagentToolRegistry` | `SimpleToolRegistry` + the spawn gate (enabled, depth, spawn budget) + the control-tool withholding (no tasks → no `stop_subagent` / `list_subagents`) |
+| `spawn_gate_open(session, conversation_id, *, exclude=None)` | the spawn predicate everything spawn-side derives from |
+| `open_turn_children(session, conversation_id)` | the roster read the control side derives from |
 
-Both tools ship auto-approved, in their own always-allowing registry — the
+All four ship auto-approved, in their own always-allowing registry — the
 pattern `MemoryPlugin` uses. That is the right call, not a shortcut: the
 dangerous work is not in the spawn, it is in the tools the *child* calls, and
-those are gated inside the child by their own registries. Prompting on the spawn
-would ask about the wrapper and never the payload.
+those are gated inside the child by their own registries; stopping only ever
+cancels work this conversation itself started, and listing reads. Prompting on
+the spawn would ask about the wrapper and never the payload.
 
 ## 3. The gate
 
@@ -78,6 +83,16 @@ declares `is_subagent_spawn` — **by declaration, never by name**, which is wha
 makes a custom spawn tool gate correctly too. The private result tool is never
 withheld: the runtime resolves it by name, and the wire filter is the runner's
 job.
+
+The control tools ride a **second** prompt/tool-list identity:
+`stop_subagent` and `list_subagents` are withheld until the conversation's
+open turn has a `ChildConversation`, and `CONTROL_PROMPT`'s part
+(`control_prompt_part`) speaks on exactly that predicate. It is a separate
+part from the spawning one on purpose — a spent spawn budget silences the
+spawn teaching while this turn's tasks still need managing, and one part
+gated on either predicate would let the prompt and the tool list disagree.
+(Matched by name, not declaration: this is presentation policy over the
+registry's own tools, not a cap the runner verifies.)
 
 ## 4. The handshake
 
@@ -125,10 +140,29 @@ parts only — reasoning and tool calls are the child's working, not its answer.
 The last *node* is the closing turn marker, so it searches backwards for the
 message rather than reading the end of the path.
 
-A child that was cancelled, errored, or ran out of steps has no final message.
-Instead of returning nothing it hands the parent a readable transcript
-(`pretty_print` of that conversation) with `is_error=True` — a finished child
-whose result says what happened, never an exception travelling upward.
+It is **outcome-aware**: a child whose turn closed cancelled / errored /
+timed out gets its last words prefixed with the outcome ("The subagent was
+cancelled before finishing. Its last message: …") and `is_error=True` — a
+stopped task's progress report must not read as an answer. A child with no
+final message at all instead hands the parent a readable transcript
+(`pretty_print` of that conversation), also with `is_error=True` — a finished
+child whose result says what happened, never an exception travelling upward.
+
+## 5b. Stopping
+
+`StopSubagent` mirrors the spawn contract, value-side only: its declared
+`SubagentStop` payload (`is_subagent_stop`, `task_id`, `reason`) rides
+`structured_content`, and the runner consumes a completed `True` payload by
+cancelling the matching direct child — matched only among tasks spawned
+*before* the stop was issued (a later task reusing the id is safe); with
+duplicate ids the target is the first match still unresolved at issue time,
+and a match that resolved after the stop consumes the signal, so a replayed
+stop can never fall through to a same-id sibling. The tool
+validates against the live session first and returns the payload with the
+flag **down** (plus an honest message) for an unknown, finished, or
+already-stopping target — exactly like a declining spawn, so the runner does
+nothing. The runner re-checks anyway; a child can finish between the tool
+body and the handler.
 
 ## 6. Coexistence
 

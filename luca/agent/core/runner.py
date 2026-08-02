@@ -15,10 +15,10 @@ drives it by polling its status and supplying input:
                 ...                                    # resolve on the registry
 
 The sketch polls, but `post_message` is not IDLE-only: posting while the agent
-works (BUSY or BLOCKED) appends into the open turn, and the turn answers the
-message before it closes COMPLETED — see `post_message` for the full
-acceptance matrix (CANCELLING, an open compaction bracket, and a turn with
-unresolved subagents reject).
+works (BUSY or BLOCKED) appends into the open turn — subagents running
+included; a parked parent is woken so the model can steer — and the turn
+answers the message before it closes COMPLETED. See `post_message` for the
+full acceptance matrix (CANCELLING and an open compaction bracket reject).
 
 A run is created by one of two methods, both returning an `AgentRun` handle:
 
@@ -170,11 +170,12 @@ from .exceptions import (
     AlreadyCancellingError,
     ConversationCancellingError,
     InvalidToolArguments,
-    SubagentsActiveError,
     ToolNotFound,
 )
 from .ledger import SessionLedger
 from .models import (
+    SPAWN_MARKER,
+    SPAWN_REQUIRED_KEYS,
     AgentSession,
     AnyEntry,
     ApprovalDecision,
@@ -204,9 +205,13 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    declares_spawn,
     is_compaction_bracket,
-    open_turn_executions,
     open_turn_unresolved_children,
+    open_turn_unseen_material,
+    spawn_payload,
+    spawns_committed,
+    stop_payload,
 )
 from .projection import ConversationProjector, tool_message_text
 from .system_prompt import (
@@ -472,6 +477,15 @@ class AgentRun:
         # can raise new gates, so it reopens.
         self._approvals_closed = False
         self._ended_published = False
+        # RE-REGISTER. `_runs` is what every liveness check keys on — the
+        # cancel door's token trip, `_flush_cancelled_children`'s "no drive
+        # left", `_settle_children`'s task wait — and a redriven drive that is
+        # absent from it reads as dead: a `stop_subagent` (or any cancel)
+        # against it would skip the token AND let the parent's flush close a
+        # turn this drive keeps writing to. Safe to claim unconditionally: the
+        # redrive paths (`_ensure_driven`, the pool's stale-waiter check) only
+        # fire when no live run holds the conversation.
+        self._runner._runs[self.conversation_id] = self
         self._task = asyncio.get_running_loop().create_task(self._consume())
 
     # ── the three consumption forms ─────────────────────────────────────────
@@ -1156,7 +1170,7 @@ class AgentSessionRunner:
         instant of the call; the method is synchronous, so that picture is
         exact — nothing can change between the check and the append. The
         rule: a conversation accepts a message whenever something will
-        eventually answer it — except while its subagents run.
+        eventually answer it.
 
         ACCEPTED:
 
@@ -1171,6 +1185,13 @@ class AgentSessionRunner:
           COMPLETED until it has (the drive's close-site check loops for one
           more round instead). Posting into a BLOCKED turn does not unblock
           anything: the message waits with the turn.
+        - An open turn with unresolved subagents — the mid-ORCHESTRATION
+          append. The children never see it, but the parent does: a parked
+          drive is woken and calls the model with the message (still-running
+          tasks project nothing until they resolve — the model tracks them
+          through the spawn confirmations and `list_subagents`), so the model
+          can steer — answer, spawn more, or stop a subagent. Any
+          conversation, main or not.
 
         REJECTED:
 
@@ -1181,12 +1202,6 @@ class AgentSessionRunner:
         - An open COMPACTION bracket, scheduled or in flight → `AgentError`.
           The compaction snapshot is built on "nothing is appended while the
           bracket is open"; drive the compaction first.
-        - An open turn with unresolved subagents → `SubagentsActiveError`.
-          The children never see this conversation's messages and its next
-          LLM call may be far away, so an accepted message could not steer
-          the work in flight. Retry once they resolve — posting is legal
-          again within the same turn. Any conversation: a subagent
-          orchestrating its own children rejects too.
         - An archived conversation (a compaction replaced it) or a finished
           subagent → `AgentError`. Nothing will ever drive either again;
           accepting would wedge the message forever.
@@ -1212,8 +1227,6 @@ class AgentSessionRunner:
             raise AgentError(
                 f"conversation {target!r} has a compaction scheduled or in flight; drive it before posting."
             )
-        if _unresolved_children(self.session, target):
-            raise SubagentsActiveError(f"conversation {target!r} has subagents running; retry once they have resolved.")
         # Archived-ness is identity, not status: a queued message compacted
         # behind leaves the archived path deriving BUSY, and a status check
         # would accept into a conversation nothing will ever drive.
@@ -1239,6 +1252,15 @@ class AgentSessionRunner:
                 parts=parts,
             ),
         )
+        # A drive parked on its subagents must look again NOW — the message is
+        # material and the model can steer. The full notify door (`_recheck` +
+        # `_ensure_driven`), the same pair `run.notify()` uses: the recheck set
+        # is what survives a drive caught mid-teardown, where the wake event
+        # alone would be set on something that never loops again. A no-op for
+        # everything else — an idle conversation has no drive to wake, and the
+        # next `run()` reads the message off the path anyway.
+        self._recheck.add(target)
+        self._ensure_driven(target)
         return message.id
 
     def schedule_compaction(self) -> str:
@@ -1554,7 +1576,20 @@ class AgentSessionRunner:
         Skipped under `autostart_subagents=False`: there the application owns
         these lifecycles and `run.child()` hands the handles back."""
         for child_id in self._unresolved_child_ids(run.conversation_id):
-            if child_id not in self.session.conversations or self._runs.get(child_id) is not None:
+            if child_id not in self.session.conversations:
+                continue
+            live = self._runs.get(child_id)
+            if live is not None:
+                # A child still DRIVING from a previous run — a depth-0
+                # wake-round failure leaves the turn open and re-raises while
+                # the children keep working, so the next run() finds them
+                # live. Adopt the existing handle: without the re-parent its
+                # forwarded events, gate publications and lifecycle endings
+                # would land on the dead handle's queues, and `run.child()`
+                # would answer None for a conversation that is plainly part
+                # of this run's subtree.
+                live._parent = run
+                run._adopt(live)
                 continue
             if self.session.get_conversation_status(child_id).status is ConversationStatus.IDLE:
                 continue  # finished — this run resolves it; there is nothing to drive
@@ -1596,9 +1631,10 @@ class AgentSessionRunner:
         # ANNOUNCE BEFORE RELEASING: releasing pumps the pool, and the pump
         # may start a queued sibling that announces its own start — "S1
         # paused, so S4 started" must arrive in that order on the stream.
-        # Deliberately OUTSIDE the `_runs` guard: a `_redrive`n drive was
-        # never re-registered there, and its ending must still announce and
-        # release (`_publish_run_ended` is latched per drive, so the extra
+        # Deliberately OUTSIDE the `_runs` guard — belt and suspenders: every
+        # drive (a `_redrive`n one included) registers there now, but an
+        # ending must announce and release even if the registration was
+        # superseded (`_publish_run_ended` is latched per drive, so the extra
         # call sites cannot double-publish).
         self._publish_run_ended(run)
         self._release_slot(run.conversation_id)
@@ -2696,6 +2732,13 @@ class AgentSessionRunner:
         """The conversational loop itself. Split from `_drive` only so the
         wake registration has a `finally` to be removed in."""
         announced_gate = False
+        # The path length at the instant of THIS DRIVE's most recent
+        # projection — v1's close-site fingerprint, now also consulted by the
+        # subagent park (step 3c): a message posted while an LLM call is in
+        # flight lands BEFORE the recorded assistant entry, so the durable
+        # material predicate cannot see it and only this can. None until this
+        # drive has projected once.
+        last_seen: int | None = None
         while True:
             # 0) Cancel check — every step boundary funnels back here. An
             # unconsumed CancelRequested ends the turn NOW; the same path is
@@ -2809,6 +2852,17 @@ class AgentSessionRunner:
                     self._start_children(conversation_id, spawned)
                     yield announcement
 
+            # 2b') THE STOP HANDSHAKE. A completed execution whose structured
+            # payload declares `is_subagent_stop` cancels the named DIRECT
+            # child — but only one spawned BEFORE the stop was issued (the
+            # path-position bound), so a later child reusing the task id can
+            # never be killed by an old signal, and a reload replays safely.
+            # Cancelling is the whole action: the child's own machinery
+            # (wind-down, the flush below, resolution) does the rest, and a
+            # target already finished or already cancelling makes this a
+            # no-op.
+            self._stop_children(conversation_id)
+
             # 2c) RESOLVE FINISHED CHILDREN. A child is finished when its turn
             # bracket closes, whatever the outcome — a child that failed is a
             # finished child whose result says so, never an exception
@@ -2856,16 +2910,30 @@ class AgentSessionRunner:
             if undecided or ready or spawned or resolved:
                 continue  # re-run the cancel check before calling the model
 
-            # 3c) BLOCKED ON CHILDREN. The parent's turn stays open until every
-            # subagent it spawned has resolved: calling the model with an
-            # unresolved child on the path is exactly the fail-loud projection
-            # error, and would be wrong anyway — the answer is not in yet.
+            # 3c) UNRESOLVED CHILDREN. The parent's turn cannot CLOSE until
+            # every subagent resolves (the close site guards that), but the
+            # model is RE-ENGAGED whenever the open turn holds something it
+            # has not seen: a resolved child's result (the runtime-minted
+            # result execution is its durable, positional record), a mid-turn
+            # user post, any non-spawn tool result. A pure spawn round is
+            # deliberately not a wake — the confirmations travel with the
+            # first real update. `open_turn_unseen_material` is the durable
+            # half; `last_seen` covers the one state it cannot see (a post
+            # that landed under this drive's own in-flight LLM call). Only
+            # with neither does the drive park on the subtree.
             if self.ledger.open_turn_index(conversation_id) is not None and _unresolved_children(
                 self.session, conversation_id
             ):
-                if not await self._await_subtree(conversation_id, token, wake):
-                    return
-                continue
+                conversation = self.session.conversations[conversation_id]
+                fresh_material = open_turn_unseen_material(conversation.nodes, self.session.entries) or (
+                    last_seen is not None and self._has_unseen_user_message(conversation_id, last_seen)
+                )
+                if not fresh_material:
+                    if not await self._await_subtree(conversation_id, token, wake):
+                        return
+                    continue
+                # fall through — step 4 calls the model with the update;
+                # still-running children project as nothing new
 
             # 4) Step-limit and doom-loop checks, then call the model — only
             # reached when every execution in the open turn is terminal.
@@ -2878,11 +2946,26 @@ class AgentSessionRunner:
             step_count = self.session.get_conversation_status(conversation_id).step_count
             soft_max_steps, hard_max_steps = self._step_limits(conversation_id)
             if hard_max_steps > 0 and step_count >= hard_max_steps:
-                self._close_turn(
-                    conversation_id,
-                    TurnOutcome.ERRORED,
-                    error=f"Hard max steps limit reached: {step_count}",
-                )
+                error = f"Hard max steps limit reached: {step_count}"
+                if _unresolved_children(self.session, conversation_id):
+                    # The hard limit is a COST stop and it wins over the
+                    # children: parking until they resolve would leave a
+                    # BUSY-deriving state whose run() does nothing (a hot
+                    # loop for a polling app) while their work keeps
+                    # billing. Cancel them, settle every link, then close.
+                    self._cascade_cancel(conversation_id, TurnOutcome.CANCELLED, error)
+                    for event in await self._settle_children(conversation_id):
+                        yield event
+                    # A cancel() that landed during the settle's awaits
+                    # controls this close like every other: the children are
+                    # settled either way, and burying the request inside an
+                    # ERRORED bracket would leave it consumed by nothing.
+                    cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
+                    if cancel_entry is not None:
+                        for event in self._wind_down(conversation_id, cancel_entry):
+                            yield event
+                        return
+                self._close_turn(conversation_id, TurnOutcome.ERRORED, error=error)
                 return
 
             tool_choice: str | None = None
@@ -2921,6 +3004,7 @@ class AgentSessionRunner:
             # close-site check below loops one more round instead of closing
             # over it.
             seen = len(self.session.conversations[conversation_id].nodes)
+            last_seen = seen
             messages, system_message = self.prepare_llm_call(conversation_id)
             # `get_tools` is application code and may block indefinitely, so
             # the whole step is raced. A lost race produces no tool list and
@@ -3031,6 +3115,30 @@ class AgentSessionRunner:
                     for event in await self._wind_down_async(conversation_id, cancel_entry):
                         yield event
                     return
+                if _unresolved_children(self.session, conversation_id):
+                    # A wake-round call failed while subagents are mid-work.
+                    if self.session.conversations[conversation_id].depth == 0:
+                        # The MAIN conversation's failure must not destroy
+                        # the children's work over a provider hiccup: the
+                        # turn stays OPEN and the failure re-raises. The
+                        # children keep driving; the next run() resumes the
+                        # bracket (the unchanged material means the model
+                        # call is retried — by the caller's explicit run(),
+                        # never automatically).
+                        raise
+                    # A SUBAGENT parent must terminalize instead: nothing
+                    # outside it ever retries a subagent mid-run, so an open
+                    # failed turn would strand the whole tree. Settle its
+                    # children and close — a finished child whose result says
+                    # so, the established doctrine.
+                    self._cascade_cancel(conversation_id, TurnOutcome.CANCELLED, str(exc))
+                    for event in await self._settle_children(conversation_id):
+                        yield event
+                    cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
+                    if cancel_entry is not None:
+                        for event in self._wind_down(conversation_id, cancel_entry):
+                            yield event
+                        return
                 outcome = TurnOutcome.TIMED_OUT if isinstance(exc, ClientTimeoutError) else TurnOutcome.ERRORED
                 self._close_turn(conversation_id, outcome, error=str(exc))
                 raise
@@ -3063,17 +3171,20 @@ class AgentSessionRunner:
             # Final answer. Precedence at the close site: an unconsumed
             # cancel controls the close (the within-grace message stays
             # recorded, the requested outcome wins and buries any unseen
-            # post); next, a user message posted after `seen` means the model
-            # answered without it — record the premature final answer and
-            # loop for another round instead of closing, so a turn never
-            # closes COMPLETED over a message the model has not seen; else
-            # close COMPLETED. Both checks are synchronous inside the same
-            # no-yield window as the record and the close, so nothing can
-            # land between a check and the `TurnFinish`.
+            # post); next, a user message posted after `seen` OR an
+            # unresolved subagent means the turn cannot close COMPLETED yet —
+            # record the premature final answer and loop instead of closing
+            # (an unseen message runs another round straight away via
+            # `last_seen`; unresolved children park until the next material);
+            # else close COMPLETED. All checks are synchronous inside the
+            # same no-yield window as the record and the close, so nothing
+            # can land between a check and the `TurnFinish`.
             cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
                 events.extend(await self._wind_down_async(conversation_id, cancel_entry))
-            elif self._has_unseen_user_message(conversation_id, seen):
+            elif self._has_unseen_user_message(conversation_id, seen) or _unresolved_children(
+                self.session, conversation_id
+            ):
                 for event in events:
                     yield event
                 continue  # → the next projection carries answer + message
@@ -3156,7 +3267,7 @@ class AgentSessionRunner:
         )
         # The seed — the child's FIRST user message, not necessarily its only
         # one: a live child accepts `post_message` like any conversation with
-        # an open turn (unless it has active subagents of its own). The
+        # an open turn (its own subagents running included). The
         # `TurnStart` is opened by the child's own drive, exactly like any
         # other conversation's.
         self._append(
@@ -3225,6 +3336,95 @@ class AgentSessionRunner:
             if isinstance(entry := entries.get(node_id), ChildConversation)
         ]
 
+    def _stop_children(self, conversation_id: str) -> None:
+        """THE STOP HANDSHAKE (drive step 2b'): act on every stop payload in
+        the open turn. Value-side only — there is no gate half, because
+        stopping bypasses no cap.
+
+        Idempotent by construction, from two facts. The POSITION BOUND: a
+        stop only matches a `ChildConversation` link that PRECEDES it on the
+        path — children that existed when the stop was issued — so a later
+        spawn reusing the same task id (task ids are model-authored) can
+        never be killed by an old signal, on a later loop pass or a reload
+        alike. And the TARGET-STATE no-ops: a resolved, missing, finished
+        (IDLE — its resolution is imminent) or already-CANCELLING match means
+        the signal is already consumed."""
+        index = self.ledger.open_turn_index(conversation_id)
+        if index is None:
+            return
+        nodes = self.ledger.conversation(conversation_id).nodes
+        entries = self.session.entries
+        positions = {node_id: position for position, node_id in enumerate(nodes[index:], start=index)}
+        links: list[tuple[int, ChildConversation]] = []
+        stops: list[tuple[int, ToolExecution, dict]] = []
+        for position in range(index, len(nodes)):
+            entry = entries.get(nodes[position])
+            if isinstance(entry, ChildConversation):
+                links.append((position, entry))
+            elif isinstance(entry, ToolExecution) and (payload := stop_payload(entry)) is not None:
+                stops.append((position, entry, payload))
+        for position, execution, payload in stops:
+            task_id = payload.get("task_id")
+            if not task_id:
+                # The runner validates the keys it is about to ACT on, at the
+                # moment it acts on them — the same rule the spawn payload
+                # gets, because nothing else checks a payload against its
+                # tool's own declaration.
+                raise AgentError(
+                    f"stop payload from execution {execution.id!r} is missing its "
+                    f"task_id; that is a contract violation, not a stop with an "
+                    f"empty target."
+                )
+            target = self._stop_target(links, positions, position, task_id)
+            if target is not None:
+                with contextlib.suppress(AlreadyCancellingError):
+                    self.cancel(conversation_id=target)
+
+    def _stop_target(
+        self,
+        links: list[tuple[int, ChildConversation]],
+        positions: dict[str, int],
+        stop_position: int,
+        task_id: str,
+    ) -> str | None:
+        """The conversation one stop payload cancels, or None when the signal
+        is already consumed (or never matched anything live).
+
+        Task ids are model-authored and nothing enforces uniqueness, so with
+        duplicates the target is "the first match that was still UNRESOLVED
+        when the stop was issued" — and issue-time state is read off PATH
+        POSITIONS, because this handler replays every loop pass and live state
+        alone cannot tell "resolved before the stop" (skip it — the model was
+        naming its sibling) from "resolved after it" (the stop caused or raced
+        that resolution — consumed; falling through here would turn one
+        consumed stop into a standing kill order for the next same-id
+        sibling). A link's resolution position is its result execution's; a
+        link resolved WITHOUT one (a wind-down settle) counts as consumed —
+        the whole turn is closing."""
+        for position, link in links:
+            if position >= stop_position:
+                return None  # a stop only names children that predate it
+            spawn = self.session.entries.get(link.tool_execution_id)
+            if not isinstance(spawn, ToolExecution):
+                continue
+            payload = spawn_payload(spawn)
+            if payload is None or payload.get("task_id") != task_id:
+                continue
+            if link.execution_result is not None:
+                resolved_at = positions.get(link.result_execution_id or "")
+                if resolved_at is not None and resolved_at < stop_position:
+                    continue  # already resolved when the stop was issued — not the target
+                return None  # resolved after (or by) the stop — consumed
+            child_id = link.conversation_id
+            if child_id not in self.session.conversations:
+                return None
+            if self.session.get_conversation_status(child_id).status is ConversationStatus.IDLE:
+                return None  # already finished; there is nothing to stop
+            if self.ledger.open_turn_cancel_requested(child_id) is not None:
+                return None  # already cancelling — the signal is consumed
+            return child_id
+        return None
+
     async def _resolve_children(
         self,
         conversation_id: str,
@@ -3284,11 +3484,28 @@ class AgentSessionRunner:
         async for event in self._invoke_runtime_tool(conversation_id, call, token):
             yield event
             if isinstance(event, ToolExecuted):
+                # `result_execution_id` lands in the same write as the result:
+                # the execution's path position is where the projector renders
+                # this resolution — after every assistant message that
+                # predates it — so the projected history stays append-only
+                # while this link mutates in place.
                 self._persist_entry(
                     conversation_id,
                     entry,
                     execution_result=self._child_result_from(event),
+                    result_execution_id=event.execution.id,
                 )
+                self._retire_child_failure(entry.conversation_id)
+
+    def _retire_child_failure(self, child_id: str) -> None:
+        """Retrieve a resolved child's stored task exception so asyncio never
+        reports it unretrieved. A subagent's failure never propagates — its
+        drive stores the exception on the handle and closes the turn ERRORED,
+        and the failure reaches the model through the link's result — so once
+        the link is resolved, nobody will ever await that task."""
+        handle = self._parked_handle(child_id)
+        if handle is not None and handle._task is not None and handle._task.done() and not handle._task.cancelled():
+            handle._task.exception()
 
     def _child_result_from(self, event: ToolExecuted) -> ExecutionResult:
         """The `ExecutionResult` that becomes `ChildConversation.execution_result`.
@@ -3451,11 +3668,24 @@ class AgentSessionRunner:
         cancellation result — WITHOUT running the result tool, exactly as a
         PENDING execution is terminalized without being dispatched.
 
-        Resolving them is not tidiness: an unresolved child on a CLOSED turn is
-        unprojectable (the same fail-loud rule a nonterminal execution gets), so
-        leaving one would wedge the conversation permanently. This also covers
-        the `autostart_subagents=False` child that was never driven at all."""
-        # WIND-DOWN IS BOOKKEEPING, NOT WORK: no model call, no tool body.
+        Resolving them is not tidiness: an unresolved child behind a CLOSED
+        turn fails projection loudly (the same fail-loud rule a nonterminal
+        execution gets), so leaving one would wedge the conversation
+        permanently. This also covers the `autostart_subagents=False` child
+        that was never driven at all."""
+        events = await self._settle_children(conversation_id)
+        return [*events, *self._wind_down(conversation_id, cancel_entry)]
+
+    async def _settle_children(self, conversation_id: str) -> list[AgentEvent]:
+        """Wait out, flush, and resolve every unresolved subagent of this
+        conversation — the child half of every close that must not leave one
+        behind: the cancel wind-down, the hard-step-limit close, and a
+        subagent parent's failure close. The caller has already cascaded a
+        cancel to the children; the links resolve WITHOUT the result tool,
+        exactly as a PENDING execution is terminalized without being
+        dispatched (`result_execution_id` stays None, which is also what
+        makes the LINK itself render the outcome)."""
+        # SETTLING IS BOOKKEEPING, NOT WORK: no model call, no tool body.
         # The slot goes back first — waiting below for cancelled children to
         # settle while holding one would be a slot-holder waiting on other
         # conversations, the one thing the pool's rule forbids — and the
@@ -3465,7 +3695,7 @@ class AgentSessionRunner:
         for child_id in self._unresolved_child_ids(conversation_id):
             # A child whose pool-granted start failed carries a recorded
             # admission error; resolving its link below makes it unreachable
-            # for the loop-top re-raise, so the cancel deliberately wins and
+            # for the loop-top re-raise, so this close deliberately wins and
             # the record is discarded rather than leaked.
             self._admission_errors.pop(child_id, None)
             run = self._runs.get(child_id)
@@ -3486,7 +3716,7 @@ class AgentSessionRunner:
                         is_error=True,
                     ),
                 )
-        return [*events, *self._wind_down(conversation_id, cancel_entry)]
+        return events
 
     def _flush_cancelled_children(self, conversation_id: str) -> list[AgentEvent]:
         """Wind down every unresolved subagent that was cancelled and has no
@@ -3504,6 +3734,14 @@ class AgentSessionRunner:
         twice: the only handle that could have delivered them is the one whose
         drive already ended."""
         events: list[AgentEvent] = []
+        # `SubagentFinished` follows ownership like every lifecycle event: a
+        # framework-driven tree announces the flush's close (this is how a
+        # never-started child's cancellation becomes visible — `Spawned` with
+        # a `Finished` and no `Started` reads "cancelled before admission");
+        # under `autostart_subagents=False` no lifecycle events exist. A child
+        # with a live drive is skipped here, and its own `_end_run` announces.
+        run = self._runs.get(conversation_id) or self._parked_handle(conversation_id)
+        announces = run is not None and run.autostart_subagents
         for child_id in self._unresolved_child_ids(conversation_id):
             if self._runs.get(child_id) is not None:
                 continue  # a live drive winds itself down
@@ -3511,6 +3749,8 @@ class AgentSessionRunner:
             if cancel_entry is None:
                 continue
             events.extend(self._wind_down(child_id, cancel_entry))
+            if announces:
+                events.append(SubagentFinished(conversation_id=child_id, outcome=cancel_entry.outcome))
         return events
 
     def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
@@ -4279,84 +4519,16 @@ class _CompactionEnded(Exception):
         self.error = error
 
 
-# The five names the spawn convention settles. The core matches on the FIELD
-# NAME, never on a tool name and never on a core type contrib has to import —
-# that is what keeps "what a spawn looks like" owned by the plugin. `luca.agent`
-# core never imports from contrib, so `SubagentSpawn` is the plugin's guarantee
-# about the payload it emits, not something the core can or should validate
-# against.
-SPAWN_MARKER = "is_subagent_spawn"
-SPAWN_REQUIRED_KEYS = ("task_id", "prompt", "description", "process_subagent_result_tool_name")
+# The spawn/stop conventions themselves — the marker names, `declares_spawn`,
+# `spawn_payload`, `stop_payload`, `spawns_committed` — are pure reads over the
+# data model and live in `models.py` (the projector needs `spawn_payload` too,
+# and it cannot import this module).
 
 
 def _unresolved_children(session: AgentSession, conversation_id: str) -> list[ChildConversation]:
     """The open turn's subagents that have not produced a result yet."""
     conversation = session.conversations[conversation_id]
     return open_turn_unresolved_children(conversation.nodes, session.entries)
-
-
-def declares_spawn(spec: ToolSpec) -> bool:
-    """Does this SPEC declare that it can spawn? A shape check on the published
-    output schema, read BEFORE the model call — there is no value to check yet.
-
-    The asymmetry with the handshake is deliberate and is what the flag buys:
-    `is_subagent_spawn` is a `bool`, not a constant, so a spawn tool that
-    decides at runtime NOT to spawn (a rejected task, a failed validation, a
-    request it answered inline) returns the payload with `False` and no child
-    is created. It is still GATED, because the gate reads the declaration."""
-    schema = spec.output_schema
-    return isinstance(schema, dict) and SPAWN_MARKER in (schema.get("properties") or {})
-
-
-def spawn_payload(execution: ToolExecution) -> dict | None:
-    """The handshake payload of a COMPLETED execution that claims it spawned,
-    or None. Value check, after the fact — the other half of `declares_spawn`."""
-    if execution.status != ExecutionStatus.COMPLETED or execution.result is None:
-        return None
-    payload = execution.result.structured_content
-    if not isinstance(payload, dict) or payload.get(SPAWN_MARKER) is not True:
-        return None
-    return payload
-
-
-def spawns_committed(
-    session: AgentSession,
-    conversation_id: str,
-    *,
-    exclude: str | None = None,
-) -> int:
-    """Subagents this conversation's OPEN TURN has already committed to.
-
-    The number both halves of the per-turn budget count — the gate that
-    withholds the spawn tool and the runner's born-REFUSED fallback — so it is
-    a pure read over durable entries and rebuilds correctly after a reload.
-
-    Counting rules, and why:
-    - only spawn-DECLARING executions count; the budget is about subagents,
-      not tool calls
-    - a settled call counts only if it actually spawned — a spawn tool may
-      return `is_subagent_spawn=False`, and a refusal is not a subagent
-    - a call still in flight (PENDING / RUNNING) counts as ONE, reserved: it
-      is about to become a child, and the budget must hold before the fact.
-      If it ends up not spawning, the reservation is released simply by it
-      becoming settled-and-not-spawned.
-
-    `exclude` drops one execution id from the count. `_spawn_one` needs it:
-    converting a settled spawn re-checks the gate at a point where that
-    execution is already counted, and the question there is "was there room
-    for this one?", not "is there room for another?"."""
-    conversation = session.conversations[conversation_id]
-    count = 0
-    for execution in open_turn_executions(conversation.nodes, session.entries):
-        if execution.id == exclude:
-            continue
-        if execution.tool_spec is None or not declares_spawn(execution.tool_spec):
-            continue
-        if execution.status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
-            count += 1  # in flight — reserved
-        elif spawn_payload(execution) is not None:
-            count += 1  # settled, and it spawned
-    return count
 
 
 def _outcome_for(exception: Exception) -> TurnOutcome:

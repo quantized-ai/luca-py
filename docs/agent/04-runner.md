@@ -60,7 +60,7 @@ await run   # the model sees it on its next call, and the turn cannot close
 | `IDLE` main conversation | accepts — the next `run()` opens a turn |
 | trailing message queued (`BUSY`, no open turn) | accepts — one turn answers all of them |
 | open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a gated turn keeps the message waiting with it |
-| open turn with unresolved subagents | raises `SubagentsActiveError` — the children never see it; retry once they resolve ([13](13-subagents.md)) |
+| open turn with unresolved subagents | accepts — the children never see it, but the PARENT does: a parked drive is woken and the model can steer, including stopping a task ([13](13-subagents.md) §6) |
 | `CANCELLING` | raises `ConversationCancellingError` — retry after the flush |
 | compaction scheduled / in flight | raises `AgentError` ([12](12-compaction.md)) |
 | finished subagent, archived conversation, unknown id | raises `AgentError` — nothing will ever drive them |
@@ -73,8 +73,8 @@ await run   # the model sees it on its next call, and the turn cannot close
 > one extra round in the same turn — the premature answer stays recorded. A
 > turn that closes `CANCELLED` / `ERRORED` / `TIMED_OUT` instead **buries**
 > the message: unanswered in that turn, but projected into the next request —
-> late, never lost. Catch the two dedicated exceptions to keep the user's
-> draft and resubmit.
+> late, never lost. Catch the dedicated `ConversationCancellingError` to keep
+> the user's draft and resubmit after the flush.
 
 ## 1. Drive it: `run()`
 
@@ -340,7 +340,7 @@ other ([02](02-data-model.md) §10).
 | Status | Predicate | Meaning → your move |
 |---|---|---|
 | `IDLE` | `runner.idle()` | Nothing queued → `post_message()` |
-| `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent) → `run()` |
+| `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent, a subagent result or mid-turn post the model has not seen) → `run()` |
 | `BLOCKED` | `runner.blocked()` | Nothing can advance until you act — a gate → resolve, then `run()` ([05](05-permissions.md)) |
 | `CANCELLING` | `runner.cancelling()` | Unconsumed cancel → `run()` flushes it |
 

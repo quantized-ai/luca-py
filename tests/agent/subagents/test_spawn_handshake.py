@@ -173,9 +173,12 @@ async def test_both_child_results_reach_the_parents_wire_history(faux):
         block.text
         for message in final
         for block in (message.content if isinstance(message.content, list) else [])
-        if isinstance(block, LucaTextBlock) and block.text.startswith("<task")
+        if isinstance(block, LucaTextBlock) and block.text.startswith("Subagent task update:")
     ]
-    assert tagged == ["<task id=tc1>\nA is fine.\n</task>", "<task id=tc2>\nB is broken.\n</task>"]
+    assert tagged == [
+        'Subagent task update:\n<task id=t1 status=completed completed_at="1970-01-01T00:00:01Z">\nA is fine.\n</task>',
+        'Subagent task update:\n<task id=t2 status=completed completed_at="1970-01-01T00:00:01Z">\nB is broken.\n</task>',
+    ]
 
 
 async def test_the_private_result_tool_never_reaches_the_wire(faux):

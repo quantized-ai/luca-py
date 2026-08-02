@@ -2563,3 +2563,227 @@ def test_a_carried_turn_finish_with_no_opener_stops_the_skip():
     session = STATUS_MATRIX_SESSION.model_copy(deep=True)
     main_conversation(session).nodes = ["cmp", "u3", "tf2_err"]
     assert session.get_conversation_status("c1").status == ConversationStatus.IDLE
+
+
+# ── derive_status: the unresolved-children branch, in precedence order ────────
+#
+# 1. advanceable executions → BUSY   2. a child that can advance → BUSY
+# 3. a gated execution → BLOCKED     4. unseen material → BUSY   5. BLOCKED
+#
+# Rule 3 ABOVE rule 4 is the load-bearing ordering: a gated wake-round call
+# plus unrelated material must derive BLOCKED — the next run() can only
+# re-park at the gate, and BUSY would hot-loop every poll-for-BLOCKED
+# consumer.
+
+
+def _spawn_declaring_spec():
+    return spec(
+        "spawn_subagent",
+        output_schema={"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}},
+    )
+
+
+def _orchestrating_session(**overrides) -> AgentSession:
+    """`c1` parked mid-orchestration on one unresolved child whose own turn is
+    gated (the child derives BLOCKED), nothing else in flight."""
+    from luca.agent.core.models import ChildConversation
+
+    call = ToolCall(id="tc1", name="spawn_subagent", arguments={"task_id": "t1"})
+    entries = {
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[call],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            conversation_id="c1",
+            parent_id="a1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=call,
+            tool_spec=_spawn_declaring_spec(),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(
+                content=[TextContent(text="spawned")],
+                structured_content={"is_subagent_spawn": True, "task_id": "t1"},
+            ),
+            started_at=500,
+            ended_at=500,
+        ),
+        "ch1": ChildConversation(
+            id="ch1",
+            parent_id="te1",
+            created_at=500,
+            conversation_id="c2",
+            tool_execution_id="te1",
+        ),
+        "u_seed": UserMessage(id="u_seed", created_at=500, parts=[TextContent(text="child work")]),
+        "ts_c": TurnStart(id="ts_c", parent_id="u_seed", created_at=500),
+        "te_c": ToolExecution(
+            id="te_c",
+            conversation_id="c2",
+            parent_id="ts_c",
+            created_at=500,
+            tool_call_id="tc_c",
+            raw_tool_call=ToolCall(id="tc_c", name="write"),
+            tool_spec=spec("write"),
+            status=ExecutionStatus.PENDING,
+            approval_status=ApprovalStatus.PENDING,
+            approval_decisions=[PENDING_1000],
+        ),
+    }
+    entries.update(overrides.pop("entries", {}))
+    fields = {
+        "id": "s_children_status",
+        "entries": entries,
+        "conversations": {
+            "c1": conversation("c1", overrides.pop("nodes", ["u1", "ts", "a1", "te1", "ch1"])),
+            "c2": conversation("c2", ["u_seed", "ts_c", "te_c"], depth=1),
+        },
+        "main_conversation_id": "c1",
+        "session_config": SessionConfig(llm_config=MODEL),
+    }
+    fields.update(overrides)
+    return make_session(**fields)
+
+
+def test_derive_status_blocked_when_every_child_is_blocked_and_nothing_is_unseen():
+    session = _orchestrating_session()
+
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+
+
+def test_derive_status_busy_when_a_posted_message_awaits_the_model():
+    session = _orchestrating_session(
+        entries={"um": UserMessage(id="um", parent_id="ch1", created_at=600, parts=[TextContent(text="steer")])},
+        nodes=["u1", "ts", "a1", "te1", "ch1", "um"],
+    )
+
+    # the children cannot advance, but the CONVERSATION can: the next run()
+    # calls the model with the message
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+
+def test_derive_status_busy_when_a_resolution_awaits_the_model():
+    from luca.agent.core.models import ChildConversation
+
+    resolved = ChildConversation(
+        id="ch1",
+        parent_id="te1",
+        created_at=500,
+        conversation_id="c2",
+        tool_execution_id="te1",
+        execution_result=ExecutionResult(content=[TextContent(text="done")]),
+        result_execution_id="ter1",
+    )
+    second = ChildConversation(
+        id="ch2",
+        parent_id="ch1",
+        created_at=500,
+        conversation_id="c2",
+        tool_execution_id="te1",
+    )
+    session = _orchestrating_session(
+        entries={
+            "ch1": resolved,
+            "ch2": second,
+            "ter1": ToolExecution(
+                id="ter1",
+                conversation_id="c1",
+                parent_id="ch2",
+                created_at=600,
+                tool_call_id="rtc1",
+                raw_tool_call=ToolCall(id="rtc1", name="create_conversation_result"),
+                tool_spec=spec("create_conversation_result", is_private=True),
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="done")]),
+                started_at=600,
+                ended_at=600,
+            ),
+        },
+        nodes=["u1", "ts", "a1", "te1", "ch1", "ch2", "ter1"],
+    )
+
+    # ch2 is still unresolved and its child is BLOCKED — but ch1's result
+    # execution after the last assistant is unseen material
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+
+def test_derive_status_a_gate_outranks_material():
+    session = _orchestrating_session(
+        entries={
+            "um": UserMessage(id="um", parent_id="ch1", created_at=600, parts=[TextContent(text="steer")]),
+            "te2": ToolExecution(
+                id="te2",
+                conversation_id="c1",
+                parent_id="um",
+                created_at=700,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="write"),
+                tool_spec=spec("write"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+        },
+        nodes=["u1", "ts", "a1", "te1", "ch1", "um", "te2"],
+    )
+
+    # material exists, but the next run() can only re-park at the gate — the
+    # application must act first
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+
+
+def test_derive_status_an_advanceable_execution_wins_over_everything():
+    session = _orchestrating_session(
+        entries={
+            "te2": ToolExecution(
+                id="te2",
+                conversation_id="c1",
+                parent_id="ch1",
+                created_at=700,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="write"),
+                tool_spec=spec("write"),
+                status=ExecutionStatus.RECEIVED,
+            ),
+        },
+        nodes=["u1", "ts", "a1", "te1", "ch1", "te2"],
+    )
+
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+
+def test_derive_status_a_cancelling_child_outranks_a_gate():
+    # rule 2 above rule 3: the instant after a stop_subagent lands, the child
+    # is CANCELLING — the parent's drive can still advance it (wait it out and
+    # resolve the link), so a gated parent execution does not make the
+    # conversation BLOCKED yet
+    session = _orchestrating_session(
+        entries={
+            "cr_c": CancelRequested(id="cr_c", parent_id="te_c", created_at=800),
+            "te2": ToolExecution(
+                id="te2",
+                conversation_id="c1",
+                parent_id="ch1",
+                created_at=700,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="write"),
+                tool_spec=spec("write"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+        },
+        nodes=["u1", "ts", "a1", "te1", "ch1", "te2"],
+    )
+    session.conversations["c2"].nodes.append("cr_c")
+
+    assert session.get_conversation_status("c2").status == ConversationStatus.CANCELLING
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY

@@ -229,7 +229,8 @@ what your entries *mean*:
   finish is a *phantom open turn* and the next drive resumes a turn that never
   happened;
 - **carrying an unresolved `ChildConversation`** → `ProjectionError` on the next
-  request, exactly like a nonterminal execution;
+  request (the successor's path holds it outside any open turn, which is the
+  no-close-leaves-one-behind corruption shape);
 - **reordering carried ids** — you chose the path;
 - **summarizing away a trailing unanswered `UserMessage`** → **the one silent
   failure**: the question disappears with no error anywhere.

@@ -455,18 +455,21 @@ turn_finish     outcome=completed
 ```
 
 `child_conversation` is the **third mutable entry type**: it is appended
-unresolved when the child is spawned and gains its `execution_result` when the
-child's turn closes.
+unresolved when the child is spawned and gains its `execution_result` (plus
+`result_execution_id`) when the child's turn closes.
 
 | Field | What it holds |
 |---|---|
 | `conversation_id` | the child conversation in `session.conversations` |
 | `tool_execution_id` | the spawning execution — the durable record that this spawn was handled, so a reload never spawns it twice |
 | `execution_result` | the child's answer, `None` until its turn closes |
+| `result_execution_id` | the runtime-minted result execution that produced it — its path position is where the answer projects, so history stays append-only while this entry mutates; `None` with a result set means the link was resolved without the tool (a cancel wind-down) and renders in place |
 
-The parent's turn cannot end while a link is unresolved: projecting one raises
-([10](10-projection.md)), and the answer is not in yet. What spawns children,
-who drives them, and how they are cancelled is [13](13-subagents.md).
+The parent's turn cannot CLOSE while a link is unresolved — but the model is
+re-engaged per resolution, and an unresolved link inside the open turn simply
+projects as nothing (outside one it raises — no close may leave one behind:
+[10](10-projection.md)). What spawns children, who drives them, how the model
+steers and stops them, and how they are cancelled is [13](13-subagents.md).
 
 An execution names its tool by `tool_spec_id`; the spec is stored once, under an
 id derived from its own content:
@@ -599,8 +602,8 @@ state.step_count    # assistant messages in the OPEN turn
 | `status` | Derived when |
 |---|---|
 | `cancelling` | the open turn holds an unconsumed `cancel_requested` (§6) |
-| `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued |
-| `blocked` | the open turn has nothing runnable: every execution is waiting on an approval, or every subagent is |
+| `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued, or a subagent result / mid-turn post awaits the model |
+| `blocked` | the open turn has nothing runnable: every execution is waiting on an approval, or every subagent is and nothing new awaits the model |
 | `idle` | anything else, INCLUDING a closed `turn_finish` whatever its outcome |
 
 Two consequences, both deliberate. A **failed** turn derives `idle`, so
@@ -611,8 +614,12 @@ too: the status says what the next `run()` will do, never whether input is
 accepted (that is `post_message`'s own acceptance matrix — [04](04-runner.md)).
 
 `blocked` is **subtree-aware**: a parent whose subagents are still working is
-`busy`, and flips to `blocked` only when every one of them is. That transition
-is triggered by a *sibling* finishing, with nothing in the parent's own entries
+`busy`, and flips to `blocked` only when every one of them is AND nothing in
+the open turn awaits the model (`open_turn_unseen_material` — a posted
+message, a resolved child's result). A gate on the parent's own execution
+outranks that material term: the next `run()` can only re-park at the gate,
+so the honest answer is `blocked`. The busy/blocked transition can be
+triggered by a *sibling* finishing, with nothing in the parent's own entries
 changing at all — which is exactly why nothing can cache it.
 
 > ⚠️ **A crashed session self-heals for free.** Nothing persists a "running"

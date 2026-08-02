@@ -277,8 +277,18 @@ entry stays in `session.entries` untouched.
 > undecided. A real strategy — thresholds, which entries, budgets — is
 > application policy you build on this seam.
 
-A `ChildConversation` is sized by its result, and only once it has one: an
-unresolved link contributes `0`, exactly like a nonterminal execution.
+A `ChildConversation` is sized by its result only when the link itself renders
+it — a resolution written without a result execution (a cancel wind-down).
+Ordinarily the result execution carries the content, its own `context_tokens`
+cover it, and the link contributes `0` — as does an unresolved link, exactly
+like a nonterminal execution.
+
+> ⚠️ **Never prune a subagent's result execution mid-orchestration.** A
+> pruned PRIVATE execution projects as nothing (no `ToolMessage` can carry a
+> runner-minted correlation id), so pruning one erases the child's entire
+> answer from the wire with no marker — and if it is pruned before the parent
+> woke for it, the wake signal goes with it. Prune old updates only once the
+> turn is over.
 
 Next: [`12-compaction.md`](12-compaction.md) — the other half of the context
 story: when pruning single entries is not enough, replace the whole older span

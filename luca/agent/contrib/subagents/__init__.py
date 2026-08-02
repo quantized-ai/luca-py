@@ -27,29 +27,45 @@ Everything else is core's: one conversation per subagent in the same session,
 """
 
 from .plugin import (
+    CONTROL_PROMPT,
     SPAWNING_PROMPT,
     SubagentsPlugin,
     SubagentToolRegistry,
+    control_prompt_part,
     spawn_gate_open,
     spawning_prompt_part,
 )
 from .tools import (
+    LIST_TOOL_NAME,
     RESULT_TOOL_NAME,
     SPAWN_TOOL_NAME,
+    STOP_TOOL_NAME,
     CreateConversationResult,
+    ListSubagents,
     SpawnSubagent,
+    StopSubagent,
     SubagentSpawn,
+    SubagentStop,
+    open_turn_children,
 )
 
 __all__ = [
+    "CONTROL_PROMPT",
+    "LIST_TOOL_NAME",
     "RESULT_TOOL_NAME",
     "SPAWNING_PROMPT",
     "SPAWN_TOOL_NAME",
+    "STOP_TOOL_NAME",
     "CreateConversationResult",
+    "ListSubagents",
     "SpawnSubagent",
+    "StopSubagent",
     "SubagentSpawn",
+    "SubagentStop",
     "SubagentToolRegistry",
     "SubagentsPlugin",
+    "control_prompt_part",
+    "open_turn_children",
     "spawn_gate_open",
     "spawning_prompt_part",
 ]

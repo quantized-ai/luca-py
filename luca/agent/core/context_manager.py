@@ -269,8 +269,14 @@ class ContextManager:
             return _text_of(entry.parts or [])
         if isinstance(entry, ChildConversation):
             # What the child contributes to its PARENT is its result, and only
-            # that: the child's own conversation has its own window.
-            return _text_of(entry.execution_result.content) if entry.execution_result is not None else ""
+            # that: the child's own conversation has its own window. The link
+            # counts it only when the link itself RENDERS it (a resolution
+            # written without a result execution — a cancel wind-down or a
+            # hard-limit settle); otherwise the result execution's own count
+            # covers the content, and counting here too would double it.
+            if entry.execution_result is not None and entry.result_execution_id is None:
+                return _text_of(entry.execution_result.content)
+            return ""
         if isinstance(entry, PrunedEntry):
             return _text_of(entry.content)
         return ""
@@ -293,7 +299,11 @@ class ContextManager:
         if isinstance(entry, CompactionEntry):
             return entry.parts or []
         if isinstance(entry, ChildConversation):
-            return entry.execution_result.content if entry.execution_result is not None else []
+            # Same ownership rule as `_model_facing_text`: the link carries the
+            # content only when it is the one rendering it.
+            if entry.execution_result is not None and entry.result_execution_id is None:
+                return entry.execution_result.content
+            return []
         if isinstance(entry, PrunedEntry):
             return entry.content
         return []

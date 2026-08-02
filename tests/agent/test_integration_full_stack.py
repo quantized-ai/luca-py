@@ -70,6 +70,22 @@ MODEL = LLMConfig(model="fake-model", provider="faux")
 # ── a faux transport that answers by conversation ────────────────────────────
 
 
+class Hold:
+    """A script entry that answers with a holding acknowledgement until the
+    request carries every `needle`, then falls through to the next entry.
+
+    A parent is re-engaged per subagent resolution, and whether two children
+    resolving near-simultaneously coalesce into one wake round is task
+    scheduling, not framework state — so the number of wake rounds a fixed
+    script would have to predict is not deterministic. This entry absorbs
+    them: reply `[waiting]` while results are still missing from the
+    projection, and hand over to the real final once they have all arrived."""
+
+    def __init__(self, needles: tuple[str, ...], text: str) -> None:
+        self.needles = needles
+        self.response = faux_assistant_message([faux_text(f"[waiting] {text}")], finish_reason="stop")
+
+
 class ConversationScript(FauxTransport):
     """`FauxTransport` keyed by CONVERSATION instead of by arrival order.
 
@@ -86,12 +102,26 @@ class ConversationScript(FauxTransport):
         self.scripts = {key: list(value) for key, value in scripts.items()}
 
     def _pop(self):
-        opening = self.requests[-1].messages[0].content[0].text
+        request = self.requests[-1]
+        opening = request.messages[0].content[0].text
         for key, queue in self.scripts.items():
-            if opening.startswith(key):
-                if not queue:
-                    raise AssertionError(f"the script for {key!r} ran out of responses")
-                return queue.pop(0)
+            if not opening.startswith(key):
+                continue
+            flattened = "".join(
+                block.text
+                for message in request.messages
+                for block in (message.content if isinstance(message.content, list) else [])
+                if hasattr(block, "text") and isinstance(block.text, str)
+            )
+            while queue and isinstance(queue[0], Hold):
+                hold = queue[0]
+                if all(needle in flattened for needle in hold.needles):
+                    queue.pop(0)  # satisfied — fall through to the real reply
+                    continue
+                return hold.response
+            if not queue:
+                raise AssertionError(f"the script for {key!r} ran out of responses")
+            return queue.pop(0)
         raise AssertionError(f"no script for a conversation opening with {opening!r}")
 
 
@@ -215,12 +245,26 @@ def todos(*contents: str, call_id: str):
 
 
 def shape(session: AgentSession) -> dict[str, tuple[int, str, tuple[str, ...]]]:
-    """Every conversation as (depth, derived status, entry types)."""
+    """Every conversation as (depth, derived status, entry types).
+
+    The `[waiting]` wake-round acknowledgements are dropped before comparing:
+    how many a turn records depends on whether near-simultaneous resolutions
+    coalesced into one wake — task scheduling, not framework state — and the
+    `Hold` script entries absorb exactly that variance."""
+
+    def keep(entry) -> bool:
+        return not (
+            isinstance(entry, AssistantMessage)
+            and entry.parts
+            and entry.parts[0].type == "text"
+            and entry.parts[0].text.startswith("[waiting]")
+        )
+
     return {
         cid: (
             conversation.depth,
             session.get_conversation_status(cid).status.value,
-            tuple(session.entries[node].type for node in conversation.nodes),
+            tuple(session.entries[node].type for node in conversation.nodes if keep(session.entries[node])),
         )
         for cid, conversation in session.conversations.items()
     }
@@ -283,6 +327,9 @@ async def test_the_whole_stack_composes(workspace: Path):
                     ],
                     finish_reason="tool_use",
                 ),
+                # wake rounds (the todo result, then each resolution) hold
+                # until both children's answers are in the projection
+                Hold(("alpha contents", "beta contents"), "the readers are still working"),
                 faux_assistant_message([faux_text("Both files summarized.")], finish_reason="stop"),
                 # 2 · a gate here AND a gate in the subagent, at once
                 faux_assistant_message(
@@ -292,6 +339,7 @@ async def test_the_whole_stack_composes(workspace: Path):
                     ],
                     finish_reason="tool_use",
                 ),
+                Hold(("gamma written",), "gamma is still being written"),
                 faux_assistant_message([faux_text("42, and gamma is written.")], finish_reason="stop"),
                 # 3 · one subagent, driven by the application, denied
                 faux_assistant_message(

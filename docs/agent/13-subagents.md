@@ -17,7 +17,9 @@ child_conversation → c2  ────────────▶ user "Read al
 child_conversation → c3  ─┐            … its own turn, its own tools …
                           │            turn_finish
                           └──────────▶ (c3, in parallel)
-tool_execution  (private result tool)
+tool_execution  (private result tool — c2's answer, projected as a task update)
+assistant  "alpha is a shopping list; still waiting on beta."   ← a wake round
+tool_execution  (private result tool — c3's answer)
 assistant  "alpha is a shopping list; beta is a changelog."
 turn_finish
 ```
@@ -61,17 +63,51 @@ spawn tool is withheld and the prompt that teaches it stays silent. See
 3. `SubagentsSpawned` is emitted with the new conversation ids, then one
    `SubagentStarted` per child that began (all of them, unless
    `subagents_max_workers` queued some — §4).
-4. The children run. The parent's turn **cannot end** until every link has a
-   result — projecting an unresolved one raises ([10](10-projection.md)).
-5. As each child's turn closes, the runner runs a **private** tool
+4. The children run; the parent parks. A pure spawn round does not call the
+   model again — the confirmations travel with the first real update.
+5. As **each** child's turn closes, the runner runs a **private** tool
    ([03](03-tools.md) §6) that turns the finished conversation into one
-   `ExecutionResult`, and stores it on the link.
-6. With every child resolved, the parent calls the model again — now with each
-   subagent's answer on its path as a synthetic user message.
+   `ExecutionResult`, stores it on the link, and **re-engages the model**: the
+   parent takes a *wake round* with the new result while its siblings keep
+   working, and can act on it — answer, spawn more, stop a task (§6). The
+   wake condition is durable (`open_turn_unseen_material`: anything after the
+   parent's last assistant message that is a posted user message or a
+   terminal non-spawn tool result), so a reload mid-orchestration resumes the
+   same behavior.
+6. The turn **cannot close** until every link has a result: a text-only
+   answer with children still out is recorded and the parent parks again;
+   the answer that lands after the last resolution closes the turn.
 
 A child that failed, timed out or ran out of steps is a *finished* child: its
 result says so, and the parent carries on. **A subagent's failure never
 propagates as an exception.**
+
+### Task updates
+
+A resolution reaches the model as a synthetic user message rendered at the
+**result execution's** path position — always below the parent's last reply,
+never a rewrite of an earlier message ([10](10-projection.md) §8):
+
+```
+Subagent task update:
+<task id=t1 status=completed completed_at="2026-08-01T18:03:12Z">
+alpha is a shopping list
+</task>
+```
+
+The `id` is the spawn payload's `task_id` — the same identifier the spawn
+confirmation, `list_subagents` and `stop_subagent` speak — `status` is
+`completed` or `failed` from the result's own verdict, and `completed_at` is
+absolute UTC (projection stays deterministic; relative wording would need a
+wall clock).
+
+> ⚠️ **Wake rounds are real steps.** A turn orchestrating N subagents now
+> records ~N extra assistant messages where the parked design recorded one,
+> so `hard_max_steps` budgets tuned for the old shape trip earlier — and a
+> hard-limit trip with children still running CANCELS them, settles every
+> link, and closes ERRORED: a cost stop wins over work in flight. The
+> doom-loop flag is per-turn and sticky too; a model repeating an identical
+> call across wake rounds can pin `tool_choice="none"` for a long turn.
 
 ### The spawn budget
 
@@ -124,10 +160,13 @@ async with runner.run(autostart_subagents=False) as run:
                         render(cid, child_event)
 ```
 
-> ⚠️ **`False` is an obligation.** The parent's turn is blocked on its
-> children, so every spawn must be driven or cancelled — otherwise the
+> ⚠️ **`False` is an obligation.** The parent's turn cannot CLOSE until every
+> child resolves, so every spawn must be driven or cancelled — otherwise the
 > conversation never finishes. Forwarding follows ownership: under `False` a
-> child's events reach you on the child handle only, never twice.
+> child's events reach you on the child handle only, never twice, and no
+> lifecycle events exist. Drive the children serially inside the
+> `SubagentsSpawned` branch (the pattern above) — that is the shape the mode
+> is designed around.
 
 `start()` always implies `True`: an eager run completes regardless of
 observation, and a subagent nobody drives would stop it doing so.
@@ -150,9 +189,10 @@ parent steps out of the pool the moment it starts waiting, which is why a
 nested tree cannot deadlock at any cap (`subagents_max_workers=1` is legal at
 any depth: it serializes subagents completely and never wedges). Admission is
 FIFO, in spawn order. Size the cap by **fan-out** — how many siblings should
-work at once — never by `subagents_max_depth`: along any root-to-leaf chain at
-most one conversation works at a time, so depth costs sequence, not
-concurrency. 20–30 suits a real workload; the pool is runtime state, rebuilt
+work at once — never by `subagents_max_depth`: a nested parent holds a slot
+only for its own rounds (a spawn round, a wake round per resolution), so depth
+costs mostly sequence, not sustained concurrency. 20–30 suits a real
+workload; the pool is runtime state, rebuilt
 from the session on the next `run()`, and changing the knob mid-session never
 interrupts work in progress — it only decides what starts next.
 
@@ -165,7 +205,7 @@ only, and each names the SUBAGENT in `conversation_id`:
 |---|---|
 | `SubagentStarted` | its drive began (or restarted after an answered gate / a resume). Announced but not started = queued |
 | `SubagentPaused` | its drive ended with the turn still open — an approval gate, a suspension. It will run again |
-| `SubagentFinished` | its turn closed; `.outcome` carries the closing `TurnFinish`'s outcome. Its link resolves next |
+| `SubagentFinished` | its turn closed; `.outcome` carries the closing `TurnFinish`'s outcome. Its link resolves next. A `Finished(cancelled)` with no `Started` = cancelled before admission — the parent's flush announces the close |
 
 ```python
 from luca.agent.core.events import (
@@ -226,7 +266,46 @@ A gate does **not** end the parent's run while anything else in the tree can
 still advance. One rule explains that and everything like it: **a drive returns
 only when nothing in its subtree can advance.**
 
-## 6. Cancellation
+## 6. Steering and stopping mid-flight
+
+The wake rounds are what make a running orchestration steerable, from both
+sides of the conversation:
+
+- **The user posts.** `post_message` accepts a mid-orchestration parent — the
+  children never see the message, but the parent does: the post is material,
+  a parked drive is woken, and the model answers promptly (a message that
+  lands while a wake round's own LLM call is in flight is caught by the
+  drive's close-site fingerprint and answered in an immediate extra round).
+- **The model manages its tasks.** Once the open turn has subagents, the
+  plugin offers two more tools (withheld before the first spawn, taught by
+  their own prompt part):
+
+| Tool | Does |
+|---|---|
+| `list_subagents` | the turn's roster: each task's id, status (`pending` / `cancelling` / `completed` / `failed` — the same completed/failed split the task updates use), description and prompt |
+| `stop_subagent(task_id, reason=None)` | cancels the named DIRECT child, best effort. The child winds down through the ordinary cancel machinery and reports back one final time as stopped |
+
+A stop is the spawn contract's mirror, value-side only: the tool's completed
+result carries `is_subagent_stop=True` in `structured_content`, and the
+runner's drive consumes it — matching the task id among children spawned
+**before** the stop was issued, so a later task reusing the id can never be
+killed by an old signal. Task ids are model-authored and nothing enforces
+uniqueness; with duplicates the target is *the first match still unresolved
+when the stop was issued* (read off path positions), and a match that
+resolved after the stop consumes the signal — a replayed stop can never fall
+through to a same-id sibling. A target that already finished, is already stopping, or never
+existed makes the signal a no-op (the shipped tool also tells the model so,
+returning the payload with the flag down). In-flight tool bodies in the
+stopped child follow `tool_cancellation_grace_period` — with the default `0`
+they are hard-interrupted.
+
+Two limits worth knowing when steering: `subagents_max_per_turn` counts every
+spawn the OPEN TURN committed — a stopped task never releases its slot, so
+stop-and-respawn spends two of the budget; and once `soft_max_steps` forces
+`tool_choice="none"`, wake rounds can only answer in text — the control tools
+are on the list but uncallable until the turn closes.
+
+## 7. Cancellation
 
 `cancel()` is conversation-scoped and cascades downward:
 
@@ -250,12 +329,12 @@ drive's job. A subagent's own drive is usually gone by the time a cancel lands
 (it parked at a gate, or nobody started it), so the **parent's** drive does that
 flush. It is the only conversation that knows the child exists.
 
-## 7. What a subagent sees
+## 8. What a subagent sees
 
 | | |
 |---|---|
 | its conversation | starts with ONE user message: the spawn prompt. Nothing of the parent's history — make the prompt self-contained |
-| its tools | the same registries the parent has, minus the spawn tool once it is at the depth cap or past its spawn budget |
+| its tools | the same registries the parent has, minus the spawn tool once it is at the depth cap or past its spawn budget; `stop_subagent` / `list_subagents` appear only once its OWN open turn has children |
 | its system prompt | assembled for **its** conversation, so a callable part can say something different to it ([06](06-system-prompts.md)) |
 | its context | its own window, never compaction-checked in V0 — bound it with `subagent_hard_max_steps` |
 | its usage | its own row in `session.usages` ([11](11-context-and-usage.md)) |
@@ -265,13 +344,12 @@ The seed is the child's **first** user message, not its only one:
 `post_message("…", conversation_id=child_id)` appends into a live child's open
 turn exactly as it does for the main conversation ([04](04-runner.md)). A
 **finished** child rejects posts — its result is already resolved into the
-parent — and a conversation whose open turn has **unresolved subagents**
-rejects them too, with `SubagentsActiveError`: a mid-orchestration parent's
-next model call may be far away and its children never see its messages, so
-accepting would only pretend to steer. (The shipped TUI still routes input to
-the main conversation only — application policy, not a framework rule.)
+parent. A mid-orchestration parent ACCEPTS them: the post wakes it, and
+steering (including `stop_subagent`) is exactly what the wake rounds are for
+(§6). (The shipped TUI still routes input to the main conversation only —
+application policy, not a framework rule.)
 
-## 8. Shared state is yours to key
+## 9. Shared state is yours to key
 
 One registry, one plugin, one permission strategy serve the whole tree — so any
 state they hold must be keyed by conversation or the conversations overwrite
@@ -290,7 +368,7 @@ scratchpad and todo list, and the shell plugin's read-before-write tracker.
 > conversation gets wrong behavior — silently — once subagents are on
 > ([07](07-middleware.md) §5).
 
-## 9. Bringing your own spawn tool
+## 10. Bringing your own spawn tool
 
 The runner matches a **declaration**, never a tool name. A tool whose
 `output_schema` declares `is_subagent_spawn` is a spawn tool: it is subject to
