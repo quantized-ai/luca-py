@@ -10,6 +10,7 @@
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
+    uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
     uv run python -m luca.agent.contrib.tui \
@@ -111,6 +112,14 @@ def arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="How many subagents may be doing work at the same time, across the whole session (default: no limit).",
+    )
+    parser.add_argument(
+        "--no-skills",
+        dest="skills",
+        action="store_false",
+        default=True,
+        help="Do not load SKILL.md skills (they are read from .claude/skills, .agents/skills "
+        "and the ~ equivalents by default).",
     )
     parser.add_argument(
         "--faux",
@@ -242,6 +251,8 @@ def main(argv: list[str] | None = None) -> None:
         permission_rules=build_permission_rules(config) or None,
         recommended_models=config.models or None,
         subagents=args.subagents,
+        skills=args.skills,
+        extra_skill_locations=config.extra_skill_locations or None,
     )
     app.run()
     print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")

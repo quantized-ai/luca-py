@@ -59,6 +59,13 @@ luca/agent/
 │   │   └── plugin.py    # spawn_gate_open, spawning_prompt_part + control_prompt_part
 │   │                    #   (callables), SubagentToolRegistry (the depth gate + the
 │   │                    #   control-tool withholding), SubagentsPlugin
+│   ├── skills/          # SKILL.md instruction sets read from disk
+│   │   ├── __init__.py  # package surface: SkillsPlugin, SkillTool, Skill, the
+│   │   │                #   discovery functions
+│   │   ├── discovery.py # frontmatter parsing, the location precedence list,
+│   │   │                #   discover_skills (nothing here raises for a bad skill)
+│   │   └── plugin.py    # SkillTool (the body, on demand) + SkillsPlugin
+│   │                    #   — needs the `skills` dependency group (PyYAML)
 │   ├── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
 │   └── tui/             # the Textual terminal UI (AgentApp + wiring + approval modal);
 │       │                #   Textual-free logic in approvals.py / render.py / sessions.py / wiring.py
@@ -673,6 +680,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_resource_permissions.py` | Self-scoped contrib tests: `PermissionStrategy` decide / apply_answer / pending_requests / grant + the tool mixin — no runner, no session |
 | `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
+| `tests/agent/contrib/test_skills.py` | Self-scoped contrib tests: frontmatter parsing (incl. the `>` / `\|` block scalars real skills use), the skip-don't-raise rules, location precedence, the `skill` tool, the plugin surface — no runner |
 | `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
 | `tests/agent/contrib/tui/` | Self-scoped contrib tests: pure modules (`test_approvals.py`, `test_render.py`, `test_sessions.py`, `test_wiring.py`, `test_cli.py`, `test_config.py`, `test_context_bar.py`) + headless Pilot tests driving `AgentApp` with a scripted `FauxProvider` (`test_app*.py`); the directory skips itself when textual is missing |
 

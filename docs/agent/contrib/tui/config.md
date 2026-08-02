@@ -98,6 +98,10 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 
   "workspace": ".",              // shell root
   "additional_directories": [],  // extra roots the shell tools may touch
+  "extra_skill_locations": [     // more places to find <name>/SKILL.md
+    ".opencode/skills/",
+    "~/.config/opencode/skills/"
+  ],
   "streaming": true
 }
 ```
@@ -114,6 +118,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   rule with `permission` (+ optional `resource` glob) matches a
   `(permission, resource)` pair. `resource` is an fnmatch glob (`"*"`,
   `"/etc/*"`).
+- `extra_skill_locations` adds roots to scan for `<name>/SKILL.md`, on top of
+  `.claude/skills`, `.agents/skills` and the `~` equivalents. `~` is expanded per
+  entry; see [`skills/`](../skills/README.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

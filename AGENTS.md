@@ -78,6 +78,8 @@ Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual T
 
 The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `.env` — except with `--faux`. Sessions persist to `<session-id>.json` in the working directory.
 
+Skills (`<name>/SKILL.md`) are read from `.claude/skills`, `.agents/skills` and the `~` equivalents, plus any `extra_skill_locations` in the config; `--no-skills` turns that off. See [docs/agent/contrib/skills/README.md](docs/agent/contrib/skills/README.md).
+
 Configuration is read from the nearest `luca.json` at or above the cwd (bounded by the repo) over `~/.config/luca/luca.json`. `--config <path>` (or `LUCA_CONFIG_PATH`, which the flag overrides) names one file to use INSTEAD of both — see [docs/agent/contrib/tui/config.md](docs/agent/contrib/tui/config.md).
 
 ## Code style (project-wide)

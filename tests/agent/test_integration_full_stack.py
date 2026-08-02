@@ -301,9 +301,20 @@ def texts(session: AgentSession, conversation_id: str) -> list[str]:
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> Path:
+def workspace(tmp_path: Path, monkeypatch) -> Path:
     (tmp_path / "alpha.txt").write_text("alpha contents\n")
     (tmp_path / "beta.txt").write_text("beta contents\n")
+    # One real skill in the project location, and HOME pointed away from the
+    # contributor's own: `build_runner` discovers skills for real, so without
+    # this the composed system prompt differs per machine.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    skill = tmp_path / ".claude" / "skills" / "greeting"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: greeting\ndescription: How to greet someone.\n---\nAlways say hello twice.\n"
+    )
+    (skill / "references").mkdir()
+    (skill / "references" / "tone.md").write_text("Warm, not effusive.\n")
     return tmp_path
 
 
@@ -683,6 +694,39 @@ async def test_the_read_before_write_guard_does_not_leak_across_conversations(wo
     assert "has not been read yet" in attempt.result.content[0].text
     # …and the parent still finished: a failed tool inside a subagent is a
     # finished subagent, not an exception travelling upward
+    assert runner.idle()
+
+
+async def test_a_skill_is_advertised_loaded_and_its_bundled_files_open_ungated(workspace: Path):
+    """Progressive disclosure end to end: the description is in the prompt, the
+    body arrives only via the tool, and the read of a bundled file next to it
+    never reaches the approval gate."""
+    reference = workspace / ".claude" / "skills" / "greeting" / "references" / "tone.md"
+    transport = ConversationScript(
+        {
+            "Greet": [
+                faux_assistant_message(
+                    [faux_tool_call("skill", {"name": "greeting"}, id="tc_skill")],
+                    finish_reason="tool_use",
+                ),
+                faux_assistant_message([read(reference, call_id="tc_ref")], finish_reason="tool_use"),
+                faux_assistant_message([faux_text("Hello, hello.")], finish_reason="stop"),
+            ],
+        }
+    )
+    session, runner, strategy = build(workspace, transport)
+    runner.post_message("Greet the user")
+
+    # No approvals answered: an empty sink means nothing gated.
+    await drive_until_idle(runner, strategy, [])
+
+    prompt = runner.build_system_message(session.main_conversation_id)
+    assert "- greeting: How to greet someone." in prompt
+    assert "Always say hello twice." not in prompt  # the body is NOT in the prompt
+    loaded, opened = [e for e in executions(session, "main") if e.raw_tool_call.name in ("skill", "read")]
+    assert "Always say hello twice." in loaded.result.content[0].text
+    assert str(reference.parent.parent) in loaded.result.content[0].text  # the skill dir
+    assert "Warm, not effusive." in opened.result.content[0].text
     assert runner.idle()
 
 

@@ -48,6 +48,16 @@ def test_a_partial_config_is_valid_and_defaults_the_rest():
     )
 
 
+def test_extra_skill_locations_parse_as_a_list_of_strings():
+    config = LucaConfig.model_validate({"extra_skill_locations": [".opencode/skills/", "~/.config/opencode/skills/"]})
+
+    assert config.extra_skill_locations == [".opencode/skills/", "~/.config/opencode/skills/"]
+
+
+def test_extra_skill_locations_default_to_empty():
+    assert LucaConfig().extra_skill_locations == []
+
+
 def test_an_unknown_key_is_rejected():
     with pytest.raises(ValidationError):
         LucaConfig.model_validate({"nope": 1})

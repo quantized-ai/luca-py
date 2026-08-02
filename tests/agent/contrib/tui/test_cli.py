@@ -38,7 +38,12 @@ def test_default_args():
     )
     assert (args.workspace, args.mode) == (None, None)
     assert args.subagents is True
+    assert args.skills is True
     assert args.config is None
+
+
+def test_no_skills_turns_skill_loading_off():
+    assert arg_parser().parse_args(["--no-skills"]).skills is False
 
 
 def test_the_config_flag_parses_as_a_path_string():
