@@ -24,6 +24,7 @@ from .helpers import fresh_session
 MATH_TOOLS = {"add", "subtract", "multiply"}
 SHELL_TOOLS = {"read", "glob", "grep", "edit", "write", "apply_patch", "bash"}
 MEMORY_TOOLS = {"read_scratchpad", "write_scratchpad", "read_todo", "update_todos"}
+SKILL_TOOLS = {"skill"}
 
 # What one demo tool looks like on the wire: the `ToolSpec.input_schema`
 # snapshotted from `BinaryOp` at `get_tool_spec()` time, mapped straight onto
@@ -58,8 +59,16 @@ async def test_build_runner_composes_all_tool_families(tmp_path):
     assert isinstance(runner, PluginAgentSessionRunner)
     assert runner.session is session
     names = {tool.name for tool in await _wire_tools(runner)}
-    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS
+    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS | SKILL_TOOLS
     assert strategy.mode is PermissionMode.ASK
+
+
+async def test_no_skills_withholds_the_skill_tool(tmp_path):
+    runner, _ = build_runner(fresh_session(), workspace=tmp_path, skills=False)
+
+    names = {tool.name for tool in await _wire_tools(runner)}
+
+    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS
 
 
 async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):

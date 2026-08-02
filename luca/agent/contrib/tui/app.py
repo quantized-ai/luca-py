@@ -146,6 +146,8 @@ class AgentApp(App):
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
         subagents: bool = True,
+        skills: bool = True,
+        extra_skill_locations: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._session_dir = Path(session_dir)
@@ -158,6 +160,8 @@ class AgentApp(App):
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
         self._subagents = subagents
+        self._skills = skills
+        self._extra_skill_locations = extra_skill_locations
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         # True while the drive worker is alive. The worker group is
@@ -646,6 +650,8 @@ class AgentApp(App):
             additional_directories=self._additional_directories,
             extra_rules=self._permission_rules,
             subagents=self._subagents,
+            skills=self._skills,
+            extra_skill_locations=self._extra_skill_locations,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:

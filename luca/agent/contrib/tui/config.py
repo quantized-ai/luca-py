@@ -135,6 +135,8 @@ class LucaConfig(BaseModel):
     models: dict[str, list[str]] = Field(default_factory=dict)
     workspace: str | None = None
     additional_directories: list[str] = Field(default_factory=list)
+    # Extra roots to scan for `<name>/SKILL.md`; `~` expanded per entry.
+    extra_skill_locations: list[str] = Field(default_factory=list)
     streaming: bool | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

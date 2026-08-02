@@ -22,6 +22,7 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
+from luca.agent.contrib.skills import SkillsPlugin
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME, SubagentsPlugin
 from luca.agent.contrib.tools import Tool
 from luca.agent.core.context import CancellationToken
@@ -162,6 +163,8 @@ def build_runner(
     additional_directories: list | None = None,
     extra_rules: list | None = None,
     subagents: bool = True,
+    skills: bool = True,
+    extra_skill_locations: list[str] | None = None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
@@ -169,10 +172,16 @@ def build_runner(
     accounting and compaction — `None` falls back to core's default, which
     accounts but never compacts, so `/compact` fails until one that implements
     `compact()` is passed here."""
+    # Skill roots become read-granted directories on the shell plugin below, so
+    # bundled files open without a prompt. Read tier only.
+    skills_plugin = SkillsPlugin(workspace=workspace, extra_locations=extra_skill_locations) if skills else None
+    readable = [*(additional_directories or [])]
+    if skills_plugin is not None:
+        readable.extend(str(directory) for directory in skills_plugin.skill_directories)
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
-        additional_directories=additional_directories,
+        additional_directories=readable,
         extra_rules=extra_rules,
     )
     strategy = shell.permission_strategy
@@ -181,6 +190,8 @@ def build_runner(
         permission_policy=strategy,
     )
     plugins: list = [MemoryPlugin(), shell]
+    if skills_plugin is not None:
+        plugins.append(skills_plugin)
     if subagents:
         # Installing the plugin is not on its own enough: `subagents_enabled`
         # still has to be True on the session's RuntimeConfig. The capability

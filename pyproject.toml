@@ -27,6 +27,9 @@ tui = [
     "textual>=8.2.8",
     "textual-dev>=1.8.0",
 ]
+skills = [
+    "pyyaml>=6",
+]
 ssh = [
     "asyncssh>=2.24.0",
     "paramiko>=5.0.0",
@@ -47,7 +50,7 @@ testpaths = ["tests"]
 
 [tool.uv]
 package = true
-default-groups = ["dev", "tui"]
+default-groups = ["dev", "tui", "skills"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["luca"]

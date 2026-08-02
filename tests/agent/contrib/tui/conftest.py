@@ -11,10 +11,11 @@ from luca.client.providers import PROVIDERS
 
 @pytest.fixture(autouse=True)
 def _isolated_config_environment(monkeypatch, tmp_path):
-    """Keep `main()`'s real config discovery off the contributor's personal
-    `~/.config/luca/luca.json` — an invalid one failed the CLI tests."""
+    """Keep discovery off the contributor's real home: config reads
+    `~/.config/luca/luca.json`, skills read `~/.claude/skills`."""
     monkeypatch.delenv(ENV_CONFIG_PATH, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
 @pytest.fixture(autouse=True)
