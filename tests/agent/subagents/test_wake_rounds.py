@@ -30,6 +30,7 @@ from luca.agent.core.models import (
     ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
+    RuntimeConfig,
     SessionConfig,
     TextContent,
     ToolCall,
@@ -136,7 +137,7 @@ async def test_each_resolution_wakes_the_parent_which_can_spawn_again(faux):
     ]
 
 
-def resolved_unseen_session():
+def resolved_unseen_session(**runtime):
     """A parent saved right after a resolution, before the wake round: the
     result execution sits after the last assistant message — durable material."""
     spawn_spec = spec(
@@ -229,7 +230,7 @@ def resolved_unseen_session():
             "c2": conversation("c2", ["u_seed", "ts_c", "a_c", "tf_c"], depth=1),
         },
         main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
+        session_config=SessionConfig(llm_config=MODEL, runtime_config=RuntimeConfig(**runtime)),
     )
 
 
@@ -529,3 +530,135 @@ async def test_a_main_llm_failure_resume_retries_and_completes(faux):
     assert types.count("turn_finish") == 1
     [link] = [e for e in session.entries.values() if isinstance(e, ChildConversation)]
     assert link.execution_result.is_error is True
+
+
+async def test_wake_parent_off_batches_resolutions_into_one_final_round(faux):
+    # `wake_parent_on_subagent_completion=False`: each child is still RESOLVED
+    # the moment it finishes — the result executions land durably in order —
+    # but no resolution wakes the model by itself. One final round, after the
+    # last child, sees every update at once. With the DEFAULT an instant
+    # provider may coalesce this same story into one round too (back-to-back
+    # resolutions); the flag turns that scheduling coincidence into the
+    # guarantee, which is what the 4-request count pins. The strict "a
+    # resolution alone never wakes" discrimination is the next story.
+    # `subagents_max_workers=1` keeps the children FIFO-sequential, per the
+    # module's one-live-caller rule.
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    spawn_call("Research A", "a", call_id="tc1", task_id="tA"),
+                    spawn_call("Research B", "b", call_id="tc2", task_id="tB"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("A done")], finish_reason="stop"),
+            faux_assistant_message([faux_text("B done")], finish_reason="stop"),
+            faux_assistant_message([faux_text("both done")], finish_reason="stop"),
+        ]
+    )
+    session = subagent_session(wake_parent_on_subagent_completion=False, subagents_max_workers=1)
+    runner = DeterministicRunner(session, tool_registry=SubagentRegistry(), provider=faux, ids=list(IDS), now=1000)
+    runner.post_message("go")
+
+    result = await runner.run()
+
+    assert result.outcome is TurnOutcome.COMPLETED
+    assert runner.idle()
+    assert len(faux.requests) == 4  # spawn round, A, B, ONE final round — no wakes
+    # the final round carries BOTH updates, in resolution order
+    assert faux.requests[3].messages[-2].content[0].text == update("tA", "A done")
+    assert faux.requests[3].messages[-1].content[0].text == update("tB", "B done")
+    # the whole turn: spawn round / both resolutions / final — one bracket,
+    # both result executions on the path even though neither woke the model
+    assert [type(session.entries[n]).__name__ for n in session.conversations["c1"].nodes] == [
+        "UserMessage",
+        "TurnStart",
+        "AssistantMessage",  # spawn A + B
+        "ToolExecution",
+        "ToolExecution",
+        "ChildConversation",
+        "ChildConversation",
+        "ToolExecution",  # A's private result — recorded, not a wake
+        "ToolExecution",  # B's private result — the LAST child; the turn continues
+        "AssistantMessage",  # the one final round
+        "TurnFinish",
+    ]
+
+
+async def test_a_resolution_alone_never_wakes_a_parent_with_completion_wakes_off(faux):
+    # THE STRICT STORY: A resolves while B is still hanging in a tool — the
+    # exact state a wake round fires from by default. With the flag off the
+    # parent stays parked on A's resolution and only the POST wakes it, so the
+    # wake round's request carries the update AND the post together (path
+    # order between them is scheduling, hence the set assert), and the model
+    # steers from there — stop B, wind up. A resolution never woke anything.
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    spawn_call("Research A", "a", call_id="tc1", task_id="tA"),
+                    spawn_call("Research B", "b", call_id="tc2", task_id="tB"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("A done")], finish_reason="stop"),
+            faux_assistant_message(
+                [faux_text("B digging in"), faux_tool_call("probe", {}, id="tc3")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("stop_subagent", {"task_id": "tB"}, id="tc4")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("stopping B")], finish_reason="stop"),
+            faux_assistant_message([faux_text("wrapped up")], finish_reason="stop"),
+        ]
+    )
+    session = subagent_session(wake_parent_on_subagent_completion=False, subagents_max_workers=1)
+    probe = PostingHangTool()
+    runner = DeterministicRunner(
+        session,
+        tool_registry=SubagentRegistry([probe]),
+        provider=faux,
+        ids=list(IDS),
+        now=1000,
+    )
+    probe.post = lambda: runner.post_message("please stop task B")
+    runner.post_message("go")
+
+    result = await runner.run()
+
+    assert result.outcome is TurnOutcome.COMPLETED
+    assert runner.idle()
+    assert len(faux.requests) == 6
+    # the wake round: A's unseen resolution waited for the post instead of
+    # waking on its own — both reach the model in one request
+    assert {message.content[0].text for message in faux.requests[3].messages[-2:]} == {
+        update("tA", "A done"),
+        "please stop task B",
+    }
+    links = [e for e in session.entries.values() if isinstance(e, ChildConversation)]
+    assert [link.execution_result.is_error for link in links] == [False, True]
+
+
+async def test_a_fully_resolved_reload_still_engages_the_model_with_completion_wakes_off(faux):
+    # the flag never strands a session: with every child resolved there is no
+    # unresolved child to park on, so a cold reload derives BUSY and the next
+    # run() calls the model with the update — whatever the flag says
+    faux.set_responses([faux_assistant_message([faux_text("summary of A")], finish_reason="stop")])
+    session = resolved_unseen_session(wake_parent_on_subagent_completion=False)
+    assert session.get_conversation_status("c1").status is ConversationStatus.BUSY
+    runner = DeterministicRunner(
+        session,
+        tool_registry=SubagentRegistry(),
+        provider=faux,
+        ids=list(IDS),
+        now=1000,
+    )
+
+    result = await runner.run()
+
+    assert result.outcome is TurnOutcome.COMPLETED
+    assert runner.idle()
+    assert len(faux.requests) == 1

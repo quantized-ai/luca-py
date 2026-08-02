@@ -1014,6 +1014,8 @@ def open_turn_is_runnable(
 def open_turn_unseen_material(
     nodes: Sequence[str],
     entries: Mapping[str, AnyEntry],
+    *,
+    include_child_results: bool = True,
 ) -> bool:
     """Does the open turn hold model-facing content recorded AFTER its last
     `AssistantMessage` — the durable signal that a parent parked on its
@@ -1031,6 +1033,13 @@ def open_turn_unseen_material(
     refusals while its committed siblings are still starting. A nonterminal
     execution is the ordinary loop's business, never a reason to wake.
 
+    `include_child_results=False` (the projection of
+    `RuntimeConfig.wake_parent_on_subagent_completion` onto this pure path
+    predicate) additionally excludes the subagent-result executions — the
+    ones an open-turn `ChildConversation.result_execution_id` names — so a
+    resolution alone is not material and the parent batches until every
+    child has resolved. Posts and ordinary tool results stay material.
+
     One documented blind spot: a message posted while an LLM call is in
     flight lands BEFORE the recorded assistant entry, so this predicate cannot
     see it and the durable state is indistinguishable from an answered post.
@@ -1047,6 +1056,13 @@ def open_turn_unseen_material(
             break
     if last_assistant is None:
         return False
+    excluded: set[str] = set()
+    if not include_child_results:
+        excluded = {
+            entry.result_execution_id
+            for node_id in nodes[index:]
+            if isinstance(entry := entries.get(node_id), ChildConversation) and entry.result_execution_id is not None
+        }
     for node_id in nodes[last_assistant + 1 :]:
         entry = entries.get(node_id)
         if isinstance(entry, UserMessage):
@@ -1054,6 +1070,7 @@ def open_turn_unseen_material(
         if (
             isinstance(entry, ToolExecution)
             and entry.status not in NONTERMINAL_STATUSES
+            and entry.id not in excluded
             and (entry.tool_spec is None or not declares_spawn(entry.tool_spec))
         ):
             return True
@@ -1226,6 +1243,13 @@ class RuntimeConfig(BaseConfigModel):
     # a bound on its steps is what stops it growing without limit.
     subagent_soft_max_steps: int | None = None
     subagent_hard_max_steps: int | None = None
+    # Whether a resolved subagent's result, BY ITSELF, re-engages the parent's
+    # model mid-orchestration (a wake round per resolution). False batches:
+    # the parent still resolves each child the moment it finishes — the result
+    # execution lands durably either way — but the next model call waits until
+    # every child has resolved, or until OTHER material arrives (a mid-turn
+    # post and an ordinary tool result wake regardless of this flag).
+    wake_parent_on_subagent_completion: bool = True
 
     # When soft_max_steps is reached, pass tool_choice="none" to the LLM.
     limit_tool_choice_on_soft_max_steps_reached: bool = True
@@ -1564,7 +1588,11 @@ class AgentSession(BaseModel):
                 #    poll-for-BLOCKED consumer.
                 # 4. Unseen material (a resolved child's result, a mid-turn
                 #    post, a non-spawn tool result) → BUSY: the next run()
-                #    calls the model with it.
+                #    calls the model with it. With
+                #    `wake_parent_on_subagent_completion=False` a resolved
+                #    child's result is NOT material — the next run() parks on
+                #    it — so the same flag gates the same predicate here,
+                #    keeping the status and the drive in agreement.
                 # 5. Otherwise every child is BLOCKED and there is nothing new
                 #    to show the model → BLOCKED.
                 if open_turn_has_advanceable_executions(nodes, entries):
@@ -1582,7 +1610,11 @@ class AgentSession(BaseModel):
                     return ConversationStatus.BUSY
                 if open_turn_has_awaiting_executions(nodes, entries):
                     return ConversationStatus.BLOCKED
-                if open_turn_unseen_material(nodes, entries):
+                if open_turn_unseen_material(
+                    nodes,
+                    entries,
+                    include_child_results=self.session_config.runtime_config.wake_parent_on_subagent_completion,
+                ):
                     return ConversationStatus.BUSY
                 return ConversationStatus.BLOCKED
             if open_turn_is_runnable(nodes, entries):

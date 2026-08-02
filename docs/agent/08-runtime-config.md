@@ -85,6 +85,7 @@ installing the spawn tool changes nothing until this says yes
 | `subagents_max_workers` | how many subagents may be **doing work** at once, session-wide; `Inf` (default) = no limit. Spawning always succeeds — the rest queue for a slot ([13](13-subagents.md)). Size it by fan-out, never by depth; `0` is invalid (that is `subagents_enabled=False` spelled incorrectly) |
 | `subagent_soft_max_steps` | soft step ceiling for a SUBAGENT's turn; `None` falls back to `soft_max_steps` |
 | `subagent_hard_max_steps` | the same for the hard ceiling |
+| `wake_parent_on_subagent_completion` | `True` by default: each resolution re-engages the parent's model (a wake round — [13](13-subagents.md) §2). `False` batches: children still resolve the moment they finish, but the model is called once, after the last one — a mid-turn post or an ordinary tool result still wakes it either way |
 
 ```python
 RuntimeConfig(subagents_enabled=True, subagents_max_depth=2, subagents_max_workers=20, subagent_hard_max_steps=20)

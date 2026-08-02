@@ -616,9 +616,11 @@ accepted (that is `post_message`'s own acceptance matrix — [04](04-runner.md))
 `blocked` is **subtree-aware**: a parent whose subagents are still working is
 `busy`, and flips to `blocked` only when every one of them is AND nothing in
 the open turn awaits the model (`open_turn_unseen_material` — a posted
-message, a resolved child's result). A gate on the parent's own execution
-outranks that material term: the next `run()` can only re-park at the gate,
-so the honest answer is `blocked`. The busy/blocked transition can be
+message, a resolved child's result; with
+`wake_parent_on_subagent_completion=False` a resolved child's result no
+longer counts, [08](08-runtime-config.md)). A gate on the parent's own
+execution outranks that material term: the next `run()` can only re-park at
+the gate, so the honest answer is `blocked`. The busy/blocked transition can be
 triggered by a *sibling* finishing, with nothing in the parent's own entries
 changing at all — which is exactly why nothing can cache it.
 

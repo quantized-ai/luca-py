@@ -73,7 +73,13 @@ spawn tool is withheld and the prompt that teaches it stays silent. See
    wake condition is durable (`open_turn_unseen_material`: anything after the
    parent's last assistant message that is a posted user message or a
    terminal non-spawn tool result), so a reload mid-orchestration resumes the
-   same behavior.
+   same behavior. `wake_parent_on_subagent_completion=False`
+   ([08](08-runtime-config.md)) narrows the condition to everything BUT
+   resolutions: each child still resolves the moment it finishes, but the
+   model is re-engaged once, after the last one — a post or an ordinary tool
+   result still wakes it either way, and the projection of the updates is
+   unchanged, so the model sees every result it has not seen whenever it IS
+   called.
 6. The turn **cannot close** until every link has a result: a text-only
    answer with children still out is recorded and the parent parks again;
    the answer that lands after the last resolution closes the turn.
@@ -108,6 +114,8 @@ wall clock).
 > link, and closes ERRORED: a cost stop wins over work in flight. The
 > doom-loop flag is per-turn and sticky too; a model repeating an identical
 > call across wake rounds can pin `tool_choice="none"` for a long turn.
+> `wake_parent_on_subagent_completion=False` is the lever back: it restores
+> the one-round-at-the-end shape, trading mid-flight reactivity for steps.
 
 ### The spawn budget
 

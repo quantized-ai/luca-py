@@ -31,9 +31,11 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    ChildConversation,
     CompactionEntry,
     CompactionSource,
     Conversation,
+    ConversationStatus,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -1651,3 +1653,115 @@ def test_a_rejected_or_unresolved_tool_execution_is_material():
     entries["te1"] = _execution("te1", status=ExecutionStatus.NOT_FOUND, tool_spec=None)
 
     assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True
+
+
+def _resolved_child_entries() -> dict:
+    # a resolved link naming its result execution — the durable record of one
+    # subagent completion, sitting after the parent's last assistant message
+    entries = _material_entries()
+    entries["ch1"] = ChildConversation(
+        id="ch1",
+        parent_id="a1",
+        created_at=600,
+        conversation_id="c2",
+        tool_execution_id="te_spawn",
+        execution_result=ExecutionResult(content=[TextContent(text="A done")]),
+        result_execution_id="ter1",
+    )
+    entries["ter1"] = _execution(
+        "ter1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=None,
+        result=ExecutionResult(content=[TextContent(text="A done")]),
+    )
+    return entries
+
+
+def test_a_child_result_execution_is_not_material_when_excluded():
+    # the `wake_parent_on_subagent_completion=False` projection onto the pure
+    # predicate: the execution a link's `result_execution_id` names is a
+    # resolution record, not a wake — by default it IS the wake
+    entries = _resolved_child_entries()
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "ch1", "ter1"], entries) is True
+    assert open_turn_unseen_material(["u1", "ts", "a1", "ch1", "ter1"], entries, include_child_results=False) is False
+
+
+def test_only_child_results_are_excluded_never_posts_or_ordinary_results():
+    entries = _resolved_child_entries()
+    entries["u2"] = UserMessage(id="u2", parent_id="ter1", created_at=700, parts=[TextContent(text="steer")])
+
+    assert (
+        open_turn_unseen_material(["u1", "ts", "a1", "ch1", "ter1", "u2"], entries, include_child_results=False) is True
+    )
+
+    del entries["u2"]
+    entries["te1"] = _execution(
+        "te1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=ADD_SPEC,
+        result=ExecutionResult(content=[TextContent(text="3")]),
+    )
+
+    assert (
+        open_turn_unseen_material(["u1", "ts", "a1", "ch1", "ter1", "te1"], entries, include_child_results=False)
+        is True
+    )
+
+
+def _orchestrating_session(**runtime) -> AgentSession:
+    """A parked parent mid-orchestration: one child resolved with its result
+    execution unseen, one still out and BLOCKED on an approval — the exact
+    state where clause 4 (unseen material) decides the parent's status."""
+    call = ToolCall(id="tc_g", name="something")
+    return make_session(
+        id="s_orch",
+        entries={
+            **_resolved_child_entries(),
+            "chB": ChildConversation(
+                id="chB",
+                parent_id="ter1",
+                created_at=600,
+                conversation_id="c3",
+                tool_execution_id="te_spawn_b",
+            ),
+            "u_seed": UserMessage(id="u_seed", created_at=500, parts=[TextContent(text="child work")]),
+            "ts_c": TurnStart(id="ts_c", parent_id="u_seed", created_at=500),
+            "a_c": AssistantMessage(
+                id="a_c",
+                parent_id="ts_c",
+                created_at=500,
+                parts=[call],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "te_g": ToolExecution(
+                id="te_g",
+                parent_id="a_c",
+                created_at=500,
+                conversation_id="c3",
+                tool_call_id="tc_g",
+                raw_tool_call=call,
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+            ),
+        },
+        conversations={
+            "c1": conversation("c1", ["u1", "ts", "a1", "ch1", "ter1", "chB"]),
+            "c3": conversation("c3", ["u_seed", "ts_c", "a_c", "te_g"], depth=1),
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL, runtime_config=RuntimeConfig(**runtime)),
+    )
+
+
+def test_wake_parent_on_subagent_completion_gates_the_parked_parents_status():
+    # same durable state, both flag values: with completions waking (the
+    # default) the unseen resolution means the next run() calls the model —
+    # BUSY; with them off the next run() parks on the BLOCKED sibling — the
+    # status must say BLOCKED or a poll-for-BLOCKED consumer hot-loops
+    assert _orchestrating_session().get_conversation_status("c1").status is ConversationStatus.BUSY
+    assert (
+        _orchestrating_session(wake_parent_on_subagent_completion=False).get_conversation_status("c1").status
+        is ConversationStatus.BLOCKED
+    )

@@ -2921,13 +2921,22 @@ class AgentSessionRunner:
             # half; `last_seen` covers the one state it cannot see (a post
             # that landed under this drive's own in-flight LLM call). Only
             # with neither does the drive park on the subtree.
+            # `wake_parent_on_subagent_completion=False` narrows the durable
+            # half only: a resolution alone is not material, so the parent
+            # batches — resolving each child as it finishes but calling the
+            # model once, when no unresolved child remains (this guard stops
+            # applying) or when other material arrives.
             if self.ledger.open_turn_index(conversation_id) is not None and _unresolved_children(
                 self.session, conversation_id
             ):
                 conversation = self.session.conversations[conversation_id]
-                fresh_material = open_turn_unseen_material(conversation.nodes, self.session.entries) or (
-                    last_seen is not None and self._has_unseen_user_message(conversation_id, last_seen)
-                )
+                fresh_material = open_turn_unseen_material(
+                    conversation.nodes,
+                    self.session.entries,
+                    include_child_results=(
+                        self.session.session_config.runtime_config.wake_parent_on_subagent_completion
+                    ),
+                ) or (last_seen is not None and self._has_unseen_user_message(conversation_id, last_seen))
                 if not fresh_material:
                     if not await self._await_subtree(conversation_id, token, wake):
                         return
