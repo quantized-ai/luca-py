@@ -1,12 +1,7 @@
 """Agent Skills — `SKILL.md` instruction sets discovered from disk.
 
-Reads the Claude- and Agent-compatible locations (`.claude/skills/<name>/`,
-`.agents/skills/<name>/`, and the `~` equivalents) plus any extra roots the
-config names. The model sees each skill's name and description in the system
-prompt and loads a body on demand through the `skill` tool.
-
-Needs the `skills` dependency group (PyYAML) — a default group, so `uv sync`
-installs it.
+Reads the Claude- and Agent-compatible locations plus any extra roots the config
+names. Needs the `skills` dependency group (PyYAML).
 """
 
 from .discovery import (

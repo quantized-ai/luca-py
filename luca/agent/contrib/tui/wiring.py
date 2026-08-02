@@ -172,10 +172,8 @@ def build_runner(
     accounting and compaction — `None` falls back to core's default, which
     accounts but never compacts, so `/compact` fails until one that implements
     `compact()` is passed here."""
-    # Skills FIRST: the roots it found become read-granted directories on the
-    # shell plugin below, so a skill body pointing at `references/*.md` next to
-    # it opens without an approval prompt. Read tier only — the shell plugin
-    # seeds access_directory/read/glob/grep, never write or bash.
+    # Skill roots become read-granted directories on the shell plugin below, so
+    # bundled files open without a prompt. Read tier only.
     skills_plugin = SkillsPlugin(workspace=workspace, extra_locations=extra_skill_locations) if skills else None
     readable = [*(additional_directories or [])]
     if skills_plugin is not None:

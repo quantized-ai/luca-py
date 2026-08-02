@@ -302,21 +302,16 @@ def texts(session: AgentSession, conversation_id: str) -> list[str]:
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch) -> Path:
-    """The project directory, with HOME deliberately a SIBLING of it.
-
-    Home has to sit outside the workspace or the skill grant is untestable: the
-    shell plugin already allows reads anywhere under the workspace, so a skill
-    nested inside it would open whether or not the grant exists. Pointing HOME
-    away from the contributor's own is also what keeps the composed system
-    prompt from differing per machine."""
+    """The project directory, with HOME a SIBLING of it — the shell plugin
+    already allows reads under the workspace, so a skill nested inside it would
+    open whether or not the skill grant exists."""
     root = tmp_path / "workspace"
     home = tmp_path / "home"
     root.mkdir()
     monkeypatch.setenv("HOME", str(home))
     (root / "alpha.txt").write_text("alpha contents\n")
     (root / "beta.txt").write_text("beta contents\n")
-    # A GLOBAL skill: outside the workspace, so reading its bundled files
-    # exercises the skill-root grant rather than the workspace grant.
+    # Global, so its bundled files exercise the skill grant not the workspace one.
     skill = home / ".claude" / "skills" / "greeting"
     (skill / "references").mkdir(parents=True)
     (skill / "SKILL.md").write_text(
@@ -706,10 +701,9 @@ async def test_the_read_before_write_guard_does_not_leak_across_conversations(wo
 
 
 async def test_a_skill_is_advertised_loaded_and_its_bundled_files_open_ungated(workspace: Path):
-    """Progressive disclosure end to end: the description is in the prompt, the
-    body arrives only via the tool, and the read of a bundled file next to it
-    never reaches the approval gate."""
-    # OUTSIDE the workspace: only the skill-root grant can make this readable.
+    """Description in the prompt, body only via the tool, bundled file read
+    without ever reaching the gate."""
+    # Outside the workspace: only the skill grant makes this readable.
     reference = Path.home() / ".claude" / "skills" / "greeting" / "references" / "tone.md"
     assert workspace not in reference.parents
     transport = ConversationScript(
@@ -736,9 +730,8 @@ async def test_a_skill_is_advertised_loaded_and_its_bundled_files_open_ungated(w
     assert "Always say hello twice." in loaded.result.content[0].text
     assert str(reference.parent.parent) in loaded.result.content[0].text  # the skill dir
     assert "Warm, not effusive." in opened.result.content[0].text
-    # NEVER GATED, and this is the assertion that actually tests the grant.
-    # `drive_until_idle` auto-answers gates, so a completed read proves nothing
-    # on its own; without the grant the audit log reads ['pending', 'allow'].
+    # `drive_until_idle` auto-answers gates, so a completed read proves nothing;
+    # without the grant this log reads ['pending', 'allow'].
     assert [d.decision.value for d in opened.approval_decisions] == ["allow"]
     assert runner.idle()
 

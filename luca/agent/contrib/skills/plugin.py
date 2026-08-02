@@ -1,15 +1,7 @@
 """The `skill` tool and the `SkillsPlugin` that bundles it.
 
-PROGRESSIVE DISCLOSURE. The system prompt carries only each skill's name and
-description; the body is loaded by a tool call when the model decides the skill
-is relevant. Putting every body in the prompt would be simpler and is the
-obvious first idea, but the cost is paid on every request of every conversation
-— including each subagent's — and it grows with the number of skills installed,
-most of which are irrelevant to any given turn.
-
-The prompt part is a CALLABLE so it re-reads discovery per call and contributes
-nothing when no skills exist, the same shape `SubagentsPlugin` uses to keep its
-prompt and its tool list from disagreeing.
+The system prompt carries each skill's name and description; the body is loaded
+by a tool call only when the model decides the skill is relevant.
 """
 
 from __future__ import annotations
@@ -71,19 +63,13 @@ class SkillTool(Tool):
         if skill is None:
             available = ", ".join(sorted(self.skills)) or "none"
             return f"No skill named {args['name']!r}. Available: {available}."
-        # The directory is part of the answer: skill bodies routinely point at
-        # bundled files ("see references/widgets.md") with no way for the model
-        # to know where that is.
+        # Bodies point at bundled files by relative path; the model needs the root.
         return f"Skill: {skill.name}\nBundled files are in: {skill.directory}\n\n{skill.body}"
 
 
 class SkillsPlugin:
-    """Bundles the `skill` tool with the prompt part that advertises what is
-    installed. A plain class implementing the plugin hooks it needs.
-
-    Discovery runs ONCE at construction: the tool list and the prompt must
-    agree, and re-globbing the filesystem before every LLM call would put disk
-    I/O on the hot path for a set that effectively never changes mid-session."""
+    """Bundles the `skill` tool with the prompt part advertising what is
+    installed. Discovery runs once at construction."""
 
     def __init__(
         self,
@@ -96,11 +82,8 @@ class SkillsPlugin:
 
     @property
     def skill_directories(self) -> list[Path]:
-        """The roots that actually held a skill.
-
-        The application grants read access over these so bundled files open
-        without an approval prompt. Only roots that produced something, so a
-        directory that does not exist is never turned into a permission rule."""
+        """The roots that actually held a skill — what the application grants
+        read access over, so bundled files open without a prompt."""
         roots = []
         for location in self.locations:
             if any(skill.directory.parent == location for skill in self.skills.values()) and location not in roots:
@@ -111,9 +94,6 @@ class SkillsPlugin:
         return [SkillTool(self.skills)]
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
-        # Auto-allowed, like memory and subagents: reading a skill the user
-        # installed themselves is not a decision worth interrupting for, and
-        # whatever the skill then tells the agent to DO is gated as usual.
         return SimpleToolRegistry(
             tools=self.get_tools(),
             permission_policy=YoloPermissionPolicy(),
