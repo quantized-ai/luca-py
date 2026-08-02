@@ -177,10 +177,16 @@ def _read_json_object(path: Path) -> dict:
 
 def find_project_config(start: Path) -> Path | None:
     """The nearest `luca.json` at or above `start`, so a project config applies
-    from any subdirectory. The walk stops after the directory holding `.git`,
-    keeping a stray file above the repo out. `exists()`, not `is_dir()`: a
-    worktree's `.git` is a file."""
+    from any subdirectory. Two bounds keep a file outside the project from
+    silently applying: the directory holding `.git`, and the home directory when
+    there is no repo. `exists()`, not `is_dir()`: a worktree's `.git` is a file."""
+    # Both sides resolved, or the comparison misses whenever a symlink is in
+    # play (/tmp vs /private/tmp on macOS) and the bound silently never fires.
+    home = Path.home().resolve()
+    start = start.resolve()
     for directory in (start, *start.parents):
+        if directory == home and directory != start:
+            break  # ~/luca.json is not the project config for everything below it
         candidate = directory / "luca.json"
         if candidate.is_file():
             return candidate
@@ -219,18 +225,23 @@ def load_luca_config(
     entirely; resolve it with `resolve_config_path()`."""
     if path is not None:
         merged = _read_named_config(path)
+        read_from = [path]
     else:
         cwd = cwd or Path.cwd()
         home = home if home is not None else config_home()
         project = find_project_config(cwd)
+        home_file = home / "luca.json"
         merged = _deep_merge(
-            _read_json_object(home / "luca.json"),
+            _read_json_object(home_file),
             _read_json_object(project) if project is not None else {},
         )
+        # Named in full: with the walk, the offending file may be several
+        # directories up and "luca.json is invalid" would send you to the wrong one.
+        read_from = [p for p in (home_file, project) if p is not None and p.is_file()]
     try:
         return LucaConfig.model_validate(merged)
     except ValidationError as exc:
-        source = str(path) if path is not None else "luca.json"
+        source = " + ".join(str(p) for p in read_from) or "luca.json"
         raise LucaConfigError(f"{source} is invalid:\n{exc}") from exc
 
 

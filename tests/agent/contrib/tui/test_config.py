@@ -158,6 +158,70 @@ def test_a_git_FILE_bounds_the_walk_too(tmp_path):
     assert config == LucaConfig()
 
 
+def test_the_walk_stops_at_home_when_there_is_no_repo(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    work = fake_home / "scratch"
+    work.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    _write(tmp_path, {"model": {"model": "above-home"}})
+
+    config = load_luca_config(cwd=work, home=tmp_path / "none")
+
+    assert config == LucaConfig()
+
+
+def test_a_luca_json_in_the_home_directory_is_not_a_project_config(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    work = fake_home / "scratch"
+    work.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    _write(fake_home, {"model": {"model": "home-root"}})
+
+    config = load_luca_config(cwd=work, home=tmp_path / "none")
+
+    assert config == LucaConfig()
+
+
+def test_home_is_still_read_when_it_is_where_you_are_standing(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    _write(fake_home, {"model": {"model": "home-root"}})
+
+    config = load_luca_config(cwd=fake_home, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="home-root"))
+
+
+def test_the_home_bound_holds_when_home_is_reached_through_a_symlink(tmp_path, monkeypatch):
+    """Both sides are resolved before comparing. Unresolved, `/tmp` never
+    equals `/private/tmp` and the bound silently never fires."""
+    real_home = tmp_path / "real_home"
+    (real_home / "scratch").mkdir(parents=True)
+    linked_home = tmp_path / "linked_home"
+    linked_home.symlink_to(real_home)
+    monkeypatch.setattr(Path, "home", lambda: linked_home)
+    _write(real_home, {"model": {"model": "home-root"}})
+
+    config = load_luca_config(cwd=real_home / "scratch", home=tmp_path / "none")
+
+    assert config == LucaConfig()
+
+
+def test_a_repo_below_home_is_unaffected_by_the_home_bound(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    repo = fake_home / "code" / "myproject"
+    source = repo / "src" / "deep"
+    source.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    _write(repo, {"model": {"model": "project"}})
+
+    config = load_luca_config(cwd=source, home=tmp_path / "none")
+
+    assert config == LucaConfig(model=ModelConfig(model="project"))
+
+
 def test_an_explicit_path_bypasses_the_walk_entirely(tmp_path):
     (tmp_path / ".git").mkdir()
     _write(tmp_path, {"model": {"model": "project"}})

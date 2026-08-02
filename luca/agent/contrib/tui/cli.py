@@ -67,8 +67,8 @@ def arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=None,
-        help="Path to a config file to use INSTEAD of ./luca.json and "
-        "~/.config/luca/luca.json. Also settable as LUCA_CONFIG_PATH; the flag wins.",
+        help="Path to a config file to use INSTEAD of the discovered luca.json "
+        "and ~/.config/luca/luca.json. Also settable as LUCA_CONFIG_PATH; the flag wins.",
     )
     parser.add_argument(
         "--fork",
