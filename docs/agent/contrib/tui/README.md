@@ -25,6 +25,7 @@ uv run python main.py --subagents-max-depth 1     # no nesting (the app default 
 uv run python main.py --subagents-max-per-turn 5  # spawn budget per turn (default: none)
 uv run python main.py --subagents-max-workers 3   # how many work at once (default: no cap)
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
+uv run python main.py --config ./ci.json  # use THIS config file, skip discovery
 uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 ```
 
@@ -162,7 +163,7 @@ thin:
 | `cells.py` / `screens.py` / `prompt.py` / `app.py` | Transcript widgets (incl. `SubagentPanel`, the one container), the modals (`ApprovalScreen`, `PickerScreen`), `PromptInput` (the multiline prompt box), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |
 | `context_bar.py` | The context-utilization gauge under the transcript; `render_context_bar` is the pure formatter |
 | `commands.py` | Slash command registry + `dispatch` (called from `on_prompt_input_submitted` before the message is sent) |
-| `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge) and the precedence resolvers, incl. `build_context_manager` — see [`config.md`](config.md) |
+| `config.py` | `LucaConfig` + `load_luca_config` (home+project `luca.json` merge, or one file named by `resolve_config_path` from `--config` / `LUCA_CONFIG_PATH`) and the precedence resolvers, incl. `build_context_manager` — see [`config.md`](config.md) |
 | `cli.py` | argparse entry point; the `--pretty-print` transcript path (never builds an app), and loads `luca.json`, threading it (incl. the `SummarizingContextManager`) through the seams |
 
 Attach an image with `Ctrl+V`, then type and press Enter — the image leads the

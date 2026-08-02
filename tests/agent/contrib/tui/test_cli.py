@@ -1,9 +1,12 @@
 """CLI argument parsing and session building."""
 
+import json
+
 import pytest
 
 from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
+from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
@@ -35,6 +38,11 @@ def test_default_args():
     )
     assert (args.workspace, args.mode) == (None, None)
     assert args.subagents is True
+    assert args.config is None
+
+
+def test_the_config_flag_parses_as_a_path_string():
+    assert arg_parser().parse_args(["--config", "./ci.json"]).config == "./ci.json"
 
 
 def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
@@ -201,6 +209,50 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
     out = capsys.readouterr().out
     assert f"--conversation {seen['id']}" in out
     assert "Goodbye!" in out
+
+
+def test_the_config_flag_replaces_the_project_luca_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"model": {"model": "from-project"}}))
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"model": {"model": "from-named"}}))
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["model"] = self.runner.session.session_config.llm_config.model
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux", "--config", str(named)])
+
+    assert seen["model"] == "from-named"
+
+
+def test_the_config_env_var_is_honored_when_no_flag_is_given(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"model": {"model": "from-project"}}))
+    named = tmp_path / "named.json"
+    named.write_text(json.dumps({"model": {"model": "from-env"}}))
+    monkeypatch.setenv(ENV_CONFIG_PATH, str(named))
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["model"] = self.runner.session.session_config.llm_config.model
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    assert seen["model"] == "from-env"
+
+
+def test_a_missing_config_file_exits_with_a_readable_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(AgentApp, "run", lambda self: pytest.fail("the app must not start"))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--faux", "--config", str(tmp_path / "nope.json")])
+
+    assert exit_info.value.code == 1
+    assert "not a readable config file" in capsys.readouterr().err
 
 
 def test_pretty_print_writes_the_transcript_and_never_starts_the_app(
