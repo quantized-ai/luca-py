@@ -152,6 +152,7 @@ class AgentApp(App):
         extra_skill_locations: list[str] | None = None,
         instructions: bool = True,
         extra_instructions: list[str] | None = None,
+        resume: bool = False,
     ) -> None:
         super().__init__()
         self.theme = theme
@@ -169,6 +170,7 @@ class AgentApp(App):
         self._extra_skill_locations = extra_skill_locations
         self._instructions = instructions
         self._extra_instructions = extra_instructions
+        self._resume = resume
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         # True while the drive worker is alive. The worker group is
@@ -206,6 +208,11 @@ class AgentApp(App):
     async def on_mount(self) -> None:
         self._refresh_status()
         await self._replay_history()
+        if self._resume:
+            # `--resume` is "start me at /resume", so it runs the command rather
+            # than duplicating it. The fresh session it opens over is unsaved
+            # and disappears if a stored one is picked.
+            await dispatch(self, "/resume")
         if self.runner.idle():
             self.query_one("#prompt", PromptInput).focus()
         else:  # gated / parked cancel / retry-ready — resume driving
@@ -664,10 +671,15 @@ class AgentApp(App):
         )
 
     async def _reset_session(self, session: AgentSession) -> None:
-        """Swap in a fresh session and wipe the transcript. `/new` rebuilds the
-        runner so the new conversation drives cleanly; under `--faux` the
-        scripted provider is stateful and already spent, which is a demo-only
-        edge (real runs pass provider=None and build fresh clients per turn)."""
+        """Swap in another session and rebuild the transcript from it. `/new`
+        rebuilds the runner so the new conversation drives cleanly; under
+        `--faux` the scripted provider is stateful and already spent, which is a
+        demo-only edge (real runs pass provider=None and build fresh clients per
+        turn).
+
+        The replay is what makes `/resume` show the conversation it switched to;
+        `/new`'s session is empty, so the same call contributes nothing there
+        and one primitive serves both."""
         self.runner, self.strategy = self._build_runner(session)
         await self.query_one("#transcript", VerticalScroll).remove_children()
         self._live_reasoning.clear()
@@ -675,6 +687,7 @@ class AgentApp(App):
         self._tool_cells.clear()
         self._panels.clear()
         self._pending_images.clear()
+        await self._replay_history()
         self._refresh_status()
         self.query_one("#prompt", PromptInput).focus()
 

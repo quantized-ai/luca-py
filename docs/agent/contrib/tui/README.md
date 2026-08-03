@@ -6,7 +6,7 @@ streaming, a modal approval gate, Esc cancellation, and per-run session
 persistence. It is also the reference for wiring a real interactive app on
 top of the runner: one drive worker, one shared
 [`PermissionStrategy`](../resource_permissions/README.md), sessions saved as
-`<session-id>.json`. Requires the `tui` dependency group (installed by
+`~/.luca/projects/<encoded-project-path>/<session-id>.json`. Requires the `tui` dependency group (installed by
 default with `uv sync`).
 
 ```python
@@ -18,7 +18,8 @@ from luca.agent.contrib.tui import AgentApp, build_runner, main
 ```bash
 uv run python main.py                     # fresh session (needs OPENROUTER_API_KEY)
 uv run python main.py --faux              # offline scripted demo — no key, no network
-uv run python main.py --conversation <id> # resume <id>.json (--fork to branch)
+uv run python main.py --resume            # pick a past session for this project
+uv run python main.py --conversation <id> # resume that session (--fork to branch)
 uv run python main.py --no-streaming      # block-level events instead of deltas
 uv run python main.py --no-subagents      # stop it spawning subagents that work in parallel
 uv run python main.py --subagents-max-depth 1     # no nesting (the app default is 3)
@@ -44,7 +45,7 @@ the flags always describe the run being started: depth defaults to 3 (main
 plus three levels of nesting), the per-turn spawn budget and the worker cap
 default to no limit ([`08-runtime-config.md`](../../08-runtime-config.md)).
 
-`--pretty-print` replaces the app: it loads `<id>.json`, writes the
+`--pretty-print` replaces the app: it loads the session from the store, writes the
 [`pretty_print`](../../02-data-model.md#13-read-a-saved-session) transcript to
 stdout and exits, so it requires `--conversation` (a usage error without one)
 and ignores every other flag — nothing is started, nothing is saved.
@@ -130,7 +131,8 @@ typo) is sent to the agent as a normal message, so nothing is swallowed.
 | `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
 | `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
 | `/compact` | Summarize the history and continue on a new conversation ([12](../../12-compaction.md)). Needs a `context_manager=` on the app that implements `compact()`; with the accounting-only default the drive reports a turn failure |
-| `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old `<id>.json` stays on disk |
+| `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old one stays in the store |
+| `/resume` | Pick another session for this project and switch to it, replaying its transcript. The one being left is saved first, unless it is still empty |
 | `/quit` | Save and exit (same as `Ctrl+D`) |
 
 The pickers are `PickerScreen` modals (arrow keys to move, Enter to select, Esc
@@ -157,7 +159,7 @@ thin:
 |---|---|
 | `wiring.py` | `build_runner(session, workspace=, provider=, mode=, context_manager=, additional_directories=, extra_rules=, subagents=)` — shell + memory plugins, the demo math tools ([`contrib.tools.Tool`](../tools/README.md) subclasses), one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | `build_approval_prompts(execution, strategy, main_conversation_id=, subagent_labels=)` — pending steps → `ApprovalPrompt`s whose options carry fully-built `ApprovalAnswer`s (the whole gate policy, no UI). The main id is what lets a prompt say which subagent is asking; `subagent_labels` is what lets it say so in the subagent's own terms, since two can gate at the same moment and an id only answers "which one" to someone who already knows |
-| `sessions.py` | `<session-id>.json` load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
+| `sessions.py` | The store: `resolve_session_directory` (root + encoded project path), `list_sessions` for the `/resume` picker, and load / save / fork — the save is atomic (temp file + `os.replace`), which is the application's job since the core owns no persistence |
 | `render.py` | Pure formatting and session reads: `format_tool_call`, `clip_text`, `status_label`, `user_transcript_text`, `compaction_transcript_text` (the live and replayed transcript share them, so they cannot drift), plus `is_runtime_plumbing`, `subagent_task` and `child_links` for the panels |
 | `clipboard.py` | `read_clipboard_image()` — the clipboard's image as PNG bytes, or `None` |
 | `cells.py` / `screens.py` / `prompt.py` / `app.py` | Transcript widgets (incl. `SubagentPanel`, the one container), the modals (`ApprovalScreen`, `PickerScreen`), `PromptInput` (the multiline prompt box), `AgentApp` (drive worker + one event handler for both streaming and block tiers) |

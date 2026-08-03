@@ -7,6 +7,8 @@ approval-modal pattern: submit the command, wait for the `PickerScreen`, drive
 it with arrow/enter/esc, then assert the whole `LLMConfig`.
 """
 
+import os
+
 from textual.command import CommandPalette
 
 from luca.agent.contrib.tui import AgentApp
@@ -17,6 +19,7 @@ from luca.agent.contrib.tui.cells import (
     UserCell,
 )
 from luca.agent.contrib.tui.screens import PickerScreen
+from luca.agent.contrib.tui.sessions import save_session
 from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
@@ -26,7 +29,7 @@ from tests.agent.scenarios import (
     main_conversation,
 )
 
-from .helpers import fresh_session, idle_again, submit, wait_until
+from .helpers import fresh_session, idle_again, submit, wait_until, with_user_message
 
 # The block `/help` renders, spelled out rather than re-derived from COMMANDS:
 # a command added, renamed, or re-summarized shows up here as a diff.
@@ -38,6 +41,7 @@ HELP_TEXT = "\n".join(
         "/theme                   choose the Textual theme",
         "/compact                 summarize the history and continue",
         "/new                     save and start a fresh conversation",
+        "/resume                  switch to another session in this project",
         "/quit                    save and exit",
     ),
 )
@@ -272,6 +276,121 @@ async def test_new_starts_a_fresh_session_keeping_the_model_and_clearing_history
         assert len(app.query(UserCell)) == 0
         assert len(app.query(AssistantCell)) == 0
         assert (tmp_path / f"{old_id}.json").exists()
+
+
+# ── /resume ──────────────────────────────────────────────────────────────────
+
+
+async def test_resume_switches_to_the_picked_session_and_replays_it(tmp_path):
+    stored = with_user_message("the older conversation")
+    save_session(stored, tmp_path)
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("enter")
+        await _picker_closed(pilot, app)
+
+        assert app.runner.session.id == stored.id
+        # the transcript, not just the id: a swap that left the pane blank
+        # would pass an id-only assertion while showing the user nothing
+        assert [cell.text for cell in app.query(UserCell)] == ["the older conversation"]
+
+
+async def test_resume_lists_the_sessions_newest_first_with_their_first_message(tmp_path):
+    older = with_user_message("older")
+    newer = with_user_message("newer")
+    save_session(older, tmp_path)
+    save_session(newer, tmp_path)
+    os.utime(tmp_path / f"{older.id}.json", (1, 1))
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+
+        assert app.screen._options == [newer.id, older.id]
+        assert [row.split("  ", 1)[1] for row in app.screen._labels] == [
+            "newer  (1 turns)",
+            "older  (1 turns)",
+        ]
+
+
+async def test_the_session_being_left_is_marked_current_in_the_picker(tmp_path):
+    # the row reads as the label, but the value behind it is still the id
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("hi back")])),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await submit(pilot, "hello")
+        await wait_until(pilot, lambda: idle_again(app))
+
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+
+        assert app.screen._options == [app.runner.session.id]
+        assert app.screen._labels[0].endswith("hello  (1 turns)")
+
+
+async def test_escaping_the_resume_picker_changes_nothing(tmp_path):
+    save_session(with_user_message("stored"), tmp_path)
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        current = app.runner.session.id
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("escape")
+        await _picker_closed(pilot, app)
+
+        assert app.runner.session.id == current
+
+
+async def test_resume_with_nothing_stored_notices_instead_of_opening_a_picker(tmp_path):
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/resume")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, PickerScreen)
+        assert _notices(app) == ["no saved sessions for this project yet"]
+
+
+async def test_resume_does_not_write_the_untouched_session_it_opened_over(tmp_path):
+    # `--resume` opens over a fresh empty session; saving that would drop a
+    # blank file into the store on every launch
+    save_session(with_user_message("stored"), tmp_path)
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        empty_id = app.runner.session.id
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("escape")
+        await _picker_closed(pilot, app)
+
+        assert not (tmp_path / f"{empty_id}.json").exists()
+
+
+async def test_resume_saves_the_conversation_it_is_leaving(tmp_path):
+    save_session(with_user_message("stored"), tmp_path)
+    app = AgentApp(
+        fresh_session(),
+        provider=scripted(faux_assistant_message([faux_text("hi back")])),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+    )
+    async with app.run_test() as pilot:
+        await submit(pilot, "hello")
+        await wait_until(pilot, lambda: idle_again(app))
+        leaving = app.runner.session.id
+
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("escape")
+        await _picker_closed(pilot, app)
+
+        assert (tmp_path / f"{leaving}.json").exists()
 
 
 async def test_new_preserves_the_runtime_config(tmp_path):

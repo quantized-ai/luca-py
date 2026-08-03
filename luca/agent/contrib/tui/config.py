@@ -57,6 +57,14 @@ class ThemeSettings(BaseModel):
     model_config = _STRICT
 
 
+class SessionSettings(BaseModel):
+    """Where sessions are stored. `directory` is the ROOT; the per-project
+    subdirectory is always appended under it."""
+
+    directory: str | None = None
+    model_config = _STRICT
+
+
 class RuntimeSettings(BaseModel):
     """Every `RuntimeConfig` knob, all optional (unset = leave the session's)."""
 
@@ -134,6 +142,7 @@ class LucaConfig(BaseModel):
     schema_url: str | None = Field(default=None, alias="$schema")
     model: ModelConfig = Field(default_factory=ModelConfig)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
+    sessions: SessionSettings = Field(default_factory=SessionSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)

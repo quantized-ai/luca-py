@@ -11,3 +11,6 @@ wheels/
 
 # env file
 .env
+
+# TUI session files, for a store pointed at the project
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
