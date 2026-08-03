@@ -6,21 +6,24 @@ environment block; `InstructionsPlugin` reads `LUCA.md` / `AGENTS.md` /
 `CLAUDE.md`. No extra dependencies.
 """
 
-from .environment import ENVIRONMENT_TEMPLATE, environment_text
+from .environment import ENVIRONMENT_TEMPLATE, format_environment
 from .instructions import (
-    INSTRUCTION_FILES,
+    INSTRUCTION_FILE_NAMES,
     MAX_INSTRUCTION_BYTES,
     InstructionFile,
+    InstructionsError,
     apply_budget,
-    config_directory,
+    find_instruction_file,
     find_instructions,
-    first_in_directory,
-    project_directories,
+    find_project_directories,
+    get_config_directory,
     read_instruction_file,
+    read_named_instruction_file,
 )
 from .plugin import (
     ENVIRONMENT_PRIORITY,
     INSTRUCTIONS_PRIORITY,
+    INSTRUCTIONS_PROMPT_HEADER,
     InstructionsPlugin,
     SystemPromptPlugin,
     format_instructions,
@@ -34,19 +37,22 @@ __all__ = [
     "FAMILIES",
     "GENERIC",
     "INSTRUCTIONS_PRIORITY",
-    "INSTRUCTION_FILES",
+    "INSTRUCTIONS_PROMPT_HEADER",
+    "INSTRUCTION_FILE_NAMES",
     "MAX_INSTRUCTION_BYTES",
     "InstructionFile",
+    "InstructionsError",
     "InstructionsPlugin",
     "SystemPromptPlugin",
     "apply_budget",
-    "config_directory",
-    "environment_text",
+    "find_instruction_file",
     "find_instructions",
-    "first_in_directory",
+    "find_project_directories",
+    "format_environment",
     "format_instructions",
+    "get_config_directory",
     "load_prompt",
-    "project_directories",
     "read_instruction_file",
+    "read_named_instruction_file",
     "select_family",
 ]

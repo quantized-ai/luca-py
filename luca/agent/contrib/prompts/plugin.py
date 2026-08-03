@@ -6,6 +6,11 @@ project's own `LUCA.md` / `AGENTS.md` / `CLAUDE.md`.
 
 Two plugins rather than one with flags: an application that wants a project's
 instructions but its own persona installs only the second.
+
+Every part builder is a PUBLIC method, so the extension model is "subclass and
+override one method" — override `family_part` to ship your own per-model text,
+or `instructions_part` to change how the files are framed, without
+reimplementing the plugin.
 """
 
 from __future__ import annotations
@@ -17,12 +22,12 @@ from pathlib import Path
 
 from luca.agent.core import AgentSession, SystemPromptPart
 
-from .environment import environment_text
+from .environment import format_environment
 from .instructions import (
     MAX_INSTRUCTION_BYTES,
     InstructionFile,
     find_instructions,
-    project_directories,
+    find_project_directories,
 )
 from .selection import BASE, load_prompt, select_family
 
@@ -61,31 +66,35 @@ class SystemPromptPlugin:
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.environment = environment
-        self._today = today
+        self.today = today
         # Once at construction, not once per LLM call: this is a filesystem
         # walk and the answer cannot change within a session.
-        self.is_git_repo = (project_directories(self.workspace)[0] / ".git").exists()
+        self.is_git_repo = (find_project_directories(self.workspace)[0] / ".git").exists()
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list:
-        parts = [self._base_part, self._family_part]
-        return [*parts, self._environment_part] if self.environment else parts
+        parts = [self.base_part, self.family_part]
+        return [*parts, self.environment_part] if self.environment else parts
 
-    def _base_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+    def base_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+        """The persona every model gets. Override to replace it wholesale."""
         return SystemPromptPart(text=load_prompt(BASE), source="prompt")
 
-    def _family_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+    def family_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+        """The addendum for the session's current model family."""
         family = select_family(session.session_config.llm_config.model)
         return SystemPromptPart(text=load_prompt(family), source=f"prompt.{family}")
 
-    def _environment_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+    def environment_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart:
+        """Model, workspace, platform and date — resolved per call, since the
+        model can change mid-session and the date can roll over."""
         config = session.session_config.llm_config
         return SystemPromptPart(
-            text=environment_text(
+            text=format_environment(
                 workspace=self.workspace,
                 model=config.model,
                 provider=config.provider,
                 platform_name=platform.system(),
-                today=self._today or date.today(),
+                today=self.today or date.today(),
                 is_git_repo=self.is_git_repo,
             ),
             source="env",
@@ -113,13 +122,15 @@ class InstructionsPlugin:
         )
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list:
-        return [self._prompt_part]
+        return [self.instructions_part]
 
-    def _prompt_part(
+    def instructions_part(
         self,
         session: AgentSession,
         conversation_id: str,
     ) -> SystemPromptPart | None:
+        """The discovered files, or `None` when there were none. Override to
+        change how they are framed."""
         if not self.files:
             return None
         return SystemPromptPart(

@@ -52,6 +52,15 @@ Adding a family is one row in `FAMILIES` and one `text/<family>.md`.
 Both parts are **callables**, so a `/model` switch mid-session moves the prompt
 with it rather than leaving the session tuned for the model it started on.
 
+Every part builder is a public method, so the extension model is "subclass and
+override one":
+
+```python
+class HousePrompt(SystemPromptPlugin):
+    def family_part(self, session, conversation_id):
+        return SystemPromptPart(text=OUR_OWN_TUNING, source="house")
+```
+
 ## 2. The environment block
 
 ```
@@ -63,7 +72,7 @@ Platform: Darwin
 Today's date: 2026-08-03
 ```
 
-`environment_text()` is pure — the date, platform and git verdict are all
+`format_environment()` is pure — the date, platform and git verdict are all
 arguments — so it is testable against a literal. The plugin resolves the git
 question once at construction, not once per model call. Pass
 `environment=False` to withhold the block.
@@ -93,8 +102,12 @@ expansion is needed.
 **Without a git repository the walk is the workspace directory alone.** An
 unbounded walk upward reaches in from outside the project entirely.
 
-Nothing raises. An unreadable, undecodable or empty file is skipped and the
-rest still load.
+A **discovered** file is read leniently: unreadable, undecodable or empty, it
+is skipped and the rest still load. A file the config **names** is not. A path
+in `instructions` that does not resolve to a readable file raises
+`InstructionsError`, so a typo fails loudly instead of quietly contributing
+nothing. The TUI turns that into `luca: <path>: not a readable instruction
+file` and exit 1, the same as any other bad config value.
 
 ### The budget
 
@@ -127,6 +140,9 @@ capabilities → environment → project rules:
 | 3-6 | the tool plugins' blurbs | `model` / `skills` / … | -1 |
 | 7 | environment | `env` | 90 |
 | 8 | project instructions | `agents.md` | 100 |
+
+`instructions_part` is public too, so a subclass can reframe the files without
+reimplementing discovery.
 
 ## 5. In the TUI
 

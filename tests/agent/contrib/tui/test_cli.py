@@ -300,6 +300,22 @@ def test_the_config_env_var_is_honored_when_no_flag_is_given(tmp_path, monkeypat
     assert seen["model"] == "from-env"
 
 
+def test_an_instructions_entry_that_does_not_exist_exits_with_a_readable_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"instructions": ["typo.md"]}))
+    monkeypatch.setattr(AgentApp, "run", lambda self: pytest.fail("the app must not start"))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--faux"])
+
+    assert exit_info.value.code == 1
+    assert "not a readable instruction file" in capsys.readouterr().err
+
+
 def test_a_missing_config_file_exits_with_a_readable_error(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(AgentApp, "run", lambda self: pytest.fail("the app must not start"))

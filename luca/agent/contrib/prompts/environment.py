@@ -20,7 +20,7 @@ Today's date: {today}
 """.strip()
 
 
-def environment_text(
+def format_environment(
     *,
     workspace: str | os.PathLike[str],
     model: str,

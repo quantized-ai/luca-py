@@ -72,11 +72,12 @@ luca/agent/
 │   │   ├── __init__.py  # package surface: the two plugins + the pure helpers
 │   │   ├── selection.py # FAMILIES, select_family (model id only), load_prompt
 │   │   ├── text/        # base.md + anthropic/gpt/gemini/generic addenda
-│   │   ├── environment.py # environment_text — pure, every input injected
+│   │   ├── environment.py # format_environment — pure, every input injected
 │   │   ├── instructions.py # LUCA.md/AGENTS.md/CLAUDE.md, per-directory name
 │   │   │                #   precedence, git-root-bounded walk, byte budget
-│   │   └── plugin.py    # SystemPromptPlugin (callable parts, so /model moves
-│   │                    #   the prompt) + InstructionsPlugin
+│   │   └── plugin.py    # SystemPromptPlugin (callable PUBLIC part builders —
+│   │                    #   subclass and override one; /model moves the prompt)
+│   │                    #   + InstructionsPlugin
 │   └── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
 └── core/
     ├── __init__.py      # external surface: AgentSessionRunner, ToolRegistry, PreparedTool,

@@ -130,7 +130,8 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   entry; see [`skills/`](../skills/README.md).
 - `instructions` adds files to the discovered `LUCA.md` / `AGENTS.md` /
   `CLAUDE.md`, read last so they win. `~` is expanded and a relative entry
-  resolves against the workspace; see [`prompts/`](../prompts/README.md).
+  resolves against the workspace. An entry that does not resolve to a readable
+  file is an error, not a silent skip; see [`prompts/`](../prompts/README.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

@@ -107,6 +107,8 @@ async def test_math_tools_execute_against_the_live_session(math_tool, expected):
     assert result == ExecutionResult(content=[TextContent(text=expected)])
 
 
+# These assert on fragments rather than the whole prompt: the assembled string
+# also carries every other plugin's tool blurb, which these tests do not own.
 def _prompt(runner, model="anthropic/claude-sonnet-5"):
     runner.session.session_config.llm_config = LLMConfig(model=model, provider="openrouter")
     return runner.build_system_message(runner.main_conversation_id)
