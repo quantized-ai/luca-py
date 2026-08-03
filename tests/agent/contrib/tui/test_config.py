@@ -21,6 +21,7 @@ from luca.agent.contrib.tui.config import (
     ModelConfig,
     PermissionRule,
     RuntimeSettings,
+    ThemeSettings,
     _deep_merge,
     build_context_manager,
     build_permission_rules,
@@ -45,6 +46,35 @@ def _write(directory, payload):
 def test_a_partial_config_is_valid_and_defaults_the_rest():
     assert LucaConfig.model_validate({"model": {"model": "x"}}) == LucaConfig(
         model=ModelConfig(model="x"),
+    )
+
+
+def test_theme_name_is_a_strict_optional_config_section():
+    assert LucaConfig.model_validate({"theme": {"name": "nord"}}) == LucaConfig(
+        theme=ThemeSettings(name="nord"),
+    )
+
+
+def test_luca_schema_describes_the_theme_section():
+    schema = json.loads((Path(__file__).parents[4] / "luca.schema.json").read_text())
+
+    assert (
+        schema["properties"]["theme"],
+        schema["$defs"]["ThemeSettings"],
+    ) == (
+        {"$ref": "#/$defs/ThemeSettings"},
+        {
+            "additionalProperties": False,
+            "properties": {
+                "name": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "title": "Name",
+                }
+            },
+            "title": "ThemeSettings",
+            "type": "object",
+        },
     )
 
 
@@ -490,6 +520,7 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
         tmp_path,
         {
             "model": {"provider": "anthropic", "model": "claude-sonnet-5", "reasoning": "low"},
+            "theme": {"name": "textual-light"},
             "runtime": {"hard_max_steps": 42},
             "compaction": {"threshold": 0.66},
             "permissions": {"mode": "yolo"},
@@ -511,6 +542,7 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
     app = AgentApp(
         session,
         provider=FauxProvider(),
+        theme=config.theme.name,
         mode=config.permissions.mode.value,
         workspace=config.workspace,
         context_manager=build_context_manager(config, enabled=None, threshold=None, keep_turns=None),
@@ -532,3 +564,4 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
         assert app._context_manager.threshold == 0.66
         assert app.strategy.mode is PermissionMode.YOLO
         assert app.recommended_models == {"anthropic": ["claude-sonnet-5"]}
+        assert app.theme == "textual-light"

@@ -17,6 +17,7 @@ Usage:
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-streaming           # block-level rendering
+    uv run python main.py --theme nord             # override the Textual theme
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --no-skills              # ignore SKILL.md skills
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit

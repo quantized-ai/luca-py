@@ -26,22 +26,35 @@ class ApprovalScreen(ModalScreen[PromptOption]):
     #approval-dialog {
         width: 70%;
         max-width: 100;
-        height: auto;
-        max-height: 80%;
-        padding: 1 2;
+        height: 80%;
+        padding: 1 2 0 2;
         border: thick $primary;
         background: $surface;
     }
-    #approval-dialog Label {
+    #approval-title {
+        height: auto;
+        margin-bottom: 1;
+    }
+    #approval-details {
+        height: 1fr;
+        min-height: 3;
+        margin-bottom: 1;
+    }
+    #approval-details Label {
+        height: auto;
         margin-bottom: 1;
     }
     #approval-options {
         height: auto;
-        max-height: 20;
+        min-height: 3;
+        max-height: 50%;
     }
     #approval-options Button {
         width: 100%;
         margin-bottom: 1;
+    }
+    #approval-options Button.-last-option {
+        margin-bottom: 0;
     }
     """
 
@@ -61,20 +74,25 @@ class ApprovalScreen(ModalScreen[PromptOption]):
             title += f"  (step {prompt.step}/{prompt.total_steps})"
         with Container(id="approval-dialog"):
             yield Label(title, markup=False, id="approval-title")
-            if prompt.resources:
-                yield Label(
-                    "resources: " + ", ".join(prompt.resources),
-                    markup=False,
-                    id="approval-resources",
-                )
-            yield Label(prompt.preview, markup=False, id="approval-preview")
+            with VerticalScroll(id="approval-details"):
+                if prompt.resources:
+                    yield Label(
+                        "resources: " + ", ".join(prompt.resources),
+                        markup=False,
+                        id="approval-resources",
+                    )
+                yield Label(prompt.preview, markup=False, id="approval-preview")
             with VerticalScroll(id="approval-options"):
                 for index, option in enumerate(prompt.options):
                     yield Button(
                         Content(f"{index + 1}. {option.label}"),
                         id=f"approval-option-{index}",
+                        classes="-last-option" if index == len(prompt.options) - 1 else None,
                         variant=self._variant(option, index),
                     )
+
+    def on_mount(self) -> None:
+        self.query_one("#approval-options", VerticalScroll).focus()
 
     @staticmethod
     def _variant(option: PromptOption, index: int) -> str:

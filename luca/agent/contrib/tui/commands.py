@@ -154,6 +154,10 @@ async def _cmd_reasoning(app: AgentApp, arg: str) -> None:
     )
 
 
+async def _cmd_theme(app: AgentApp, arg: str) -> None:
+    app.action_change_theme()
+
+
 async def _cmd_new(app: AgentApp, arg: str) -> None:
     old_id = app.runner.session.id
     save_session(app.runner.session, app._session_dir)
@@ -189,6 +193,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("help", "", "show this help", _cmd_help),
     SlashCommand("model", "[provider:model]", "pick a provider then a model", _cmd_model),
     SlashCommand("reasoning", "[level]", "pick or set the reasoning level", _cmd_reasoning),
+    SlashCommand("theme", "", "choose the Textual theme", _cmd_theme),
     SlashCommand("compact", "", "summarize the history and continue", _cmd_compact),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_new),
     SlashCommand("quit", "", "save and exit", _cmd_quit),

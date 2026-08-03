@@ -1,11 +1,13 @@
 """Slash command behaviour, driven headless through the Pilot.
 
 `/model` drills down (pick a provider, then one of its models); `/reasoning`
-opens a single picker. Both switch directly when given an argument. Picker
-tests mirror the approval-modal pattern: submit the command, wait for the
-`PickerScreen`, drive it with arrow/enter/esc, then assert the whole
-`LLMConfig`.
+opens a single picker; `/theme` opens Textual's native theme palette. Model and
+reasoning both switch directly when given an argument. Picker tests mirror the
+approval-modal pattern: submit the command, wait for the `PickerScreen`, drive
+it with arrow/enter/esc, then assert the whole `LLMConfig`.
 """
+
+from textual.command import CommandPalette
 
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.cells import (
@@ -33,6 +35,7 @@ HELP_TEXT = "\n".join(
         "/help                    show this help",
         "/model [provider:model]  pick a provider then a model",
         "/reasoning [level]       pick or set the reasoning level",
+        "/theme                   choose the Textual theme",
         "/compact                 summarize the history and continue",
         "/new                     save and start a fresh conversation",
         "/quit                    save and exit",
@@ -79,6 +82,16 @@ async def test_help_lists_every_command(tmp_path):
         await pilot.pause()
 
         assert _notices(app) == [HELP_TEXT]
+
+
+async def test_theme_opens_textual_native_theme_palette(tmp_path):
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+
+    async with app.run_test() as pilot:
+        await submit(pilot, "/theme")
+        await wait_until(pilot, lambda: CommandPalette.is_open(app))
+
+        assert type(app.screen) is CommandPalette
 
 
 # ── /model ───────────────────────────────────────────────────────────────────

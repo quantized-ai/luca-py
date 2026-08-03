@@ -17,6 +17,8 @@ uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high --provi
 
 ### Contributing
 
+See CONTRIBUTING.md.
+
 Set up your env:
 
 ```bash

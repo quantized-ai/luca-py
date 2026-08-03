@@ -1,5 +1,7 @@
 Guidance for the `luca.agent` layer. Read this file whenever you're working in `luca/agent/` or `tests/agent/`.
 
+If you're working with the TUI, also read `luca/agent/contrib/tui/AGENTS.tui.md`.
+
 ## What this layer is
 
 `luca.agent` is the primary product: a full-featured, durable agent framework. Its central artifact is a single serializable `AgentSession` that captures a complete conversation history — messages, tool executions, reasoning, turn boundaries, compaction — and can be reloaded to resume exactly where it stopped.
@@ -66,10 +68,7 @@ luca/agent/
 │   │   │                #   discover_skills (nothing here raises for a bad skill)
 │   │   └── plugin.py    # SkillTool (the body, on demand) + SkillsPlugin
 │   │                    #   — needs the `skills` dependency group (PyYAML)
-│   ├── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
-│   └── tui/             # the Textual terminal UI (AgentApp + wiring + approval modal);
-│       │                #   Textual-free logic in approvals.py / render.py / sessions.py / wiring.py
-│       │                #   — needs the `tui` dependency group (a uv default group)
+│   └── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
 └── core/
     ├── __init__.py      # external surface: AgentSessionRunner, ToolRegistry, PreparedTool,
     │                    #   SystemPromptAssembler, all entry types, exceptions.
@@ -118,7 +117,6 @@ luca/agent/
                          #   entries, never the projection)
 
 tests/agent/             # all agent tests; mirrors core/ layout; contrib tests under tests/agent/contrib/
-main.py                  # runnable agent demo — launches the contrib TUI
 ```
 
 `contrib/` packages are library code, but deliberately *outside* the core
@@ -386,7 +384,7 @@ Three consequences worth stating separately:
 
 A call that is terminal at birth is persisted with a structured `error` and never reaches `decide()` (`approval_status` stays `None`); it still passes through the tool middleware pair.
 
-The batteries-included registries live in `luca/agent/contrib/simple_tool_registry/`: `SimpleToolRegistry(tools, permission_policy)` reproduces the classic preflight (resolve → validate → duck-typed `get_approval_context`, stored under `extras["approval_context"]`), delegates `decide()` to a `PermissionPolicy` (async `decide(session, tool_execution)`; `YoloPermissionPolicy` allows everything), and returns from `prepare()` a closure binding the validated arguments and the session; `ProxyToolRegistry(*registries)` composes registries (`get_tools` recomputes and caches a `{name → child}` route PER CONVERSATION — a child may withhold a tool from a subagent, so one shared route would be wrong routing in both directions; duplicate names raise). The proxy's `decide` and `prepare` resolve INDEPENDENTLY of that cache, warming it once from the children on a miss — a call left pending approval by a previous process now resolves on a fresh one, is gated by its owning child, and dispatches. That is a correctness requirement, not a convenience: once `prepare()` can resolve without the cache, the old blanket ALLOW-on-cache-miss becomes a permission bypass on a cold resume. ALLOW on a genuinely unresolvable name STAYS — `prepare()` then raises `ToolNotFound` and the call records the honest NOT_FOUND, where DENY would record REJECTED for a tool that never existed. Everything richer — modes, rules, resource globs, answer-decoupled interactive approval, the `ResourcePermissionToolMixin` — lives in `luca/agent/contrib/resource_permissions/` and is driven interactively by `main.py`.
+The batteries-included registries live in `luca/agent/contrib/simple_tool_registry/`: `SimpleToolRegistry(tools, permission_policy)` reproduces the classic preflight (resolve → validate → duck-typed `get_approval_context`, stored under `extras["approval_context"]`), delegates `decide()` to a `PermissionPolicy` (async `decide(session, tool_execution)`; `YoloPermissionPolicy` allows everything), and returns from `prepare()` a closure binding the validated arguments and the session; `ProxyToolRegistry(*registries)` composes registries (`get_tools` recomputes and caches a `{name → child}` route PER CONVERSATION — a child may withhold a tool from a subagent, so one shared route would be wrong routing in both directions; duplicate names raise). The proxy's `decide` and `prepare` resolve INDEPENDENTLY of that cache, warming it once from the children on a miss — a call left pending approval by a previous process now resolves on a fresh one, is gated by its owning child, and dispatches. That is a correctness requirement, not a convenience: once `prepare()` can resolve without the cache, the old blanket ALLOW-on-cache-miss becomes a permission bypass on a cold resume. ALLOW on a genuinely unresolvable name STAYS — `prepare()` then raises `ToolNotFound` and the call records the honest NOT_FOUND, where DENY would record REJECTED for a tool that never existed. Everything richer — modes, rules, resource globs, answer-decoupled interactive approval, the `ResourcePermissionToolMixin` — lives in `luca/agent/contrib/resource_permissions/`.
 
 ### Compaction
 
@@ -441,7 +439,7 @@ Two rules keep that from stranding anything, and both exist because `cancel()` i
 
 **Middleware stays conversation-blind** (§12 of the PRD, accepted): no hook receives a `conversation_id`, so an application middleware written for a single conversation gets wrong behavior with no error. Nothing in `luca/` implements a hook, so this is a missing capability rather than a broken one.
 
-Limits the implementation may rely on: a subagent is never compaction-checked (bound it with `subagent_hard_max_steps` instead). `post_message` reaches subagents too: a live child accepts posts into its open turn (the spawn prompt is its FIRST user message, not its only one), a finished child rejects them, and a mid-orchestration parent accepts as well — the post wakes it, and steering (including `stop_subagent`) is exactly what the wake is for. Nesting is a real knob: `subagents_max_depth=N` means main plus N levels of subagents (default 1; the TUI opts into 3).
+Limits the implementation may rely on: a subagent is never compaction-checked (bound it with `subagent_hard_max_steps` instead). `post_message` reaches subagents too: a live child accepts posts into its open turn (the spawn prompt is its FIRST user message, not its only one), a finished child rejects them, and a mid-orchestration parent accepts as well — the post wakes it, and steering (including `stop_subagent`) is exactly what the wake is for. Nesting is a real knob: `subagents_max_depth=N` means main plus N levels of subagents (default 1).
 
 ### Tool identity
 
@@ -517,7 +515,7 @@ It is always recomputed via `AgentSession.get_conversation_status(conversation_i
 
 `AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload — text, `id`, `signature` and `redacted` alike. `id` is the provider's identity for the reasoning ITEM (OpenAI's `rs_…`); `signature` its attestation over the content (Anthropic's signature, OpenAI's `encrypted_content`). The Responses API needs both to replay an item.
 
-Whether it goes back on the wire is the transport's call, and it turns on TWO facts. First the protocol: chat-completions hosts have no replay surface and drop reasoning outright, while Anthropic and the OpenAI Responses API replay the block verbatim. Second the producing model: an attestation is minted by one (provider, model) pair and refused by every other, so `ConversationProjector.project_assistant_message` copies `entry.llm_config`'s provider and model onto the projected client message and the transport drops any block whose provenance disagrees with the model being called (`BaseTransport._attestation_is_replayable`). That path is live — the TUI's `/model` switches models mid-session and the whole history is replayed to the new one. For the same reason `AssistantMessage.llm_config` records the EFFECTIVE model (`runner.effective_llm_config`), not the session's: a `build_model_string` middleware may route a turn elsewhere, and recording the session config would make provenance lie.
+Whether it goes back on the wire is the transport's call, and it turns on TWO facts. First the protocol: chat-completions hosts have no replay surface and drop reasoning outright, while Anthropic and the OpenAI Responses API replay the block verbatim. Second the producing model: an attestation is minted by one (provider, model) pair and refused by every other, so `ConversationProjector.project_assistant_message` copies `entry.llm_config`'s provider and model onto the projected client message and the transport drops any block whose provenance disagrees with the model being called (`BaseTransport._attestation_is_replayable`). That path is live whenever an application switches models mid-session and replays the whole history to the new one. For the same reason `AssistantMessage.llm_config` records the EFFECTIVE model (`runner.effective_llm_config`), not the session's: a `build_model_string` middleware may route a turn elsewhere, and recording the session config would make provenance lie.
 
 A `ThinkingContent` is therefore immutable once persisted; rewriting `thinking` in middleware invalidates the signature and the provider will reject the turn.
 
@@ -683,8 +681,6 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
 | `tests/agent/contrib/test_skills.py` | Self-scoped contrib tests: frontmatter parsing (incl. the `>` / `\|` block scalars real skills use), the skip-don't-raise rules, location precedence, the `skill` tool, the plugin surface — no runner |
 | `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
-| `tests/agent/contrib/tui/` | Self-scoped contrib tests: pure modules (`test_approvals.py`, `test_render.py`, `test_sessions.py`, `test_wiring.py`, `test_cli.py`, `test_config.py`, `test_context_bar.py`) + headless Pilot tests driving `AgentApp` with a scripted `FauxProvider` (`test_app*.py`); the directory skips itself when textual is missing |
-
 ## When in doubt
 
 | Question | Go to |
