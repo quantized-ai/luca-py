@@ -1,9 +1,11 @@
 """Agent composition for the TUI.
 
-`build_runner` reproduces the demo wiring in one place: the shell plugin's
-tools scoped to a workspace, the memory plugin, the three demo math tools,
-and ONE `PermissionStrategy` (built and seeded by `ShellAccessPlugin`)
-shared by every registry so a single approval gate serves everything.
+`build_runner` reproduces the demo wiring in one place: the prompt plugins
+(the model's base prompt, the environment, the project's instruction files),
+the shell plugin's tools scoped to a workspace, the memory plugin, the three
+demo math tools, and ONE `PermissionStrategy` (built and seeded by
+`ShellAccessPlugin`) shared by every registry so a single approval gate serves
+everything.
 
 `build_faux_provider` scripts an offline conversation (`--faux`) so the TUI
 can be exercised end-to-end with no key and no network — the same
@@ -19,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from luca.agent.contrib.memory import MemoryPlugin
 from luca.agent.contrib.plugins import PluginAgentSessionRunner
+from luca.agent.contrib.prompts import InstructionsPlugin, SystemPromptPlugin
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
@@ -94,13 +97,6 @@ class MultiplyTool(Tool):
         return str(args["a"] * args["b"])
 
 
-SYSTEM_PROMPT = (
-    "You're a helpful assistant. Use the provided tools for any arithmetic and "
-    "for any filesystem or shell work — don't compute results or invent file "
-    "contents yourself."
-)
-
-
 def default_model() -> LLMConfig:
     return LLMConfig(
         model="openai/gpt-5.4-mini",
@@ -165,6 +161,8 @@ def build_runner(
     subagents: bool = True,
     skills: bool = True,
     extra_skill_locations: list[str] | None = None,
+    instructions: bool = True,
+    extra_instructions: list[str] | None = None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
@@ -189,9 +187,14 @@ def build_runner(
         tools=[AddTool(), SubtractTool(), MultiplyTool()],
         permission_policy=strategy,
     )
-    plugins: list = [MemoryPlugin(), shell]
+    # First in the list, so the persona and the model addendum open the
+    # assembled prompt and every plugin's tool blurb follows them. The env and
+    # instruction parts carry positive priorities and sort to the tail.
+    plugins: list = [SystemPromptPlugin(workspace=workspace), MemoryPlugin(), shell]
     if skills_plugin is not None:
         plugins.append(skills_plugin)
+    if instructions:
+        plugins.append(InstructionsPlugin(workspace=workspace, extra=extra_instructions))
     if subagents:
         # Installing the plugin is not on its own enough: `subagents_enabled`
         # still has to be True on the session's RuntimeConfig. The capability
@@ -203,7 +206,6 @@ def build_runner(
         session,
         tool_registry=registry,
         plugins=plugins,
-        system_prompt_parts=[SYSTEM_PROMPT],
         provider=provider,
         context_manager=context_manager,
     )

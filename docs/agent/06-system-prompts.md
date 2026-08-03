@@ -111,4 +111,10 @@ runner = AgentSessionRunner(
 )
 ```
 
+## 6. Ready-made parts
+
+[`contrib/prompts`](contrib/prompts/README.md) ships two plugins built on this
+machinery: a base coding-agent prompt picked for the model's family plus an
+environment block, and the project's `LUCA.md` / `AGENTS.md` / `CLAUDE.md`.
+
 Next: [`07-middleware.md`](07-middleware.md).

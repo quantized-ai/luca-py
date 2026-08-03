@@ -179,4 +179,4 @@ subagents keeps Yolo.
 The demo wires all of this by default: `uv run python main.py`
 ([`tui/`](../tui/README.md)).
 
-Next: [`simple_context_manager/README.md`](../simple_context_manager/README.md).
+Next: [`skills/README.md`](../skills/README.md).

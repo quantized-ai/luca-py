@@ -492,6 +492,13 @@
       "title": "Extra Skill Locations",
       "type": "array"
     },
+    "instructions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Instructions",
+      "type": "array"
+    },
     "streaming": {
       "anyOf": [
         {

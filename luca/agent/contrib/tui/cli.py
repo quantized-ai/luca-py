@@ -12,6 +12,7 @@
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
+    uv run python -m luca.agent.contrib.tui --no-instructions   # ignore AGENTS.md
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
     uv run python -m luca.agent.contrib.tui \
@@ -28,6 +29,11 @@ Configuration layers, highest precedence first: CLI flags, then the nearest
 `--config <path>` (or the `LUCA_CONFIG_PATH` env var, which the flag overrides)
 REPLACES both file layers with the one named file. See `config.py` and the docs.
 
+The system prompt is assembled by `contrib/prompts`: a base prompt chosen for
+the model's family, an environment block, and the project's instruction files
+(`LUCA.md` / `AGENTS.md` / `CLAUDE.md`, one per directory from the git root down
+to the workspace). `--no-instructions` withholds the last of those.
+
 Sessions persist to `<session-id>.json` in the working directory after every
 run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
 the environment; `--faux` needs nothing — it plays back the scripted demo
@@ -42,6 +48,7 @@ from typing import get_args
 
 from pydantic import ValidationError
 
+from luca.agent.contrib.prompts import InstructionsError
 from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
 from luca.agent.core.models import AgentSession
 from luca.client.types import Reasoning
@@ -121,6 +128,13 @@ def arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Do not load SKILL.md skills (they are read from .claude/skills, .agents/skills "
         "and the ~ equivalents by default).",
+    )
+    parser.add_argument(
+        "--no-instructions",
+        dest="instructions",
+        action="store_false",
+        default=True,
+        help="Do not read the project's LUCA.md / AGENTS.md / CLAUDE.md into the system prompt.",
     )
     parser.add_argument(
         "--faux",
@@ -230,37 +244,42 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--pretty-print requires --conversation <id>.")
         print(pretty_print(load_session(args.conversation)))
         return
+    # Building the app is inside the try: composing it resolves the config's
+    # `instructions` paths, and a typo there has to exit readably like any
+    # other bad config value rather than traceback.
     try:
         config = load_luca_config(path=resolve_config_path(args.config))
         register_config_providers(config)
         session = build_session(args, config)
-    except LucaConfigError as exc:
+        provider = build_faux_provider() if args.faux else None
+        config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
+        app = AgentApp(
+            session,
+            provider=provider,
+            theme=pick(args.theme, config.theme.name, DEFAULT_THEME),
+            streaming=pick(args.streaming, config.streaming, True),
+            workspace=pick(args.workspace, config.workspace, "."),
+            mode=pick(args.mode, config_mode, "ask"),
+            context_manager=build_context_manager(
+                config,
+                provider=provider,
+                enabled=args.autocompact,
+                threshold=args.compact_threshold,
+                keep_turns=args.compact_keep_turns,
+            ),
+            additional_directories=config.additional_directories or None,
+            permission_rules=build_permission_rules(config) or None,
+            recommended_models=config.models or None,
+            subagents=args.subagents,
+            skills=args.skills,
+            extra_skill_locations=config.extra_skill_locations or None,
+            instructions=args.instructions,
+            extra_instructions=config.instructions or None,
+        )
+    except (LucaConfigError, InstructionsError) as exc:
         sys.stderr.write(f"luca: {exc}\n")
         raise SystemExit(1) from exc
 
-    provider = build_faux_provider() if args.faux else None
-    config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
-    app = AgentApp(
-        session,
-        provider=provider,
-        theme=pick(args.theme, config.theme.name, DEFAULT_THEME),
-        streaming=pick(args.streaming, config.streaming, True),
-        workspace=pick(args.workspace, config.workspace, "."),
-        mode=pick(args.mode, config_mode, "ask"),
-        context_manager=build_context_manager(
-            config,
-            provider=provider,
-            enabled=args.autocompact,
-            threshold=args.compact_threshold,
-            keep_turns=args.compact_keep_turns,
-        ),
-        additional_directories=config.additional_directories or None,
-        permission_rules=build_permission_rules(config) or None,
-        recommended_models=config.models or None,
-        subagents=args.subagents,
-        skills=args.skills,
-        extra_skill_locations=config.extra_skill_locations or None,
-    )
     app.run()
     print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")
 

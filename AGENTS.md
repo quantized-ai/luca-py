@@ -80,6 +80,8 @@ The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `
 
 Skills (`<name>/SKILL.md`) are read from `.claude/skills`, `.agents/skills` and the `~` equivalents, plus any `extra_skill_locations` in the config; `--no-skills` turns that off. See [docs/agent/contrib/skills/README.md](docs/agent/contrib/skills/README.md).
 
+The system prompt is assembled per model: a base coding-agent prompt plus an addendum for the model's family, an environment block, and the project's instruction files (`LUCA.md`, then `AGENTS.md`, then `CLAUDE.md` — one per directory from the git root down to the workspace). `--no-instructions` turns the last part off; `instructions` in the config names extra files. See [docs/agent/contrib/prompts/README.md](docs/agent/contrib/prompts/README.md).
+
 Configuration is read from the nearest `luca.json` at or above the cwd (bounded by the repo) over `~/.config/luca/luca.json`. `--config <path>` (or `LUCA_CONFIG_PATH`, which the flag overrides) names one file to use INSTEAD of both — see [docs/agent/contrib/tui/config.md](docs/agent/contrib/tui/config.md).
 
 ## Code style (project-wide)

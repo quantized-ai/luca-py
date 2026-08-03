@@ -20,6 +20,7 @@ Usage:
     uv run python main.py --theme nord             # override the Textual theme
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --no-skills              # ignore SKILL.md skills
+    uv run python main.py --no-instructions        # ignore AGENTS.md
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
@@ -29,6 +30,9 @@ default with `uv sync`).
 
 Configuration comes from `./luca.json` over `~/.config/luca/luca.json`, unless
 `--config <path>` (or `LUCA_CONFIG_PATH`) names one file to use instead of both.
+
+The system prompt is picked for the model's family and carries the project's
+`LUCA.md` / `AGENTS.md` / `CLAUDE.md`; `--no-instructions` drops the latter.
 """
 
 from dotenv import load_dotenv

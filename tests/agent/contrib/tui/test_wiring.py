@@ -3,6 +3,7 @@
 import pytest
 
 from luca.agent.contrib.plugins import PluginAgentSessionRunner
+from luca.agent.contrib.prompts import BASE, load_prompt
 from luca.agent.contrib.resource_permissions import PermissionMode
 from luca.agent.contrib.tui.wiring import (
     AddTool,
@@ -13,7 +14,7 @@ from luca.agent.contrib.tui.wiring import (
 )
 from luca.agent.core import AgentSessionRunner as _Runner  # noqa: F401
 from luca.agent.core.context import CancellationToken
-from luca.agent.core.models import ExecutionResult, TextContent
+from luca.agent.core.models import ExecutionResult, LLMConfig, TextContent
 from luca.client.types import Tool as LucaTool
 from tests.agent.scenarios import (
     main_conversation,
@@ -104,6 +105,66 @@ async def test_math_tools_execute_against_the_live_session(math_tool, expected):
     )
 
     assert result == ExecutionResult(content=[TextContent(text=expected)])
+
+
+# These assert on fragments rather than the whole prompt: the assembled string
+# also carries every other plugin's tool blurb, which these tests do not own.
+def _prompt(runner, model="anthropic/claude-sonnet-5"):
+    runner.session.session_config.llm_config = LLMConfig(model=model, provider="openrouter")
+    return runner.build_system_message(runner.main_conversation_id)
+
+
+def test_the_base_prompt_opens_and_the_family_addendum_follows_the_model(tmp_path):
+    runner, _ = build_runner(fresh_session(), workspace=tmp_path)
+
+    claude = _prompt(runner, "anthropic/claude-sonnet-5")
+    gpt = _prompt(runner, "openai/gpt-5.4-mini")
+
+    assert claude.startswith(load_prompt(BASE))
+    assert load_prompt("anthropic") in claude
+    assert load_prompt("gpt") not in claude
+    assert load_prompt("gpt") in gpt
+    assert load_prompt("anthropic") not in gpt
+
+
+def test_the_project_instructions_are_the_last_thing_in_the_prompt(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("House rule: never use tabs.")
+
+    prompt = _prompt(build_runner(fresh_session(), workspace=tmp_path)[0])
+
+    assert prompt.endswith(f"--- {tmp_path / 'AGENTS.md'} ---\nHouse rule: never use tabs.")
+
+
+def test_no_instructions_withholds_the_project_rules(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("House rule: never use tabs.")
+
+    prompt = _prompt(build_runner(fresh_session(), workspace=tmp_path, instructions=False)[0])
+
+    assert "never use tabs" not in prompt
+
+
+def test_extra_instructions_are_read_too(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "conventions.md").write_text("Two spaces, always.")
+
+    runner, _ = build_runner(
+        fresh_session(),
+        workspace=tmp_path,
+        extra_instructions=["conventions.md"],
+    )
+
+    assert "Two spaces, always." in _prompt(runner)
+
+
+def test_the_environment_block_sits_between_the_tools_and_the_instructions(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("House rule.")
+
+    prompt = _prompt(build_runner(fresh_session(), workspace=tmp_path)[0])
+
+    assert prompt.index("### Shell access") < prompt.index("### Environment") < prompt.index("### Project instructions")
 
 
 def test_faux_provider_starts_unconsumed():

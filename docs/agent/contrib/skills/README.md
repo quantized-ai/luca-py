@@ -120,3 +120,5 @@ Needs the `skills` dependency group (PyYAML). It is a default group, so
 `allowed-tools` in frontmatter is parsed and ignored — restricting a skill's
 tool access is a separate capability. Skills are also not injected into subagent
 prompts, and there is no slash-command invocation.
+
+Next: [`prompts/README.md`](../prompts/README.md).

@@ -309,6 +309,8 @@ def workspace(tmp_path: Path, monkeypatch) -> Path:
     home = tmp_path / "home"
     root.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Instruction discovery reads the luca config directory, which XDG names.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     (root / "alpha.txt").write_text("alpha contents\n")
     (root / "beta.txt").write_text("beta contents\n")
     # Global, so its bundled files exercise the skill grant not the workspace one.

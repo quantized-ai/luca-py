@@ -40,11 +40,16 @@ def test_default_args():
     assert args.theme is None
     assert args.subagents is True
     assert args.skills is True
+    assert args.instructions is True
     assert args.config is None
 
 
 def test_no_skills_turns_skill_loading_off():
     assert arg_parser().parse_args(["--no-skills"]).skills is False
+
+
+def test_no_instructions_turns_agents_md_reading_off():
+    assert arg_parser().parse_args(["--no-instructions"]).instructions is False
 
 
 def test_the_config_flag_parses_as_a_path_string():
@@ -293,6 +298,22 @@ def test_the_config_env_var_is_honored_when_no_flag_is_given(tmp_path, monkeypat
     main(["--faux"])
 
     assert seen["model"] == "from-env"
+
+
+def test_an_instructions_entry_that_does_not_exist_exits_with_a_readable_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"instructions": ["typo.md"]}))
+    monkeypatch.setattr(AgentApp, "run", lambda self: pytest.fail("the app must not start"))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--faux"])
+
+    assert exit_info.value.code == 1
+    assert "not a readable instruction file" in capsys.readouterr().err
 
 
 def test_a_missing_config_file_exits_with_a_readable_error(tmp_path, monkeypatch, capsys):
