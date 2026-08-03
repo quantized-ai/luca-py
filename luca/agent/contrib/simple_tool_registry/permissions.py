@@ -73,4 +73,7 @@ class YoloPermissionPolicy(PermissionPolicy):
         session: AgentSession,
         tool_execution: ToolExecution,
     ) -> ApprovalDecision:
-        return ApprovalDecision(decision=ApprovalOption.ALLOW)
+        return ApprovalDecision(
+            decision=ApprovalOption.ALLOW,
+            metadata={"via": "yolo"},
+        )

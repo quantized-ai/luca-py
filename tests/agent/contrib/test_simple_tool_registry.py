@@ -415,6 +415,7 @@ async def test_yolo_policy_allows_every_execution():
     # test does not own.
     assert decision == ApprovalDecision(
         decision=ApprovalOption.ALLOW,
+        metadata={"via": "yolo"},
         created_at=decision.created_at,
     )
 
@@ -642,6 +643,7 @@ async def test_proxy_decide_allows_a_name_no_child_owns():
     # test does not own.
     assert decision == ApprovalDecision(
         decision=ApprovalOption.ALLOW,
+        metadata={"via": "unrouted"},
         created_at=decision.created_at,
     )
     assert policy.seen == []

@@ -308,7 +308,10 @@ class ProxyToolRegistry(ToolRegistry):
         if child is None:
             # Genuinely unresolvable: prepare() raises ToolNotFound and the
             # call records the honest NOT_FOUND rather than a false REJECTED.
-            return ApprovalDecision(decision=ApprovalOption.ALLOW)
+            return ApprovalDecision(
+                decision=ApprovalOption.ALLOW,
+                metadata={"via": "unrouted"},
+            )
         return await child.decide(session, conversation_id, tool_execution)
 
     async def prepare(

@@ -380,9 +380,12 @@ class ToolSpec(BaseModel):
 class ApprovalDecision(BaseModel):
     """One approval verdict for a whole tool call (per-call, all-or-nothing).
     Produced by the runner's `ToolRegistry.decide()` and appended to
-    `ToolExecution.approval_decisions`. How it was decided — modes, rules, a
-    human, a web service — is registry/application logic; `metadata` is
-    free-form provenance (e.g. {"via": "rule"}) the core never interprets."""
+    `ToolExecution.approval_decisions` — except on a toolless runner, which
+    synthesizes an ALLOW itself ({"via": "toolless_runner"}): there is no
+    gatekeeper, so nothing is gated, and the dispatch step records the honest
+    NOT_FOUND terminal. How it was decided — modes, rules, a human, a web
+    service — is registry/application logic; `metadata` is free-form
+    provenance (e.g. {"via": "rule"}) the core never interprets."""
 
     decision: ApprovalOption
     metadata: dict | None = None

@@ -4126,6 +4126,7 @@ class AgentSessionRunner:
         if self.tool_registry is None:
             decision = ApprovalDecision(
                 decision=ApprovalOption.ALLOW,
+                metadata={"via": "toolless_runner"},
                 created_at=self.now_ms(),
             )
         else:
