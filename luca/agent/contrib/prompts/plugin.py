@@ -24,7 +24,6 @@ from luca.agent.core import AgentSession, SystemPromptPart
 
 from .environment import format_environment
 from .instructions import (
-    MAX_INSTRUCTION_BYTES,
     InstructionFile,
     find_instructions,
     find_project_directories,
@@ -112,14 +111,8 @@ class InstructionsPlugin:
         extra: list[str] | None = None,
         *,
         config_dir: Path | None = None,
-        max_bytes: int = MAX_INSTRUCTION_BYTES,
     ) -> None:
-        self.files = find_instructions(
-            workspace,
-            extra,
-            config_dir=config_dir,
-            max_bytes=max_bytes,
-        )
+        self.files = find_instructions(workspace, extra, config_dir=config_dir)
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list:
         return [self.instructions_part]

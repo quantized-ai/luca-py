@@ -121,7 +121,6 @@ def find_instructions(
     extra: list[str] | None = None,
     *,
     config_dir: Path | None = None,
-    max_bytes: int = MAX_INSTRUCTION_BYTES,
 ) -> list[InstructionFile]:
     """Every instruction file that applies, least specific first. Relative
     `extra` entries resolve against the workspace, and each one must exist."""
@@ -140,4 +139,4 @@ def find_instructions(
         if file is not None and file.path.resolve() not in seen:
             seen.add(file.path.resolve())
             found.append(file)
-    return apply_budget(found, max_bytes)
+    return apply_budget(found, MAX_INSTRUCTION_BYTES)
