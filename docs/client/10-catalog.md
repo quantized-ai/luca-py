@@ -5,10 +5,39 @@ covering pricing, context window, and capability flags. It lives behind
 exactly **one** door — the helper — so the request path is never gated by
 catalog state.
 
-`luca/client/catalog/` ships with a small curated set of records
-generated from
-[`models.dev`](https://models.dev) covering OpenAI / Anthropic /
-OpenRouter.
+## Where the records come from
+
+[`models.dev`](https://models.dev), narrowed twice. Its one endpoint carries
+~180 providers and ~6,000 models; luca keeps the providers it has a transport
+for and, within those, the models an agent can actually drive — `tool_call`
+plus text in and text out, which drops the image, embedding and speech models.
+That is **449 records across 6 providers**.
+
+Two files, layered:
+
+| | |
+|---|---|
+| `luca/client/catalog/_data/models.json` | generated and shipped in the package. The offline floor — no import ever touches the network |
+| `$XDG_CACHE_HOME/luca/models.json` | written by a refresh, layered on top by `(provider, model)` |
+
+The cache adds and updates; it never subtracts. A missing, corrupt or
+partly-unreadable cache costs only the records it would have added, because
+`catalog.get` backs the compaction gauge and must not be able to fail.
+
+```bash
+python -m luca.client.catalog.refresh            # update the local cache
+python -m luca.client.catalog.refresh --vendor   # regenerate the shipped file
+uv run python main.py --refresh-models           # the same, from the TUI
+```
+
+> **The catalog is metadata, never a gate.** models.dev is not complete —
+> `openrouter/anthropic/claude-opus-4-8` works today and is not listed — so
+> `catalog.get` returning `None` means "no metadata", not "cannot be used".
+> A request for an unlisted model runs on provider defaults.
+
+Two providers are deliberately absent: `ollama`, whose models are whatever you
+pulled locally, and any custom host registered from config. Both are served by
+the `models` key in [`luca.json`](../agent/contrib/tui/config.md).
 
 ## Public surface
 

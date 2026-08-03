@@ -13,9 +13,19 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, OptionList
+from textual.widgets import Button, Input, Label, OptionList
 
 from .approvals import ApprovalPrompt, PromptOption
+
+# Keys a filterable picker hands to the option list instead of the filter input.
+NAVIGATION_KEYS = {
+    "up": "action_cursor_up",
+    "down": "action_cursor_down",
+    "home": "action_first",
+    "end": "action_last",
+    "pageup": "action_page_up",
+    "pagedown": "action_page_down",
+}
 
 
 class ApprovalScreen(ModalScreen[PromptOption]):
@@ -126,7 +136,13 @@ class PickerScreen(ModalScreen[str | None]):
 
     Pass `labels` when the row should read differently from the value it
     returns — a session picker shows a title and a timestamp but returns the
-    session id. Same length as `options`, positionally matched."""
+    session id. Same length as `options`, positionally matched.
+
+    Pass `filterable=True` for a list too long to arrow through — openrouter
+    alone contributes hundreds of models. Typing narrows the rows, and the
+    selected index resolves against what is VISIBLE, never against the full
+    list. `self._visible` is that mapping and is the whole reason filtering is
+    not just a display concern."""
 
     DEFAULT_CSS = """
     PickerScreen {
@@ -144,6 +160,9 @@ class PickerScreen(ModalScreen[str | None]):
     #picker-dialog Label {
         margin-bottom: 1;
     }
+    #picker-filter {
+        margin-bottom: 1;
+    }
     #picker-options {
         height: auto;
         max-height: 20;
@@ -157,36 +176,74 @@ class PickerScreen(ModalScreen[str | None]):
         *,
         current: str | None = None,
         labels: list[str] | None = None,
+        filterable: bool = False,
     ) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._current = current
         self._labels = labels
+        self._filterable = filterable
+        # Index into `_options` for each row currently on screen.
+        self._visible: list[int] = list(range(len(options)))
 
-    def compose(self) -> ComposeResult:
+    def _rows(self) -> list[str]:
+        """Every row's text, current-marked, in `_options` order."""
         rows = self._labels if self._labels is not None else self._options
-        labels = [
+        return [
             f"{row} (current)" if option == self._current else row
             for option, row in zip(self._options, rows, strict=True)
         ]
+
+    def compose(self) -> ComposeResult:
         with Container(id="picker-dialog"):
             yield Label(self._title, markup=False, id="picker-title")
-            yield OptionList(*labels, id="picker-options")
+            if self._filterable:
+                yield Input(placeholder="filter…", id="picker-filter")
+            yield OptionList(*self._rows(), id="picker-options")
 
     def on_mount(self) -> None:
         options = self.query_one("#picker-options", OptionList)
         options.highlighted = self._options.index(self._current) if self._current in self._options else 0
-        options.focus()
+        # The filter takes focus when there is one, so typing narrows the list
+        # instead of jumping the highlight around by first letter.
+        if self._filterable:
+            self.query_one("#picker-filter", Input).focus()
+        else:
+            options.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        event.stop()
+        needle = event.value.strip().lower()
+        rows = self._rows()
+        self._visible = [index for index, row in enumerate(rows) if needle in row.lower()]
+        options = self.query_one("#picker-options", OptionList)
+        options.clear_options()
+        options.add_options([rows[index] for index in self._visible])
+        if self._visible:
+            options.highlighted = 0
 
     def on_option_list_option_selected(
         self,
         event: OptionList.OptionSelected,
     ) -> None:
         event.stop()
-        self.dismiss(self._options[event.option_index])
+        self.dismiss(self._options[self._visible[event.option_index]])
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape":
             event.stop()
             self.dismiss(None)
+            return
+        if not self._filterable:
+            return
+        # The filter holds focus so typing narrows the list, which means every
+        # navigation key has to be handed on or the list becomes unreachable.
+        options = self.query_one("#picker-options", OptionList)
+        if event.key == "enter":
+            event.stop()
+            if options.highlighted is not None and self._visible:
+                self.dismiss(self._options[self._visible[options.highlighted]])
+        elif action := NAVIGATION_KEYS.get(event.key):
+            event.stop()
+            getattr(options, action)()

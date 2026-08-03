@@ -6,6 +6,7 @@
     uv run python -m luca.agent.contrib.tui --subagents-max-depth 1   # no nesting
     uv run python -m luca.agent.contrib.tui --subagents-max-per-turn 5
     uv run python -m luca.agent.contrib.tui --subagents-max-workers 3
+    uv run python -m luca.agent.contrib.tui --refresh-models    # update the model list
     uv run python -m luca.agent.contrib.tui --resume            # pick a past session
     uv run python -m luca.agent.contrib.tui --conversation <id> # resume it by id
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
@@ -57,6 +58,7 @@ from pydantic import ValidationError
 from luca.agent.contrib.prompts import InstructionsError
 from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
 from luca.agent.core.models import AgentSession
+from luca.client.catalog.refresh import main as refresh_catalog
 from luca.client.types import Reasoning
 
 from .app import DEFAULT_THEME, AgentApp
@@ -79,6 +81,11 @@ from .wiring import build_faux_provider, default_model, faux_model
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
     parser.add_argument("--conversation", help="Session id to load (<id>.json).")
+    parser.add_argument(
+        "--refresh-models",
+        action="store_true",
+        help="Pull the model catalog from models.dev into the local cache, then exit.",
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -254,6 +261,10 @@ def build_session(
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
+    if args.refresh_models:
+        # An explicit empty argv: the refresh has its own parser, and letting it
+        # fall through to sys.argv would hand it this command's flags.
+        raise SystemExit(refresh_catalog([]))
     if args.pretty_print and not args.conversation:
         parser.error("--pretty-print requires --conversation <id>.")
     # Building the app is inside the try: composing it resolves the config's

@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, get_args
 
 from luca.agent.core.models import LLMConfig
 from luca.agent.core.runner import AgentSessionRunner
+from luca.client import catalog
+from luca.client.providers import PROVIDERS
 from luca.client.types import Reasoning
 
 from .screens import PickerScreen
 from .sessions import SessionSummary, list_sessions, load_session, save_session
-from .wiring import RECOMMENDED_MODELS
 
 if TYPE_CHECKING:
     from .app import AgentApp
@@ -40,6 +41,26 @@ class SlashCommand:
     usage: str  # argument hint shown by /help, e.g. "[provider:model]"
     summary: str
     handler: Callable[[AgentApp, str], Awaitable[None]]
+
+
+def pickable_models(configured: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """Provider → models for the `/model` picker.
+
+    The catalog decides what there is, intersected with the provider registry
+    so a host luca has no transport for never appears — picking one would fail
+    every request. `configured` is the `models` map from luca.json, unioned on
+    top: it is the only route for a custom host or a local one, since neither
+    is in models.dev.
+
+    Never a gate. `/model provider:model` still switches to anything, which
+    matters because models.dev is not complete."""
+    models: dict[str, list[str]] = {}
+    for record in catalog.list():
+        if record.provider in PROVIDERS and record.model is not None:
+            models.setdefault(record.provider, []).append(record.model)
+    for provider, listed in (configured or {}).items():
+        models[provider] = sorted(set(models.get(provider, [])) | set(listed))
+    return {provider: sorted(entries) for provider, entries in sorted(models.items())}
 
 
 def _current_model_line(cfg: LLMConfig) -> str:
@@ -84,8 +105,7 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
     # model, and Esc at either step changes nothing. The model step carries a
     # "back" entry that returns to the provider step with that provider still
     # highlighted, so the provider choice can be changed without starting over.
-    # A luca.json `models` map overrides the built-in list.
-    models = getattr(app, "recommended_models", None) or RECOMMENDED_MODELS
+    models = pickable_models(getattr(app, "recommended_models", None))
 
     def open_provider_step(highlight: str | None) -> None:
         app.push_screen(
@@ -115,8 +135,10 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
         app.push_screen(
             PickerScreen(
                 f"Select a model ({provider})",
-                [*models[provider], _BACK],
+                [*models.get(provider, ()), _BACK],
                 current=cfg.model,
+                # openrouter alone contributes hundreds; arrowing is not an option
+                filterable=True,
             ),
             picked_model,
         )

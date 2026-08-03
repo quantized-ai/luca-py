@@ -18,11 +18,14 @@ from luca.agent.contrib.tui.cells import (
     NoticeCell,
     UserCell,
 )
+from luca.agent.contrib.tui.commands import pickable_models
 from luca.agent.contrib.tui.screens import PickerScreen
 from luca.agent.contrib.tui.sessions import save_session
-from luca.agent.contrib.tui.wiring import RECOMMENDED_MODELS
+from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
+from luca.client import catalog
+from luca.client.providers import PROVIDERS
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from tests.agent.scenarios import (
     GATED_SESSION,
@@ -104,8 +107,8 @@ async def test_theme_opens_textual_native_theme_palette(tmp_path):
 
 async def test_model_drills_down_provider_then_model(tmp_path):
     # provider step highlights index 0 (anthropic); model step index 0.
-    provider = next(iter(RECOMMENDED_MODELS))
-    model = RECOMMENDED_MODELS[provider][0]
+    provider = next(iter(pickable_models()))
+    model = pickable_models()[provider][0]
     app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
     async with app.run_test() as pilot:
         await submit(pilot, "/model")
@@ -120,8 +123,8 @@ async def test_model_drills_down_provider_then_model(tmp_path):
 
 async def test_model_arrows_through_both_steps(tmp_path):
     # provider index 1, then model index 1 within that provider.
-    provider = list(RECOMMENDED_MODELS)[1]
-    model = RECOMMENDED_MODELS[provider][1]
+    provider = list(pickable_models())[1]
+    model = pickable_models()[provider][1]
     app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
     async with app.run_test() as pilot:
         await submit(pilot, "/model")
@@ -139,8 +142,8 @@ async def test_model_arrows_through_both_steps(tmp_path):
 async def test_model_back_returns_to_provider_step_then_reselects(tmp_path):
     # "end" jumps to the last model-step option, which is "← Back to providers".
     # Choosing it lands back on the provider step; then pick provider 1, model 0.
-    provider = list(RECOMMENDED_MODELS)[1]
-    model = RECOMMENDED_MODELS[provider][0]
+    provider = list(pickable_models())[1]
+    model = pickable_models()[provider][0]
     app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
     async with app.run_test() as pilot:
         await submit(pilot, "/model")
@@ -531,3 +534,61 @@ async def test_compact_with_a_manager_that_cannot_compact_reports_a_turn_failure
             "compaction errored",
             "turn failed: ",
         ]
+
+
+# ── what the /model picker is allowed to offer ───────────────────────────────
+
+
+def test_the_picker_offers_only_providers_luca_can_route_to():
+    offered = set(pickable_models())
+
+    assert offered <= set(PROVIDERS)
+    assert "anthropic" in offered
+    assert "openrouter" in offered
+    # models.dev carries google, but there is no google transport, so offering
+    # it would be a dead end
+    assert "google" not in offered
+
+
+def test_a_configured_host_is_unioned_in_even_though_models_dev_lacks_it():
+    # `quantized` is a custom OpenAI-compatible host; the `models` key in
+    # luca.json is its only route into the picker
+    offered = pickable_models({"quantized": ["anthropic/claude-opus-4.6"]})
+
+    assert offered["quantized"] == ["anthropic/claude-opus-4.6"]
+
+
+def test_configured_models_extend_a_provider_rather_than_replacing_it():
+    offered = pickable_models({"anthropic": ["claude-unreleased"]})
+
+    assert "claude-unreleased" in offered["anthropic"]
+    assert "claude-fable-5" in offered["anthropic"]
+
+
+def test_the_default_model_is_one_the_catalog_knows():
+    # a default models.dev no longer lists should fail the build, not the user
+    default = default_model()
+
+    assert catalog.get(default.provider, default.model) is not None
+
+
+async def test_a_model_id_containing_a_colon_survives_the_argument_form(tmp_path):
+    # bedrock ids look like `amazon.nova-2-lite-v1:0`, so the split has to be
+    # on the FIRST colon only
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/model bedrock:amazon.nova-2-lite-v1:0")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(model="amazon.nova-2-lite-v1:0", provider="bedrock")
+
+
+async def test_a_model_models_dev_does_not_list_is_still_selectable(tmp_path):
+    # openrouter really serves this one; the catalog is metadata, not a gate
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/model openrouter:anthropic/claude-opus-4-8")
+        await pilot.pause()
+
+        assert catalog.get("openrouter", "anthropic/claude-opus-4-8") is None
+        assert _config(app) == LLMConfig(model="anthropic/claude-opus-4-8", provider="openrouter")

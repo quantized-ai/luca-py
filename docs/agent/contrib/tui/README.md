@@ -131,6 +131,7 @@ typo) is sent to the agent as a normal message, so nothing is swallowed.
 | `/model [provider:model]` | No arg drills down: pick a provider, then one of its models. `provider:model` switches both, a bare id switches only the model. Takes effect next turn |
 | `/reasoning [level]` | No arg opens a picker of the reasoning levels; an arg sets it directly |
 | `/compact` | Summarize the history and continue on a new conversation ([12](../../12-compaction.md)). Needs a `context_manager=` on the app that implements `compact()`; with the accounting-only default the drive reports a turn failure |
+| `/model` | Pick a provider, then a model. Providers come from the catalog intersected with the transports luca has; the model step filters as you type, since openrouter alone lists hundreds. `/model provider:model` still switches to anything, listed or not |
 | `/new` | Save the current session, then start a fresh one with the same model and an empty transcript. The old one stays in the store |
 | `/resume` | Pick another session for this project and switch to it, replaying its transcript. The one being left is saved first, unless it is still empty |
 | `/quit` | Save and exit (same as `Ctrl+D`) |

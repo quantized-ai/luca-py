@@ -76,6 +76,8 @@ Tests are declarative: precondition → one action → postcondition. No logic, 
 
 Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual TUI in `luca/agent/contrib/tui` (streaming by default). Run `uv run python --help` for more.
 
+Model metadata (context windows, pricing, capabilities) comes from [models.dev](https://models.dev), vendored in `luca/client/catalog/_data/models.json` and refreshable with `--refresh-models`. It is metadata, never a gate: an unlisted model still runs. See [docs/client/10-catalog.md](docs/client/10-catalog.md).
+
 The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `.env` — except with `--faux`. Sessions persist to `~/.luca/projects/<encoded-project-path>/<session-id>.json`, one directory per project; `--resume` (or `/resume`) picks one back up, and `sessions.directory` in the config moves the root.
 
 Skills (`<name>/SKILL.md`) are read from `.claude/skills`, `.agents/skills` and the `~` equivalents, plus any `extra_skill_locations` in the config; `--no-skills` turns that off. See [docs/agent/contrib/skills/README.md](docs/agent/contrib/skills/README.md).
