@@ -25,6 +25,7 @@ from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from tests.agent.scenarios import (
+    GATED_SESSION,
     FakeContextManager,
     main_conversation,
 )
@@ -391,6 +392,42 @@ async def test_resume_saves_the_conversation_it_is_leaving(tmp_path):
         await _picker_closed(pilot, app)
 
         assert (tmp_path / f"{leaving}.json").exists()
+
+
+async def test_resume_picks_up_a_session_that_was_left_mid_turn(tmp_path, monkeypatch):
+    # quitting at an approval modal persists a non-idle session. `--conversation`
+    # drives it on mount; `/resume` reaching the same file must too, or the turn
+    # sits frozen with no modal and no way forward but sending a new message.
+    started: list[str] = []
+    monkeypatch.setattr(AgentApp, "_start_drive", lambda self: started.append("drive"))
+    gated = GATED_SESSION.model_copy(deep=True)
+    save_session(gated, tmp_path)
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("enter")
+        await _picker_closed(pilot, app)
+
+        assert app.runner.session.id == gated.id
+        assert app.runner.idle() is False
+        assert started == ["drive"]
+
+
+async def test_resume_into_an_idle_session_just_focuses_the_prompt(tmp_path, monkeypatch):
+    # a stored session with nothing pending — `with_user_message` would leave a
+    # trailing unanswered message, which the runner rightly wants to drive
+    started: list[str] = []
+    monkeypatch.setattr(AgentApp, "_start_drive", lambda self: started.append("drive"))
+    save_session(fresh_session(), tmp_path)
+    app = AgentApp(fresh_session(), workspace=tmp_path, session_dir=tmp_path)
+    async with app.run_test() as pilot:
+        await submit(pilot, "/resume")
+        await _picker_titled(pilot, app, "Resume")
+        await pilot.press("enter")
+        await _picker_closed(pilot, app)
+
+        assert started == []
 
 
 async def test_new_preserves_the_runtime_config(tmp_path):
