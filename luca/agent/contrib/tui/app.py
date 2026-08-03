@@ -150,6 +150,8 @@ class AgentApp(App):
         subagents: bool = True,
         skills: bool = True,
         extra_skill_locations: list[str] | None = None,
+        instructions: bool = True,
+        extra_instructions: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.theme = theme
@@ -165,6 +167,8 @@ class AgentApp(App):
         self._subagents = subagents
         self._skills = skills
         self._extra_skill_locations = extra_skill_locations
+        self._instructions = instructions
+        self._extra_instructions = extra_instructions
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
         # True while the drive worker is alive. The worker group is
@@ -655,6 +659,8 @@ class AgentApp(App):
             subagents=self._subagents,
             skills=self._skills,
             extra_skill_locations=self._extra_skill_locations,
+            instructions=self._instructions,
+            extra_instructions=self._extra_instructions,
         )
 
     async def _reset_session(self, session: AgentSession) -> None:

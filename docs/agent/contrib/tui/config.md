@@ -106,6 +106,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     ".opencode/skills/",
     "~/.config/opencode/skills/"
   ],
+  "instructions": [              // extra instruction files, on top of AGENTS.md
+    "docs/conventions.md"
+  ],
   "streaming": true
 }
 ```
@@ -125,6 +128,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 - `extra_skill_locations` adds roots to scan for `<name>/SKILL.md`, on top of
   `.claude/skills`, `.agents/skills` and the `~` equivalents. `~` is expanded per
   entry; see [`skills/`](../skills/README.md).
+- `instructions` adds files to the discovered `LUCA.md` / `AGENTS.md` /
+  `CLAUDE.md`, read last so they win. `~` is expanded and a relative entry
+  resolves against the workspace; see [`prompts/`](../prompts/README.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 
@@ -133,3 +139,6 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 `--model`, `--provider`, `--reasoning`, `--theme`, `--workspace`, `--mode`,
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
 `--compact-threshold`, `--compact-keep-turns`.
+
+`--no-skills` and `--no-instructions` withhold skills and the project's
+instruction files entirely, whatever the config says.

@@ -25,6 +25,7 @@ from luca.agent.contrib.tools import Tool
 | [`tui/`](tui/README.md) | The Textual terminal UI — transcript, streaming, modal approvals, cancellation; the runnable demo behind `main.py` |
 | [`subagents/`](subagents/README.md) | The two subagent tools + `SubagentsPlugin` — parallel subagents, gated by depth and budget ([`13-subagents.md`](../13-subagents.md)) |
 | [`skills/`](skills/README.md) | `SKILL.md` instruction sets discovered from the Claude/Agent locations + `SkillsPlugin` — name and description in the prompt, body loaded on demand |
+| [`prompts/`](prompts/README.md) | `SystemPromptPlugin` (a base prompt picked for the model family, plus an environment block) and `InstructionsPlugin` (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`) |
 | [`simple_context_manager/`](simple_context_manager/README.md) | `SummarizingContextManager` — a ready-made compacting `ContextManager` (the context gauge + an LLM summary), with a `keep_turns` knob |
 | `memory` | An in-memory scratchpad + todo list packaged as `MemoryPlugin` — documented in [`09-plugins.md`](../09-plugins.md) |
 

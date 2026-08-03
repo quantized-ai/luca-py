@@ -88,6 +88,16 @@ def test_extra_skill_locations_default_to_empty():
     assert LucaConfig().extra_skill_locations == []
 
 
+def test_instructions_parse_as_a_list_of_strings():
+    config = LucaConfig.model_validate({"instructions": ["docs/conventions.md", "~/notes/style.md"]})
+
+    assert config.instructions == ["docs/conventions.md", "~/notes/style.md"]
+
+
+def test_instructions_default_to_empty():
+    assert LucaConfig().instructions == []
+
+
 def test_an_unknown_key_is_rejected():
     with pytest.raises(ValidationError):
         LucaConfig.model_validate({"nope": 1})

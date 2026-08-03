@@ -12,6 +12,7 @@
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
+    uv run python -m luca.agent.contrib.tui --no-instructions   # ignore AGENTS.md
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
     uv run python -m luca.agent.contrib.tui \
@@ -27,6 +28,11 @@ Configuration layers, highest precedence first: CLI flags, then the nearest
 (personal defaults), then the persisted session, then built-in defaults.
 `--config <path>` (or the `LUCA_CONFIG_PATH` env var, which the flag overrides)
 REPLACES both file layers with the one named file. See `config.py` and the docs.
+
+The system prompt is assembled by `contrib/prompts`: a base prompt chosen for
+the model's family, an environment block, and the project's instruction files
+(`LUCA.md` / `AGENTS.md` / `CLAUDE.md`, one per directory from the git root down
+to the workspace). `--no-instructions` withholds the last of those.
 
 Sessions persist to `<session-id>.json` in the working directory after every
 run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
@@ -121,6 +127,13 @@ def arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Do not load SKILL.md skills (they are read from .claude/skills, .agents/skills "
         "and the ~ equivalents by default).",
+    )
+    parser.add_argument(
+        "--no-instructions",
+        dest="instructions",
+        action="store_false",
+        default=True,
+        help="Do not read the project's LUCA.md / AGENTS.md / CLAUDE.md into the system prompt.",
     )
     parser.add_argument(
         "--faux",
@@ -260,6 +273,8 @@ def main(argv: list[str] | None = None) -> None:
         subagents=args.subagents,
         skills=args.skills,
         extra_skill_locations=config.extra_skill_locations or None,
+        instructions=args.instructions,
+        extra_instructions=config.instructions or None,
     )
     app.run()
     print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")
