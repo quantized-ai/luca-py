@@ -23,7 +23,7 @@ from luca.agent.core.runner import AgentSessionRunner
 from luca.client.types import Reasoning
 
 from .screens import PickerScreen
-from .sessions import save_session
+from .sessions import SessionSummary, list_sessions, load_session, save_session
 from .wiring import RECOMMENDED_MODELS
 
 if TYPE_CHECKING:
@@ -172,6 +172,42 @@ async def _cmd_new(app: AgentApp, arg: str) -> None:
     await app._notice(f"saved {old_id}, started new session {new.id}")
 
 
+def session_row(summary: SessionSummary) -> str:
+    """One picker row: when it was last touched, what it was about, how long."""
+    when = summary.modified.strftime("%Y-%m-%d %H:%M")
+    return f"{when}  {summary.title}  ({summary.turns} turns)"
+
+
+async def _cmd_resume(app: AgentApp, arg: str) -> None:
+    """Switch to another session in this project. The current one is saved
+    first, so nothing is lost by leaving it — unless it is still empty, which
+    is what `--resume` opens over, and writing that would litter the store with
+    a blank session on every launch."""
+    session = app.runner.session
+    if session.conversations[session.main_conversation_id].nodes:
+        save_session(session, app._session_dir)
+    summaries = list_sessions(app._session_dir)
+    if not summaries:
+        await app._notice("no saved sessions for this project yet")
+        return
+
+    async def picked(session_id: str | None) -> None:
+        if session_id is None or session_id == app.runner.session.id:
+            return
+        await app._reset_session(load_session(session_id, app._session_dir))
+        await app._notice(f"resumed session {session_id}")
+
+    app.push_screen(
+        PickerScreen(
+            "Resume a session",
+            [summary.id for summary in summaries],
+            current=app.runner.session.id,
+            labels=[session_row(summary) for summary in summaries],
+        ),
+        picked,
+    )
+
+
 async def _cmd_compact(app: AgentApp, arg: str) -> None:
     """Schedule a compaction, then drive it. Scheduling only writes the
     bracket and the entry — the summarization happens on the next drive, and
@@ -196,6 +232,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("theme", "", "choose the Textual theme", _cmd_theme),
     SlashCommand("compact", "", "summarize the history and continue", _cmd_compact),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_new),
+    SlashCommand("resume", "", "switch to another session in this project", _cmd_resume),
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )
 

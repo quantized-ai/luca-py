@@ -385,6 +385,26 @@
       "title": "RuntimeSettings",
       "type": "object"
     },
+    "SessionSettings": {
+      "additionalProperties": false,
+      "description": "Where sessions are stored. `directory` is the ROOT; the per-project\nsubdirectory is always appended under it.",
+      "properties": {
+        "directory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Directory"
+        }
+      },
+      "title": "SessionSettings",
+      "type": "object"
+    },
     "ThemeSettings": {
       "additionalProperties": false,
       "properties": {
@@ -439,6 +459,9 @@
     },
     "theme": {
       "$ref": "#/$defs/ThemeSettings"
+    },
+    "sessions": {
+      "$ref": "#/$defs/SessionSettings"
     },
     "runtime": {
       "$ref": "#/$defs/RuntimeSettings"

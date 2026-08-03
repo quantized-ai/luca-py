@@ -98,6 +98,14 @@ def test_instructions_default_to_empty():
     assert LucaConfig().instructions == []
 
 
+def test_the_sessions_directory_parses():
+    assert LucaConfig.model_validate({"sessions": {"directory": "~/somewhere"}}).sessions.directory == "~/somewhere"
+
+
+def test_the_sessions_directory_defaults_to_unset():
+    assert LucaConfig().sessions.directory is None
+
+
 def test_an_unknown_key_is_rejected():
     with pytest.raises(ValidationError):
         LucaConfig.model_validate({"nope": 1})

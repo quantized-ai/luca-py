@@ -10,7 +10,8 @@ tools are wired and the capability turned on for the session by default;
 Usage:
     uv run python main.py                          # start a fresh session
     uv run python main.py --faux                   # offline scripted demo, no key
-    uv run python main.py --conversation <id>      # resume <id>.json
+    uv run python main.py --resume                 # pick a past session
+    uv run python main.py --conversation <id>      # resume that session by id
     uv run python main.py --conversation <id> --fork  # branch into a new session
     uv run python main.py --no-subagents           # no parallel subagents
     uv run python main.py --subagents-max-depth 1  # no nesting (default 3)
@@ -24,8 +25,9 @@ Usage:
     uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
-except with `--faux`. Sessions persist to `<session-id>.json` in the current
-directory after every run. Requires the `tui` dependency group (installed by
+except with `--faux`. Sessions persist to
+`~/.luca/projects/<encoded-project-path>/<session-id>.json` after every run —
+one directory per project, so nothing is written next to your code. Requires the `tui` dependency group (installed by
 default with `uv sync`).
 
 Configuration comes from `./luca.json` over `~/.config/luca/luca.json`, unless

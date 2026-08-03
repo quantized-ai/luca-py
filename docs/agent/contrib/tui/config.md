@@ -109,6 +109,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   "instructions": [              // extra instruction files, on top of AGENTS.md
     "docs/conventions.md"
   ],
+  "sessions": {
+    "directory": "~/.luca/projects"  // the session store ROOT
+  },
   "streaming": true
 }
 ```
@@ -132,6 +135,10 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   `CLAUDE.md`, read last so they win. `~` is expanded and a relative entry
   resolves against the workspace. An entry that does not resolve to a readable
   file is an error, not a silent skip; see [`prompts/`](../prompts/README.md).
+- `sessions.directory` is the store ROOT, not the final directory: the encoded
+  project path is always appended under it, so two projects never share a
+  session list. Defaults to `~/.luca/projects`; see
+  [`tui/README.md`](README.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

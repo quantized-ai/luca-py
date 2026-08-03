@@ -122,7 +122,11 @@ class PickerScreen(ModalScreen[str | None]):
     cancel. `self._options` holds the values; the displayed row equals the value
     except the current one, which is shown with a "(current)" suffix. Selection
     maps back by index, so it returns the raw value. Dismisses with the chosen
-    string, or None on cancel."""
+    string, or None on cancel.
+
+    Pass `labels` when the row should read differently from the value it
+    returns — a session picker shows a title and a timestamp but returns the
+    session id. Same length as `options`, positionally matched."""
 
     DEFAULT_CSS = """
     PickerScreen {
@@ -152,14 +156,20 @@ class PickerScreen(ModalScreen[str | None]):
         options: list[str],
         *,
         current: str | None = None,
+        labels: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._current = current
+        self._labels = labels
 
     def compose(self) -> ComposeResult:
-        labels = [f"{opt} (current)" if opt == self._current else opt for opt in self._options]
+        rows = self._labels if self._labels is not None else self._options
+        labels = [
+            f"{row} (current)" if option == self._current else row
+            for option, row in zip(self._options, rows, strict=True)
+        ]
         with Container(id="picker-dialog"):
             yield Label(self._title, markup=False, id="picker-title")
             yield OptionList(*labels, id="picker-options")

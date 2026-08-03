@@ -7,7 +7,11 @@ import pytest
 from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import arg_parser, build_session, main
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
-from luca.agent.contrib.tui.sessions import save_session
+from luca.agent.contrib.tui.sessions import (
+    encode_project_path,
+    resolve_session_directory,
+    save_session,
+)
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
 from luca.agent.core.utils import pretty_print
@@ -46,6 +50,45 @@ def test_default_args():
 
 def test_no_skills_turns_skill_loading_off():
     assert arg_parser().parse_args(["--no-skills"]).skills is False
+
+
+def test_resume_is_off_unless_asked_for():
+    assert arg_parser().parse_args([]).resume is False
+    assert arg_parser().parse_args(["--resume"]).resume is True
+
+
+def test_resume_reaches_the_app(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, bool] = {}
+    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(resume=self._resume))
+
+    main(["--faux", "--resume"])
+
+    assert seen == {"resume": True}
+
+
+def test_the_session_store_is_the_project_directory_under_the_configured_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"sessions": {"directory": str(tmp_path / "store")}}))
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(directory=self._session_dir))
+
+    main(["--faux"])
+
+    assert seen == {"directory": tmp_path / "store" / encode_project_path(tmp_path)}
+
+
+def test_a_conversation_is_loaded_from_the_store_not_the_launch_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    session = fresh_session()
+    save_session(session, resolve_session_directory("."))
+    seen: dict[str, str] = {}
+    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(id=self.runner.session.id))
+
+    main(["--conversation", session.id])
+
+    assert seen == {"id": session.id}
+    assert not (tmp_path / f"{session.id}.json").exists()
 
 
 def test_no_instructions_turns_agents_md_reading_off():
@@ -222,7 +265,8 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
     main(["--faux"])
 
     out = capsys.readouterr().out
-    assert f"--conversation {seen['id']}" in out
+    assert "--resume" in out
+    assert seen["id"] in out
     assert "Goodbye!" in out
 
 
@@ -334,7 +378,9 @@ def test_pretty_print_writes_the_transcript_and_never_starts_the_app(
 ):
     monkeypatch.chdir(tmp_path)
     session = fresh_session()
-    save_session(session)
+    # into the project's store, not the cwd — which is what --pretty-print
+    # now has to look in
+    save_session(session, resolve_session_directory("."))
     monkeypatch.setattr(
         AgentApp,
         "run",

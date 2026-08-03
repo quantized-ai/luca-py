@@ -6,7 +6,8 @@
     uv run python -m luca.agent.contrib.tui --subagents-max-depth 1   # no nesting
     uv run python -m luca.agent.contrib.tui --subagents-max-per-turn 5
     uv run python -m luca.agent.contrib.tui --subagents-max-workers 3
-    uv run python -m luca.agent.contrib.tui --conversation <id> # resume <id>.json
+    uv run python -m luca.agent.contrib.tui --resume            # pick a past session
+    uv run python -m luca.agent.contrib.tui --conversation <id> # resume it by id
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
@@ -34,8 +35,12 @@ the model's family, an environment block, and the project's instruction files
 (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`, one per directory from the git root down
 to the workspace). `--no-instructions` withholds the last of those.
 
-Sessions persist to `<session-id>.json` in the working directory after every
-run. A real session needs a provider key (OPENROUTER_API_KEY by default) in
+Sessions persist to `~/.luca/projects/<encoded-project-path>/<session-id>.json`
+after every run — one directory per project, so nothing lands next to your code.
+`sessions.directory` in the config moves that root; the per-project
+subdirectory is always applied under it. `--resume` opens the picker on start,
+`/resume` opens it mid-session, and `--conversation <id>` still goes straight to
+one. A real session needs a provider key (OPENROUTER_API_KEY by default) in
 the environment; `--faux` needs nothing — it plays back the scripted demo
 conversation (one turn: a gated `multiply` call, then the wrap-up).
 """
@@ -44,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import get_args
 
 from pydantic import ValidationError
@@ -66,13 +72,18 @@ from .config import (
     resolve_llm_config,
     resolve_runtime_config,
 )
-from .sessions import fork_session, load_session
+from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
 
 
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
     parser.add_argument("--conversation", help="Session id to load (<id>.json).")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Open the session picker for this project on start (the same as /resume).",
+    )
     parser.add_argument(
         "--config",
         default=None,
@@ -192,10 +203,14 @@ def arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_session(args: argparse.Namespace, config: LucaConfig | None = None) -> AgentSession:
+def build_session(
+    args: argparse.Namespace,
+    config: LucaConfig | None = None,
+    session_dir: Path | None = None,
+) -> AgentSession:
     config = config or LucaConfig()
     if args.conversation:
-        session = load_session(args.conversation)
+        session = load_session(args.conversation, session_dir or ".")
         if args.fork:
             session = fork_session(session)
     else:
@@ -239,23 +254,31 @@ def build_session(args: argparse.Namespace, config: LucaConfig | None = None) ->
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
-    if args.pretty_print:
-        if not args.conversation:
-            parser.error("--pretty-print requires --conversation <id>.")
-        print(pretty_print(load_session(args.conversation)))
-        return
+    if args.pretty_print and not args.conversation:
+        parser.error("--pretty-print requires --conversation <id>.")
     # Building the app is inside the try: composing it resolves the config's
     # `instructions` paths, and a typo there has to exit readably like any
     # other bad config value rather than traceback.
     try:
         config = load_luca_config(path=resolve_config_path(args.config))
+        # Resolved once and threaded everywhere: `build_session` loads before
+        # the app exists, and `--pretty-print` never builds one at all.
+        store = resolve_session_directory(
+            pick(args.workspace, config.workspace, "."),
+            config.sessions.directory,
+        )
+        if args.pretty_print:
+            print(pretty_print(load_session(args.conversation, store)))
+            return
         register_config_providers(config)
-        session = build_session(args, config)
+        session = build_session(args, config, store)
         provider = build_faux_provider() if args.faux else None
         config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
         app = AgentApp(
             session,
             provider=provider,
+            session_dir=store,
+            resume=args.resume,
             theme=pick(args.theme, config.theme.name, DEFAULT_THEME),
             streaming=pick(args.streaming, config.streaming, True),
             workspace=pick(args.workspace, config.workspace, "."),
@@ -281,7 +304,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from exc
 
     app.run()
-    print(f"Goodbye! Resume session with `python main.py --conversation {app.runner.session.id}`")
+    print(f"Goodbye! Pick this session back up with `python main.py --resume` ({app.runner.session.id})")
 
 
 if __name__ == "__main__":

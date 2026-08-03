@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.core.models import AgentSession, LLMConfig, RuntimeConfig
+from luca.agent.core.models import AgentSession, LLMConfig, RuntimeConfig, TextContent, UserMessage
 from luca.agent.core.runner import AgentSessionRunner
 
 FAUX_MODEL = LLMConfig(model="fake-model", provider="faux")
@@ -20,6 +20,16 @@ FAUX_MODEL = LLMConfig(model="fake-model", provider="faux")
 
 def fresh_session(runtime_config: RuntimeConfig | None = None) -> AgentSession:
     return AgentSessionRunner.new_session(FAUX_MODEL, runtime_config=runtime_config)
+
+
+def with_user_message(text: str) -> AgentSession:
+    """A session carrying one user message — enough for the resume picker to
+    title it and for a replay to have something to draw."""
+    session = fresh_session()
+    entry = UserMessage(id="u1", created_at=1, parts=[TextContent(text=text)])
+    session.entries[entry.id] = entry
+    session.conversations[session.main_conversation_id].nodes.append(entry.id)
+    return session
 
 
 async def submit(pilot, text: str) -> None:
