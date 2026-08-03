@@ -112,6 +112,7 @@ from .sessions import save_session
 from .wiring import build_runner
 
 _CellT = TypeVar("_CellT", bound=TranscriptCell)
+DEFAULT_THEME = "nord"
 
 
 class AgentApp(App):
@@ -137,6 +138,7 @@ class AgentApp(App):
         session: AgentSession,
         *,
         provider=None,
+        theme: str = DEFAULT_THEME,
         workspace: str | os.PathLike[str] = ".",
         session_dir: str | os.PathLike[str] = ".",
         streaming: bool = True,
@@ -150,6 +152,7 @@ class AgentApp(App):
         extra_skill_locations: list[str] | None = None,
     ) -> None:
         super().__init__()
+        self.theme = theme
         self._session_dir = Path(session_dir)
         self._streaming = streaming
         self._workspace = workspace

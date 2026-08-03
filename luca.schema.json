@@ -385,6 +385,25 @@
       "title": "RuntimeSettings",
       "type": "object"
     },
+    "ThemeSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "title": "ThemeSettings",
+      "type": "object"
+    },
     "ToolKind": {
       "enum": [
         "read",
@@ -417,6 +436,9 @@
     },
     "model": {
       "$ref": "#/$defs/ModelConfig"
+    },
+    "theme": {
+      "$ref": "#/$defs/ThemeSettings"
     },
     "runtime": {
       "$ref": "#/$defs/RuntimeSettings"

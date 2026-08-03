@@ -9,6 +9,7 @@
     uv run python -m luca.agent.contrib.tui --conversation <id> # resume <id>.json
     uv run python -m luca.agent.contrib.tui --conversation <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
+    uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
     uv run python -m luca.agent.contrib.tui \
@@ -45,7 +46,7 @@ from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
 from luca.agent.core.models import AgentSession
 from luca.client.types import Reasoning
 
-from .app import AgentApp
+from .app import DEFAULT_THEME, AgentApp
 from .config import (
     LucaConfig,
     LucaConfigError,
@@ -146,6 +147,11 @@ def arg_parser() -> argparse.ArgumentParser:
         help="Shell workspace root (default: the current directory).",
     )
     parser.add_argument(
+        "--theme",
+        default=None,
+        help=f"Textual theme name (default: {DEFAULT_THEME}).",
+    )
+    parser.add_argument(
         "--mode",
         choices=["ask", "yolo", "auto"],
         default=None,
@@ -237,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
     app = AgentApp(
         session,
         provider=provider,
+        theme=pick(args.theme, config.theme.name, DEFAULT_THEME),
         streaming=pick(args.streaming, config.streaming, True),
         workspace=pick(args.workspace, config.workspace, "."),
         mode=pick(args.mode, config_mode, "ask"),

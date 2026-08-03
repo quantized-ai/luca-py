@@ -60,6 +60,10 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     "reasoning": "high"          // provider-default|none|minimal|low|medium|high|xhigh
   },
 
+  "theme": {
+    "name": "nord"               // Textual theme name
+  },
+
   "runtime": {                   // any RuntimeConfig knob (ms; -1 = disabled)
     "hard_max_steps": 40,
     "soft_max_steps": 30,
@@ -126,6 +130,6 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 
 ## CLI flags that override it
 
-`--model`, `--provider`, `--reasoning`, `--workspace`, `--mode`,
+`--model`, `--provider`, `--reasoning`, `--theme`, `--workspace`, `--mode`,
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
 `--compact-threshold`, `--compact-keep-turns`.

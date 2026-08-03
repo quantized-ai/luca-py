@@ -37,6 +37,7 @@ def test_default_args():
         None,
     )
     assert (args.workspace, args.mode) == (None, None)
+    assert args.theme is None
     assert args.subagents is True
     assert args.skills is True
     assert args.config is None
@@ -48,6 +49,10 @@ def test_no_skills_turns_skill_loading_off():
 
 def test_the_config_flag_parses_as_a_path_string():
     assert arg_parser().parse_args(["--config", "./ci.json"]).config == "./ci.json"
+
+
+def test_the_theme_flag_parses_as_a_textual_theme_name():
+    assert arg_parser().parse_args(["--theme", "textual-light"]).theme == "textual-light"
 
 
 def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
@@ -214,6 +219,47 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
     out = capsys.readouterr().out
     assert f"--conversation {seen['id']}" in out
     assert "Goodbye!" in out
+
+
+def test_theme_defaults_to_nord_during_app_construction(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["theme"] = self.theme
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    assert seen == {"theme": "nord"}
+
+
+def test_luca_json_theme_reaches_the_app(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"theme": {"name": "textual-light"}}))
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["theme"] = self.theme
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    assert seen == {"theme": "textual-light"}
+
+
+def test_theme_flag_overrides_luca_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"theme": {"name": "textual-light"}}))
+    seen: dict[str, str] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["theme"] = self.theme
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux", "--theme", "textual-dark"])
+
+    assert seen == {"theme": "textual-dark"}
 
 
 def test_the_config_flag_replaces_the_project_luca_json(tmp_path, monkeypatch):
