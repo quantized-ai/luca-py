@@ -490,12 +490,190 @@ def subagents_session() -> AgentSession:
     return session
 
 
+# Mention paths are stored ABSOLUTE, exactly as the live `prompt_files` handler
+# stores them — and rooted somewhere that can never be a home directory.
+# `render.mention_blocks` passes the path through `format.home_path`, which
+# resolves relative paths against the process cwd and contracts anything under
+# `~`; either would make this world render differently on every machine.
+WORKSPACE = "/quantized/luca"
+
+
+def mention(entry_id: str, text: str, path: str, lines: int, minutes: float) -> UserMessage:
+    """A user turn carrying an `@` mention: the typed words, plus one part per
+    inlined file. The mention part is annotated exactly as `prompt_files`
+    annotates it, so it renders as its own `▸ read` row and never as prose."""
+    return UserMessage(
+        id=entry_id,
+        created_at=at(minutes),
+        parts=[
+            TextContent(text=text),
+            TextContent(
+                text=f"<contents of {path}>",
+                metadata={"mention": {"path": path, "success": True, "lines": lines}},
+            ),
+        ],
+        context_tokens=1400,
+    )
+
+
+def planning_session() -> AgentSession:
+    """The fan-out shape: a mentioned file, a plan, and the plan's first step
+    carried out by two subagents at once — one reading, one editing."""
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": mention(
+            "u1",
+            "split @luca/store/reader.py into a reader and a writer",
+            f"{WORKSPACE}/luca/store/reader.py",
+            84,
+            0,
+        ),
+        "a1": assistant("a1", 0.2, thinking="sizing the split"),
+        "te_plan": call(
+            "te_plan",
+            "update_todos",
+            {
+                "todos": [
+                    {"content": "audit the reader and draft the split", "status": "in_progress"},
+                    {"content": "move the write path into writer.py", "status": "pending"},
+                    {"content": "update every import site", "status": "pending"},
+                    {"content": "backfill the tests", "status": "pending"},
+                ]
+            },
+            0.4,
+            result=text_result("plan updated"),
+            context_tokens=95,
+        ),
+        "a2": assistant(
+            "a2", 0.6, text="Step one, in parallel: one subagent audits the reader, one drafts the writer."
+        ),
+        "sp1": _spawn(
+            "sp1",
+            "audit the reader",
+            "Read the store module and report what belongs on the write path.",
+            0.7,
+        ),
+        "cc1": ChildConversation(
+            id="cc1",
+            created_at=at(0.7),
+            conversation_id="c2",
+            tool_execution_id="sp1",
+            execution_result=text_result("4 write-path methods identified"),
+            context_tokens=210,
+        ),
+        "sp2": _spawn("sp2", "draft the writer", "Create writer.py and move the write path into it.", 0.7),
+        "cc2": ChildConversation(
+            id="cc2",
+            created_at=at(0.7),
+            conversation_id="c3",
+            tool_execution_id="sp2",
+            execution_result=text_result("writer.py created, 2 files touched"),
+            context_tokens=180,
+        ),
+        "a3": assistant(
+            "a3",
+            8.4,
+            text="`writer.py` now owns the write path. Next: the import sites.",
+        ),
+        "tf1": finish(1, 8.6),
+        # c2 — the reading subagent
+        "u_c2": user("u_c2", "Read the store module and report what belongs on the write path.", 0.7),
+        "a_c2a": assistant("a_c2a", 0.9, thinking="reading the store"),
+        "te_c2a": call(
+            "te_c2a",
+            "read",
+            {"path": "luca/store/reader.py"},
+            1.1,
+            result=text_result(*[f"line {n}" for n in range(1, 85)]),
+            context_tokens=1900,
+        ),
+        "te_c2b": call(
+            "te_c2b",
+            "read",
+            {"path": "luca/store/schema.sql"},
+            1.9,
+            result=text_result(*[f"line {n}" for n in range(1, 32)]),
+            context_tokens=430,
+        ),
+        "te_c2c": call(
+            "te_c2c",
+            "grep",
+            {"pattern": "def append|def flush", "path": "luca/store"},
+            2.6,
+            result=text_result("Found 4 matches", "luca/store/reader.py:", "luca/store/__init__.py:"),
+            context_tokens=180,
+        ),
+        "a_c2b": assistant(
+            "a_c2b",
+            6.9,
+            text="`append`, `flush`, `_rotate` and `close` are the write path — all four live in `reader.py` today.",
+        ),
+        # c3 — the editing subagent
+        "u_c3": user("u_c3", "Create writer.py and move the write path into it.", 0.7),
+        "a_c3a": assistant("a_c3a", 0.9, thinking="drafting the module"),
+        "te_c3a": call(
+            "te_c3a",
+            "write",
+            {"path": "luca/store/writer.py"},
+            1.4,
+            result=text_result(
+                "created luca/store/writer.py",
+                diff="--- /dev/null\n+++ b\n+class Writer:\n+    def append(self, event):\n+        ...\n"
+                "+    def flush(self):\n+        ...\n+    def close(self):\n+        ...\n",
+            ),
+            seconds=0.3,
+            context_tokens=160,
+            approval_status=ApprovalStatus.ALLOWED,
+            extras={"approval_context": {"requests": [_edit_request().model_dump()]}},
+        ),
+        "te_c3b": call(
+            "te_c3b",
+            "edit",
+            {"path": "luca/store/__init__.py"},
+            2.2,
+            result=text_result(
+                "edited luca/store/__init__.py",
+                diff="--- a\n+++ b\n-from .reader import Reader, append, flush\n+from .reader import Reader\n"
+                "+from .writer import Writer\n",
+            ),
+            seconds=0.2,
+            context_tokens=70,
+            approval_status=ApprovalStatus.ALLOWED,
+            extras={"approval_context": {"requests": [_edit_request().model_dump()]}},
+        ),
+        "a_c3b": assistant(
+            "a_c3b", 7.8, text="`writer.py` holds the write path and `store/__init__.py` re-exports it."
+        ),
+    }
+    main = ["ts1", "u1", "a1", "te_plan", "a2", "sp1", "cc1", "sp2", "cc2", "a3", "tf1"]
+    session = make_session(
+        id="planning",
+        entries=entries,
+        conversations={
+            "c1": conversation("c1", main, created_at=T0, updated_at=at(8.6)),
+            "c2": conversation(
+                "c2", ["u_c2", "a_c2a", "te_c2a", "te_c2b", "te_c2c", "a_c2b"], depth=1, created_at=at(0.7)
+            ),
+            "c3": conversation("c3", ["u_c3", "a_c3a", "te_c3a", "te_c3b", "a_c3b"], depth=1, created_at=at(0.7)),
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {
+        "c1": {"a3": usage("c1", "a3", input=10_400, output=390, cache_read=26_000, cache_write=1_200)},
+        "c2": {"a_c2b": usage("c2", "a_c2b", input=5_800, output=240, cache_read=11_000)},
+        "c3": {"a_c3b": usage("c3", "a_c3b", input=4_900, output=310, cache_read=9_000)},
+    }
+    return session
+
+
 BUILDERS = {
     "empty": empty_session,
     "conversation": conversation_session,
     "approval": approval_session,
     "failures": failures_session,
     "subagents": subagents_session,
+    "planning": planning_session,
 }
 
 

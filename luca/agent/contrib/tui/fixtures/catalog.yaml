@@ -28,6 +28,12 @@
   screen: chat
   session: subagents
 
+# A mentioned file, a plan, and the plan's first step carried out by two
+# subagents at once — one reading, one editing.
+- name: chat/planning
+  screen: chat
+  session: planning
+
 - name: chat/failures
   screen: chat
   session: failures

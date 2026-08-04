@@ -309,6 +309,7 @@ def sessions_screen(scene: Scene) -> vm.ScreenState:
 # mtime: the catalog must not change because someone checked a fixture out.
 AGES_MINUTES: dict[str, int] = {
     "conversation": 18,
+    "planning": 42,
     "approval": 96,
     "failures": 191,
     "subagents": 320,

@@ -39,7 +39,7 @@ def test_every_authored_world_is_committed():
 
 
 def test_the_library_covers_the_states_that_matter():
-    assert sorted(LIBRARY) == ["approval", "conversation", "empty", "failures", "subagents"]
+    assert sorted(LIBRARY) == ["approval", "conversation", "empty", "failures", "planning", "subagents"]
 
 
 def test_an_unreadable_world_names_itself(tmp_path):
@@ -190,6 +190,7 @@ def test_the_sessions_screen_lists_the_whole_library_against_a_fixed_clock():
     sessions = SCREENS["sessions"](scene()).modal.sessions
     assert [(row.when, row.first_message) for row in sessions.rows] == [
         ("18m ago", "migrate the event store to sqlite"),
+        ("42m ago", "split @luca/store/reader.py into a reader and a writer"),
         ("2h ago", "add a --json flag to the events command"),
         ("3h ago", "clean the build directory and re-run the suite"),
         ("5h ago", "audit the docs and the tests for stale references"),
@@ -219,3 +220,49 @@ def test_a_world_never_shares_its_file_list_with_the_next_one():
 
 def test_the_approval_worlds_selection_moves_the_caret():
     assert SCREENS["approval"](scene("approval", selected=2)).approval.selected == 2
+
+
+# ── the plan fan-out (chat/planning) ──────────────────────────────────────────
+
+
+def test_a_mention_renders_as_its_own_read_row_under_the_user_turn():
+    blocks = SCREENS["chat"](scene("planning")).transcript
+    assert blocks[:2] == [
+        vm.UserBlock(text="split @luca/store/reader.py into a reader and a writer"),
+        vm.ToolBlock(
+            tool="read",
+            arg="/quantized/luca/luca/store/reader.py",
+            status="ok",
+            result=vm.ToolResult(summary="84 lines"),
+        ),
+    ]
+
+
+def test_the_mention_path_does_not_depend_on_where_you_run_from(monkeypatch, tmp_path):
+    """`home_path` resolves relative paths against the cwd and contracts
+    anything under `~`; the world stores an absolute path outside both."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    row = SCREENS["chat"](scene("planning")).transcript[1]
+    assert row.arg == "/quantized/luca/luca/store/reader.py"
+
+
+def test_the_plan_shows_its_first_step_active():
+    plan = next(b for b in SCREENS["chat"](scene("planning")).transcript if b.kind == "list")
+    assert plan == vm.ListBlock(
+        label="plan · 1 of 4",
+        rows=[
+            vm.ListRow(glyph="active", text="audit the reader and draft the split"),
+            vm.ListRow(glyph="pending", text="move the write path into writer.py"),
+            vm.ListRow(glyph="pending", text="update every import site"),
+            vm.ListRow(glyph="pending", text="backfill the tests"),
+        ],
+    )
+
+
+def test_the_first_plan_step_fans_out_into_two_tasks_one_reading_one_editing():
+    tasks = [b for b in SCREENS["chat"](scene("planning")).transcript if b.kind == "task"]
+    assert [(t.description, t.status, [c.tool for c in t.blocks if c.kind == "tool"]) for t in tasks] == [
+        ("audit the reader", "done", ["read", "read", "grep"]),
+        ("draft the writer", "done", ["write", "edit"]),
+    ]

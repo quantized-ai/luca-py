@@ -1,0 +1,903 @@
+{
+  "id": "planning",
+  "entries": {
+    "ts1": {
+      "id": "ts1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "turn_start",
+      "context_tokens": 0
+    },
+    "u1": {
+      "id": "u1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "user",
+      "context_tokens": 1400,
+      "parts": [
+        {
+          "type": "text",
+          "text": "split @luca/store/reader.py into a reader and a writer",
+          "metadata": {}
+        },
+        {
+          "type": "text",
+          "text": "<contents of /quantized/luca/luca/store/reader.py>",
+          "metadata": {
+            "mention": {
+              "path": "/quantized/luca/luca/store/reader.py",
+              "success": true,
+              "lines": 84
+            }
+          }
+        }
+      ]
+    },
+    "a1": {
+      "id": "a1",
+      "parent_id": null,
+      "created_at": 1700000012000,
+      "type": "assistant",
+      "context_tokens": 20,
+      "parts": [
+        {
+          "type": "thinking",
+          "thinking": "sizing the split",
+          "id": null,
+          "signature": null,
+          "redacted": false
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "tool_use"
+    },
+    "te_plan": {
+      "id": "te_plan",
+      "parent_id": null,
+      "created_at": 1700000024000,
+      "type": "tool_execution",
+      "context_tokens": 95,
+      "tool_call_id": "tc_te_plan",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_plan",
+        "name": "update_todos",
+        "arguments": {
+          "todos": [
+            {
+              "content": "audit the reader and draft the split",
+              "status": "in_progress"
+            },
+            {
+              "content": "move the write path into writer.py",
+              "status": "pending"
+            },
+            {
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "content": "backfill the tests",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      "tool_spec_id": "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "plan updated",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000024000,
+      "ended_at": 1700000024400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a2": {
+      "id": "a2",
+      "parent_id": null,
+      "created_at": 1700000036000,
+      "type": "assistant",
+      "context_tokens": 39,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Step one, in parallel: one subagent audits the reader, one drafts the writer.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "sp1": {
+      "id": "sp1",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "tool_execution",
+      "context_tokens": 60,
+      "tool_call_id": "tc_sp1",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_sp1",
+        "name": "task",
+        "arguments": {
+          "description": "audit the reader",
+          "prompt": "Read the store module and report what belongs on the write path."
+        }
+      },
+      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "task started",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "is_subagent_spawn": true,
+          "task_id": "sp1",
+          "description": "audit the reader",
+          "prompt": "Read the store module and report what belongs on the write path.",
+          "process_subagent_result_tool_name": "task_result"
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000042000,
+      "ended_at": 1700000042400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "cc1": {
+      "id": "cc1",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "child_conversation",
+      "context_tokens": 210,
+      "conversation_id": "c2",
+      "tool_execution_id": "sp1",
+      "execution_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "4 write-path methods identified",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "result_execution_id": null
+    },
+    "sp2": {
+      "id": "sp2",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "tool_execution",
+      "context_tokens": 60,
+      "tool_call_id": "tc_sp2",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_sp2",
+        "name": "task",
+        "arguments": {
+          "description": "draft the writer",
+          "prompt": "Create writer.py and move the write path into it."
+        }
+      },
+      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "task started",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "is_subagent_spawn": true,
+          "task_id": "sp2",
+          "description": "draft the writer",
+          "prompt": "Create writer.py and move the write path into it.",
+          "process_subagent_result_tool_name": "task_result"
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000042000,
+      "ended_at": 1700000042400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "cc2": {
+      "id": "cc2",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "child_conversation",
+      "context_tokens": 180,
+      "conversation_id": "c3",
+      "tool_execution_id": "sp2",
+      "execution_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "writer.py created, 2 files touched",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "result_execution_id": null
+    },
+    "a3": {
+      "id": "a3",
+      "parent_id": null,
+      "created_at": 1700000504000,
+      "type": "assistant",
+      "context_tokens": 35,
+      "parts": [
+        {
+          "type": "text",
+          "text": "`writer.py` now owns the write path. Next: the import sites.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "tf1": {
+      "id": "tf1",
+      "parent_id": null,
+      "created_at": 1700000516000,
+      "type": "turn_finish",
+      "context_tokens": 0,
+      "outcome": "completed",
+      "error": null
+    },
+    "u_c2": {
+      "id": "u_c2",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Read the store module and report what belongs on the write path.",
+          "metadata": {}
+        }
+      ]
+    },
+    "a_c2a": {
+      "id": "a_c2a",
+      "parent_id": null,
+      "created_at": 1700000054000,
+      "type": "assistant",
+      "context_tokens": 20,
+      "parts": [
+        {
+          "type": "thinking",
+          "thinking": "reading the store",
+          "id": null,
+          "signature": null,
+          "redacted": false
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "tool_use"
+    },
+    "te_c2a": {
+      "id": "te_c2a",
+      "parent_id": null,
+      "created_at": 1700000066000,
+      "type": "tool_execution",
+      "context_tokens": 1900,
+      "tool_call_id": "tc_te_c2a",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c2a",
+        "name": "read",
+        "arguments": {
+          "path": "luca/store/reader.py"
+        }
+      },
+      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31\nline 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52\nline 53\nline 54\nline 55\nline 56\nline 57\nline 58\nline 59\nline 60\nline 61\nline 62\nline 63\nline 64\nline 65\nline 66\nline 67\nline 68\nline 69\nline 70\nline 71\nline 72\nline 73\nline 74\nline 75\nline 76\nline 77\nline 78\nline 79\nline 80\nline 81\nline 82\nline 83\nline 84",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000066000,
+      "ended_at": 1700000066400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "te_c2b": {
+      "id": "te_c2b",
+      "parent_id": null,
+      "created_at": 1700000114000,
+      "type": "tool_execution",
+      "context_tokens": 430,
+      "tool_call_id": "tc_te_c2b",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c2b",
+        "name": "read",
+        "arguments": {
+          "path": "luca/store/schema.sql"
+        }
+      },
+      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000114000,
+      "ended_at": 1700000114400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "te_c2c": {
+      "id": "te_c2c",
+      "parent_id": null,
+      "created_at": 1700000156000,
+      "type": "tool_execution",
+      "context_tokens": 180,
+      "tool_call_id": "tc_te_c2c",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c2c",
+        "name": "grep",
+        "arguments": {
+          "pattern": "def append|def flush",
+          "path": "luca/store"
+        }
+      },
+      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Found 4 matches\nluca/store/reader.py:\nluca/store/__init__.py:",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000156000,
+      "ended_at": 1700000156400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a_c2b": {
+      "id": "a_c2b",
+      "parent_id": null,
+      "created_at": 1700000414000,
+      "type": "assistant",
+      "context_tokens": 44,
+      "parts": [
+        {
+          "type": "text",
+          "text": "`append`, `flush`, `_rotate` and `close` are the write path — all four live in `reader.py` today.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "u_c3": {
+      "id": "u_c3",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Create writer.py and move the write path into it.",
+          "metadata": {}
+        }
+      ]
+    },
+    "a_c3a": {
+      "id": "a_c3a",
+      "parent_id": null,
+      "created_at": 1700000054000,
+      "type": "assistant",
+      "context_tokens": 20,
+      "parts": [
+        {
+          "type": "thinking",
+          "thinking": "drafting the module",
+          "id": null,
+          "signature": null,
+          "redacted": false
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "tool_use"
+    },
+    "te_c3a": {
+      "id": "te_c3a",
+      "parent_id": null,
+      "created_at": 1700000084000,
+      "type": "tool_execution",
+      "context_tokens": 160,
+      "tool_call_id": "tc_te_c3a",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c3a",
+        "name": "write",
+        "arguments": {
+          "path": "luca/store/writer.py"
+        }
+      },
+      "tool_spec_id": "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62",
+      "extras": {
+        "approval_context": {
+          "requests": [
+            {
+              "resources": [
+                {
+                  "permission": "edit",
+                  "resource": "luca/events.py"
+                }
+              ],
+              "answer_options": [
+                {
+                  "resource_permissions": [
+                    {
+                      "permission": "edit",
+                      "resource": "luca/**"
+                    }
+                  ],
+                  "metadata": {
+                    "preview": "edits under luca/"
+                  }
+                }
+              ],
+              "metadata": {
+                "preview": "Apply this edit to [accent]luca/events.py[/]"
+              }
+            }
+          ]
+        }
+      },
+      "approval_status": "allowed",
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "created luca/store/writer.py",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {
+          "diff": "--- /dev/null\n+++ b\n+class Writer:\n+    def append(self, event):\n+        ...\n+    def flush(self):\n+        ...\n+    def close(self):\n+        ...\n"
+        },
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000084000,
+      "ended_at": 1700000084300,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "te_c3b": {
+      "id": "te_c3b",
+      "parent_id": null,
+      "created_at": 1700000132000,
+      "type": "tool_execution",
+      "context_tokens": 70,
+      "tool_call_id": "tc_te_c3b",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c3b",
+        "name": "edit",
+        "arguments": {
+          "path": "luca/store/__init__.py"
+        }
+      },
+      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "extras": {
+        "approval_context": {
+          "requests": [
+            {
+              "resources": [
+                {
+                  "permission": "edit",
+                  "resource": "luca/events.py"
+                }
+              ],
+              "answer_options": [
+                {
+                  "resource_permissions": [
+                    {
+                      "permission": "edit",
+                      "resource": "luca/**"
+                    }
+                  ],
+                  "metadata": {
+                    "preview": "edits under luca/"
+                  }
+                }
+              ],
+              "metadata": {
+                "preview": "Apply this edit to [accent]luca/events.py[/]"
+              }
+            }
+          ]
+        }
+      },
+      "approval_status": "allowed",
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "edited luca/store/__init__.py",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {
+          "diff": "--- a\n+++ b\n-from .reader import Reader, append, flush\n+from .reader import Reader\n+from .writer import Writer\n"
+        },
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000132000,
+      "ended_at": 1700000132200,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a_c3b": {
+      "id": "a_c3b",
+      "parent_id": null,
+      "created_at": 1700000468000,
+      "type": "assistant",
+      "context_tokens": 37,
+      "parts": [
+        {
+          "type": "text",
+          "text": "`writer.py` holds the write path and `store/__init__.py` re-exports it.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    }
+  },
+  "tool_specs": {
+    "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b": {
+      "name": "update_todos",
+      "description": "update_todos tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+      "name": "task",
+      "description": "task tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "is_subagent_spawn": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "is_subagent_spawn"
+        ]
+      },
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+      "name": "read",
+      "description": "read tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+      "name": "grep",
+      "description": "grep tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62": {
+      "name": "write",
+      "description": "write tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+      "name": "edit",
+      "description": "edit tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    }
+  },
+  "usages": {
+    "c1": {
+      "a3": {
+        "conversation_id": "c1",
+        "entry_id": "a3",
+        "input": 10400,
+        "output": 390,
+        "cache_read": 26000,
+        "cache_write": 1200,
+        "total_tokens": 0
+      }
+    },
+    "c2": {
+      "a_c2b": {
+        "conversation_id": "c2",
+        "entry_id": "a_c2b",
+        "input": 5800,
+        "output": 240,
+        "cache_read": 11000,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    },
+    "c3": {
+      "a_c3b": {
+        "conversation_id": "c3",
+        "entry_id": "a_c3b",
+        "input": 4900,
+        "output": 310,
+        "cache_read": 9000,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    }
+  },
+  "conversations": {
+    "c1": {
+      "id": "c1",
+      "nodes": [
+        "ts1",
+        "u1",
+        "a1",
+        "te_plan",
+        "a2",
+        "sp1",
+        "cc1",
+        "sp2",
+        "cc2",
+        "a3",
+        "tf1"
+      ],
+      "created_at": 1700000000000,
+      "updated_at": 1700000516000,
+      "previous_conversation_id": null,
+      "depth": 0
+    },
+    "c2": {
+      "id": "c2",
+      "nodes": [
+        "u_c2",
+        "a_c2a",
+        "te_c2a",
+        "te_c2b",
+        "te_c2c",
+        "a_c2b"
+      ],
+      "created_at": 1700000042000,
+      "updated_at": 500,
+      "previous_conversation_id": null,
+      "depth": 1
+    },
+    "c3": {
+      "id": "c3",
+      "nodes": [
+        "u_c3",
+        "a_c3a",
+        "te_c3a",
+        "te_c3b",
+        "a_c3b"
+      ],
+      "created_at": 1700000042000,
+      "updated_at": 500,
+      "previous_conversation_id": null,
+      "depth": 1
+    }
+  },
+  "main_conversation_id": "c1",
+  "session_config": {
+    "extras": {},
+    "llm_config": {
+      "extras": {},
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "reasoning": null
+    },
+    "runtime_config": {
+      "extras": {},
+      "builtin_client_completion_timeout_in_ms": -1,
+      "client_completion_timeout_in_ms": -1,
+      "tool_execution_timeout_in_ms": -1,
+      "llm_completion_cancellation_grace_period": 0,
+      "tool_cancellation_grace_period": 0,
+      "soft_max_steps": -1,
+      "hard_max_steps": -1,
+      "doom_loop_threshold": -1,
+      "subagents_enabled": false,
+      "subagents_max_depth": 1,
+      "subagents_max_per_turn": -1,
+      "subagents_max_workers": -1,
+      "subagent_soft_max_steps": null,
+      "subagent_hard_max_steps": null,
+      "wake_parent_on_subagent_completion": true,
+      "limit_tool_choice_on_soft_max_steps_reached": true,
+      "limit_tool_choice_on_doom_loop_flagged": true
+    }
+  }
+}
