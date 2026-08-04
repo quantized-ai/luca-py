@@ -8,23 +8,29 @@ two cannot drift.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 
 from luca.agent.core import declares_spawn
 from luca.agent.core.models import (
+    NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
     ChildConversation,
+    CompactionEntry,
     ContentPart,
+    Entry,
     ExecutionStatus,
     ImageContent,
     TextContent,
+    ThinkingContent,
     ToolExecution,
+    TurnFinish,
+    TurnOutcome,
     UserMessage,
 )
 
 from . import state as vm
-from .format import fmt_bytes, fmt_duration, home_path
+from .format import fmt_bytes, fmt_duration, fmt_tokens, home_path
 
 OUTPUT_HEAD_LINES = 8
 ARG_VALUE_MAX_CHARS = 80
@@ -182,6 +188,16 @@ def _duration_note(execution: ToolExecution) -> str | None:
     return fmt_duration(seconds) if seconds >= 1 else f"{seconds:.1f}s"
 
 
+def was_auto_approved(execution: ToolExecution) -> bool:
+    """The call passed through a permission gate (it carries an approval
+    context) and no user answer stands against it — so a rule decided it, and
+    the transcript has to say so. The live app narrows this further with the
+    answers it collected in THIS process; a stored session has only this."""
+    if execution.approval_status is None:
+        return False
+    return bool(execution.extras.get("approval_context"))
+
+
 def tool_block(
     execution: ToolExecution,
     result_text: str | None = None,
@@ -334,6 +350,168 @@ def child_links(session: AgentSession) -> Iterator[tuple[str, ChildConversation]
             entry = session.entries.get(node_id)
             if isinstance(entry, ChildConversation):
                 yield parent_id, entry
+
+
+def task_status(entry: ChildConversation) -> vm.TaskStatus:
+    """A subagent's settled status. THE LINK IS THE SOURCE OF TRUTH: a
+    cancelled subagent resolves without its result tool ever running, so the
+    link, not the tool, says how it ended."""
+    if entry.execution_result is None:
+        return "waiting"
+    return "failed" if entry.execution_result.is_error else "done"
+
+
+# ── a stored session as transcript blocks ─────────────────────────────────────
+
+# A terminal execution's model-facing result: `(text, is_error)`. Injected
+# rather than imported so this module never reaches for a runner — the app
+# passes its projector, a fixture generator passes a bare one.
+ResultResolver = Callable[[ToolExecution], tuple[str | None, bool]]
+
+
+def entry_blocks(
+    entry: Entry | None,
+    *,
+    resolve_result: ResultResolver | None = None,
+    subagent: bool = False,
+) -> list[vm.Block]:
+    """Every transcript block one session entry renders as — the mapping the
+    live replay and any fixture generator share, so the two cannot drift.
+
+    Without `resolve_result` a tool row is its header alone. `subagent=True`
+    drops user messages: a child conversation's only one is its seed, and that
+    already reads on the task label. A `ChildConversation` yields nothing here
+    — nesting needs the session, which `transcript_blocks` has.
+    """
+    if isinstance(entry, UserMessage):
+        if subagent:
+            return []
+        # Derived from the parts' metadata: the inlined file is never re-read,
+        # so the transcript reproduces what the model actually saw.
+        return [vm.UserBlock(text=user_transcript_text(entry.parts)), *mention_blocks(entry.parts)]
+    if isinstance(entry, AssistantMessage):
+        blocks: list[vm.Block] = []
+        for part in entry.parts:
+            if isinstance(part, ThinkingContent):
+                blocks.append(vm.ThinkingBlock())
+            elif isinstance(part, TextContent) and part.text.strip():
+                blocks.append(vm.TextBlock(text=part.text))
+        return blocks
+    if isinstance(entry, ToolExecution):
+        return _execution_blocks(entry, resolve_result)
+    if isinstance(entry, CompactionEntry):
+        if not entry.parts:
+            return []
+        replaced = len(entry.compacted_nodes or [])
+        return [vm.NoticeBlock(text=f"context compacted · {replaced} entries summarized")]
+    if isinstance(entry, TurnFinish) and entry.outcome is TurnOutcome.CANCELLED:
+        return [vm.NoticeBlock(text="turn cancelled")]
+    return []
+
+
+def _execution_blocks(entry: ToolExecution, resolve_result: ResultResolver | None) -> list[vm.Block]:
+    if is_runtime_plumbing(entry):
+        # A private tool renders nothing and a spawn renders as its task block
+        # — but a refusal is the one thing the user has to be told about.
+        if entry.status is ExecutionStatus.REFUSED and entry.error is not None:
+            return [vm.NoticeBlock(text=entry.error.error_message, error=True)]
+        return []
+    if is_plan_update(entry):
+        if entry.status is not ExecutionStatus.COMPLETED:
+            return []
+        plan = plan_from_execution(entry)
+        return [plan] if plan is not None else []
+    result_text, is_error = None, False
+    if resolve_result is not None and entry.status not in NONTERMINAL_STATUSES:
+        result_text, is_error = resolve_result(entry)
+    return [
+        tool_block(
+            entry,
+            result_text,
+            is_error=is_error,
+            auto_approved=was_auto_approved(entry),
+        )
+    ]
+
+
+def transcript_blocks(
+    session: AgentSession,
+    conversation_id: str | None = None,
+    *,
+    resolve_result: ResultResolver | None = None,
+) -> list[vm.Block]:
+    """A whole stored conversation as transcript blocks, each subagent nested
+    into its own `TaskBlock`. This is the pure form of what the app mounts on
+    resume, so a session file is renderable without an agent, a provider or a
+    key — which is what lets a real conversation be browsed in the gallery."""
+    return _conversation_blocks(
+        session,
+        conversation_id or session.main_conversation_id,
+        resolve_result,
+        subagent=False,
+    )
+
+
+def _conversation_blocks(
+    session: AgentSession,
+    conversation_id: str,
+    resolve_result: ResultResolver | None,
+    *,
+    subagent: bool,
+) -> list[vm.Block]:
+    conversation = session.conversations.get(conversation_id)
+    if conversation is None:
+        return []
+    blocks: list[vm.Block] = []
+    # The plan is ONE block that the run kept rewriting, not one per update —
+    # the live app mutates it in place, so the derivation has to collapse it
+    # the same way or a resumed session and a derived fixture disagree.
+    plan_at: int | None = None
+    for node_id in conversation.nodes:
+        entry = session.entries.get(node_id)
+        if isinstance(entry, ChildConversation):
+            description, _prompt = subagent_task(session, entry)
+            blocks.append(
+                vm.TaskBlock(
+                    description=description,
+                    status=task_status(entry),
+                    blocks=_conversation_blocks(session, entry.conversation_id, resolve_result, subagent=True),
+                )
+            )
+            continue
+        for block in entry_blocks(entry, resolve_result=resolve_result, subagent=subagent):
+            if isinstance(block, vm.ListBlock):  # only a plan update makes one
+                if plan_at is not None:
+                    blocks[plan_at] = block
+                    continue
+                plan_at = len(blocks)
+            blocks.append(block)
+    return blocks
+
+
+# ── overlay rows (palette, `@` picker) ────────────────────────────────────────
+
+
+def filter_rows(rows: Sequence[vm.OverlayRow], query: str) -> list[vm.OverlayRow]:
+    """The palette / menu filter: a case-insensitive substring of the command
+    or its description. Empty query keeps everything."""
+    if not query:
+        return list(rows)
+    needle = query.lower()
+    return [row for row in rows if needle in row.primary.lower() or needle in (row.secondary or "").lower()]
+
+
+def picker_rows(
+    matches: Sequence[tuple[str, str, int]],
+    checked: Collection[str] = (),
+) -> list[vm.OverlayRow]:
+    """`files.match_files` output → `@` picker rows. `checked` holds plain
+    paths; the row's `primary` carries the match spans, so the two are
+    deliberately not the same string."""
+    return [
+        vm.OverlayRow(primary=marked, annotation=fmt_tokens(tokens), checked=path in checked)
+        for path, marked, tokens in matches
+    ]
 
 
 # ── session previews (1i) ─────────────────────────────────────────────────────

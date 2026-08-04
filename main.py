@@ -19,8 +19,9 @@ Usage:
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-streaming           # block-level rendering
     uv run python main.py --theme luca-dark        # the design theme (default)
-    uv run python main.py --gallery                # browse the design-system gallery
-    uv run python main.py --gallery 1c_diff_approval   # one fixture
+    uv run python main.py --gallery                # browse the design-system catalog
+    uv run python main.py --gallery chat/subagents # one catalog entry
+    uv run python main.py --gallery 1c_diff_approval   # one hand-authored fixture
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --no-skills              # ignore SKILL.md skills
     uv run python main.py --no-instructions        # ignore AGENTS.md

@@ -134,6 +134,26 @@ def mark_path(path: str, positions: list[int]) -> str:
     return "".join(pieces)
 
 
+def rank_files(files: list[str], query: str, *, limit: int = MAX_ROWS) -> list[tuple[str, str]]:
+    """`(path, span-marked path)` best match first — the ranking WITHOUT the
+    disk. Every file is scored; only the display is capped. Split from
+    `match_files` so a catalogued file list ranks identically to a real one."""
+    if not query:
+        return [(path, path) for path in files[:limit]]
+    needle = query.lower()
+    scored: list[tuple[float, str, str]] = []
+    for path in files:
+        hit = score_path(needle, path)
+        if hit is None:
+            continue
+        score, positions = hit
+        scored.append((score, path, mark_path(path, positions)))
+    # `-score` first, then the path itself: ties resolve alphabetically so
+    # the list never reshuffles between identical queries.
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return [(path, marked) for _score, path, marked in scored[:limit]]
+
+
 def match_files(
     files: list[str],
     query: str,
@@ -142,21 +162,6 @@ def match_files(
     limit: int = MAX_ROWS,
 ) -> list[tuple[str, str, int]]:
     """`(path, span-marked path, token estimate)` rows for the picker, best
-    match first. Every file is scored; only the display is capped."""
+    match first. The ranking plus one `stat` per displayed row."""
     root = Path(workspace)
-    if not query:
-        chosen: list[tuple[str, str]] = [(path, path) for path in files[:limit]]
-    else:
-        needle = query.lower()
-        scored: list[tuple[float, str, str]] = []
-        for path in files:
-            hit = score_path(needle, path)
-            if hit is None:
-                continue
-            score, positions = hit
-            scored.append((score, path, mark_path(path, positions)))
-        # `-score` first, then the path itself: ties resolve alphabetically so
-        # the list never reshuffles between identical queries.
-        scored.sort(key=lambda row: (-row[0], row[1]))
-        chosen = [(path, marked) for _score, path, marked in scored[:limit]]
-    return [(path, marked, estimate_tokens(root / path)) for path, marked in chosen]
+    return [(path, marked, estimate_tokens(root / path)) for path, marked in rank_files(files, query, limit=limit)]

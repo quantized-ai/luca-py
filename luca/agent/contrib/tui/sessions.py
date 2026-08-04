@@ -117,16 +117,20 @@ class SessionSummary:
     preview: list[str] | None = None
 
 
-def summarize_session(path: Path) -> SessionSummary | None:
-    """One stored session as a sessions-screen row, or `None` when it cannot
-    be read. One unloadable file must never stop the screen opening."""
+def summarize(
+    session: AgentSession,
+    *,
+    path: Path,
+    modified: datetime,
+    size_bytes: int,
+) -> SessionSummary:
+    """A loaded session as a sessions-screen row.
+
+    Split from the file read so a catalogued, in-memory session produces the
+    same row a stored one does — the screen has one derivation, not two."""
     from .render import preview_rows
     from .usage import estimated_cost, usage_totals
 
-    try:
-        session = AgentSession.model_validate_json(path.read_text())
-    except (OSError, UnicodeDecodeError, ValueError):
-        return None
     nodes = session.conversations[session.main_conversation_id].nodes
     messages = [session.entries[node] for node in nodes if isinstance(session.entries.get(node), UserMessage)]
     lines = user_transcript_text(messages[0].parts).strip().splitlines() if messages else []
@@ -134,14 +138,30 @@ def summarize_session(path: Path) -> SessionSummary | None:
     return SessionSummary(
         id=session.id,
         path=path,
-        modified=datetime.fromtimestamp(path.stat().st_mtime),
+        modified=modified,
         title=title[:TITLE_LENGTH],
         turns=len(messages),
         model=session.session_config.llm_config.model,
         tokens=usage_totals(session).total,
         cost=estimated_cost(session),
-        size_bytes=path.stat().st_size,
+        size_bytes=size_bytes,
         preview=preview_rows(session),
+    )
+
+
+def summarize_session(path: Path) -> SessionSummary | None:
+    """One stored session as a sessions-screen row, or `None` when it cannot
+    be read. One unloadable file must never stop the screen opening."""
+    try:
+        session = AgentSession.model_validate_json(path.read_text())
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    stat = path.stat()
+    return summarize(
+        session,
+        path=path,
+        modified=datetime.fromtimestamp(stat.st_mtime),
+        size_bytes=stat.st_size,
     )
 
 

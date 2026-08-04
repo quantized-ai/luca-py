@@ -14,7 +14,10 @@ Layering (the Textual-free modules are the unit-testable core):
   `gitinfo` / `config` — pure logic, no Textual.
 - `blocks` / `chrome` / `shells` / `modals` / `frame` — the widgets and the
   `LucaApp` frame (`app.tcss` holds every geometry and color assignment).
-- `gallery`   — fixtures + `GalleryApp` (`--gallery`): the component catalog.
+- `catalog`   — the derived catalog: `screen × world → ScreenState`, built
+  from committed sessions through the app's own projections.
+- `gallery`   — `GalleryApp` (`--gallery`) over the catalog and the
+  hand-authored fixtures alike.
 - `app`       — `AgentApp`, the live agent wired onto the frame.
 - `cli`       — the argparse entry point (`python -m luca.agent.contrib.tui`).
 

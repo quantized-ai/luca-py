@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, get_args
 
-from luca.agent.core.models import TextContent
+from luca.agent.core.models import LLMConfig, TextContent
 from luca.agent.core.runner import AgentSessionRunner
 from luca.client.types import Reasoning
 
@@ -29,7 +29,6 @@ from .sessions import (
     SessionSummary,
     delete_session,
     fork_session,
-    list_sessions,
     load_session,
     save_session,
 )
@@ -245,11 +244,19 @@ async def run_palette_choice(app: AgentApp, primary: str) -> None:
 # ── live modal states ─────────────────────────────────────────────────────────
 
 
-def build_sessions_state(app: AgentApp) -> tuple[vm.SessionsState | None, list[SessionSummary]]:
-    summaries = list_sessions(app._session_dir)
+def build_sessions_state(
+    summaries: list[SessionSummary],
+    *,
+    directory_name: str,
+    now: datetime | None = None,
+    selected: int = 0,
+) -> vm.SessionsState | None:
+    """The sessions screen from its rows. Takes summaries rather than a
+    directory — the live app lists a store, the catalog hands over sessions it
+    already holds, and `now` is injectable so `18m ago` is reproducible."""
     if not summaries:
-        return None, []
-    now = datetime.now()
+        return None
+    now = now or datetime.now()
     total_bytes = sum(summary.size_bytes for summary in summaries)
     rows = [
         vm.SessionRow(
@@ -264,13 +271,12 @@ def build_sessions_state(app: AgentApp) -> tuple[vm.SessionsState | None, list[S
     ]
     size = f"{total_bytes / 1_000_000:.1f} MB" if total_bytes >= 1_000_000 else f"{total_bytes / 1000:.0f} KB"
     noun = "session" if len(summaries) == 1 else "sessions"
-    state = vm.SessionsState(
-        count_line=f"{len(summaries)} {noun} in this project · {size} · {Path(app._session_dir).name}",
+    return vm.SessionsState(
+        count_line=f"{len(summaries)} {noun} in this project · {size} · {directory_name}",
         rows=rows,
-        selected=0,
-        preview=summaries[0].preview or [],
+        selected=selected,
+        preview=summaries[selected].preview or [],
     )
-    return state, summaries
 
 
 def session_preview(summary: SessionSummary) -> list[str]:
@@ -309,11 +315,21 @@ async def delete_session_row(app: AgentApp, screen: SessionsScreen, row: vm.Sess
 _MODE_COLORS: dict[str, vm.SettingColor] = {"ask": "muted", "yolo": "accent", "auto": "muted"}
 
 
-def build_settings_state(app: AgentApp, selected: int = 0) -> vm.SettingsState:
-    config = app.runner.session.session_config.llm_config
+def build_settings_state(
+    config: LLMConfig,
+    *,
+    theme: str,
+    streaming: bool,
+    mode: str,
+    show_counter: bool,
+    selected: int = 0,
+) -> vm.SettingsState:
+    """The settings screen from the model config plus the ambient app state.
+    Takes data, not the app, so a catalogued world renders the same screen the
+    live app does."""
     return vm.SettingsState(
         selected=selected,
-        swatch_label=app.theme,
+        swatch_label=theme,
         groups=[
             vm.SettingsGroup(
                 label="model",
@@ -321,7 +337,7 @@ def build_settings_state(app: AgentApp, selected: int = 0) -> vm.SettingsState:
                     vm.SettingRow(name="model", value=short_model(config.model)),
                     vm.SettingRow(name="provider", value=config.provider),
                     vm.SettingRow(name="reasoning", value=config.reasoning or "provider-default"),
-                    vm.SettingRow(name="streaming", value="on" if app._streaming else "off"),
+                    vm.SettingRow(name="streaming", value="on" if streaming else "off"),
                 ],
             ),
             vm.SettingsGroup(
@@ -329,16 +345,16 @@ def build_settings_state(app: AgentApp, selected: int = 0) -> vm.SettingsState:
                 rows=[
                     vm.SettingRow(
                         name="approval mode",
-                        value=app._mode,
-                        color=_MODE_COLORS.get(app._mode, "muted"),
+                        value=mode,
+                        color=_MODE_COLORS.get(mode, "muted"),
                     ),
                 ],
             ),
             vm.SettingsGroup(
                 label="appearance",
                 rows=[
-                    vm.SettingRow(name="theme", value=app.theme),
-                    vm.SettingRow(name="show token counter", value="on" if app._show_counter else "off"),
+                    vm.SettingRow(name="theme", value=theme),
+                    vm.SettingRow(name="show token counter", value="on" if show_counter else "off"),
                 ],
             ),
         ],
@@ -376,7 +392,7 @@ def adjust_setting(app: AgentApp, screen: SettingsScreen, row: vm.SettingRow, de
         app._refresh_status()
     else:
         return
-    screen.set_state(build_settings_state(app, selected=screen.state.selected))
+    screen.set_state(app.settings_state(selected=screen.state.selected))
 
 
 # ── skills (^s) ───────────────────────────────────────────────────────────────

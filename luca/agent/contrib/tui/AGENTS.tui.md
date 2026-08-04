@@ -11,15 +11,18 @@ theme.py      the palette as a registered Textual Theme — THE ONLY HEX SOURCE
 app.tcss      every layout, spacing, border and color assignment ($tokens only)
 state.py      the view-model: ScreenState + the block vocabulary (pure Pydantic)
 format.py     pure text helpers: token spans, humanized figures, hint legends
-render.py     pure derivations: agent entries/events → view-models
+render.py     pure derivations: agent entries/events → view-models, and a whole
+              stored session → transcript blocks (`transcript_blocks`)
 blocks.py     the transcript block widgets (user, thinking, text, tool, list, diff, notice, task)
 chrome.py     StatusBar, HintLegend, Composer
 shells.py     SelectRow (THE selection treatment, defined once), ApprovalPromptView,
               OverlayListView (palette/picker/menu), LucaModalScreen
 modals.py     SessionsScreen, SettingsScreen, CostScreen
 frame.py      LucaApp — the global frame; apply_state(ScreenState) renders any state
-gallery.py    fixture loading + GalleryApp (`--gallery`), the component catalog
-fixtures/     the declarative screen states: 1a–1k + components/ sheets
+catalog.py    the DERIVED catalog: screen × world → ScreenState (see below)
+gallery.py    GalleryApp (`--gallery`) over both tiers; fixture loading
+fixtures/     catalog.yaml (the grid) + sessions/ (the worlds)
+              + 1a–1k and components/ (hand-authored screen states)
 app.py        AgentApp(LucaApp) — the live agent wiring (drive worker, events)
 ```
 
@@ -36,16 +39,40 @@ Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost s
 - Don't invent UI the handoff doesn't specify. The two sanctioned extensions are `NoticeBlock` (turn-level notices) and `TaskBlock` (subagent conversations, built from the handoff's gutter idiom).
 - `@` file mentions render as ordinary `ToolBlock`s (`tool: read`) under the user turn — same idiom, no new block kind. They are NOT tool calls: no `ToolExecution` backs them, so they never carry an approval note. A declined mention (too long, binary, a directory) is `status: error` with a `[error]×[/]` summary; a path that does not resolve gets no row at all and stays prose, which is what keeps `@property` and `@types/node` from being read as files. See `fixtures/components/mentions.yaml`, the requirements sheet for the feature.
 
-## The gallery is the catalog
+## The catalog
 
 ```bash
-uv run python -m luca.agent.contrib.tui --gallery                # browse everything
-uv run python -m luca.agent.contrib.tui --gallery 1a_agent_loop  # one screen
+uv run python -m luca.agent.contrib.tui --gallery                 # browse everything
+uv run python -m luca.agent.contrib.tui --gallery chat/subagents  # one catalog entry
+uv run python -m luca.agent.contrib.tui --gallery 1a_agent_loop   # one fixture
+uv run python -m luca.agent.contrib.tui --gallery ~/.luca/projects/<project>/<id>.json
 ```
 
-A fixture is a YAML file validated as `state.ScreenState`. The bundled set covers the eleven handoff screens plus `components/` sheets showing every block and shell variant. **Any new component or state gets a fixture**, and every fixture gets a snapshot test (`tests/agent/contrib/tui/test_snapshots.py`, `pytest --snapshot-update` regenerates the committed SVGs). To prototype a state ("what does 90% context look like?"), write a fixture — never drive a live model to reproduce a screen.
+Two tiers, both browsable and both snapshot-tested (`tests/agent/contrib/tui/test_snapshots.py`; `pytest --snapshot-update` regenerates the committed SVGs).
+
+**Tier 1 — the catalog (`fixtures/catalog.yaml`).** Two axes:
+
+- **Screens** are projections, one per screen of the app: `catalog.SCREENS` maps a name to a pure `Scene → ScreenState` function. They call the SAME code the live app calls (`transcript_blocks`, `cost_state`, `build_settings_state`, `build_sessions_state`, `build_approval_prompts`), which is the whole point — a catalogued screen cannot depict a feature that no longer exists, because deleting it changes the screen or breaks the build.
+- **Worlds** are data: a committed `AgentSession` under `fixtures/sessions/` plus a `catalog.World` of the ambient state no session holds (branch, theme, approval mode, a typed query, the boxes ticked in a picker). Every `World` field has the ordinary default, so an entry names only what makes it different.
+
+```yaml
+- {name: chat/subagents, screen: chat, session: subagents}
+- {name: modal/settings-yolo, screen: settings, session: conversation, world: {mode: yolo}}
+```
+
+| To add… | Do this |
+|---|---|
+| a state | one line in `fixtures/catalog.yaml`, then `pytest --snapshot-update` |
+| a world | a builder in `tests/agent/contrib/tui/session_library.py`, then `uv run python -m tests.agent.contrib.tui.session_library` |
+| a screen | a `Scene → ScreenState` function in `catalog.py` + a name in `SCREENS` + at least one entry (a test enforces the last part) |
+
+Worlds are **authored, never captured**. A recorded real session is a 100KB diff nobody reviews, full of absolute paths; the builders are a dozen lines each. Everything is fixed — ids, timestamps, token counts, and `catalog.NOW` — so the built screens are byte-stable. `test_catalog.py` fails if the committed JSON and the builders disagree.
+
+**Tier 2 — fixtures (`fixtures/*.yaml`).** Hand-authored `ScreenState` documents: the eleven handoff screens `1a`–`1k` plus `components/` sheets. These are for states with no producer yet ("what does 90% context look like?") — specifications, not records. A fixture cannot notice drift, so prefer a catalog entry whenever the agent can actually produce the state.
 
 YAML gotchas: quote strings containing commas inside `{...}` flow mappings, and diff line numbers use the key `num` (`no` is a YAML boolean).
+
+A stored `AgentSession` path also works: the gallery recognises one by shape and derives its screen through `render.transcript_blocks` — the same derivation `app._replay_path` mounts on resume, so what you see is what a resume would show.
 
 ## Agent integration details
 

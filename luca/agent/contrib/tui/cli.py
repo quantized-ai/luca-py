@@ -124,10 +124,11 @@ def arg_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="all",
         default=None,
-        metavar="FIXTURE",
-        help="Boot the design-system gallery instead of a live agent: a bundled "
-        "fixture by name (e.g. 1a_agent_loop), a path to a YAML/JSON fixture, "
-        "or no value to browse them all.",
+        metavar="STATE",
+        help="Boot the design-system gallery instead of a live agent: a catalog "
+        "entry by name (e.g. chat/subagents), a bundled fixture by name (e.g. "
+        "1a_agent_loop), a path to a fixture or a stored session, or no value "
+        "to browse them all.",
     )
     parser.add_argument(
         "--streaming",

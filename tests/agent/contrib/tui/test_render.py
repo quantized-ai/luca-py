@@ -9,17 +9,22 @@ from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.render import (
     child_links,
     diff_stat,
+    entry_blocks,
     is_plan_update,
     is_runtime_plumbing,
     plan_block,
     plan_from_execution,
     preview_rows,
     subagent_task,
+    task_status,
     tool_arg,
     tool_block,
+    transcript_blocks,
     user_transcript_text,
+    was_auto_approved,
 )
 from luca.agent.core.models import (
+    ApprovalStatus,
     AssistantMessage,
     ChildConversation,
     ExecutionResult,
@@ -28,8 +33,11 @@ from luca.agent.core.models import (
     ImageContent,
     SessionConfig,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolExecution,
+    TurnFinish,
+    TurnOutcome,
     TurnStart,
     UserMessage,
 )
@@ -638,3 +646,196 @@ def test_user_transcript_text_falls_back_to_the_media_type():
         )
         == "[image: image/png]"
     )
+
+
+# ── entry_blocks / transcript_blocks ──────────────────────────────────────────
+
+TODOS_FIRST = [
+    {"content": "read the schema", "status": "in_progress"},
+    {"content": "write the migration", "status": "pending"},
+]
+TODOS_SECOND = [
+    {"content": "read the schema", "status": "completed"},
+    {"content": "write the migration", "status": "in_progress"},
+]
+
+
+def test_entry_blocks_renders_a_user_message_with_its_mention_rows():
+    entry = UserMessage(
+        id="u1",
+        created_at=500,
+        parts=[
+            TextContent(text="explain @luca/cli.py"),
+            TextContent(
+                text="…file contents…",
+                metadata={"mention": {"path": "/repo/luca/cli.py", "success": True, "lines": 84}},
+            ),
+        ],
+    )
+    assert entry_blocks(entry) == [
+        vm.UserBlock(text="explain @luca/cli.py"),
+        vm.ToolBlock(
+            tool="read",
+            arg="/repo/luca/cli.py",
+            status="ok",
+            result=vm.ToolResult(summary="84 lines"),
+        ),
+    ]
+
+
+def test_entry_blocks_drops_a_subagents_seed_message():
+    entry = UserMessage(id="u1", created_at=500, parts=[TextContent(text="audit the docs")])
+    assert entry_blocks(entry, subagent=True) == []
+
+
+def test_entry_blocks_renders_thinking_and_non_empty_text_parts():
+    entry = AssistantMessage(
+        id="a1",
+        created_at=500,
+        parts=[ThinkingContent(thinking="hmm"), TextContent(text="done"), TextContent(text="   ")],
+        llm_config=MODEL,
+        stop_reason="end_turn",
+    )
+    assert entry_blocks(entry) == [vm.ThinkingBlock(), vm.TextBlock(text="done")]
+
+
+def test_entry_blocks_reports_a_cancelled_turn():
+    entry = TurnFinish(id="tf1", created_at=500, outcome=TurnOutcome.CANCELLED)
+    assert entry_blocks(entry) == [vm.NoticeBlock(text="turn cancelled")]
+
+
+def test_entry_blocks_leaves_a_tool_row_resultless_without_a_resolver():
+    """No resolver means no model-facing text to summarize — the row still
+    renders, it just has nothing to say."""
+    entry = execution("read", ExecutionStatus.COMPLETED, {"path": "luca/cli.py"})
+    assert entry_blocks(entry) == [
+        vm.ToolBlock(tool="read", arg="luca/cli.py", status="ok", result=vm.ToolResult(summary=""))
+    ]
+
+
+def test_entry_blocks_takes_the_result_text_from_the_resolver():
+    entry = execution("read", ExecutionStatus.COMPLETED, {"path": "luca/cli.py"})
+    assert entry_blocks(entry, resolve_result=lambda _e: ("one\ntwo\nthree", False)) == [
+        vm.ToolBlock(
+            tool="read",
+            arg="luca/cli.py",
+            status="ok",
+            result=vm.ToolResult(summary="3 lines"),
+        )
+    ]
+
+
+def test_was_auto_approved_needs_a_gate_and_an_approval_context():
+    gated = execution(
+        "bash",
+        ExecutionStatus.COMPLETED,
+        approval_status=ApprovalStatus.ALLOWED,
+        extras={"approval_context": {"resources": []}},
+    )
+    ungated = execution("bash", ExecutionStatus.COMPLETED)
+    assert (was_auto_approved(gated), was_auto_approved(ungated)) == (True, False)
+
+
+def test_task_status_reads_the_link_not_the_tool():
+    pending = ChildConversation(id="cc1", created_at=500, conversation_id="c2", tool_execution_id="te1")
+    failed = ChildConversation(
+        id="cc2",
+        created_at=500,
+        conversation_id="c3",
+        tool_execution_id="te1",
+        execution_result=ExecutionResult(content=[TextContent(text="boom")], is_error=True),
+    )
+    assert (task_status(pending), task_status(failed)) == ("waiting", "failed")
+
+
+PLAN_SESSION = make_session(
+    id="s_plan",
+    entries={
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="migrate the store")]),
+        "te1": execution("update_todos", ExecutionStatus.COMPLETED, {"todos": TODOS_FIRST}, id="te1"),
+        "te2": execution(
+            "update_todos",
+            ExecutionStatus.COMPLETED,
+            {"todos": TODOS_SECOND},
+            id="te2",
+            tool_call_id="tc2",
+        ),
+    },
+    conversations={"c1": conversation("c1", ["u1", "te1", "te2"])},
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def test_transcript_blocks_collapse_repeated_plan_updates_into_one_block():
+    assert transcript_blocks(PLAN_SESSION) == [
+        vm.UserBlock(text="migrate the store"),
+        vm.ListBlock(
+            label="plan · 2 of 2",
+            rows=[
+                vm.ListRow(glyph="done", text="read the schema"),
+                vm.ListRow(glyph="active", text="write the migration"),
+            ],
+        ),
+    ]
+
+
+NESTED_SESSION = make_session(
+    id="s_nested",
+    entries={
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="audit the docs")]),
+        "te_spawn": ToolExecution(
+            id="te_spawn",
+            conversation_id="c1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="task", arguments=SPAWN_ARGUMENTS),
+            tool_spec=spec("task", output_schema=SPAWN_SCHEMA),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(
+                content=[TextContent(text="task started")],
+                structured_content={
+                    "is_subagent_spawn": True,
+                    "task_id": "t1",
+                    "description": "audit the docs",
+                    "prompt": "Read every doc page",
+                    "process_subagent_result_tool_name": "task_result",
+                },
+            ),
+        ),
+        "cc1": ChildConversation(
+            id="cc1",
+            created_at=500,
+            conversation_id="c2",
+            tool_execution_id="te_spawn",
+            execution_result=ExecutionResult(content=[TextContent(text="12 pages")]),
+        ),
+        "u2": UserMessage(id="u2", created_at=500, parts=[TextContent(text="Read every doc page")]),
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=500,
+            parts=[TextContent(text="all pages read")],
+            llm_config=MODEL,
+            stop_reason="end_turn",
+        ),
+    },
+    conversations={
+        "c1": conversation("c1", ["u1", "te_spawn", "cc1"]),
+        "c2": conversation("c2", ["u2", "a1"], depth=1),
+    },
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+def test_transcript_blocks_nest_a_subagent_into_its_task_block():
+    """The spawn renders as the task, not as a tool row, and the child's seed
+    message is dropped — it already reads on the task label."""
+    assert transcript_blocks(NESTED_SESSION) == [
+        vm.UserBlock(text="audit the docs"),
+        vm.TaskBlock(
+            description="audit the docs",
+            status="done",
+            blocks=[vm.TextBlock(text="all pages read")],
+        ),
+    ]

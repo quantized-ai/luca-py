@@ -120,16 +120,56 @@ eleven screens `1a`–`1k`). The system that implements it:
   only, commented by the screen ids each section serves.
 - **`state.py`** — the view-model: `ScreenState` (status, transcript blocks,
   dock, modal, hints). Fixtures, the live app and the replay all produce it.
-- **`gallery.py` + `fixtures/`** — the component catalog:
+- **`catalog.py` + `gallery.py` + `fixtures/`** — the catalog, below.
+
+### 4.1 The catalog
 
 ```bash
 uv run python main.py --gallery                    # browse every state
+uv run python main.py --gallery chat/subagents     # one catalog entry
 uv run python main.py --gallery 1c_diff_approval   # one handoff screen
 uv run python main.py --gallery my_state.yaml      # your own fixture
+uv run python main.py --gallery ~/.luca/projects/<project>/<id>.json
 ```
 
-A fixture is YAML validated as `ScreenState` — so "what does the approval
-prompt look like over a 200-line diff?" is a file, not a live-model hunt:
+`←`/`→` cycle, `g` opens the index, `ctrl+q` quits. No key or provider is
+involved — nothing here talks to a model.
+
+Two tiers, both browsable and both snapshot-tested.
+
+**Derived (`fixtures/catalog.yaml`).** `screen × world`. A **screen** is a pure
+projection in `catalog.SCREENS` (`chat`, `approval`, `palette`, `picker`,
+`cost`, `settings`, `sessions`); a **world** is a committed `AgentSession`
+under `fixtures/sessions/` plus a `catalog.World` of the ambient state no
+session holds (branch, theme, approval mode, a typed query, ticked boxes).
+Every `World` field has the ordinary default, so an entry names only what makes
+it different:
+
+```yaml
+- {name: chat/subagents, screen: chat, session: subagents}
+- {name: modal/settings-yolo, screen: settings, session: conversation, world: {mode: yolo}}
+```
+
+The projections call the same functions the live app calls — `transcript_blocks`,
+`cost_state`, `build_settings_state`, `build_sessions_state`,
+`build_approval_prompts`. That is the point: a derived state cannot depict a
+feature that no longer exists, because deleting it changes the screen or breaks
+the build.
+
+| To add… | Do this |
+|---|---|
+| a state | one line in `fixtures/catalog.yaml`, then `pytest --snapshot-update` |
+| a world | a builder in `tests/agent/contrib/tui/session_library.py`, then `uv run python -m tests.agent.contrib.tui.session_library` |
+| a screen | a `Scene → ScreenState` function in `catalog.py`, a name in `SCREENS`, and at least one entry (a test enforces the last part) |
+
+Worlds are **authored, never captured** — a recorded session is a 100KB diff
+nobody reviews. Ids, timestamps, token counts and `catalog.NOW` are all fixed,
+so screens are byte-stable; `test_catalog.py` fails if the committed JSON and
+the builders disagree.
+
+**Hand-authored (`fixtures/*.yaml`).** YAML validated as `ScreenState`, for
+states no producer exists for yet — so "what does the approval prompt look like
+over a 200-line diff?" is a file, not a live-model hunt:
 
 ```yaml
 name: my_state
@@ -141,10 +181,18 @@ composer: {placeholder: "ask, or / for commands"}
 hints: [enter send, ⇥ complete, ^p palette]
 ```
 
-Every bundled fixture has a committed SVG snapshot
+These are specifications, not records: a fixture pins its own output, so it
+cannot notice drift. Prefer a catalog entry whenever the agent can actually
+produce the state.
+
+Every state in both tiers has a committed SVG snapshot
 (`tests/agent/contrib/tui/test_snapshots.py`); `pytest --snapshot-update`
-regenerates them after an intentional visual change — review the SVG diff
-like code. Add a fixture for any new component or state.
+regenerates them after an intentional visual change — review the SVG diff like
+code.
+
+A stored `AgentSession` path also works: the gallery recognises one by shape and
+derives its screen through the same `render.transcript_blocks` the live app
+replays on resume, so what you see is what a resume would show.
 
 > ⚠️ **YAML gotchas.** Quote strings containing commas inside `{…}` flow
 > mappings, and diff line numbers use the key `num` — bare `no` is a YAML
@@ -155,10 +203,11 @@ like code. Add a fixture for any new component or state.
 | Module | Role |
 |---|---|
 | `theme.py` / `app.tcss` / `state.py` / `format.py` | The design system's contract: palette, geometry, view-model, pure text helpers (token spans, humanized figures, hint legends) |
-| `render.py` | Pure derivations: entries/events → view-models (`tool_block`, `plan_block`, `preview_rows`, `subagent_task`, …) — live and replay share them, so they cannot drift |
+| `render.py` | Pure derivations: entries/events → view-models (`tool_block`, `plan_block`, `preview_rows`, `subagent_task`, …) plus a whole stored session → transcript blocks (`entry_blocks`, `transcript_blocks`) — live, replay and the catalog share them, so they cannot drift |
 | `blocks.py` / `chrome.py` / `shells.py` / `modals.py` | The widgets: transcript blocks, status bar + legend + composer, the shared selection treatment + approval prompt + overlay list + modal base, the three modal screens |
 | `frame.py` | `LucaApp` — the frame; `apply_state(ScreenState)` renders any state |
-| `gallery.py` | Fixture loading + `GalleryApp` (`--gallery`) |
+| `catalog.py` | The derived catalog: `screen × world → ScreenState`, the `SCREENS` registry and the `World` / `Entry` models |
+| `gallery.py` | `GalleryApp` (`--gallery`) over both tiers; fixture and session loading |
 | `app.py` | `AgentApp(LucaApp)` — the drive worker and one event handler for both streaming and block tiers |
 | `wiring.py` | `build_runner(...)` — shell + memory plugins, demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | Pending permission steps → the fixed 4-option prompt model (`Approve once / Approve always — <scope> / Deny / Cancel turn`), no UI |

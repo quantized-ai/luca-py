@@ -56,21 +56,14 @@ from luca.agent.core.events import (
 )
 from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
-    NONTERMINAL_STATUSES,
     AgentSession,
-    AssistantMessage,
     ChildConversation,
-    CompactionEntry,
     ContentPart,
     ExecutionStatus,
     ImageBase64,
     ImageContent,
-    TextContent,
-    ThinkingContent,
     ToolExecution,
-    TurnFinish,
     TurnOutcome,
-    UserMessage,
 )
 from luca.agent.core.projection import tool_message_text
 
@@ -84,7 +77,7 @@ from .blocks import (
     ToolBlockView,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
-from .format import HINTS, fmt_tokens, home_path, inline_paths, short_model
+from .format import HINTS, home_path, inline_paths, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
@@ -92,13 +85,17 @@ from .prompt import PromptInput
 from .prompt_files import ReadLimits, parse_prompt
 from .render import (
     child_links,
+    entry_blocks,
+    filter_rows,
     is_plan_update,
     is_runtime_plumbing,
     mention_blocks,
+    picker_rows,
     plan_from_execution,
     subagent_task,
     tool_block,
     user_transcript_text,
+    was_auto_approved,
 )
 from .sessions import save_session
 from .shells import ApprovalPromptView, OverlayListView
@@ -544,17 +541,20 @@ class AgentApp(LucaApp):
 
     def _was_auto_approved(self, execution: ToolExecution) -> bool:
         """State every automatic permission decision: the call went through a
-        gate (it carries an approval context) and the user never answered."""
+        gate and the user never answered. Narrows the stored-session rule with
+        the answers collected in this process."""
         if execution.tool_call_id in self._answered:
             return False
-        if execution.approval_status is None:
-            return False
-        return bool(execution.extras.get("approval_context"))
+        return was_auto_approved(execution)
 
     async def _apply_plan(self, execution: ToolExecution, source: str) -> None:
         plan = plan_from_execution(execution)
-        if plan is None:
-            return
+        if plan is not None:
+            await self._apply_plan_block(plan, source)
+
+    async def _apply_plan_block(self, plan: vm.ListBlock, source: str) -> None:
+        """THE PLAN IS ONE BLOCK: every update rewrites the block the run
+        already has, so a ten-step plan never stacks ten copies."""
         view = self._plan_views.get(source)
         if view is None or not view.is_attached:
             widget = await self.mount_block(plan, self._tasks.get(source))
@@ -568,8 +568,8 @@ class AgentApp(LucaApp):
         await target.mount(widget)
         self.scroll_transcript_end()
 
-    async def _mount_widget_block(self, block: vm.Block, conversation_id: str | None) -> None:
-        await self.mount_block(block, self._tasks.get(conversation_id) if conversation_id else None)
+    async def _mount_widget_block(self, block: vm.Block, conversation_id: str | None):
+        return await self.mount_block(block, self._tasks.get(conversation_id) if conversation_id else None)
 
     # ── subagent tasks ────────────────────────────────────────────────────────
 
@@ -609,66 +609,44 @@ class AgentApp(LucaApp):
         self._sync_tasks()
 
     async def _replay_path(self, nodes: list[str], conversation_id: str | None = None) -> None:
+        """Mount what `render.entry_blocks` derives, and keep the widgets a
+        later event still has to mutate reachable — a call replayed while
+        pending settles through `_tool_views` when its result finally lands."""
         session = self.runner.session
-        entries = session.entries
         for node_id in nodes:
-            entry = entries.get(node_id)
-            if isinstance(entry, UserMessage):
-                if conversation_id is None:  # a subagent's seed lives on its label
-                    await self.mount_block(vm.UserBlock(text=user_transcript_text(entry.parts)))
-                    # Derived from the parts' metadata, exactly as the live
-                    # path does — the inlined file is never re-read on resume,
-                    # so the transcript reproduces what the model actually saw.
-                    for block in mention_blocks(entry.parts):
-                        await self.mount_block(block)
-            elif isinstance(entry, AssistantMessage):
-                for part in entry.parts:
-                    if isinstance(part, ThinkingContent):
-                        await self._mount_widget_block(vm.ThinkingBlock(), conversation_id)
-                    elif isinstance(part, TextContent) and part.text.strip():
-                        await self._mount_widget_block(vm.TextBlock(text=part.text), conversation_id)
-            elif isinstance(entry, ToolExecution):
-                if is_runtime_plumbing(entry):
-                    if entry.status is ExecutionStatus.REFUSED and entry.error is not None:
-                        await self._mount_widget_block(
-                            vm.NoticeBlock(text=entry.error.error_message, error=True),
-                            conversation_id,
-                        )
-                    continue
-                if is_plan_update(entry) and entry.status is ExecutionStatus.COMPLETED:
-                    await self._apply_plan(entry, conversation_id or self.runner.main_conversation_id)
-                    continue
-                result_text, is_error = None, False
-                if entry.status not in NONTERMINAL_STATUSES:
-                    try:
-                        message = self.runner.conversation_projector.project_tool_execution(entry, entries)
-                        result_text, is_error = tool_message_text(message), message.is_error
-                    except ProjectionError:
-                        pass
-                view = ToolBlockView(
-                    tool_block(
-                        entry,
-                        result_text,
-                        is_error=is_error,
-                        auto_approved=self._was_auto_approved(entry),
-                    )
-                )
-                self._tool_views[entry.tool_call_id] = view
-                await self._mount_widget(view, conversation_id)
-            elif isinstance(entry, ChildConversation):
+            entry = session.entries.get(node_id)
+            if isinstance(entry, ChildConversation):
                 task = await self._open_task(entry.conversation_id, conversation_id)
                 child = session.conversations.get(entry.conversation_id)
                 if task is not None and child is not None:
                     await self._replay_path(child.nodes, entry.conversation_id)
-            elif isinstance(entry, CompactionEntry):
-                if entry.parts:
-                    replaced = len(entry.compacted_nodes or [])
-                    await self._mount_widget_block(
-                        vm.NoticeBlock(text=f"context compacted · {replaced} entries summarized"),
-                        conversation_id,
-                    )
-            elif isinstance(entry, TurnFinish) and entry.outcome is TurnOutcome.CANCELLED:
-                await self._mount_widget_block(vm.NoticeBlock(text="turn cancelled"), conversation_id)
+                continue
+            source = conversation_id or self.runner.main_conversation_id
+            blocks = entry_blocks(
+                entry,
+                resolve_result=self._resolve_result,
+                subagent=conversation_id is not None,
+            )
+            for block in blocks:
+                if isinstance(block, vm.ListBlock):  # a plan update
+                    await self._apply_plan_block(block, source)
+                    continue
+                widget = await self._mount_widget_block(block, conversation_id)
+                if isinstance(entry, ToolExecution) and isinstance(block, vm.ToolBlock):
+                    self._tool_views[entry.tool_call_id] = widget
+
+    def _resolve_result(self, execution: ToolExecution) -> tuple[str | None, bool]:
+        """A terminal execution's model-facing result text, through the
+        runner's OWN projector — the transcript then shows what the model was
+        actually told, not a second rendering of the raw result."""
+        try:
+            message = self.runner.conversation_projector.project_tool_execution(
+                execution,
+                self.runner.session.entries,
+            )
+        except ProjectionError:
+            return None, False
+        return tool_message_text(message), message.is_error
 
     # ── overlays: palette + context picker + menus ────────────────────────────
 
@@ -708,14 +686,7 @@ class AgentApp(LucaApp):
         self.set_hints(HINTS["menu"])
 
     def _filter_rows(self, query: str) -> list[vm.OverlayRow]:
-        if not query:
-            return list(self._menu_all_rows)
-        needle = query.lower()
-        return [
-            row
-            for row in self._menu_all_rows
-            if needle in row.primary.lower() or needle in (row.secondary or "").lower()
-        ]
+        return filter_rows(self._menu_all_rows, query)
 
     async def _refresh_overlay(
         self,
@@ -793,17 +764,7 @@ class AgentApp(LucaApp):
     def _context_rows(self, query: str) -> list[vm.OverlayRow]:
         from .files import match_files
 
-        matches = match_files(self._picker_files, query, self._workspace)
-        rows = []
-        for path, marked, tokens in matches:
-            rows.append(
-                vm.OverlayRow(
-                    primary=marked,
-                    annotation=fmt_tokens(tokens),
-                    checked=path in self._picker_selected,
-                )
-            )
-        return rows
+        return picker_rows(match_files(self._picker_files, query, self._workspace), self._picker_selected)
 
     async def _commit_context(self, index: int) -> None:
         """Write the picked paths into the composer. Nothing checked means the
@@ -952,8 +913,10 @@ class AgentApp(LucaApp):
 
     async def open_sessions_screen(self) -> None:
         from .commands import build_sessions_state
+        from .sessions import list_sessions
 
-        state, summaries = build_sessions_state(self)
+        summaries = list_sessions(self._session_dir)
+        state = build_sessions_state(summaries, directory_name=Path(self._session_dir).name)
         if state is None:
             await self._notice("no saved sessions for this project yet")
             return
@@ -961,11 +924,22 @@ class AgentApp(LucaApp):
         screen._summaries = summaries
         await self.push_screen(screen)
 
-    async def open_settings_screen(self) -> None:
+    def settings_state(self, selected: int = 0) -> vm.SettingsState:
+        """This app's ambient state as the settings screen's view-model."""
         from .commands import build_settings_state
 
+        return build_settings_state(
+            self.runner.session.session_config.llm_config,
+            theme=self.theme,
+            streaming=self._streaming,
+            mode=self._mode,
+            show_counter=self._show_counter,
+            selected=selected,
+        )
+
+    async def open_settings_screen(self) -> None:
         screen = SettingsScreen(
-            build_settings_state(self),
+            self.settings_state(),
             self._modal_status("settings · luca.json"),
             HINTS["settings"],
         )

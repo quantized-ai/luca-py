@@ -18,14 +18,13 @@ from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, UserTurn
 from luca.agent.contrib.tui.commands import (
     COMMANDS,
     build_sessions_state,
-    build_settings_state,
     dispatch,
     palette_rows,
     run_palette_choice,
 )
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.sessions import save_session
+from luca.agent.contrib.tui.sessions import list_sessions, save_session
 from luca.agent.contrib.tui.shells import OverlayListView
 from luca.agent.core.models import LLMConfig, RuntimeConfig
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
@@ -369,7 +368,7 @@ async def test_quit_saves_and_exits(tmp_path):
 def test_build_settings_state_reflects_the_runner_and_the_app(tmp_path):
     app = agent_app(tmp_path)
 
-    assert build_settings_state(app) == vm.SettingsState(
+    assert app.settings_state() == vm.SettingsState(
         selected=0,
         swatch_label="luca-dark",
         groups=[
@@ -486,9 +485,9 @@ def test_build_sessions_state_lists_newest_first_with_the_count_line(tmp_path):
     os.utime(tmp_path / f"{older.id}.json", (now - 600, now - 600))
     os.utime(tmp_path / f"{newer.id}.json", (now - 300, now - 300))
     total = sum(path.stat().st_size for path in tmp_path.glob("*.json"))
-    app = agent_app(tmp_path)
 
-    state, summaries = build_sessions_state(app)
+    summaries = list_sessions(tmp_path)
+    state = build_sessions_state(summaries, directory_name=tmp_path.name)
 
     assert state == vm.SessionsState(
         count_line=f"2 sessions in this project · {total / 1000:.0f} KB · {tmp_path.name}",
@@ -503,6 +502,4 @@ def test_build_sessions_state_lists_newest_first_with_the_count_line(tmp_path):
 
 
 def test_build_sessions_state_with_an_empty_store_returns_nothing(tmp_path):
-    app = agent_app(tmp_path)
-
-    assert build_sessions_state(app) == (None, [])
+    assert build_sessions_state(list_sessions(tmp_path), directory_name=tmp_path.name) is None

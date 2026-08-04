@@ -1,0 +1,46 @@
+{
+  "id": "empty",
+  "entries": {},
+  "tool_specs": {},
+  "usages": {},
+  "conversations": {
+    "c1": {
+      "id": "c1",
+      "nodes": [],
+      "created_at": 1700000000000,
+      "updated_at": 1700000000000,
+      "previous_conversation_id": null,
+      "depth": 0
+    }
+  },
+  "main_conversation_id": "c1",
+  "session_config": {
+    "extras": {},
+    "llm_config": {
+      "extras": {},
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "reasoning": null
+    },
+    "runtime_config": {
+      "extras": {},
+      "builtin_client_completion_timeout_in_ms": -1,
+      "client_completion_timeout_in_ms": -1,
+      "tool_execution_timeout_in_ms": -1,
+      "llm_completion_cancellation_grace_period": 0,
+      "tool_cancellation_grace_period": 0,
+      "soft_max_steps": -1,
+      "hard_max_steps": -1,
+      "doom_loop_threshold": -1,
+      "subagents_enabled": false,
+      "subagents_max_depth": 1,
+      "subagents_max_per_turn": -1,
+      "subagents_max_workers": -1,
+      "subagent_soft_max_steps": null,
+      "subagent_hard_max_steps": null,
+      "wake_parent_on_subagent_completion": true,
+      "limit_tool_choice_on_soft_max_steps_reached": true,
+      "limit_tool_choice_on_doom_loop_flagged": true
+    }
+  }
+}

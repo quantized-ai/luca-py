@@ -1,0 +1,81 @@
+# The catalog: screen × world.
+#
+# Each row is one catalogued state. `screen` names a projection in
+# `catalog.SCREENS`; `session` names a world in `fixtures/sessions/`; `world`
+# overrides the ambient defaults in `catalog.World` — everything unnamed is
+# the ordinary case.
+#
+# Adding a state is a line here. Adding a world is a session file (authored in
+# `tests/agent/contrib/tui/session_library.py`). Adding a screen is a function
+# plus a name in `SCREENS`. Every row is snapshot-tested.
+
+# ── chat: the main column, across the states that matter ─────────────────────
+- name: chat/empty
+  screen: chat
+  session: empty
+  world: {branch: main, dirty: false}
+
+- name: chat/conversation
+  screen: chat
+  session: conversation
+
+- name: chat/working
+  screen: chat
+  session: conversation
+  world: {busy: true}
+
+- name: chat/subagents
+  screen: chat
+  session: subagents
+
+- name: chat/failures
+  screen: chat
+  session: failures
+
+# ── the dock: what replaces the composer ─────────────────────────────────────
+- name: dock/approval
+  screen: approval
+  session: approval
+
+- name: dock/palette
+  screen: palette
+  session: conversation
+
+- name: dock/palette-filtered
+  screen: palette
+  session: conversation
+  world: {query: se}
+
+- name: dock/picker
+  screen: picker
+  session: conversation
+
+- name: dock/picker-query
+  screen: picker
+  session: conversation
+  world:
+    query: writ
+    checked: [luca/store/writer.py]
+    selected: 1
+
+# ── the modals ───────────────────────────────────────────────────────────────
+- name: modal/cost
+  screen: cost
+  session: conversation
+
+- name: modal/cost-empty
+  screen: cost
+  session: empty
+
+- name: modal/settings
+  screen: settings
+  session: conversation
+
+- name: modal/settings-yolo
+  screen: settings
+  session: conversation
+  world: {mode: yolo, streaming: false, selected: 4}
+
+- name: modal/sessions
+  screen: sessions
+  session: conversation

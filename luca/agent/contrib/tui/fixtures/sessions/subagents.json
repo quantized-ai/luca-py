@@ -1,0 +1,593 @@
+{
+  "id": "subagents",
+  "entries": {
+    "ts1": {
+      "id": "ts1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "turn_start",
+      "context_tokens": 0
+    },
+    "u1": {
+      "id": "u1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "audit the docs and the tests for stale references",
+          "metadata": {}
+        }
+      ]
+    },
+    "a1": {
+      "id": "a1",
+      "parent_id": null,
+      "created_at": 1700000012000,
+      "type": "assistant",
+      "context_tokens": 28,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Spawning two subagents in parallel.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "sp1": {
+      "id": "sp1",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "tool_execution",
+      "context_tokens": 60,
+      "tool_call_id": "tc_sp1",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_sp1",
+        "name": "task",
+        "arguments": {
+          "description": "audit the docs",
+          "prompt": "Read every page under docs/ and list stale references."
+        }
+      },
+      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "task started",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "is_subagent_spawn": true,
+          "task_id": "sp1",
+          "description": "audit the docs",
+          "prompt": "Read every page under docs/ and list stale references.",
+          "process_subagent_result_tool_name": "task_result"
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000018000,
+      "ended_at": 1700000018400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "cc1": {
+      "id": "cc1",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "child_conversation",
+      "context_tokens": 180,
+      "conversation_id": "c2",
+      "tool_execution_id": "sp1",
+      "execution_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "3 stale references",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "result_execution_id": null
+    },
+    "sp2": {
+      "id": "sp2",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "tool_execution",
+      "context_tokens": 60,
+      "tool_call_id": "tc_sp2",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_sp2",
+        "name": "task",
+        "arguments": {
+          "description": "audit the tests",
+          "prompt": "Find tests referencing the jsonl store."
+        }
+      },
+      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "task started",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "is_subagent_spawn": true,
+          "task_id": "sp2",
+          "description": "audit the tests",
+          "prompt": "Find tests referencing the jsonl store.",
+          "process_subagent_result_tool_name": "task_result"
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000018000,
+      "ended_at": 1700000018400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "cc2": {
+      "id": "cc2",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "child_conversation",
+      "context_tokens": 40,
+      "conversation_id": "c3",
+      "tool_execution_id": "sp2",
+      "execution_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "the grep tool timed out",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": true
+      },
+      "result_execution_id": null
+    },
+    "a2": {
+      "id": "a2",
+      "parent_id": null,
+      "created_at": 1700000360000,
+      "type": "assistant",
+      "context_tokens": 41,
+      "parts": [
+        {
+          "type": "text",
+          "text": "The docs audit found 3 stale references; the test audit timed out and needs a rerun.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "tf1": {
+      "id": "tf1",
+      "parent_id": null,
+      "created_at": 1700000372000,
+      "type": "turn_finish",
+      "context_tokens": 0,
+      "outcome": "completed",
+      "error": null
+    },
+    "u_c2": {
+      "id": "u_c2",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Read every page under docs/ and list stale references.",
+          "metadata": {}
+        }
+      ]
+    },
+    "a_c2a": {
+      "id": "a_c2a",
+      "parent_id": null,
+      "created_at": 1700000030000,
+      "type": "assistant",
+      "context_tokens": 20,
+      "parts": [
+        {
+          "type": "thinking",
+          "thinking": "listing docs/",
+          "id": null,
+          "signature": null,
+          "redacted": false
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "tool_use"
+    },
+    "te_c2a": {
+      "id": "te_c2a",
+      "parent_id": null,
+      "created_at": 1700000042000,
+      "type": "tool_execution",
+      "context_tokens": 70,
+      "tool_call_id": "tc_te_c2a",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c2a",
+        "name": "glob",
+        "arguments": {
+          "pattern": "docs/**/*.md"
+        }
+      },
+      "tool_spec_id": "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "docs/agent/README.md\ndocs/client/README.md\ndocs/llm.txt",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000042000,
+      "ended_at": 1700000042400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "te_c2b": {
+      "id": "te_c2b",
+      "parent_id": null,
+      "created_at": 1700000084000,
+      "type": "tool_execution",
+      "context_tokens": 95,
+      "tool_call_id": "tc_te_c2b",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c2b",
+        "name": "grep",
+        "arguments": {
+          "pattern": "jsonl",
+          "path": "docs"
+        }
+      },
+      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Found 3 matches\ndocs/agent/README.md:\ndocs/llm.txt:",
+            "metadata": {}
+          }
+        ],
+        "structured_content": null,
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000084000,
+      "ended_at": 1700000084400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a_c2b": {
+      "id": "a_c2b",
+      "parent_id": null,
+      "created_at": 1700000324000,
+      "type": "assistant",
+      "context_tokens": 30,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Three pages still describe the jsonl store.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "u_c3": {
+      "id": "u_c3",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Find tests referencing the jsonl store.",
+          "metadata": {}
+        }
+      ]
+    },
+    "a_c3a": {
+      "id": "a_c3a",
+      "parent_id": null,
+      "created_at": 1700000030000,
+      "type": "assistant",
+      "context_tokens": 20,
+      "parts": [
+        {
+          "type": "thinking",
+          "thinking": "grepping tests/",
+          "id": null,
+          "signature": null,
+          "redacted": false
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "tool_use"
+    },
+    "te_c3a": {
+      "id": "te_c3a",
+      "parent_id": null,
+      "created_at": 1700000048000,
+      "type": "tool_execution",
+      "context_tokens": 20,
+      "tool_call_id": "tc_te_c3a",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_c3a",
+        "name": "grep",
+        "arguments": {
+          "pattern": "jsonl",
+          "path": "tests"
+        }
+      },
+      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "timed_out",
+      "result": null,
+      "error": {
+        "error_type": "TimeoutError",
+        "error_message": "the tool exceeded its 30s budget",
+        "details": {}
+      },
+      "started_at": 1700000048000,
+      "ended_at": 1700000078000,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    }
+  },
+  "tool_specs": {
+    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+      "name": "task",
+      "description": "task tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "is_subagent_spawn": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "is_subagent_spawn"
+        ]
+      },
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24": {
+      "name": "glob",
+      "description": "glob tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    },
+    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+      "name": "grep",
+      "description": "grep tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": null,
+      "version": null,
+      "timeout_in_ms": null
+    }
+  },
+  "usages": {
+    "c1": {
+      "a2": {
+        "conversation_id": "c1",
+        "entry_id": "a2",
+        "input": 9100,
+        "output": 430,
+        "cache_read": 22000,
+        "cache_write": 900,
+        "total_tokens": 0
+      }
+    },
+    "c2": {
+      "a_c2b": {
+        "conversation_id": "c2",
+        "entry_id": "a_c2b",
+        "input": 4200,
+        "output": 180,
+        "cache_read": 8000,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    },
+    "c3": {
+      "a_c3a": {
+        "conversation_id": "c3",
+        "entry_id": "a_c3a",
+        "input": 2100,
+        "output": 60,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    }
+  },
+  "conversations": {
+    "c1": {
+      "id": "c1",
+      "nodes": [
+        "ts1",
+        "u1",
+        "a1",
+        "sp1",
+        "cc1",
+        "sp2",
+        "cc2",
+        "a2",
+        "tf1"
+      ],
+      "created_at": 1700000000000,
+      "updated_at": 1700000372000,
+      "previous_conversation_id": null,
+      "depth": 0
+    },
+    "c2": {
+      "id": "c2",
+      "nodes": [
+        "u_c2",
+        "a_c2a",
+        "te_c2a",
+        "te_c2b",
+        "a_c2b"
+      ],
+      "created_at": 1700000018000,
+      "updated_at": 500,
+      "previous_conversation_id": null,
+      "depth": 1
+    },
+    "c3": {
+      "id": "c3",
+      "nodes": [
+        "u_c3",
+        "a_c3a",
+        "te_c3a"
+      ],
+      "created_at": 1700000018000,
+      "updated_at": 500,
+      "previous_conversation_id": null,
+      "depth": 1
+    }
+  },
+  "main_conversation_id": "c1",
+  "session_config": {
+    "extras": {},
+    "llm_config": {
+      "extras": {},
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "reasoning": null
+    },
+    "runtime_config": {
+      "extras": {},
+      "builtin_client_completion_timeout_in_ms": -1,
+      "client_completion_timeout_in_ms": -1,
+      "tool_execution_timeout_in_ms": -1,
+      "llm_completion_cancellation_grace_period": 0,
+      "tool_cancellation_grace_period": 0,
+      "soft_max_steps": -1,
+      "hard_max_steps": -1,
+      "doom_loop_threshold": -1,
+      "subagents_enabled": false,
+      "subagents_max_depth": 1,
+      "subagents_max_per_turn": -1,
+      "subagents_max_workers": -1,
+      "subagent_soft_max_steps": null,
+      "subagent_hard_max_steps": null,
+      "wake_parent_on_subagent_completion": true,
+      "limit_tool_choice_on_soft_max_steps_reached": true,
+      "limit_tool_choice_on_doom_loop_flagged": true
+    }
+  }
+}
