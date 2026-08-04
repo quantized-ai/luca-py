@@ -1,0 +1,43 @@
+# Component sheet — subagent task blocks (the sanctioned vocabulary extension).
+name: components/tasks
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  tokens: 18.2k
+  cost: $0.11
+transcript:
+  - kind: text
+    text: Let me have two helpers check this in parallel.
+  - kind: task
+    description: check the arithmetic
+    status: done
+    blocks:
+      - kind: tool
+        tool: multiply
+        arg: a=6, b=7
+        result:
+          summary: "42"
+      - kind: text
+        text: Confirmed, 6 x 7 = 42.
+  - kind: task
+    description: audit the reader
+    status: running
+    blocks:
+      - kind: tool
+        tool: read
+        arg: luca/store/reader.py
+        result:
+          summary: 212 lines
+      - kind: thinking
+        activity: comparing against the schema
+  - kind: task
+    description: a task that failed
+    status: failed
+    blocks:
+      - kind: notice
+        text: subagent ran out of steps
+        error: true
+composer:
+  placeholder: working…
+hints: [enter queue, ^t plan, ^p palette, esc interrupt]

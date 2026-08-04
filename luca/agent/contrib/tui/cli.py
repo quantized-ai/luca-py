@@ -102,6 +102,16 @@ def arg_parser() -> argparse.ArgumentParser:
         "instead of starting the TUI. Requires --conversation.",
     )
     parser.add_argument(
+        "--gallery",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="FIXTURE",
+        help="Boot the design-system gallery instead of a live agent: a bundled "
+        "fixture by name (e.g. 1a_agent_loop), a path to a YAML/JSON fixture, "
+        "or no value to browse them all.",
+    )
+    parser.add_argument(
         "--streaming",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -254,6 +264,15 @@ def build_session(
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
+    if args.gallery is not None:
+        from .gallery import FixtureError, run_gallery
+
+        try:
+            run_gallery(args.gallery)
+        except FixtureError as exc:
+            sys.stderr.write(f"luca: {exc}\n")
+            raise SystemExit(1) from exc
+        return
     if args.pretty_print and not args.conversation:
         parser.error("--pretty-print requires --conversation <id>.")
     # Building the app is inside the try: composing it resolves the config's

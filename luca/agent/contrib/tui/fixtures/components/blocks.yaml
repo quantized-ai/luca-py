@@ -1,0 +1,47 @@
+# Component sheet — the transcript block vocabulary, every type at once.
+name: components/blocks
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  tokens: 9.9k
+  cost: $0.05
+transcript:
+  - kind: user
+    text: a user turn — the › glyph, then the message, wrapped with a hanging indent when it runs long enough to need a second row
+  - kind: thinking
+    duration: 3
+  - kind: thinking
+    activity: reading luca/store/reader.py
+  - kind: text
+    text: Assistant text at the 84-column measure. Inline `code spans` and `luca/paths.py` render in accent, never backticked.
+  - kind: text
+    text: A streaming reply ends with the block cursor
+    streaming: true
+  - kind: notice
+    text: a notice row — turn cancelled
+  - kind: notice
+    text: an error notice — turn failed
+    error: true
+  - kind: list
+    label: plan · 2 of 4
+    rows:
+      - {glyph: done, text: a completed step}
+      - {glyph: done, text: another completed step}
+      - {glyph: active, text: the step in progress}
+      - {glyph: pending, text: a pending step}
+  - kind: list
+    label: context · 2 files · 3.3k tokens
+    column: 31
+    rows:
+      - {glyph: included, text: luca/events.py, annotation: 1.4k}
+      - {glyph: included, text: luca/store/reader.py, annotation: 1.9k}
+  - kind: diff
+    lines:
+      - {num: 7, text: 'def totals(events):'}
+      - {num: 8, sign: '-', text: '    return sum(e.cost for e in events)'}
+      - {num: 8, sign: '+', text: '    return round(sum(e.cost for e in events), 4)'}
+      - {num: 9, text: ''}
+composer:
+  placeholder: ask, or / for commands
+hints: [enter send, ⇥ complete, ^p palette]

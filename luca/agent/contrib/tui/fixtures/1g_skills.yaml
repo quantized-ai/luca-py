@@ -1,0 +1,32 @@
+# 1g — Loading skills.
+name: 1g_skills
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 14.8k
+  cost: $0.10
+transcript:
+  - kind: user
+    text: /skill sqlite-migrations
+  - kind: tool
+    tool: skill
+    arg: sqlite-migrations
+    note_right: loaded
+    output:
+      lines:
+        - "[faint].luca/skills/sqlite-migrations/SKILL.md[/]"
+        - "[faint]3 references · 1 script · 1.7k tokens[/]"
+  - kind: list
+    label: active skills · 2
+    column: 24
+    rows:
+      - {glyph: included, text: sqlite-migrations, annotation: project · .luca/skills}
+      - {glyph: included, text: python-review, annotation: user · ~/.luca/skills}
+  - kind: text
+    text: Loaded. The skill wants every migration to be reversible and numbered, so I'll rename `schema.sql` to `001_init.sql` and add a matching down-migration before continuing.
+composer:
+  placeholder: ask, or / for commands
+# The handoff README's 1g legend overrides the HTML mock's shorter one.
+hints: [enter send, ⇥ complete, ^p palette, esc interrupt]

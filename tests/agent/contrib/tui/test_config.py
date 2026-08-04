@@ -534,11 +534,15 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
     from luca.agent.core.runner import AgentSessionRunner
     from luca.client.testing import FauxProvider
 
+    # "luca-dark" rather than a stock Textual theme: the frame's widgets
+    # resolve the luca theme variables at render time, and a stock theme
+    # (missing them) crashes the first paint. The CLI-layer tests cover the
+    # theme value flowing through without rendering.
     _write(
         tmp_path,
         {
             "model": {"provider": "anthropic", "model": "claude-sonnet-5", "reasoning": "low"},
-            "theme": {"name": "textual-light"},
+            "theme": {"name": "luca-dark"},
             "runtime": {"hard_max_steps": 42},
             "compaction": {"threshold": 0.66},
             "permissions": {"mode": "yolo"},
@@ -582,4 +586,4 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
         assert app._context_manager.threshold == 0.66
         assert app.strategy.mode is PermissionMode.YOLO
         assert app.recommended_models == {"anthropic": ["claude-sonnet-5"]}
-        assert app.theme == "textual-light"
+        assert app.theme == "luca-dark"

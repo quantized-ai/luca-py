@@ -33,7 +33,7 @@ def with_user_message(text: str) -> AgentSession:
 
 
 async def submit(pilot, text: str) -> None:
-    prompt = pilot.app.query_one("#prompt", PromptInput)
+    prompt = pilot.app.query_one(PromptInput)
     prompt.load_text(text)
     prompt.focus()
     await pilot.pause()
@@ -51,5 +51,5 @@ async def wait_until(pilot, condition, timeout: float = 8.0) -> None:
 
 
 def idle_again(app) -> bool:
-    """The drive worker is done: runner idle and the prompt re-enabled."""
-    return app.runner.idle() and not app.query_one("#prompt", PromptInput).disabled
+    """The drive worker is done: runner idle and the drive worker released."""
+    return app.runner.idle() and not app._driving

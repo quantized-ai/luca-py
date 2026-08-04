@@ -9,6 +9,7 @@ from pydantic_core import PydanticSerializationError
 from luca.agent.contrib.tui.sessions import (
     DEFAULT_STORE,
     SessionSummary,
+    delete_session,
     encode_project_path,
     fork_session,
     list_sessions,
@@ -170,6 +171,10 @@ def test_a_summary_carries_the_first_user_message_and_the_model(tmp_path):
         title="fix the parser",
         turns=1,
         model=session.session_config.llm_config.model,
+        tokens=0,  # no usage recorded yet
+        cost=None,  # "fake-model" is not in the price table
+        size_bytes=path.stat().st_size,
+        preview=["[accent]›[/] fix the parser"],
     )
 
 
@@ -205,3 +210,21 @@ def test_summarizing_an_unreadable_file_returns_nothing(tmp_path):
     (tmp_path / "broken.json").write_text("{not json")
 
     assert summarize_session(tmp_path / "broken.json") is None
+
+
+# ── deleting a session ───────────────────────────────────────────────────────
+
+
+def test_delete_session_removes_the_stored_file(tmp_path):
+    session = fresh_session()
+    save_session(session, tmp_path)
+
+    delete_session(session.id, tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_deleting_a_session_that_was_never_stored_is_a_no_op(tmp_path):
+    delete_session("missing", tmp_path)  # must not raise
+
+    assert list_sessions(tmp_path) == []

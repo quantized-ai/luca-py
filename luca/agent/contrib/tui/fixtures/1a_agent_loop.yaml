@@ -1,0 +1,37 @@
+# 1a — Agent loop: user turn, thinking, tool calls, streaming reply.
+name: 1a_agent_loop
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 12.4k
+  cost: $0.08
+transcript:
+  - kind: user
+    text: add a --json flag to the events command
+  - kind: thinking
+    duration: 3
+  - kind: text
+    text: I'll add the flag to the CLI parser and thread it through the event formatter.
+  - kind: tool
+    tool: read
+    arg: luca/cli.py
+    result:
+      summary: 84 lines
+  - kind: tool
+    tool: grep
+    arg: add_argument
+    result:
+      summary: 6 matches · luca/cli.py, luca/events.py
+  - kind: tool
+    tool: edit
+    arg: luca/cli.py
+    result:
+      stat: {add: 7, del: 1}
+  - kind: text
+    text: Done — `luca events --json` now emits one JSON object per line.
+    streaming: true
+composer:
+  placeholder: ask, or / for commands
+hints: [enter send, ⇥ complete, ^p palette, esc interrupt]

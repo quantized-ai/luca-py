@@ -1,29 +1,32 @@
-"""luca.agent.contrib.tui — a Textual terminal UI for the agent loop.
+"""luca.agent.contrib.tui — the Textual terminal UI, built as a design system.
 
-The interactive counterpart of the classic REPL demo: a full-screen chat
-transcript, an input box, a modal approval gate, live streaming, and Esc
-cancellation — driven by the same `PluginAgentSessionRunner` wiring (shell +
-memory plugins, the demo math tools, one shared `PermissionStrategy`).
+A full-screen (alt-screen) app: one scrolling conversation column, a single
+dock slot (composer / approval prompt / overlay list), and modal screens for
+sessions, settings and cost. The visual spec is the design handoff's eleven
+screens; every state is expressible as declarative data and renderable
+without an agent.
 
 Layering (the Textual-free modules are the unit-testable core):
 
-- `sessions`  — `<session-id>.json` load / save / fork.
-- `wiring`    — `build_runner()`: the full agent composition; `build_faux_provider()`
-                for the offline scripted demo.
-- `approvals` — the pure approval-prompt model (`ApprovalPrompt`,
-                `PromptOption`, `build_approval_prompts`): main-loop policy
-                translated to data the modal can display.
-- `render`    — pure text formatting for transcript cells.
-- `cells` / `screens` / `prompt` / `app` — the Textual widgets, the approval
-                modal, the multiline prompt box, and `AgentApp` itself.
+- `theme`     — the palette as a registered Theme; the only hex source.
+- `state`     — the view-model / fixture schema (`ScreenState`, the blocks).
+- `format` / `render` / `usage` / `approvals` / `sessions` / `files` /
+  `gitinfo` / `config` — pure logic, no Textual.
+- `blocks` / `chrome` / `shells` / `modals` / `frame` — the widgets and the
+  `LucaApp` frame (`app.tcss` holds every geometry and color assignment).
+- `gallery`   — fixtures + `GalleryApp` (`--gallery`): the component catalog.
+- `app`       — `AgentApp`, the live agent wired onto the frame.
 - `cli`       — the argparse entry point (`python -m luca.agent.contrib.tui`).
 
-Requires the `tui` dependency group (`textual`). Importing this package root
-pulls in Textual; the pure modules can be imported directly without it.
+Requires the `tui` dependency group (`textual`, `pyyaml`). Importing this
+package root pulls in Textual; the pure modules can be imported directly
+without it.
 """
 
 from .app import AgentApp
 from .cli import main
+from .frame import LucaApp
+from .gallery import GalleryApp
 from .wiring import build_faux_provider, build_runner
 
-__all__ = ["AgentApp", "build_faux_provider", "build_runner", "main"]
+__all__ = ["AgentApp", "GalleryApp", "LucaApp", "build_faux_provider", "build_runner", "main"]

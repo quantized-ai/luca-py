@@ -1,22 +1,24 @@
-"""Subagents in the transcript: one panel per child, and a resume that
-reproduces it.
+"""Subagents in the transcript: one `TaskBlockView` per spawned child, its
+blocks nested inside `task.body`, and a resume that reproduces it.
 
-Every assertion here is on the whole transcript TREE rather than on a flat
-cell list — nesting is the behavior under test, so a flat `app.query(...)`
-would pass just as happily with the subagent's output spliced into the main
-column, which is exactly the bug the panel exists to prevent.
+Placement assertions read the transcript's direct children and each task
+body's direct children rather than a flat `app.query(...)` — nesting is the
+behavior under test, and a flat query would pass just as happily with the
+subagent's output spliced into the main column.
 """
-
-from textual.containers import VerticalScroll
-from textual.widgets import Label
 
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME
-from luca.agent.contrib.tui import AgentApp
+from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.approvals import build_approval_prompts
-from luca.agent.contrib.tui.cells import SubagentPanel
-from luca.agent.contrib.tui.screens import ApprovalScreen
+from luca.agent.contrib.tui.blocks import (
+    AssistantText,
+    NoticeLine,
+    TaskBlockView,
+    ToolBlockView,
+)
 from luca.agent.contrib.tui.sessions import load_session
+from luca.agent.contrib.tui.shells import ApprovalPromptView
 from luca.agent.core.models import (
     ChildConversation,
     RuntimeConfig,
@@ -43,6 +45,18 @@ def scripted(*responses) -> FauxProvider:
     return provider
 
 
+def make_app(session, provider, tmp_path, **kwargs) -> AgentApp:
+    return AgentApp(
+        session,
+        provider=provider,
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+        **kwargs,
+    )
+
+
 def spawn(description: str, prompt: str, *, call_id: str, task_id: str):
     return faux_tool_call(
         SPAWN_TOOL_NAME,
@@ -51,39 +65,16 @@ def spawn(description: str, prompt: str, *, call_id: str, task_id: str):
     )
 
 
-def transcript(app) -> VerticalScroll:
-    """The transcript, found on the BASE screen. `app.query` is scoped to the
-    top of the screen stack, so a test that reads the transcript while the
-    approval modal is up would otherwise find nothing."""
-    return app.screen_stack[0].query_one("#transcript", VerticalScroll)
+def tasks(app) -> list[TaskBlockView]:
+    return list(app.query(TaskBlockView))
 
 
-def tree(app, node=None) -> list:
-    """The transcript as `(cell type, border title, border subtitle, text,
-    children)` tuples — the whole shape in one comparable value."""
-    node = node if node is not None else transcript(app)
-    return [
-        (
-            type(child).__name__,
-            child.border_title,
-            child.border_subtitle,
-            getattr(child, "text", None),
-            tree(app, child),
-        )
-        for child in node.children
-    ]
-
-
-def panels(app) -> list[SubagentPanel]:
-    return list(transcript(app).query(SubagentPanel))
-
-
-async def test_a_subagents_work_renders_inside_its_own_panel(tmp_path):
-    """The spawn tool and the result tool are plumbing — the panel is what the
-    user sees, and the subagent's answer sits inside it."""
-    app = AgentApp(
+async def test_a_subagents_work_renders_inside_its_task_block(tmp_path):
+    """The spawn tool and the result tool are plumbing — the task block is
+    what the user sees, and the subagent's answer sits inside its body."""
+    app = make_app(
         fresh_session(SUBAGENTS),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [
                     faux_text("Delegating."),
@@ -93,70 +84,66 @@ async def test_a_subagents_work_renders_inside_its_own_panel(tmp_path):
             faux_assistant_message([faux_text("alpha.txt is a shopping list.")]),
             faux_assistant_message([faux_text("It is a shopping list.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "what is alpha.txt")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert tree(app) == [
-            ("UserCell", "you", None, "what is alpha.txt", []),
-            ("AssistantCell", "assistant", None, "Delegating.", []),
-            (
-                "SubagentPanel",
-                "subagent · read alpha.txt",
-                "done",
-                None,
-                [
-                    ("Static", None, None, None, []),  # the task the subagent was given
-                    ("AssistantCell", "assistant", None, "alpha.txt is a shopping list.", []),
-                ],
-            ),
-            ("AssistantCell", "assistant", None, "It is a shopping list.", []),
+        assert [type(widget).__name__ for widget in app.transcript.children] == [
+            "UserTurn",
+            "AssistantText",
+            "TaskBlockView",
+            "AssistantText",
+        ]
+        [task] = tasks(app)
+        assert task.status_model == vm.TaskBlock(description="read alpha.txt", status="done")
+        assert [text.model for text in task.body.query(AssistantText)] == [
+            vm.TextBlock(text="alpha.txt is a shopping list.", streaming=False),
         ]
 
 
-async def test_parallel_subagents_get_one_panel_each(tmp_path):
-    """Two children advance at once and their events interleave on one stream.
-    Each answer must land in its own panel — spliced output would show up as
-    one panel holding both."""
-    app = AgentApp(
+async def test_parallel_subagents_get_one_task_block_each(tmp_path):
+    """Two children advance at once and their events interleave on one
+    stream. Each answer must land in its own task body — spliced output would
+    show up as one body holding both."""
+    app = make_app(
         fresh_session(SUBAGENTS),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [
                     spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1"),
                     spawn("read beta", "Read beta.txt.", call_id="c2", task_id="t2"),
                 ]
             ),
-            # Which child pops which response is up to the scheduler; that both
-            # panels hold exactly one answer each is not.
+            # Which child pops which response is up to the scheduler; that
+            # both bodies hold exactly one answer each is not.
             faux_assistant_message([faux_text("one answer")]),
             faux_assistant_message([faux_text("another answer")]),
             faux_assistant_message([faux_text("Both are read.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "read both")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [(panel.description, panel.status, len(panel.children)) for panel in panels(app)] == [
-            ("read alpha", "done", 2),  # the task line plus one answer
-            ("read beta", "done", 2),
+        assert [
+            (task.status_model.description, task.status_model.status, len(task.body.children)) for task in tasks(app)
+        ] == [
+            ("read alpha", "done", 1),
+            ("read beta", "done", 1),
         ]
-        answers = sorted(cell.text for panel in panels(app) for cell in panel.children if hasattr(cell, "text"))
+        answers = sorted(text.model.text for task in tasks(app) for text in task.body.query(AssistantText))
         assert answers == ["another answer", "one answer"]
 
 
-async def test_a_subagents_own_tool_calls_render_inside_its_panel(tmp_path):
-    app = AgentApp(
+async def test_a_subagents_own_tool_calls_render_inside_its_task_body(tmp_path):
+    app = make_app(
         fresh_session(SUBAGENTS),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [spawn("do the sum", "Add 2 and 3.", call_id="c1", task_id="t1")],
             ),
@@ -164,39 +151,41 @@ async def test_a_subagents_own_tool_calls_render_inside_its_panel(tmp_path):
             faux_assistant_message([faux_text("2 + 3 = 5.")]),
             faux_assistant_message([faux_text("My helper made it 5.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
         mode="yolo",  # the gate has its own test below; this one is about placement
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "add 2 and 3 with a helper")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert tree(app) == [
-            ("UserCell", "you", None, "add 2 and 3 with a helper", []),
-            (
-                "SubagentPanel",
-                "subagent · do the sum",
-                "done",
-                None,
-                [
-                    ("Static", None, None, None, []),
-                    ("ToolCallCell", "tool · add", "done", "add(a=2, b=3)\n→ 5.0", []),
-                    ("AssistantCell", "assistant", None, "2 + 3 = 5.", []),
-                ],
+        assert [type(widget).__name__ for widget in app.transcript.children] == [
+            "UserTurn",
+            "TaskBlockView",
+            "AssistantText",
+        ]
+        [task] = tasks(app)
+        assert [type(widget).__name__ for widget in task.body.children] == ["ToolBlockView", "AssistantText"]
+        assert [view.model for view in task.body.query(ToolBlockView)] == [
+            vm.ToolBlock(
+                tool="add",
+                arg="a=2, b=3",
+                status="ok",
+                result=vm.ToolResult(summary="5.0"),
             ),
-            ("AssistantCell", "assistant", None, "My helper made it 5.", []),
+        ]
+        assert [text.model for text in task.body.query(AssistantText)] == [
+            vm.TextBlock(text="2 + 3 = 5.", streaming=False),
         ]
 
 
-async def test_resume_replays_the_panel_exactly_as_it_rendered(tmp_path):
+async def test_resume_replays_the_task_exactly_as_it_rendered(tmp_path):
     """A reloaded session must show the delegated work, not a gap where it
     happened — so the replayed tree is compared against the live one."""
     session = fresh_session(SUBAGENTS)
-    app = AgentApp(
+    app = make_app(
         session,
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [
                     faux_text("Delegating."),
@@ -207,53 +196,53 @@ async def test_resume_replays_the_panel_exactly_as_it_rendered(tmp_path):
             faux_assistant_message([faux_text("alpha.txt is a shopping list.")]),
             faux_assistant_message([faux_text("It is a shopping list.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
         mode="yolo",
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "what is alpha.txt")
         await wait_until(pilot, lambda: idle_again(app))
-        live = tree(app)
+        live_shape = [type(widget).__name__ for widget in app.transcript.children]
+        [live_task] = tasks(app)
+        live_status = live_task.status_model
+        live_body = [type(widget).__name__ for widget in live_task.body.children]
+        live_tools = [view.model for view in live_task.body.query(ToolBlockView)]
 
-    resumed = AgentApp(
-        load_session(session.id, tmp_path),
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-        mode="yolo",
-    )
-    async with resumed.run_test() as pilot:
+    resumed = make_app(load_session(session.id, tmp_path), scripted(), tmp_path, mode="yolo")
+    async with resumed.run_test(size=(105, 35)) as pilot:
         await pilot.pause()
 
-        assert tree(resumed) == live
+        assert [type(widget).__name__ for widget in resumed.transcript.children] == live_shape
+        [task] = tasks(resumed)
+        assert task.status_model == live_status
+        assert [type(widget).__name__ for widget in task.body.children] == live_body
+        assert [view.model for view in task.body.query(ToolBlockView)] == live_tools
 
 
-async def test_a_cancelled_subagents_panel_stops_saying_running(tmp_path):
+async def test_a_cancelled_subagents_task_settles_failed(tmp_path):
     """The wind-down resolves a cancelled child WITHOUT running the result
-    tool, so a panel driven by that tool's event alone would hang on
-    "running…" — on precisely the path where the user needs to see it stop."""
-    app = AgentApp(
+    tool, so a task driven by that tool's event alone would hang on "running"
+    — on precisely the path where the user needs to see it stop."""
+    app = make_app(
         fresh_session(SUBAGENTS),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1")],
             ),
             faux_assistant_message([faux_hang()]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "delegate then cancel")
-        await wait_until(pilot, lambda: bool(panels(app)))
+        await wait_until(pilot, lambda: bool(tasks(app)))
         await pilot.press("escape")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [(panel.description, panel.status, panel.border_subtitle) for panel in panels(app)] == [
-            ("read alpha", "failed", "failed"),
+        assert [task.status_model for task in tasks(app)] == [
+            vm.TaskBlock(description="read alpha", status="failed"),
         ]
         session = app.runner.session
         links = [entry for entry in session.entries.values() if isinstance(entry, ChildConversation)]
@@ -262,12 +251,12 @@ async def test_a_cancelled_subagents_panel_stops_saying_running(tmp_path):
 
 async def test_a_queued_subagent_says_waiting_until_the_pool_admits_it(tmp_path):
     """Under `subagents_max_workers` a spawned subagent may be queued: its
-    panel opens saying "waiting…" and flips to "running…" only when
-    `SubagentStarted` arrives — one field, driven entirely by the events."""
+    task opens "waiting" and flips to "running" only when `SubagentStarted`
+    arrives — one field, driven entirely by the events."""
     capped = RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagents_max_workers=1)
-    app = AgentApp(
+    app = make_app(
         fresh_session(capped),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [
                     spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1"),
@@ -276,33 +265,32 @@ async def test_a_queued_subagent_says_waiting_until_the_pool_admits_it(tmp_path)
             ),
             faux_assistant_message([faux_hang()]),  # the first child holds the only slot
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "read both, one at a time")
-        await wait_until(pilot, lambda: len(panels(app)) == 2)
-        await wait_until(pilot, lambda: panels(app)[0].status == "running")
+        await wait_until(pilot, lambda: len(tasks(app)) == 2)
+        await wait_until(pilot, lambda: tasks(app)[0].status_model.status == "running")
 
         # the slot-holder runs; its sibling is queued and says so
-        assert [(panel.description, panel.border_subtitle) for panel in panels(app)] == [
-            ("read alpha", "running…"),
-            ("read beta", "waiting…"),
+        assert [task.status_model for task in tasks(app)] == [
+            vm.TaskBlock(description="read alpha", status="running"),
+            vm.TaskBlock(description="read beta", status="waiting"),
         ]
 
         await pilot.press("escape")  # unwind the hung child; both settle
         await wait_until(pilot, lambda: idle_again(app))
 
 
-async def test_a_refused_spawn_renders_a_notice_not_nothing(tmp_path):
+async def test_a_refused_spawn_renders_an_error_notice_not_nothing(tmp_path):
     """A spawn past `subagents_max_per_turn` is born REFUSED and creates no
-    child — so the plumbing rule (spawns render as their child's panel) would
-    make it invisible. It gets a notice instead, live and on replay."""
+    child — so the plumbing rule (spawns render as their task block) would
+    make it invisible. It gets an error notice instead, live and on replay."""
     budgeted = RuntimeConfig(subagents_enabled=True, subagents_max_depth=1, subagents_max_per_turn=1)
-    app = AgentApp(
+    app = make_app(
         fresh_session(budgeted),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [
                     spawn("read alpha", "Read alpha.txt.", call_id="c1", task_id="t1"),
@@ -312,39 +300,35 @@ async def test_a_refused_spawn_renders_a_notice_not_nothing(tmp_path):
             faux_assistant_message([faux_text("alpha read")]),
             faux_assistant_message([faux_text("Only alpha; the budget refused beta.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "read both")
         await wait_until(pilot, lambda: idle_again(app))
 
-        notices = [row for row in tree(app) if row[0] == "NoticeCell"]
-        assert len(notices) == 1
-        assert "Spawn limit reached (1/1 subagents this turn)" in notices[0][3]
-        assert [panel.description for panel in panels(app)] == ["read alpha"]
+        [notice] = app.query(NoticeLine)
+        assert "Spawn limit reached (1/1 subagents this turn)" in notice.text
+        assert notice.error is True
+        assert [task.status_model.description for task in tasks(app)] == ["read alpha"]
 
     # and the replay reproduces it
-    reloaded = AgentApp(
-        load_session(app.runner.session.id, directory=tmp_path),
-        provider=FauxProvider(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with reloaded.run_test() as pilot:
-        await wait_until(pilot, lambda: bool(panels(reloaded)))
-        notices = [row for row in tree(reloaded) if row[0] == "NoticeCell"]
-        assert len(notices) == 1
-        assert "Spawn limit reached" in notices[0][3]
+    reloaded = make_app(load_session(app.runner.session.id, tmp_path), FauxProvider(), tmp_path)
+    async with reloaded.run_test(size=(105, 35)) as pilot:
+        await wait_until(pilot, lambda: bool(tasks(reloaded)))
+
+        [notice] = reloaded.query(NoticeLine)
+        assert "Spawn limit reached" in notice.text
+        assert notice.error is True
 
 
-async def test_a_subagents_approval_modal_names_it_by_its_task(tmp_path):
-    """Two subagents can gate at the same moment, so the modal has to say which
-    one is asking in terms the user can act on — the task, not the key."""
-    app = AgentApp(
+async def test_a_subagents_approval_prompt_names_its_task(tmp_path):
+    """Two subagents can gate at the same moment, so the prompt has to say
+    which one is asking in terms the user can act on — the task label, not
+    the conversation key."""
+    app = make_app(
         fresh_session(SUBAGENTS),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [spawn("do the sum", "Add 2 and 3.", call_id="c1", task_id="t1")],
             ),
@@ -352,24 +336,23 @@ async def test_a_subagents_approval_modal_names_it_by_its_task(tmp_path):
             faux_assistant_message([faux_text("2 + 3 = 5.")]),
             faux_assistant_message([faux_text("My helper made it 5.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
         mode="ask",
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "add 2 and 3 with a helper")
-        await wait_until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await wait_until(pilot, lambda: bool(app.query(ApprovalPromptView)))
 
-        prompt = app.screen.prompt
-        [child_id] = [panel.conversation_id for panel in panels(app)]
-        assert (prompt.tool_name, prompt.conversation_id, prompt.conversation_label) == (
-            "add",
-            child_id,
-            "do the sum",
-        )
-        assert str(app.screen.query_one("#approval-title", Label).content) == (
-            "Approval needed: add  [subagent · do the sum]"
+        [prompt] = app.query(ApprovalPromptView)
+        assert prompt.model == vm.ApprovalState(
+            question="[faint]task · do the sum —[/] Run add?",
+            options=[
+                vm.ApprovalOption(label="Approve once"),
+                vm.ApprovalOption(label="Deny — tell Luca what to do instead"),
+                vm.ApprovalOption(label="Cancel turn", key_hint="esc"),
+            ],
+            selected=0,
         )
 
         await pilot.press("1")  # Approve once, so the run finishes cleanly
@@ -395,27 +378,24 @@ def test_an_unnamed_subagent_prompt_falls_back_to_its_id():
     )
 
     assert (prompt.tool_name, prompt.conversation_id, prompt.conversation_label) == ("add", "c_child", None)
+    assert prompt.question == "[faint]task · c_child —[/] Run add?"
 
 
-async def test_subagents_off_renders_no_panel(tmp_path):
+async def test_subagents_off_renders_no_task(tmp_path):
     """`--no-subagents` withholds the tool, so nothing about the transcript
     changes for a session that never spawns."""
-    app = AgentApp(
+    app = make_app(
         fresh_session(),
-        provider=scripted(faux_assistant_message([faux_text("No helpers needed.")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_text("No helpers needed.")])),
+        tmp_path,
         subagents=False,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert tree(app) == [
-            ("UserCell", "you", None, "hi", []),
-            ("AssistantCell", "assistant", None, "No helpers needed.", []),
-        ]
-        assert panels(app) == []
+        assert [type(widget).__name__ for widget in app.transcript.children] == ["UserTurn", "AssistantText"]
+        assert tasks(app) == []
         outcomes = [entry.outcome for entry in app.runner.session.entries.values() if hasattr(entry, "outcome")]
         assert outcomes == [TurnOutcome.COMPLETED]

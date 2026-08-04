@@ -1,0 +1,20 @@
+# 1i — Session history & resume.
+name: 1i_sessions
+status:
+  cwd: ~/quantized/luca
+  label: sessions
+modal:
+  sessions:
+    count_line: 7 sessions in this repo · 2.1 MB · .luca/sessions
+    selected: 0
+    rows:
+      - {when: 18m ago, first_message: migrate the event store to sqlite, turns: "14", tokens: 31.7k, cost: $0.21}
+      - {when: 2h ago, first_message: add a --json flag to events, turns: "6", tokens: 12.4k, cost: $0.08}
+      - {when: yesterday, first_message: "why does the TUI flicker on resize?", turns: "22", tokens: 58.0k, cost: $0.39}
+      - {when: yesterday, first_message: write the README quickstart, turns: "4", tokens: 9.1k, cost: $0.06}
+      - {when: 3 days ago, first_message: scaffold the textual app shell, turns: "31", tokens: 74.6k, cost: $0.51}
+    preview:
+      - "◉ port the reader, version-gated on session.format"
+      - "▸ write  luca/store/schema.sql   [success]+34[/]"
+      - "▸ bash   pytest tests/test_store.py -q"
+hints: [↑↓ move, enter resume, f fork, d delete, esc back]

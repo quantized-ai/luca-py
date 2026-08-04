@@ -1,30 +1,21 @@
-"""AgentApp — the Textual front end of the agent loop.
+"""`AgentApp` — the live agent wired onto the Luca frame.
 
 One drive worker owns the runner exactly like the classic REPL loop did:
-answer the approval gate (modal screens), then fall THROUGH to a run —
-recording answers on the strategy does not advance the runner, so the
-approval branch must always be followed by a run, never a re-prompt. A lazy
-run is created per iteration (`streaming=` decides the event tier), events
-render into transcript cells through one unified handler (delta events
-stream into the live cell; block events finalize it — so the same handler
-serves both modes), and the session persists after every run.
+answer the approval gate (the inline prompt that replaces the composer), then
+fall THROUGH to a run — recording answers on the strategy does not advance
+the runner, so the approval branch must always be followed by a run, never a
+re-prompt. A lazy run is created per iteration (`streaming=` decides the
+event tier), events render into transcript blocks through one unified
+handler, and the session persists after every run.
 
-Escape while a run is live requests cancellation (`run.cancel()`); the
-wind-down renders live and the turn closes CANCELLED. Abandoning at the
-approval modal cancels the runner; the loop's next run is the flush.
+Escape while a run is live requests cancellation; the wind-down renders live
+and the turn closes CANCELLED. Choosing "Cancel turn" at the approval prompt
+does the same. A drive failure renders as an error block plus the recovery
+prompt (keep retrying / switch model / cancel turn).
 
-The prompt stays enabled while the agent works: submitting mid-turn posts
-into the open turn (rendered immediately, answered before the turn closes),
-and a rejection — cancelling, subagents active — surfaces as a notice with
-the draft preserved. Slash commands stay idle-only. A mid-turn post never
-starts a second drive; the live loop picks it up at its next LLM call.
-
-Construction wires the full demo agent via `wiring.build_runner` (shell +
-memory plugins, math tools, one shared permission strategy); `provider=` is
-the zero-logic passthrough tests use to inject a scripted `FauxProvider`.
-On a resumed session the transcript replays the persisted conversation, and
-a non-idle session (gated, parked cancel, retry-ready) starts driving on
-mount.
+The composer stays enabled while the agent works: submitting mid-turn posts
+into the open turn. Slash commands stay idle-only. Typing `/` in an empty
+composer opens the palette; `@` opens the (mock) context picker.
 """
 
 from __future__ import annotations
@@ -32,15 +23,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import os
+import time
 from pathlib import Path
-from typing import ClassVar, TypeVar
+from typing import ClassVar
 
-from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
-from textual.css.query import NoMatches
-from textual.widgets import Footer, Header
+from textual.widgets import TextArea
 
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
@@ -84,54 +72,47 @@ from luca.agent.core.models import (
 )
 from luca.agent.core.projection import tool_message_text
 
+from . import state as vm
 from .approvals import build_approval_prompts
-from .cells import (
-    AssistantCell,
-    CompactionCell,
-    NoticeCell,
-    ReasoningCell,
-    SubagentPanel,
-    ToolCallCell,
-    TranscriptCell,
-    UserCell,
+from .blocks import (
+    AssistantText,
+    ListBlockView,
+    TaskBlockView,
+    ThinkingLine,
+    ToolBlockView,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
-from .commands import COMMANDS, dispatch
-from .context_bar import ContextBar
+from .format import HINTS, fmt_tokens, home_path, short_model
+from .frame import DEFAULT_THEME, LucaApp
+from .gitinfo import GitInfo, read_git_info
+from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
 from .render import (
-    REDACTED_REASONING_MARKER,
     child_links,
+    is_plan_update,
     is_runtime_plumbing,
-    reasoning_transcript_text,
+    plan_from_execution,
     subagent_task,
+    tool_block,
     user_transcript_text,
 )
-from .screens import ApprovalScreen
 from .sessions import save_session
+from .shells import ApprovalPromptView, OverlayListView
+from .usage import status_counter
 from .wiring import build_runner
 
-_CellT = TypeVar("_CellT", bound=TranscriptCell)
-DEFAULT_THEME = "nord"
+__all__ = ["AgentApp", "DEFAULT_THEME"]
 
 
-class AgentApp(App):
-    TITLE = "luca"
-
+class AgentApp(LucaApp):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("escape", "cancel_run", "Cancel turn"),
-        Binding("ctrl+v", "paste_image", "Attach image", priority=True),
-        Binding("ctrl+d", "save_quit", "Quit", priority=True),
+        Binding("escape", "cancel_run", show=False),
+        Binding("ctrl+p", "palette", show=False, priority=True),
+        Binding("ctrl+t", "goto_plan", show=False, priority=True),
+        Binding("ctrl+s", "show_skills", show=False, priority=True),
+        Binding("ctrl+o", "expand_output", show=False, priority=True),
+        Binding("ctrl+v", "paste_image", show=False, priority=True),
     ]
-
-    CSS = """
-    #transcript {
-        padding: 1 0 0 0;
-    }
-    #prompt {
-        margin: 0 1 1 1;
-    }
-    """
 
     def __init__(
         self,
@@ -139,8 +120,8 @@ class AgentApp(App):
         *,
         provider=None,
         theme: str = DEFAULT_THEME,
-        workspace: str | os.PathLike[str] = ".",
-        session_dir: str | os.PathLike[str] = ".",
+        workspace: str | Path = ".",
+        session_dir: str | Path = ".",
         streaming: bool = True,
         mode: str = "ask",
         context_manager=None,
@@ -154,8 +135,7 @@ class AgentApp(App):
         extra_instructions: list[str] | None = None,
         resume: bool = False,
     ) -> None:
-        super().__init__()
-        self.theme = theme
+        super().__init__(theme=theme)
         self._session_dir = Path(session_dir)
         self._streaming = streaming
         self._workspace = workspace
@@ -173,59 +153,71 @@ class AgentApp(App):
         self._resume = resume
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
-        # True while the drive worker is alive. The worker group is
-        # `exclusive=True`, so starting a second drive would CANCEL the live
-        # run mid-turn — a mid-turn post must never start one (the live loop's
-        # next LLM call picks the message up on its own).
         self._driving = False
-        # KEYED BY CONVERSATION. With subagents, the main agent and several
-        # children stream at once on ONE event stream; a single live-cell slot
-        # would splice two conversations' text into the same cell.
-        self._live_reasoning: dict[str, ReasoningCell | None] = {}
-        self._live_text: dict[str, AssistantCell | None] = {}
-        self._tool_cells: dict[str, ToolCallCell] = {}
-        # conversation id → the panel its cells mount into. A conversation with
-        # no panel here is the main one, and mounts into the transcript itself.
-        self._panels: dict[str, SubagentPanel] = {}
+        # KEYED BY CONVERSATION: with subagents several conversations stream
+        # onto one event stream at once.
+        self._live_thinking: dict[str, ThinkingLine | None] = {}
+        self._thinking_started: dict[str, float] = {}
+        self._live_text: dict[str, AssistantText | None] = {}
+        self._tool_views: dict[str, ToolBlockView] = {}
+        self._plan_views: dict[str, ListBlockView] = {}
+        self._tasks: dict[str, TaskBlockView] = {}
         self._pending_images: list[ImageContent] = []
+        # Which calls the user answered at a prompt — everything else that ran
+        # was decided by rule, and the transcript says so.
+        self._answered: set[str] = set()
+        self._denied_by_user: set[str] = set()
+        self._approval_future: asyncio.Future[int] | None = None
+        self._retry_prompt_active = False
+        self._git = GitInfo()
+        self._show_counter = True
+        # The mock context set (`@` picker) — display-only until the feature
+        # lands in the agent.
+        self._context_files: list[tuple[str, int]] = []
+        self._context_list_view: ListBlockView | None = None
+        self._menu_handler = None
+        self._menu_rows: list[vm.OverlayRow] = []
+        self._menu_all_rows: list[vm.OverlayRow] = []
+        self._picker_selected: set[str] = set()
 
     @property
     def current_run(self) -> AgentRun | None:
-        """The live run handle while the drive worker is inside one."""
         return self._current_run
 
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield VerticalScroll(id="transcript")
-        yield ContextBar(id="context-bar")
-        yield PromptInput(
-            placeholder="Message the agent — Enter to send, Alt+Enter for a new line, /help for commands",
-            commands=[f"/{command.name}" for command in COMMANDS],
-            id="prompt",
-        )
-        yield Footer()
+    def _composer_commands(self) -> list[str]:
+        from .commands import COMMANDS
+
+        return [f"/{command.name}" for command in COMMANDS]
+
+    # ── mount ─────────────────────────────────────────────────────────────────
 
     async def on_mount(self) -> None:
+        super().on_mount()
+        await self.show_composer(vm.ComposerState())
+        self.set_hints(HINTS["idle"])
         self._refresh_status()
+        self.run_worker(self._load_git_info(), group="git", exclusive=True)
         await self._replay_history()
         if self._resume:
-            # `--resume` is "start me at /resume", so it runs the command rather
-            # than duplicating it. The fresh session it opens over is unsaved
-            # and disappears if a stored one is picked. `/resume` settles the
-            # session it switches to, so do not settle this one over the top.
+            from .commands import dispatch
+
             await dispatch(self, "/resume")
             return
         self._settle()
 
-    # ── input ──────────────────────────────────────────────────────────────────
+    async def _load_git_info(self) -> None:
+        self._git = await asyncio.to_thread(read_git_info, self._workspace)
+        self._refresh_status()
+
+    # ── input ─────────────────────────────────────────────────────────────────
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         text = event.value.strip()
         if text.startswith("/"):
-            # Commands mutate runner/session state and stay idle-only. The
-            # draft is preserved — input is never silently discarded.
+            from .commands import dispatch
+
             if not self.runner.idle():
-                self.notify("Commands are available when the agent is idle.", severity="warning")
+                await self._notice("commands are available when the agent is idle", error=True)
                 return
             if await dispatch(self, text):
                 event.prompt_input.clear()
@@ -238,21 +230,32 @@ class AgentApp(App):
         try:
             self.runner.post_message(parts)
         except AgentError as exc:
-            # The transient rejection (cancelling) and every other refusal
-            # alike: a brief notice, and the draft stays in the input for a
-            # later resubmit.
-            self.notify(str(exc), severity="warning")
+            await self._notice(str(exc), error=True)
             return
         event.prompt_input.clear()
         self._pending_images = []
-        # Rendered immediately; mid-turn it may interleave with streaming
-        # cells, which is correct — the message is answered after the current
-        # response completes.
-        await self._mount_cell(UserCell(user_transcript_text(parts)))
+        await self.mount_block(vm.UserBlock(text=user_transcript_text(parts)))
         if not self._driving:
             self._start_drive()
 
-    # ── the drive worker ───────────────────────────────────────────────────────
+    async def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """`/` in an empty composer opens the palette; `@` opens the context
+        picker. Both consume the trigger character."""
+        area = event.text_area
+        if not isinstance(area, PromptInput):
+            return
+        text = area.text
+        if text == "/":
+            area.clear()
+            await self.open_palette()
+        elif text.endswith("@") and (len(text) == 1 or text[-2].isspace()):
+            area.load_text(text[:-1])
+            area.move_cursor(area.document.end)
+            await self.open_context_picker()
+        else:
+            area.update_suggestion()
+
+    # ── the drive worker ──────────────────────────────────────────────────────
 
     def _start_drive(self) -> None:
         self._driving = True
@@ -260,17 +263,9 @@ class AgentApp(App):
         self.run_worker(self._drive(), group="drive", exclusive=True)
 
     async def _drive(self) -> None:
-        """THE DRIVE COMES BEFORE THE PROMPT.
-
-        Answering writes to the permission strategy, not to the execution, so
-        `approval_status` stays PENDING until a drive re-asks `decide()` — the
-        engine's single decide call site. Prompting first would therefore
-        re-ask the user for whatever was just answered; driving first means
-        "still `BLOCKED` after a drive" is a genuinely unanswered gate.
-
-        Abandoning at the modal cancels instead of answering, which leaves the
-        conversation CANCELLING — not idle — so the next pass drives the flush
-        and the loop still terminates."""
+        """THE DRIVE COMES BEFORE THE PROMPT: answering writes to the
+        permission strategy, so only a drive can consume it — still-BLOCKED
+        after a drive is a genuinely unanswered gate."""
         runner = self.runner
         try:
             while True:
@@ -282,229 +277,291 @@ class AgentApp(App):
                     async with run:
                         async for event in run:
                             await self._on_agent_event(event)
+                except Exception as exc:
+                    self._current_run = None
+                    save_session(runner.session, self._session_dir)
+                    self._refresh_status()
+                    if not await self._recover_from(exc):
+                        break
+                    continue
                 finally:
                     self._current_run = None
-                    # A cancelled subagent is resolved by the wind-down with no
-                    # result-tool event to close its panel, so reconcile here
-                    # too — the run ending is the last chance to.
-                    self._sync_panels()
+                    self._sync_tasks()
                     save_session(runner.session, self._session_dir)
                     self._refresh_status()
                 if runner.blocked():
                     await self._resolve_approvals()
-        except Exception as exc:
-            await self._notice(f"turn failed: {exc}", error=True)
-            save_session(runner.session, self._session_dir)
-            self._refresh_status()
         finally:
             self._driving = False
             self._set_busy(False)
+            self.run_worker(self._load_git_info(), group="git", exclusive=True)
+
+    async def _recover_from(self, exc: Exception) -> bool:
+        """The 1h recovery prompt. True = keep driving, False = stop."""
+        await self.mount_block(
+            vm.ToolBlock(
+                tool="model",
+                arg=short_model(self.runner.session.session_config.llm_config.model),
+                status="error",
+                output=vm.ToolOutput(lines=[f"[error]{type(exc).__name__}[/]", str(exc)]),
+            )
+        )
+        alternate = self._alternate_model()
+        options = [vm.ApprovalOption(label="Retry now")]
+        if alternate is not None:
+            options.append(vm.ApprovalOption(label=f"Switch to {short_model(alternate[1])} and continue"))
+        options.append(vm.ApprovalOption(label="Cancel turn", key_hint="esc"))
+        self._retry_prompt_active = True
+        try:
+            choice = await self._ask(
+                vm.ApprovalState(question="Keep going, or stop here?", options=options),
+                hints=HINTS["retry"],
+            )
+        finally:
+            self._retry_prompt_active = False
+        await self.show_composer(vm.ComposerState(placeholder="working…"))
+        if alternate is not None and choice == 1:
+            config = self.runner.session.session_config.llm_config
+            provider, model = alternate
+            self.runner.session.session_config.llm_config = config.model_copy(
+                update={"provider": provider, "model": model}
+            )
+            self._refresh_status()
+            return True
+        if choice == len(options) - 1:
+            with contextlib.suppress(AlreadyCancellingError):
+                self.runner.cancel(error="cancelled after a failure")
+            return not self.runner.idle()
+        return True
+
+    def _alternate_model(self) -> tuple[str, str] | None:
+        from .wiring import RECOMMENDED_MODELS
+
+        config = self.runner.session.session_config.llm_config
+        models = (self.recommended_models or RECOMMENDED_MODELS).get(config.provider) or ()
+        for model in models:
+            if model != config.model:
+                return config.provider, model
+        return None
+
+    # ── approvals (inline, replacing the composer) ────────────────────────────
+
+    async def _ask(self, state: vm.ApprovalState, *, hints: list[str] | None = None) -> int:
+        prompt = await self.show_approval(state)
+        self.set_hints(hints or ["↑↓ move", "enter confirm", f"1–{len(state.options)} pick"])
+        self._approval_future = asyncio.get_running_loop().create_future()
+        try:
+            return await self._approval_future
+        finally:
+            self._approval_future = None
+            if prompt.is_attached:
+                await prompt.remove()
+
+    def on_approval_prompt_view_decided(self, message: ApprovalPromptView.Decided) -> None:
+        if self._approval_future is not None and not self._approval_future.done():
+            self._approval_future.set_result(message.index)
 
     async def _resolve_approvals(self) -> None:
-        """Collect verdicts for every pending execution through the modal,
-        then record them all — same policy as the REPL: abandoning discards
-        everything collected so far and cancels instead of answering; a DENY
-        skips the execution's remaining steps (the call is dead anyway).
-
-        `pending_approvals()` is SUBTREE-SCOPED, so this list can hold gates
-        from several conversations at once. Each modal names the subagent that
-        raised it; the main agent's are unlabelled, which is the ordinary
-        case."""
+        """Collect verdicts for every pending execution through the inline
+        prompt, then record them all. Cancel-turn discards everything
+        collected so far; a deny skips the execution's remaining steps and
+        hands the composer back empty — tell Luca what to do instead."""
         collected: list[tuple[ToolExecution, list]] = []
         for execution in self.runner.pending_approvals():
+            if execution.tool_call_id in self._answered:
+                # Coverage is emergent: an answer that does not cover every
+                # required pair leaves the call pending and the gate re-arms.
+                # Say so — a silently repeating prompt reads as a frozen UI.
+                await self._notice("that answer did not cover the request — asking again")
             answers = []
             for prompt in build_approval_prompts(
                 execution,
                 self.strategy,
                 main_conversation_id=self.runner.main_conversation_id,
-                subagent_labels={cid: panel.description for cid, panel in self._panels.items()},
+                subagent_labels={cid: task.status_model.description for cid, task in self._tasks.items()},
             ):
-                option = await self.push_screen_wait(ApprovalScreen(prompt))
-                if option.is_abandon:
-                    self.runner.cancel(error="abandoned at the approval prompt")
-                    await self._notice("turn abandoned — flushing")
+                choice = await self._ask(prompt.to_state())
+                option = prompt.options[choice]
+                self._answered.add(execution.tool_call_id)
+                if option.is_cancel:
+                    with contextlib.suppress(AlreadyCancellingError):
+                        self.runner.cancel(error="cancelled at the approval prompt")
+                    await self._notice("turn cancelled — winding down")
+                    await self._restore_composer()
                     return
                 answers.append(option.answer)
                 if option.is_deny:
+                    self._denied_by_user.add(execution.tool_call_id)
                     break
             collected.append((execution, answers))
         for execution, answers in collected:
             self.strategy.apply_answer(execution, answers)
+        await self._restore_composer()
 
-    # ── event rendering ────────────────────────────────────────────────────────
+    async def _restore_composer(self) -> None:
+        placeholder = "working…" if self._driving else "ask, or / for commands"
+        await self.show_composer(vm.ComposerState(placeholder=placeholder))
+        self._set_busy(self._driving)
+
+    # ── event rendering ───────────────────────────────────────────────────────
 
     async def _on_agent_event(self, event) -> None:
-        """One handler for both tiers: deltas stream into the live cell,
-        the block event finalizes it (or mounts it whole when not
-        streaming).
-
-        Every event names its conversation, and BOTH the live-cell state and
-        the mount target are keyed by it — with subagents the stream is the
-        whole tree's, so two conversations can be mid-block at the same time
-        and their cells must not land in the same column."""
         source = event.conversation_id
         match event:
             case ReasoningStart():
-                self._live_reasoning[source] = None
-            case ReasoningDelta(text=text):
-                self._live_reasoning[source] = await self._stream_into(
-                    self._live_reasoning.get(source),
-                    ReasoningCell,
-                    text,
-                    source,
-                )
-            case ReasoningBlock(text=text, redacted=redacted):
-                await self._settle_cell(
-                    self._live_reasoning.get(source),
-                    ReasoningCell,
-                    REDACTED_REASONING_MARKER if redacted else text,
-                    source,
-                )
-                self._live_reasoning[source] = None
+                self._thinking_started[source] = time.monotonic()
+                line = ThinkingLine(vm.ThinkingBlock(activity="thinking"))
+                line.add_class("block")
+                await self._mount_widget(line, source)
+                self._live_thinking[source] = line
+            case ReasoningDelta():
+                pass  # the design collapses thinking to its one-line label
+            case ReasoningBlock():
+                started = self._thinking_started.pop(source, None)
+                duration = max(time.monotonic() - started, 1.0) if started else None
+                line = self._live_thinking.pop(source, None)
+                if line is None:
+                    line = ThinkingLine(vm.ThinkingBlock(duration=duration))
+                    await self._mount_widget(line, source)
+                else:
+                    line.settle(duration) if duration is not None else line.set_activity("thought")
             case TextStart():
                 self._live_text[source] = None
             case TextDelta(text=text):
-                self._live_text[source] = await self._stream_into(
-                    self._live_text.get(source),
-                    AssistantCell,
-                    text,
-                    source,
-                )
+                view = self._live_text.get(source)
+                if view is None:
+                    if not text.strip():
+                        return
+                    view = AssistantText(vm.TextBlock(text="", streaming=True))
+                    await self._mount_widget(view, source)
+                    self._live_text[source] = view
+                view.append_text(text)
+                self.scroll_transcript_end()
             case TextBlock(text=text):
-                await self._settle_cell(self._live_text.get(source), AssistantCell, text, source)
+                view = self._live_text.get(source)
+                if not text.strip():
+                    if view is not None:
+                        await view.remove()
+                elif view is None:
+                    await self.mount_block(vm.TextBlock(text=text), self._tasks.get(source))
+                else:
+                    view.settle(text)
                 self._live_text[source] = None
             case ToolCallReceived(execution=execution) if is_runtime_plumbing(execution):
-                # A spawn renders as its child's panel and a private tool as
-                # nothing; neither gets a cell to start, so neither gets one to
-                # update later.
-                pass
+                pass  # a spawn renders as its task block; private tools render nothing
+            case ToolCallReceived(execution=execution) if is_plan_update(execution):
+                pass  # renders on completion, as the plan block
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
-                cell = ToolCallCell(execution)
-                self._tool_cells[tool_call_id] = cell
-                await self._mount_cell(cell, source)
-            case ToolExecutionStarted(tool_call_id=tool_call_id, execution=execution):
-                cell = self._tool_cells.get(tool_call_id)
-                if cell is not None:
-                    cell.mark_running(execution)
+                view = ToolBlockView(tool_block(execution))
+                self._tool_views[tool_call_id] = view
+                await self._mount_widget(view, source)
+            case ToolExecutionStarted():
+                pass  # no running affordance in the design — no spinners
             case ToolExecuted(execution=execution, result_text=result_text) if is_runtime_plumbing(execution):
                 if execution.status is ExecutionStatus.REFUSED:
-                    # A refused spawn has no panel to render as — without this
-                    # the budget's refusal would be invisible to the user
-                    # while the model reads it.
-                    await self._mount_cell(NoticeCell(result_text, error=True), source)
-                # The result tool completing is how a subagent's panel closes
-                # while its siblings are still working.
-                self._sync_panels()
+                    await self._mount_widget_block(vm.NoticeBlock(text=result_text, error=True), source)
+                self._sync_tasks()
+            case ToolExecuted(execution=execution) if (
+                is_plan_update(execution) and execution.status is ExecutionStatus.COMPLETED
+            ):
+                await self._apply_plan(execution, source)
             case ToolExecuted(
                 tool_call_id=tool_call_id,
                 execution=execution,
                 result_text=result_text,
                 is_error=is_error,
             ):
-                cell = self._tool_cells.get(tool_call_id)
-                if cell is None:  # e.g. an orphan recovered on resume
-                    cell = ToolCallCell(execution)
-                    self._tool_cells[tool_call_id] = cell
-                    await self._mount_cell(cell, source)
-                cell.finish(execution, result_text, is_error)
-            case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED):
-                if entry.parts:
-                    await self._mount_cell(CompactionCell(entry), source)
+                view = self._tool_views.get(tool_call_id)
+                block = tool_block(
+                    execution,
+                    result_text,
+                    is_error=is_error,
+                    auto_approved=self._was_auto_approved(execution),
+                    denied_by_user=tool_call_id in self._denied_by_user,
+                )
+                if view is None:
+                    view = ToolBlockView(block)
+                    self._tool_views[tool_call_id] = view
+                    await self._mount_widget(view, source)
                 else:
-                    await self._mount_cell(NoticeCell("nothing to compact"), source)
+                    await view.apply(block)
+                self.scroll_transcript_end()
+            case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED):
+                replaced = len(entry.compacted_nodes or [])
+                text = f"context compacted · {replaced} entries summarized" if entry.parts else "nothing to compact"
+                await self._mount_widget_block(vm.NoticeBlock(text=text), source)
+                self._refresh_status()
             case CompactionFinished(outcome=outcome, error=error):
-                # A policy-initiated failure degrades silently otherwise: this
-                # event is the only place it surfaces.
-                await self._mount_cell(
-                    NoticeCell(
-                        f"compaction {outcome.value}" + (f": {error}" if error else ""),
+                await self._mount_widget_block(
+                    vm.NoticeBlock(
+                        text=f"compaction {outcome.value}" + (f": {error}" if error else ""),
                         error=outcome is not TurnOutcome.CANCELLED,
                     ),
                     source,
                 )
             case SubagentsSpawned(conversation_ids=conversation_ids):
-                # `source` is the PARENT, so a panel nests inside its spawner's
-                # panel whenever that spawner has one: at depth 1 the parent is
-                # the transcript, and a deeper tree nests by the same rule.
                 for child_id in conversation_ids:
-                    await self._open_panel(child_id, source)
+                    await self._open_task(child_id, source)
             case SubagentStarted():
-                # `source` is the SUBAGENT here — the panel lookup is the same
-                # one the tool cells use.
-                panel = self._panels.get(source)
-                if panel is not None:
-                    panel.set_activity("running")
+                task = self._tasks.get(source)
+                if task is not None:
+                    task.set_status("running")
             case SubagentPaused():
-                panel = self._panels.get(source)
-                if panel is not None:
-                    panel.set_activity("waiting")
+                task = self._tasks.get(source)
+                if task is not None:
+                    task.set_status("waiting")
             case (
                 ToolCallStart()
                 | FinishReason()
                 | ApprovalRequired()
                 | CompactionScheduled()
                 | CompactionStarted()
-                | SubagentFinished()  # terminal rendering is the settle path's
+                | SubagentFinished()
             ):
                 pass
 
-    async def _stream_into(
-        self,
-        cell: _CellT | None,
-        cell_class: type[_CellT],
-        delta: str,
-        conversation_id: str | None = None,
-    ) -> _CellT | None:
-        """Append a delta, mounting the cell on the first visible one so a
-        whitespace-only block never gets a cell."""
-        if cell is None:
-            if not delta.strip():
-                return None
-            cell = cell_class()
-            await self._mount_cell(cell, conversation_id)
-        cell.append_text(delta)
-        self._scroll_end()
-        return cell
+    def _was_auto_approved(self, execution: ToolExecution) -> bool:
+        """State every automatic permission decision: the call went through a
+        gate (it carries an approval context) and the user never answered."""
+        if execution.tool_call_id in self._answered:
+            return False
+        if execution.approval_status is None:
+            return False
+        return bool(execution.extras.get("approval_context"))
 
-    async def _settle_cell(
-        self,
-        cell: _CellT | None,
-        cell_class: type[_CellT],
-        text: str,
-        conversation_id: str | None = None,
-    ) -> None:
-        """Settle a streamed cell against its completed block (or mount it
-        whole when not streaming). Blank text never survives: providers emit
-        whitespace-only content alongside tool calls."""
-        if not text.strip():
-            if cell is not None:
-                await cell.remove()
+    async def _apply_plan(self, execution: ToolExecution, source: str) -> None:
+        plan = plan_from_execution(execution)
+        if plan is None:
             return
-        if cell is None:
-            cell = cell_class()
-            await self._mount_cell(cell, conversation_id)
-        cell.set_text(text)
+        view = self._plan_views.get(source)
+        if view is None or not view.is_attached:
+            widget = await self.mount_block(plan, self._tasks.get(source))
+            self._plan_views[source] = widget
+        else:
+            view.apply(plan)
 
-    # ── subagent panels ────────────────────────────────────────────────────────
+    async def _mount_widget(self, widget, conversation_id: str | None) -> None:
+        task = self._tasks.get(conversation_id) if conversation_id else None
+        target = task.body if task is not None else self.transcript
+        await target.mount(widget)
+        self.scroll_transcript_end()
 
-    async def _open_panel(
-        self,
-        conversation_id: str,
-        parent_id: str | None = None,
-    ) -> SubagentPanel | None:
-        """Mount the panel a subagent's cells go into. Idempotent: the same
-        child is announced once by the event and again by a replay, and only
-        the first one mounts."""
-        if conversation_id in self._panels:
-            return self._panels[conversation_id]
+    async def _mount_widget_block(self, block: vm.Block, conversation_id: str | None) -> None:
+        await self.mount_block(block, self._tasks.get(conversation_id) if conversation_id else None)
+
+    # ── subagent tasks ────────────────────────────────────────────────────────
+
+    async def _open_task(self, conversation_id: str, parent_id: str | None = None) -> TaskBlockView | None:
+        if conversation_id in self._tasks:
+            return self._tasks[conversation_id]
         entry = self._child_link(conversation_id)
         if entry is None:
             return None
-        description, prompt = subagent_task(self.runner.session, entry)
-        panel = SubagentPanel(conversation_id, description, prompt)
-        self._panels[conversation_id] = panel
-        await self._mount_cell(panel, parent_id)
-        return panel
+        description, _prompt = subagent_task(self.runner.session, entry)
+        task = TaskBlockView(vm.TaskBlock(description=description, status="waiting"))
+        self._tasks[conversation_id] = task
+        await self._mount_widget(task, parent_id)
+        return task
 
     def _child_link(self, conversation_id: str) -> ChildConversation | None:
         for _parent_id, entry in child_links(self.runner.session):
@@ -512,113 +569,263 @@ class AgentApp(App):
                 return entry
         return None
 
-    def _sync_panels(self) -> None:
-        """Settle every panel whose subagent has resolved.
-
-        THE LINK IS THE SOURCE OF TRUTH, not the result tool's event: a
-        cancelled subagent is resolved by the parent's wind-down without that
-        tool ever running, so a panel driven by the event alone would say
-        "running" forever on the one path where the user most wants to know it
-        stopped."""
+    def _sync_tasks(self) -> None:
+        """THE LINK IS THE SOURCE OF TRUTH: a cancelled subagent resolves
+        without its result tool ever running, and its task block still has to
+        stop saying running."""
         for _parent_id, entry in child_links(self.runner.session):
-            panel = self._panels.get(entry.conversation_id)
-            if panel is None or entry.execution_result is None:
+            task = self._tasks.get(entry.conversation_id)
+            if task is None or entry.execution_result is None:
                 continue
-            panel.settle(is_error=entry.execution_result.is_error)
+            task.set_status("failed" if entry.execution_result.is_error else "done")
 
-    # ── history replay (resume) ────────────────────────────────────────────────
+    # ── history replay (resume) ───────────────────────────────────────────────
 
     async def _replay_history(self) -> None:
         session = self.runner.session
         await self._replay_path(session.conversations[session.main_conversation_id].nodes)
-        self._sync_panels()
+        self._sync_tasks()
 
-    async def _replay_path(
-        self,
-        nodes: list[str],
-        conversation_id: str | None = None,
-    ) -> None:
-        """Replay one path's entries as cells. Recursive: a `ChildConversation`
-        replays the subagent's own path inside the panel it mounts, so a
-        resumed session shows the delegated work rather than a gap where it
-        happened.
-
-        `conversation_id` is None for the main conversation — the one that
-        mounts into the transcript itself — and names the subagent otherwise."""
+    async def _replay_path(self, nodes: list[str], conversation_id: str | None = None) -> None:
         session = self.runner.session
         entries = session.entries
         for node_id in nodes:
             entry = entries.get(node_id)
             if isinstance(entry, UserMessage):
-                # A subagent's path begins with its seed prompt and never gets
-                # another user message. The panel's border already carries it,
-                # so replaying it here would say the same thing twice.
-                if conversation_id is None:
-                    await self._mount_cell(UserCell(user_transcript_text(entry.parts)))
+                if conversation_id is None:  # a subagent's seed lives on its label
+                    await self.mount_block(vm.UserBlock(text=user_transcript_text(entry.parts)))
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
                     if isinstance(part, ThinkingContent):
-                        text = reasoning_transcript_text(part)
-                        if text:
-                            await self._mount_cell(ReasoningCell(text), conversation_id)
+                        await self._mount_widget_block(vm.ThinkingBlock(), conversation_id)
                     elif isinstance(part, TextContent) and part.text.strip():
-                        await self._mount_cell(AssistantCell(part.text), conversation_id)
-                    # a ToolCall part renders through its ToolExecution entry
+                        await self._mount_widget_block(vm.TextBlock(text=part.text), conversation_id)
             elif isinstance(entry, ToolExecution):
                 if is_runtime_plumbing(entry):
                     if entry.status is ExecutionStatus.REFUSED and entry.error is not None:
-                        # a refused spawn never got a panel; replay its notice
-                        await self._mount_cell(
-                            NoticeCell(entry.error.error_message, error=True),
+                        await self._mount_widget_block(
+                            vm.NoticeBlock(text=entry.error.error_message, error=True),
                             conversation_id,
                         )
-                    continue  # the spawn and the result tool render as the panel
-                cell = ToolCallCell(entry)
-                self._tool_cells[entry.tool_call_id] = cell
-                await self._mount_cell(cell, conversation_id)
+                    continue
+                if is_plan_update(entry) and entry.status is ExecutionStatus.COMPLETED:
+                    await self._apply_plan(entry, conversation_id or self.runner.main_conversation_id)
+                    continue
+                result_text, is_error = None, False
                 if entry.status not in NONTERMINAL_STATUSES:
                     try:
-                        message = self.runner.conversation_projector.project_tool_execution(
-                            entry,
-                            entries,
-                        )
+                        message = self.runner.conversation_projector.project_tool_execution(entry, entries)
+                        result_text, is_error = tool_message_text(message), message.is_error
                     except ProjectionError:
-                        continue
-                    cell.finish(entry, tool_message_text(message), message.is_error)
+                        pass
+                view = ToolBlockView(
+                    tool_block(
+                        entry,
+                        result_text,
+                        is_error=is_error,
+                        auto_approved=self._was_auto_approved(entry),
+                    )
+                )
+                self._tool_views[entry.tool_call_id] = view
+                await self._mount_widget(view, conversation_id)
             elif isinstance(entry, ChildConversation):
-                panel = await self._open_panel(entry.conversation_id, conversation_id)
+                task = await self._open_task(entry.conversation_id, conversation_id)
                 child = session.conversations.get(entry.conversation_id)
-                if panel is not None and child is not None:
+                if task is not None and child is not None:
                     await self._replay_path(child.nodes, entry.conversation_id)
             elif isinstance(entry, CompactionEntry):
-                # Only a COMMITTED compaction carries content, and only on the
-                # path where the history it replaced is gone — the same rule
-                # the wire projection follows.
                 if entry.parts:
-                    await self._mount_cell(CompactionCell(entry), conversation_id)
+                    replaced = len(entry.compacted_nodes or [])
+                    await self._mount_widget_block(
+                        vm.NoticeBlock(text=f"context compacted · {replaced} entries summarized"),
+                        conversation_id,
+                    )
             elif isinstance(entry, TurnFinish) and entry.outcome is TurnOutcome.CANCELLED:
-                await self._mount_cell(NoticeCell("turn cancelled"), conversation_id)
+                await self._mount_widget_block(vm.NoticeBlock(text="turn cancelled"), conversation_id)
 
-    # ── actions ────────────────────────────────────────────────────────────────
+    # ── overlays: palette + context picker + menus ────────────────────────────
+
+    async def open_palette(self, query: str = "") -> None:
+        from .commands import palette_rows
+
+        self._menu_all_rows = palette_rows()
+        self._menu_handler = self._run_palette_choice
+        await self._refresh_overlay("palette", "/", query)
+        self.set_hints(HINTS["palette"])
+
+    async def open_context_picker(self, query: str = "") -> None:
+        self._picker_selected = {path for path, _tokens in self._context_files}
+        self._menu_all_rows = self._context_rows(query)
+        self._menu_handler = self._commit_context
+        await self._refresh_overlay("picker", "@", query, filtered=False)
+        self.set_hints(HINTS["picker"])
+
+    async def open_menu(
+        self, rows: list[vm.OverlayRow], handler, *, sigil: str = "/", column: int | None = None
+    ) -> None:
+        """A generic single-pick overlay (model / reasoning / theme lists)."""
+        self._menu_all_rows = rows
+        self._menu_handler = handler
+        await self._refresh_overlay("menu", sigil, "", column=column)
+        self.set_hints(HINTS["menu"])
+
+    def _filter_rows(self, query: str) -> list[vm.OverlayRow]:
+        if not query:
+            return list(self._menu_all_rows)
+        needle = query.lower()
+        return [
+            row
+            for row in self._menu_all_rows
+            if needle in row.primary.lower() or needle in (row.secondary or "").lower()
+        ]
+
+    async def _refresh_overlay(
+        self,
+        mode: str,
+        sigil: str,
+        query: str,
+        *,
+        filtered: bool = True,
+        column: int | None = None,
+    ) -> None:
+        rows = self._filter_rows(query) if filtered else self._menu_all_rows
+        counter = f"{len(rows)} of {len(self._menu_all_rows)}" if filtered else f"{len(rows)} files"
+        state = vm.OverlayState(
+            mode=mode,
+            rows=rows,
+            query=query,
+            sigil=sigil,
+            counter=counter,
+            selected=0,
+            column=column,
+        )
+        self._menu_rows = rows
+        view = self.query(OverlayListView)
+        if view:
+            await view.first().set_state(state)
+        else:
+            await self.show_overlay(state)
+
+    async def on_overlay_list_view_query_changed(self, message: OverlayListView.QueryChanged) -> None:
+        if message.view.model.mode == "picker":
+            self._menu_all_rows = self._context_rows(message.value)
+            await self._refresh_overlay("picker", "@", message.value, filtered=False)
+        else:
+            mode = message.view.model.mode
+            await self._refresh_overlay(mode, message.view.model.sigil, message.value)
+
+    async def on_overlay_list_view_toggled(self, message: OverlayListView.Toggled) -> None:
+        if message.view.model.mode != "picker":
+            return
+        row = self._menu_rows[message.index]
+        path = _strip_spans(row.primary)
+        if path in self._picker_selected:
+            self._picker_selected.discard(path)
+        else:
+            self._picker_selected.add(path)
+        query = message.view.model.query
+        self._menu_all_rows = self._context_rows(query)
+        await self._refresh_overlay("picker", "@", query, filtered=False)
+
+    async def on_overlay_list_view_committed(self, message: OverlayListView.Committed) -> None:
+        handler = self._menu_handler
+        self._menu_handler = None
+        if handler is not None:
+            await handler(message.index)
+
+    async def on_overlay_list_view_dismissed(self, message: OverlayListView.Dismissed) -> None:
+        self._menu_handler = None
+        await self._restore_composer()
+
+    async def _run_palette_choice(self, index: int) -> None:
+        from .commands import run_palette_choice
+
+        if not self._menu_rows:
+            await self._restore_composer()
+            return
+        row = self._menu_rows[index]
+        await self._restore_composer()
+        await run_palette_choice(self, row.primary)
+
+    def _context_rows(self, query: str) -> list[vm.OverlayRow]:
+        from .files import list_workspace_files, match_files
+
+        files = list_workspace_files(self._workspace)
+        matches = match_files(files, query)
+        rows = []
+        for path, marked, tokens in matches:
+            rows.append(
+                vm.OverlayRow(
+                    primary=marked,
+                    annotation=fmt_tokens(tokens),
+                    checked=path in self._picker_selected,
+                )
+            )
+        return rows
+
+    async def _commit_context(self, _index: int) -> None:
+        from .files import estimate_tokens
+
+        selected = sorted(self._picker_selected)
+        self._context_files = [(path, estimate_tokens(Path(self._workspace) / path)) for path in selected]
+        await self._restore_composer()
+        await self._refresh_context_block()
+
+    async def _refresh_context_block(self) -> None:
+        if not self._context_files:
+            return
+        total = sum(tokens for _path, tokens in self._context_files)
+        block = vm.ListBlock(
+            label=f"context · {len(self._context_files)} files · {fmt_tokens(total)} tokens",
+            column=31,
+            rows=[
+                vm.ListRow(glyph="included", text=path, annotation=fmt_tokens(tokens))
+                for path, tokens in self._context_files
+            ],
+        )
+        if self._context_list_view is not None and self._context_list_view.is_attached:
+            self._context_list_view.apply(block)
+        else:
+            self._context_list_view = await self.mount_block(block)
+
+    # ── actions ───────────────────────────────────────────────────────────────
+
+    async def action_palette(self) -> None:
+        if self.query(OverlayListView):
+            return
+        await self.open_palette()
+
+    def action_goto_plan(self) -> None:
+        for view in reversed(list(self.query(ListBlockView))):
+            if view.model.label and view.model.label.startswith("plan"):
+                self.transcript.scroll_to_widget(view, animate=False)
+                return
+
+    async def action_show_skills(self) -> None:
+        from .commands import skills_block
+
+        block = skills_block(self)
+        await self.mount_block(block)
+
+    def action_expand_output(self) -> None:
+        for view in reversed(list(self.query(ToolBlockView))):
+            output = view.model.output
+            if output is not None and output.hidden_lines:
+                view.toggle_expanded()
+                return
 
     async def action_paste_image(self) -> None:
-        """Attach the clipboard's image to the next message. A terminal never
-        transmits image bytes on paste, so the clipboard is read directly —
-        blocking work, kept off the UI thread."""
         try:
             data = await asyncio.to_thread(read_clipboard_image)
         except ClipboardUnavailable as exc:
-            self.notify(str(exc), severity="error")
+            await self._notice(str(exc), error=True)
             return
         if data is None:
-            self.notify("No image in the clipboard.")
+            await self._notice("no image in the clipboard")
             return
         self._pending_images.append(
             ImageContent(
-                source=ImageBase64(
-                    data=base64.b64encode(data).decode("ascii"),
-                    media_type=MEDIA_TYPE,
-                ),
+                source=ImageBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
                 metadata={
                     "name": f"pasted-{len(self._pending_images) + 1}.png",
                     "size_bytes": len(data),
@@ -626,16 +833,14 @@ class AgentApp(App):
                 },
             ),
         )
-        self._refresh_status()
-        self.notify("Image attached — Enter to send, Esc to clear.")
+        await self._notice(f"image attached ({len(self._pending_images)}) — enter sends it")
 
     async def action_cancel_run(self) -> None:
         run = self._current_run
         if run is None:
             if self._pending_images:
                 self._pending_images = []
-                self._refresh_status()
-                self.notify("Attachments cleared.")
+                await self._notice("attachments cleared")
             return
         try:
             run.cancel(error="cancelled by user")
@@ -643,17 +848,16 @@ class AgentApp(App):
             return
         await self._notice("cancelling — winding down the turn")
 
-    async def action_save_quit(self) -> None:
+    async def action_quit(self) -> None:
         await self._quit()
 
     async def _quit(self) -> None:
         save_session(self.runner.session, self._session_dir)
         self.exit()
 
+    # ── session plumbing ──────────────────────────────────────────────────────
+
     def _build_runner(self, session: AgentSession):
-        """One build_runner call site, so `__init__` and the session-swap paths
-        carry the same config-derived workspace / mode / rules and the
-        context manager."""
         return build_runner(
             session,
             workspace=self._workspace,
@@ -670,80 +874,138 @@ class AgentApp(App):
         )
 
     def _settle(self) -> None:
-        """Hand the session over to the user, or pick its turn back up.
-
-        A session is not necessarily idle when it arrives: quitting at an
-        approval modal, or with a parked cancel, persists it mid-turn. Both
-        doors into a session — `on_mount` and `_reset_session` — end here, so
-        `/resume` cannot leave a gated turn frozen while `--conversation` drives
-        the identical file."""
         if self.runner.idle():
-            self.query_one("#prompt", PromptInput).focus()
+            composer = self.composer()
+            if composer is not None:
+                composer.input.focus()
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
 
     async def _reset_session(self, session: AgentSession) -> None:
-        """Swap in another session and rebuild the transcript from it. `/new`
-        rebuilds the runner so the new conversation drives cleanly; under
-        `--faux` the scripted provider is stateful and already spent, which is a
-        demo-only edge (real runs pass provider=None and build fresh clients per
-        turn).
-
-        The replay is what makes `/resume` show the conversation it switched to;
-        `/new`'s session is empty, so the same call contributes nothing there
-        and one primitive serves both."""
         self.runner, self.strategy = self._build_runner(session)
-        await self.query_one("#transcript", VerticalScroll).remove_children()
-        self._live_reasoning.clear()
+        await self.clear_transcript()
+        self._live_thinking.clear()
         self._live_text.clear()
-        self._tool_cells.clear()
-        self._panels.clear()
+        self._tool_views.clear()
+        self._plan_views.clear()
+        self._tasks.clear()
         self._pending_images.clear()
+        self._answered.clear()
+        self._denied_by_user.clear()
         await self._replay_history()
         self._refresh_status()
         self._settle()
 
-    # ── plumbing ───────────────────────────────────────────────────────────────
-
-    async def _mount_cell(
-        self,
-        cell: TranscriptCell | SubagentPanel,
-        conversation_id: str | None = None,
-    ) -> None:
-        """Mount a cell where its conversation lives: inside that subagent's
-        panel, or in the transcript for the main agent (and for any
-        conversation whose panel is not up yet)."""
-        panel = self._panels.get(conversation_id) if conversation_id else None
-        target = panel if panel is not None else self.query_one("#transcript", VerticalScroll)
-        await target.mount(cell)
-        self._scroll_end()
-
-    def _scroll_end(self) -> None:
-        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
-
     async def _notice(self, text: str, *, error: bool = False) -> None:
-        await self._mount_cell(NoticeCell(text, error=error))
+        await self.mount_block(vm.NoticeBlock(text=text, error=error))
 
     def _set_busy(self, busy: bool) -> None:
-        # The prompt stays ENABLED while the agent works — posting mid-turn is
-        # the feature, and a rejection surfaces as a notice with the draft
-        # preserved. Busy only refreshes the status line; going idle refocuses
-        # the input.
-        if not busy:
-            self.query_one("#prompt", PromptInput).focus()
+        composer = self.composer()
+        if composer is not None:
+            composer.set_placeholder("working…" if busy else "ask, or / for commands")
+            if not busy:
+                composer.input.focus()
+        self.set_hints(HINTS["running"] if busy else HINTS["idle"])
         self._refresh_status()
 
     def _refresh_status(self) -> None:
         session = self.runner.session
-        cfg = session.session_config.llm_config
-        status = f"session {session.id} · {cfg.provider}:{cfg.model} · {self.runner.status.value}"
-        if cfg.reasoning:
-            status += f" · reasoning {cfg.reasoning}"
-        if self._pending_images:
-            count = len(self._pending_images)
-            status += f" · {count} image{'s' if count > 1 else ''} attached"
-        self.sub_title = status
-        threshold = getattr(self._context_manager, "threshold", 0.8)
-        # the bar is absent during the early __init__-time refresh, before compose()
-        with contextlib.suppress(NoMatches):
-            self.query_one("#context-bar", ContextBar).update_from(session, threshold=threshold)
+        config = session.session_config.llm_config
+        tokens, cost = status_counter(session) if self._show_counter else (None, None)
+        self.set_status(
+            vm.StatusState(
+                cwd=home_path(self._workspace),
+                model=short_model(config.model),
+                branch=self._git.branch,
+                dirty=self._git.dirty,
+                tokens=tokens,
+                cost=cost,
+            )
+        )
+
+    # ── modal screens (live) ──────────────────────────────────────────────────
+
+    async def open_sessions_screen(self) -> None:
+        from .commands import build_sessions_state
+
+        state, summaries = build_sessions_state(self)
+        if state is None:
+            await self._notice("no saved sessions for this project yet")
+            return
+        screen = SessionsScreen(state, self._modal_status("sessions"), HINTS["sessions"])
+        screen._summaries = summaries
+        await self.push_screen(screen)
+
+    async def open_settings_screen(self) -> None:
+        from .commands import build_settings_state
+
+        screen = SettingsScreen(
+            build_settings_state(self),
+            self._modal_status("settings · luca.json"),
+            HINTS["settings"],
+        )
+        await self.push_screen(screen)
+
+    async def open_cost_screen(self) -> None:
+        from .usage import cost_state
+
+        screen = CostScreen(
+            cost_state(self.runner.session),
+            self._modal_status("cost · this session"),
+            HINTS["cost"],
+        )
+        await self.push_screen(screen)
+
+    def _modal_status(self, label: str) -> vm.StatusState:
+        return vm.StatusState(cwd=home_path(self._workspace), label=label)
+
+    async def on_sessions_screen_highlighted(self, message: SessionsScreen.Highlighted) -> None:
+        from .commands import session_preview
+
+        summaries = getattr(message.screen, "_summaries", None)
+        if summaries and 0 <= message.index < len(summaries):
+            message.screen.update_preview(session_preview(summaries[message.index]))
+
+    async def on_sessions_screen_resume(self, message: SessionsScreen.Resume) -> None:
+        from .commands import resume_session
+
+        await resume_session(self, message.screen, message.row)
+
+    async def on_sessions_screen_fork(self, message: SessionsScreen.Fork) -> None:
+        from .commands import fork_session_row
+
+        await fork_session_row(self, message.screen, message.row)
+
+    async def on_sessions_screen_delete(self, message: SessionsScreen.Delete) -> None:
+        from .commands import delete_session_row
+
+        await delete_session_row(self, message.screen, message.row)
+
+    async def on_settings_screen_adjusted(self, message: SettingsScreen.Adjusted) -> None:
+        from .commands import adjust_setting
+
+        adjust_setting(self, message.screen, message.row, message.delta)
+
+    async def on_settings_screen_closed(self, message: SettingsScreen.Closed) -> None:
+        save_session(self.runner.session, self._session_dir)
+        self._refresh_status()
+
+    async def on_cost_screen_compact_requested(self, message: CostScreen.CompactRequested) -> None:
+        message.screen.dismiss(None)
+        self.runner.schedule_compaction()
+        await self._notice("compacting the conversation…")
+        if not self._driving:
+            self._start_drive()
+
+    async def on_key(self, event) -> None:
+        # ^r at the retry prompt = "Retry now" (option 1).
+        if event.key == "ctrl+r" and self._retry_prompt_active and self._approval_future is not None:
+            if not self._approval_future.done():
+                self._approval_future.set_result(0)
+            event.stop()
+
+
+def _strip_spans(text: str) -> str:
+    import re
+
+    return re.sub(r"\[/?[a-z]*\]", "", text)

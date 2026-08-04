@@ -660,6 +660,41 @@ async def test_deny_rule_on_one_request_denies_the_call():
     )
 
 
+# A bash call whose resource contains fnmatch metacharacters (`[0]` is a
+# character class, so the string does not fnmatch its own literal text) —
+# the regression shape behind equality-first resource matching.
+GLOBBY_COMMAND = "python3 -c 'print(latest[0], latest[1])'"
+
+GLOBBY_EXECUTION = ToolExecution(
+    id="x_globby",
+    created_at=500,
+    tool_call_id="c_globby",
+    raw_tool_call=ToolCall(
+        id="c_globby",
+        name="bash",
+        arguments={"command": GLOBBY_COMMAND},
+    ),
+    tool_spec=spec("bash", tool_kind=ToolKind.EXECUTE),
+    extras={
+        "approval_context": {
+            "requests": [
+                {
+                    "resources": [_pair("bash", GLOBBY_COMMAND)],
+                    "answer_options": [
+                        {
+                            "resource_permissions": [_pair("bash", "python3 *")],
+                            "metadata": {"preview": "Run any 'python3' command"},
+                        },
+                    ],
+                    "metadata": {"preview": f"Run command: {GLOBBY_COMMAND}"},
+                },
+            ],
+        },
+    },
+    status=ExecutionStatus.PENDING,
+)
+
+
 # ── apply_answer(): scopes and decisions ──────────────────────────────────────
 
 
@@ -683,6 +718,43 @@ async def test_approve_once_with_the_exact_option_allows_the_call():
     assert (decision.decision, decision.metadata) == (
         ApprovalOption.ALLOW,
         {"via": "user"},
+    )
+
+
+async def test_approve_once_covers_a_resource_containing_glob_metacharacters():
+    strategy = PermissionStrategy(mode=PermissionMode.ASK)
+    strategy.apply_answer(
+        GLOBBY_EXECUTION,
+        [
+            ApprovalAnswer(
+                answer_option=AnswerOption(
+                    resource_permissions=[
+                        ResourcePermission(permission="bash", resource=GLOBBY_COMMAND),
+                    ]
+                ),
+                decision=AnswerDecision.APPROVE,
+                scope=AnswerScope.ONCE,
+            )
+        ],
+    )
+    decision = await strategy.decide(SESSION, GLOBBY_EXECUTION)
+    assert (decision.decision, decision.metadata) == (
+        ApprovalOption.ALLOW,
+        {"via": "user"},
+    )
+
+
+async def test_allow_rule_spelled_exactly_like_the_resource_matches_it():
+    strategy = PermissionStrategy(mode=PermissionMode.ASK)
+    strategy.add_rule(
+        "bash",
+        ResourcePermission(permission="bash", resource=GLOBBY_COMMAND),
+        ApprovalOption.ALLOW,
+    )
+    decision = await strategy.decide(SESSION, GLOBBY_EXECUTION)
+    assert (decision.decision, decision.metadata) == (
+        ApprovalOption.ALLOW,
+        {"via": "rule"},
     )
 
 

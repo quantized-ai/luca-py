@@ -1,12 +1,13 @@
 """`build_approval_prompts` — the pure approval-prompt policy.
 
 Each test: a known execution + strategy, one call, full-object asserts on the
-resulting `ApprovalPrompt`s (options carry fully-built `ApprovalAnswer`s).
+resulting `ApprovalPromptModel`s (options carry fully-built `ApprovalAnswer`s).
 
 Which steps are still pending is the strategy's job (asserted in
 `tests/agent/contrib/test_resource_permissions.py`); what this module owns is
-the translation of a pending request into a prompt — the option set, the
-labels, and the answers each option carries.
+the translation of a pending request into the design's fixed prompt shape —
+the option set, the labels, the question wording, and the answers each option
+carries.
 """
 
 from luca.agent.contrib.resource_permissions import (
@@ -17,9 +18,11 @@ from luca.agent.contrib.resource_permissions import (
     PermissionStrategy,
     ResourcePermission,
 )
+from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.approvals import (
-    ABANDON_LABEL,
-    ApprovalPrompt,
+    CANCEL_LABEL,
+    DENY_LABEL,
+    ApprovalPromptModel,
     PromptOption,
     build_approval_prompts,
 )
@@ -52,7 +55,7 @@ READ_EXECUTION = ToolExecution(
                     "answer_options": [
                         {
                             "resource_permissions": [{"permission": "read", "resource": "/tmp/*"}],
-                            "metadata": {"preview": "Allow all reads under /tmp/*"},
+                            "metadata": {"preview": "all reads under /tmp/*"},
                         }
                     ],
                     "metadata": {"preview": "Read /tmp/notes.txt"},
@@ -95,7 +98,8 @@ TWO_STEP_EXECUTION = ToolExecution(
 )
 
 # A request the tool wrote no previews for — neither on the step nor on its
-# suggested option — so both labels fall back to the pairs themselves.
+# suggested option — so the question falls back to the tool name and the
+# widening label to the pairs themselves.
 UNLABELLED_EXECUTION = ToolExecution(
     id="te4",
     created_at=500,
@@ -149,6 +153,30 @@ MULTI_PAIR_EXECUTION = ToolExecution(
     },
 )
 
+# A preview whose trailing punctuation must not double up in the question.
+DOTTED_EXECUTION = ToolExecution(
+    id="te6",
+    created_at=500,
+    tool_call_id="tc6",
+    raw_tool_call=ToolCall(id="tc6", name="bash", arguments={"command": "rm -r build"}),
+    tool_spec=spec("bash", tool_kind=ToolKind.EXECUTE),
+    status=ExecutionStatus.PENDING,
+    extras={
+        "approval_context": {
+            "requests": [
+                {
+                    "resources": [{"permission": "execute", "resource": "rm"}],
+                    "metadata": {"preview": "Remove build artifacts."},
+                }
+            ]
+        }
+    },
+)
+
+# The same gate raised from inside a subagent's conversation.
+SUBAGENT_EXECUTION = READ_EXECUTION.model_copy(update={"conversation_id": "c_child"})
+MAIN_EXECUTION = READ_EXECUTION.model_copy(update={"conversation_id": "c_main"})
+
 
 def test_resourced_request_builds_the_full_option_set():
     strategy = PermissionStrategy()
@@ -164,25 +192,26 @@ def test_resourced_request_builds_the_full_option_set():
         resource_permissions=[
             ResourcePermission(permission="read", resource="/tmp/*"),
         ],
-        metadata={"preview": "Allow all reads under /tmp/*"},
+        metadata={"preview": "all reads under /tmp/*"},
     )
     assert prompts == [
-        ApprovalPrompt(
+        ApprovalPromptModel(
             tool_name="read",
+            question="Read /tmp/notes.txt?",
             step=1,
             total_steps=1,
-            resources=["read:/tmp/notes.txt"],
-            preview="Read /tmp/notes.txt",
             options=[
                 PromptOption(
                     label="Approve once",
+                    kind="approve",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.APPROVE,
                     ),
                 ),
                 PromptOption(
-                    label="Allow all reads under /tmp/*",
+                    label="Approve always — all reads under /tmp/*",
+                    kind="always",
                     answer=ApprovalAnswer(
                         answer_option=suggested,
                         decision=AnswerDecision.APPROVE,
@@ -190,19 +219,22 @@ def test_resourced_request_builds_the_full_option_set():
                     ),
                 ),
                 PromptOption(
-                    label="Deny",
+                    label=DENY_LABEL,
+                    kind="deny",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.DENY,
                     ),
                 ),
-                PromptOption(label=ABANDON_LABEL, answer=None),
+                PromptOption(label=CANCEL_LABEL, kind="cancel", key_hint="esc"),
             ],
+            conversation_id=None,
+            conversation_label=None,
         )
     ]
 
 
-def test_resourceless_tool_gets_a_synthesized_prompt():
+def test_resourceless_tool_gets_a_synthesized_three_option_prompt():
     strategy = PermissionStrategy()
 
     prompts = build_approval_prompts(MATH_EXECUTION, strategy)
@@ -213,34 +245,37 @@ def test_resourceless_tool_gets_a_synthesized_prompt():
         ]
     )
     assert prompts == [
-        ApprovalPrompt(
+        ApprovalPromptModel(
             tool_name="add",
+            question="Run add?",
             step=1,
             total_steps=1,
-            resources=["add"],
-            preview="Run add",
             options=[
                 PromptOption(
                     label="Approve once",
+                    kind="approve",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.APPROVE,
                     ),
                 ),
                 PromptOption(
-                    label="Deny",
+                    label=DENY_LABEL,
+                    kind="deny",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.DENY,
                     ),
                 ),
-                PromptOption(label=ABANDON_LABEL, answer=None),
+                PromptOption(label=CANCEL_LABEL, kind="cancel", key_hint="esc"),
             ],
+            conversation_id=None,
+            conversation_label=None,
         )
     ]
 
 
-def test_previewless_request_and_option_are_labelled_by_their_pairs():
+def test_previewless_widening_is_labelled_by_its_pairs():
     strategy = PermissionStrategy()
 
     prompts = build_approval_prompts(UNLABELLED_EXECUTION, strategy)
@@ -257,22 +292,23 @@ def test_previewless_request_and_option_are_labelled_by_their_pairs():
         ]
     )
     assert prompts == [
-        ApprovalPrompt(
+        ApprovalPromptModel(
             tool_name="write",
+            question="Run write?",
             step=1,
             total_steps=1,
-            resources=["write:/srv/app.log"],
-            preview="write:/srv/app.log",
             options=[
                 PromptOption(
                     label="Approve once",
+                    kind="approve",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.APPROVE,
                     ),
                 ),
                 PromptOption(
-                    label="write:/srv/*, create:/srv/*",
+                    label="Approve always — write:/srv/*, create:/srv/*",
+                    kind="always",
                     answer=ApprovalAnswer(
                         answer_option=suggested,
                         decision=AnswerDecision.APPROVE,
@@ -280,14 +316,17 @@ def test_previewless_request_and_option_are_labelled_by_their_pairs():
                     ),
                 ),
                 PromptOption(
-                    label="Deny",
+                    label=DENY_LABEL,
+                    kind="deny",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.DENY,
                     ),
                 ),
-                PromptOption(label=ABANDON_LABEL, answer=None),
+                PromptOption(label=CANCEL_LABEL, kind="cancel", key_hint="esc"),
             ],
+            conversation_id=None,
+            conversation_label=None,
         )
     ]
 
@@ -308,50 +347,53 @@ def test_partially_covered_step_answers_only_over_its_pending_pairs():
         ]
     )
     assert prompts == [
-        ApprovalPrompt(
+        ApprovalPromptModel(
             tool_name="read",
+            question="Read two files?",
             step=1,
             total_steps=1,
-            resources=["read:/tmp/scratch"],
-            preview="Read two files",
             options=[
                 PromptOption(
                     label="Approve once",
+                    kind="approve",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.APPROVE,
                     ),
                 ),
                 PromptOption(
-                    label="Deny",
+                    label=DENY_LABEL,
+                    kind="deny",
                     answer=ApprovalAnswer(
                         answer_option=exact,
                         decision=AnswerDecision.DENY,
                     ),
                 ),
-                PromptOption(label=ABANDON_LABEL, answer=None),
+                PromptOption(label=CANCEL_LABEL, kind="cancel", key_hint="esc"),
             ],
+            conversation_id=None,
+            conversation_label=None,
         )
     ]
 
 
-# The two step-framing tests below assert the framing only: each prompt's
-# option set is identical to the ones asserted whole above, and repeating it
-# per step would bury the one thing they are about.
+# The step-framing and question-wording tests below assert the question line
+# only: each prompt's option set is identical to the ones asserted whole
+# above, and repeating it per step would bury the one thing they are about.
 
 
-def test_multi_step_context_yields_one_prompt_per_request():
+def test_multi_step_context_numbers_each_question():
     strategy = PermissionStrategy()
 
     prompts = build_approval_prompts(TWO_STEP_EXECUTION, strategy)
 
-    assert [(p.step, p.total_steps, p.preview) for p in prompts] == [
-        (1, 2, "Access /etc"),
-        (2, 2, "Edit /etc/hosts"),
+    assert [(p.step, p.total_steps, p.question) for p in prompts] == [
+        (1, 2, "Access /etc?  (step 1 of 2)"),
+        (2, 2, "Edit /etc/hosts?  (step 2 of 2)"),
     ]
 
 
-def test_rule_covered_steps_stay_silent():
+def test_rule_covered_steps_stay_silent_and_the_count_shrinks():
     strategy = PermissionStrategy()
     strategy.add_rule(
         None,
@@ -361,18 +403,85 @@ def test_rule_covered_steps_stay_silent():
 
     prompts = build_approval_prompts(TWO_STEP_EXECUTION, strategy)
 
-    assert [(p.step, p.total_steps, p.preview) for p in prompts] == [
-        (1, 1, "Edit /etc/hosts"),
+    assert [(p.step, p.total_steps, p.question) for p in prompts] == [
+        (1, 1, "Edit /etc/hosts?"),
     ]
+
+
+def test_question_never_doubles_trailing_punctuation():
+    strategy = PermissionStrategy()
+
+    [prompt] = build_approval_prompts(DOTTED_EXECUTION, strategy)
+
+    assert prompt.question == "Remove build artifacts?"
+
+
+def test_a_subagent_gate_names_its_task_in_the_question():
+    strategy = PermissionStrategy()
+
+    [prompt] = build_approval_prompts(
+        SUBAGENT_EXECUTION,
+        strategy,
+        main_conversation_id="c_main",
+        subagent_labels={"c_child": "audit the docs"},
+    )
+
+    assert (prompt.question, prompt.conversation_id, prompt.conversation_label) == (
+        "[faint]task · audit the docs —[/] Read /tmp/notes.txt?",
+        "c_child",
+        "audit the docs",
+    )
+
+
+def test_an_unlabelled_subagent_gate_falls_back_to_the_conversation_id():
+    strategy = PermissionStrategy()
+
+    [prompt] = build_approval_prompts(SUBAGENT_EXECUTION, strategy, main_conversation_id="c_main")
+
+    assert (prompt.question, prompt.conversation_id, prompt.conversation_label) == (
+        "[faint]task · c_child —[/] Read /tmp/notes.txt?",
+        "c_child",
+        None,
+    )
+
+
+def test_a_main_conversation_gate_carries_no_task_prefix():
+    strategy = PermissionStrategy()
+
+    [prompt] = build_approval_prompts(MAIN_EXECUTION, strategy, main_conversation_id="c_main")
+
+    assert (prompt.question, prompt.conversation_id, prompt.conversation_label) == (
+        "Read /tmp/notes.txt?",
+        None,
+        None,
+    )
+
+
+def test_to_state_maps_labels_and_the_esc_hint():
+    strategy = PermissionStrategy()
+
+    [prompt] = build_approval_prompts(READ_EXECUTION, strategy)
+
+    assert prompt.to_state() == vm.ApprovalState(
+        question="Read /tmp/notes.txt?",
+        options=[
+            vm.ApprovalOption(label="Approve once"),
+            vm.ApprovalOption(label="Approve always — all reads under /tmp/*"),
+            vm.ApprovalOption(label=DENY_LABEL),
+            vm.ApprovalOption(label=CANCEL_LABEL, key_hint="esc"),
+        ],
+        selected=0,
+    )
 
 
 def test_option_flags():
     strategy = PermissionStrategy()
 
-    [prompt] = build_approval_prompts(MATH_EXECUTION, strategy)
+    [prompt] = build_approval_prompts(READ_EXECUTION, strategy)
 
-    assert [(option.is_abandon, option.is_deny) for option in prompt.options] == [
-        (False, False),
-        (False, True),
-        (True, False),
+    assert [(option.kind, option.is_cancel, option.is_deny) for option in prompt.options] == [
+        ("approve", False, False),
+        ("always", False, False),
+        ("deny", False, True),
+        ("cancel", True, False),
     ]

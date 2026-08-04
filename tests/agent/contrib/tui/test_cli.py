@@ -42,6 +42,7 @@ def test_default_args():
     )
     assert (args.workspace, args.mode) == (None, None)
     assert args.theme is None
+    assert args.gallery is None
     assert args.subagents is True
     assert args.skills is True
     assert args.instructions is True
@@ -101,6 +102,13 @@ def test_the_config_flag_parses_as_a_path_string():
 
 def test_the_theme_flag_parses_as_a_textual_theme_name():
     assert arg_parser().parse_args(["--theme", "textual-light"]).theme == "textual-light"
+
+
+def test_the_gallery_flag_parses_bare_or_with_a_fixture_name():
+    # nargs="?" with const "all": bare --gallery browses everything, a value
+    # names one fixture (bundled name or path)
+    assert arg_parser().parse_args(["--gallery"]).gallery == "all"
+    assert arg_parser().parse_args(["--gallery", "1a_agent_loop"]).gallery == "1a_agent_loop"
 
 
 def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
@@ -270,7 +278,7 @@ def test_main_prints_the_resume_hint_after_the_app_exits(
     assert "Goodbye!" in out
 
 
-def test_theme_defaults_to_nord_during_app_construction(tmp_path, monkeypatch):
+def test_theme_defaults_to_luca_dark_during_app_construction(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     seen: dict[str, str] = {}
 
@@ -280,7 +288,7 @@ def test_theme_defaults_to_nord_during_app_construction(tmp_path, monkeypatch):
     monkeypatch.setattr(AgentApp, "run", fake_run)
     main(["--faux"])
 
-    assert seen == {"theme": "nord"}
+    assert seen == {"theme": "luca-dark"}
 
 
 def test_luca_json_theme_reaches_the_app(tmp_path, monkeypatch):

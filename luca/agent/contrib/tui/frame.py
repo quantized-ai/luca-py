@@ -1,0 +1,205 @@
+"""`LucaApp` — the global frame, with no agent attached.
+
+Status bar, the single rule, the scrolling transcript, one dock slot
+(composer / approval prompt / overlay list), the hint legend. Everything a
+screen can show is applied from `state.ScreenState` view-models, which is
+what the gallery and the snapshot tests boot against; `AgentApp` subclasses
+this and feeds the same APIs from live agent events.
+
+Below 60 columns the frame is replaced by a single centred line; between 60
+and the 105-column design width the status bar drops segments and the
+assistant measure shrinks (TCSS).
+"""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.widget import Widget
+from textual.widgets import Static
+
+from . import state as vm
+from .blocks import TaskBlockView, build_block
+from .chrome import Composer, HintLegend, StatusBar
+from .format import HINTS, MIN_COLUMNS
+from .modals import CostScreen, SessionsScreen, SettingsScreen
+from .shells import ApprovalPromptView, LucaModalScreen, OverlayListView
+from .theme import LUCA_DARK
+
+DEFAULT_THEME = LUCA_DARK.name
+
+
+class LucaApp(App):
+    TITLE = "luca"
+    CSS_PATH = "app.tcss"
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("ctrl+q", "quit", show=False, priority=True),
+        Binding("pageup", "transcript_page(-1)", show=False, priority=True),
+        Binding("pagedown", "transcript_page(1)", show=False, priority=True),
+    ]
+
+    def __init__(self, *, theme: str = DEFAULT_THEME) -> None:
+        super().__init__()
+        self.register_theme(LUCA_DARK)
+        self.theme = theme
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        # The design tokens stay resolvable under any registered theme, so a
+        # stock-theme user still gets a working (if off-palette) frame.
+        return dict(LUCA_DARK.variables)
+
+    # ── frame ─────────────────────────────────────────────────────────────────
+
+    def compose(self) -> ComposeResult:
+        yield StatusBar(id="status")
+        yield Static(classes="rule")
+        yield VerticalScroll(id="transcript", can_focus=False)
+        yield Vertical(id="dock")
+        yield HintLegend(id="hints")
+        yield Static("luca needs 60 columns", id="too-narrow", markup=False)
+
+    def on_mount(self) -> None:
+        self._check_width()
+
+    def on_resize(self) -> None:
+        self._check_width()
+
+    def _check_width(self) -> None:
+        self.screen.set_class(self.size.width < MIN_COLUMNS, "-too-narrow")
+
+    # ── status / hints ────────────────────────────────────────────────────────
+
+    def set_status(self, status: vm.StatusState) -> None:
+        self.query_one("#status", StatusBar).set_state(status)
+
+    def set_hints(self, hints: list[str]) -> None:
+        self.query_one("#hints", HintLegend).set_hints(hints)
+
+    # ── transcript ────────────────────────────────────────────────────────────
+
+    @property
+    def transcript(self) -> VerticalScroll:
+        return self.query_one("#transcript", VerticalScroll)
+
+    async def clear_transcript(self) -> None:
+        await self.transcript.remove_children()
+
+    async def mount_block(self, model: vm.Block, into: TaskBlockView | None = None) -> Widget:
+        widget = build_block(model)
+        target: Widget = into.body if into is not None else self.transcript
+        await target.mount(widget)
+        self.scroll_transcript_end()
+        return widget
+
+    def scroll_transcript_end(self) -> None:
+        self.transcript.scroll_end(animate=False)
+
+    def action_transcript_page(self, direction: int) -> None:
+        if direction < 0:
+            self.transcript.scroll_page_up(animate=False)
+        else:
+            self.transcript.scroll_page_down(animate=False)
+
+    def dim_transcript(self, dimmed: bool) -> None:
+        self.transcript.set_class(dimmed, "-dimmed")
+
+    # ── the dock: composer / approval / overlay ───────────────────────────────
+
+    @property
+    def dock_slot(self) -> Vertical:
+        return self.query_one("#dock", Vertical)
+
+    def composer(self) -> Composer | None:
+        try:
+            return self.query_one(Composer)
+        except Exception:
+            return None
+
+    async def show_composer(
+        self,
+        state: vm.ComposerState | None = None,
+        *,
+        commands: list[str] | None = None,
+        focus: bool = True,
+    ) -> Composer:
+        await self.dock_slot.remove_children()
+        self.dim_transcript(False)
+        composer = Composer(state, commands=commands or self._composer_commands())
+        await self.dock_slot.mount(composer)
+        if focus:
+            composer.input.focus()
+        return composer
+
+    def _composer_commands(self) -> list[str]:
+        """Slash names for inline completion; the live app overrides."""
+        return []
+
+    async def show_approval(self, state: vm.ApprovalState, *, focus: bool = True) -> ApprovalPromptView:
+        await self.dock_slot.remove_children()
+        self.dim_transcript(False)
+        prompt = ApprovalPromptView(state)
+        await self.dock_slot.mount(prompt)
+        if focus:
+            prompt.focus()
+        return prompt
+
+    async def show_overlay(self, state: vm.OverlayState, *, focus: bool = True) -> OverlayListView:
+        await self.dock_slot.remove_children()
+        self.dim_transcript(True)
+        overlay = OverlayListView(state)
+        await self.dock_slot.mount(overlay)
+        if focus:
+            overlay.focus()
+        return overlay
+
+    # ── whole-screen application (fixtures, replay) ───────────────────────────
+
+    async def apply_state(self, state: vm.ScreenState) -> None:
+        """Render one declarative screen state: status, transcript, dock,
+        hints, and the modal if the state carries one."""
+        self.set_status(state.status)
+        await self.clear_transcript()
+        for block in state.transcript:
+            await self.mount_block(block)
+        dock = state.dock()
+        if dock == "approval":
+            await self.show_approval(state.approval)
+        elif dock == "overlay":
+            await self.show_overlay(state.overlay)
+        else:
+            await self.show_composer(state.composer or vm.ComposerState(), focus=state.modal is None)
+        self.set_hints(state.hints or self._default_hints(state))
+        if isinstance(self.screen, LucaModalScreen):
+            self.pop_screen()
+        if state.modal is not None:
+            await self.push_screen(self._build_modal(state))
+
+    def _default_hints(self, state: vm.ScreenState) -> list[str]:
+        if state.modal is not None:
+            if state.modal.sessions is not None:
+                return HINTS["sessions"]
+            if state.modal.settings is not None:
+                return HINTS["settings"]
+            return HINTS["cost"]
+        dock = state.dock()
+        if dock == "approval":
+            count = len(state.approval.options)
+            return ["↑↓ move", "enter confirm", f"1–{count} pick"]
+        if dock == "overlay":
+            return HINTS[state.overlay.mode]
+        return HINTS["idle"]
+
+    def _build_modal(self, state: vm.ScreenState) -> LucaModalScreen:
+        modal = state.modal
+        hints = state.hints or self._default_hints(state)
+        if modal.sessions is not None:
+            return SessionsScreen(modal.sessions, state.status, hints)
+        if modal.settings is not None:
+            return SettingsScreen(modal.settings, state.status, hints)
+        if modal.cost is not None:
+            return CostScreen(modal.cost, state.status, hints)
+        raise ValueError("modal state carries no screen")

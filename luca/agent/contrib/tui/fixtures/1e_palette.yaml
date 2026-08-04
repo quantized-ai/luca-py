@@ -1,0 +1,28 @@
+# 1e — Command palette over a dimmed transcript.
+name: 1e_palette
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 12.4k
+  cost: $0.08
+transcript:
+  - kind: user
+    text: add a --json flag to the events command
+  - kind: text
+    text: Done — `luca events --json` now emits one JSON object per line.
+overlay:
+  mode: palette
+  sigil: /
+  query: s
+  counter: 6 of 14
+  selected: 0
+  rows:
+    - {primary: /skill, secondary: load a skill into this session}
+    - {primary: /session, secondary: "resume, fork or list sessions"}
+    - {primary: /context, secondary: add files to the working set}
+    - {primary: /cost, secondary: token and spend breakdown}
+    - {primary: /settings, secondary: "model, theme, permissions"}
+    - {primary: /clear, secondary: start a fresh session}
+hints: [↑↓ move, enter run, esc dismiss]

@@ -1,0 +1,28 @@
+# 1k — Cost & token usage. Meters are proportional to COST, not tokens.
+name: 1k_cost
+status:
+  cwd: ~/quantized/luca
+  label: cost · this session
+modal:
+  cost:
+    headline: $0.21
+    subline: 14 turns · 22m · sonnet-4.5
+    items:
+      - {label: input, tokens: 26.3k, cost: $0.079, fraction: 0.98, color: accent}
+      - {label: output, tokens: 5.4k, cost: $0.081, fraction: 1.0, color: foreground}
+      - {label: cache write, tokens: 2.8k, cost: $0.011, fraction: 0.14, color: faint}
+      - {label: cache read, tokens: 129.0k, cost: $0.039, fraction: 0.48, color: rule}
+    context:
+      used: 31.7k / 200k
+      percent: 16%
+      context_fraction: 0.13
+      reply_fraction: 0.03
+      legend:
+        - "[accent]▪[/] context 26.3k"
+        - "[fg]▪[/] reply 5.4k"
+        - "free 168.3k"
+    consumers:
+      - {label: skill · sqlite-migrations, tokens: 1.7k}
+      - {label: file · luca/store/reader.py, tokens: 1.9k}
+      - {label: output · pytest -q, tokens: 1.4k}
+hints: [^k compact context, esc back]

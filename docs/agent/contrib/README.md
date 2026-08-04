@@ -22,7 +22,7 @@ from luca.agent.contrib.tools import Tool
 | [`plugins/`](plugins/README.md) | `BasePlugin` + `PluginAgentSessionRunner` — install a capability (registry + prompt parts + middleware) in one move |
 | [`resource_permissions/`](resource_permissions/README.md) | Rule-based tool approval — modes, resource globs, answer-decoupled grants, and a typed tool mixin |
 | [`shell/`](shell/README.md) | The seven shell tools (read/glob/grep/edit/write/apply_patch/bash) + `ShellAccessPlugin` — workspace-scoped, two-step directory permissions |
-| [`tui/`](tui/README.md) | The Textual terminal UI — transcript, streaming, modal approvals, cancellation; the runnable demo behind `main.py` |
+| [`tui/`](tui/README.md) | The Textual terminal UI, built as a design system — declarative screen states, a fixture gallery, snapshot tests; the runnable demo behind `main.py` |
 | [`subagents/`](subagents/README.md) | The two subagent tools + `SubagentsPlugin` — parallel subagents, gated by depth and budget ([`13-subagents.md`](../13-subagents.md)) |
 | [`skills/`](skills/README.md) | `SKILL.md` instruction sets discovered from the Claude/Agent locations + `SkillsPlugin` — name and description in the prompt, body loaded on demand |
 | [`prompts/`](prompts/README.md) | `SystemPromptPlugin` (a base prompt picked for the model family, plus an environment block) and `InstructionsPlugin` (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`) |

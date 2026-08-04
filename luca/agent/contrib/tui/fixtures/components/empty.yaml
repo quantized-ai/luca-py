@@ -1,0 +1,10 @@
+# Component sheet — the empty frame: a fresh session, nothing said yet.
+name: components/empty
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+transcript: []
+composer:
+  placeholder: ask, or / for commands
+hints: [enter send, ⇥ complete, ^p palette]

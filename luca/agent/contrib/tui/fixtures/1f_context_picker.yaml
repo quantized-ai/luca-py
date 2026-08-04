@@ -1,0 +1,30 @@
+# 1f — File / codebase context picker (@), with fuzzy-match highlighting.
+name: 1f_context_picker
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 12.4k
+  cost: $0.08
+transcript:
+  - kind: list
+    label: context · 3 files · 4.1k tokens
+    column: 31
+    rows:
+      - {glyph: included, text: luca/events.py, annotation: 1.4k}
+      - {glyph: included, text: luca/store/reader.py, annotation: 1.9k}
+      - {glyph: included, text: tests/test_events.py, annotation: 0.8k}
+overlay:
+  mode: picker
+  sigil: "@"
+  query: writ
+  counter: 4 of 212
+  selected: 0
+  column: 36
+  rows:
+    - {primary: "luca/store/[accent]writ[/]er.py", annotation: 2.2k, checked: false}
+    - {primary: "tests/store/test_[accent]writ[/]er.py", annotation: 1.1k, checked: false}
+    - {primary: "docs/[accent]writ[/]ing-skills.md", annotation: 3.4k, checked: false}
+    - {primary: "luca/store/schema.sql", annotation: 0.4k, checked: false}
+hints: [↑↓ move, space toggle, enter add, esc dismiss]
