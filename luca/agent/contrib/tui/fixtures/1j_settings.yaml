@@ -1,0 +1,26 @@
+# 1j — Settings.
+name: 1j_settings
+status:
+  cwd: ~/quantized/luca
+  label: settings · .luca/config.toml
+modal:
+  settings:
+    selected: 0
+    swatch_label: luca-dark
+    groups:
+      - label: model
+        rows:
+          - {name: model, value: sonnet-4.5}
+          - {name: max output tokens, value: "8192"}
+          - {name: thinking, value: auto}
+      - label: permissions
+        rows:
+          - {name: edits under luca/, value: always, color: accent}
+          - {name: shell commands, value: ask, color: muted}
+          - {name: destructive shell, value: never, color: error}
+          - {name: network access, value: ask, color: muted}
+      - label: appearance
+        rows:
+          - {name: theme, value: luca-dark}
+          - {name: show token counter, value: "on"}
+hints: [↑↓ move, ← → change, enter edit, esc save & close]

@@ -58,8 +58,17 @@ def _now_ms() -> int:
 
 
 class TextContent(BaseModel):
+    """Text carried by a message, a tool result or a pruned replacement.
+
+    `metadata` is application-owned and deliberately NOT projected — the
+    client's `TextBlock` carries only the text. It survives in the session, so
+    a replayed transcript can describe where the text came from when that is
+    not evident from the text itself (an `@`-mention's inlined file, say).
+    Same contract as `ImageContent.metadata`: the core never interprets it."""
+
     type: Literal["text"] = "text"
     text: str
+    metadata: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 

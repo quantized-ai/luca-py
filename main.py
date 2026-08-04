@@ -11,18 +11,20 @@ Usage:
     uv run python main.py                          # start a fresh session
     uv run python main.py --faux                   # offline scripted demo, no key
     uv run python main.py --resume                 # pick a past session
-    uv run python main.py --conversation <id>      # resume that session by id
-    uv run python main.py --conversation <id> --fork  # branch into a new session
+    uv run python main.py --resume <id>            # resume that session by id
+    uv run python main.py --resume <id> --fork     # branch into a new session
     uv run python main.py --no-subagents           # no parallel subagents
     uv run python main.py --subagents-max-depth 1  # no nesting (default 3)
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-streaming           # block-level rendering
-    uv run python main.py --theme nord             # override the Textual theme
+    uv run python main.py --theme luca-dark        # the design theme (default)
+    uv run python main.py --gallery                # browse the design-system gallery
+    uv run python main.py --gallery 1c_diff_approval   # one fixture
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --no-skills              # ignore SKILL.md skills
     uv run python main.py --no-instructions        # ignore AGENTS.md
-    uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
+    uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
 except with `--faux`. Sessions persist to

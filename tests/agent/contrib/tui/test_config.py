@@ -30,8 +30,10 @@ from luca.agent.contrib.tui.config import (
     register_config_providers,
     resolve_config_path,
     resolve_llm_config,
+    resolve_read_limits,
     resolve_runtime_config,
 )
+from luca.agent.contrib.tui.prompt_files import ReadLimits
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
 from luca.client.providers import PROVIDERS
 
@@ -534,11 +536,15 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
     from luca.agent.core.runner import AgentSessionRunner
     from luca.client.testing import FauxProvider
 
+    # "luca-dark" rather than a stock Textual theme: the frame's widgets
+    # resolve the luca theme variables at render time, and a stock theme
+    # (missing them) crashes the first paint. The CLI-layer tests cover the
+    # theme value flowing through without rendering.
     _write(
         tmp_path,
         {
             "model": {"provider": "anthropic", "model": "claude-sonnet-5", "reasoning": "low"},
-            "theme": {"name": "textual-light"},
+            "theme": {"name": "luca-dark"},
             "runtime": {"hard_max_steps": 42},
             "compaction": {"threshold": 0.66},
             "permissions": {"mode": "yolo"},
@@ -582,4 +588,37 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
         assert app._context_manager.threshold == 0.66
         assert app.strategy.mode is PermissionMode.YOLO
         assert app.recommended_models == {"anthropic": ["claude-sonnet-5"]}
-        assert app.theme == "textual-light"
+        assert app.theme == "luca-dark"
+
+
+# ── client.file_read — the `@`-mention inline cap ────────────────────────────
+
+
+def test_the_file_read_section_parses():
+    config = LucaConfig.model_validate(
+        {
+            "client": {
+                "file_read": {
+                    "max_read_file_tokens_hard_limit": 8000,
+                    "max_read_file_tokens_context_percentage": 0.1,
+                }
+            }
+        }
+    )
+
+    assert resolve_read_limits(config) == ReadLimits(hard_limit=8000, context_percentage=0.1)
+
+
+def test_the_file_read_section_is_optional_and_falls_back_to_the_defaults():
+    assert resolve_read_limits(LucaConfig()) == ReadLimits(hard_limit=25_000, context_percentage=0.05)
+
+
+def test_a_partial_file_read_section_keeps_the_other_default():
+    config = LucaConfig.model_validate({"client": {"file_read": {"max_read_file_tokens_hard_limit": 500}}})
+
+    assert resolve_read_limits(config) == ReadLimits(hard_limit=500, context_percentage=0.05)
+
+
+def test_an_unknown_key_under_client_is_rejected():
+    with pytest.raises(ValidationError):
+        LucaConfig.model_validate({"client": {"nope": {}}})

@@ -341,8 +341,17 @@ def _aggregate(
 
 
 def _resource_matches(call_resource: str | None, rule_resource: str | None) -> bool:
-    """A `None` rule matches only a resource-less pair; a glob matches only a
-    resourceful pair (fnmatch); mixed never matches."""
+    """A `None` rule matches only a resource-less pair; identical strings
+    always match; otherwise the rule is a glob (fnmatch); mixed never matches.
+
+    The equality check is load-bearing, not an optimization: "Approve once"
+    records the request's EXACT resource as a verdict, and a resource
+    containing glob metacharacters (`x[0]` in a bash command) does not
+    fnmatch its own literal text — `[0]` is a character class. Without the
+    short-circuit such a call can never be approved once: the verdict never
+    covers the pair and the prompt re-arms forever."""
     if call_resource is None or rule_resource is None:
         return call_resource is None and rule_resource is None
+    if call_resource == rule_resource:
+        return True
     return fnmatchcase(call_resource, rule_resource)

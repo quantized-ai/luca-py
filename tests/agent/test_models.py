@@ -596,7 +596,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
         "approval_decisions": [],
         "status": "completed",
         "result": {
-            "content": [{"type": "text", "text": "3"}],
+            "content": [{"type": "text", "text": "3", "metadata": {}}],
             "structured_content": None,
             "metadata": {},
             "is_error": False,

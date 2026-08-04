@@ -1,0 +1,41 @@
+# 1h — Permission denial + API error recovery.
+name: 1h_denial_error
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 26.3k
+  cost: $0.18
+transcript:
+  - kind: tool
+    tool: bash
+    arg: rm -rf build/ dist/
+    status: denied
+    result:
+      summary: denied
+      note: "rule: never · destructive shell"
+  - kind: user
+    text: use git clean instead, and don't touch dist
+  - kind: tool
+    tool: bash
+    arg: git clean -fdx build/
+    result:
+      summary: exit 0 · removed 12 paths
+  - kind: tool
+    tool: model
+    arg: sonnet-4.5
+    status: error
+    output:
+      lines:
+        - "[error]overloaded_error · 529[/]"
+        - "Retrying in 4s — attempt 2 of 5. The turn resumes where it stopped;"
+        - "nothing has been lost."
+approval:
+  question: Keep waiting, or stop here?
+  selected: 0
+  options:
+    - {label: Keep retrying}
+    - {label: Switch to haiku-4.5 and continue}
+    - {label: Cancel turn, key_hint: esc}
+hints: [↑↓ move, enter confirm, ^r retry now]

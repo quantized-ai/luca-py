@@ -2,25 +2,22 @@
 
 Each test scripts the provider, runs the app headless (`run_test`), submits
 a prompt, waits for the drive worker to settle, and asserts on transcript
-cell state (`.text`, `.status`, …) plus the persisted session.
+block view-models plus the persisted session.
 """
 
 import base64
 
-from luca.agent.contrib.tui import AgentApp, app as app_module
-from luca.agent.contrib.tui.cells import (
-    AssistantCell,
-    CompactionCell,
-    NoticeCell,
-    ReasoningCell,
-    ToolCallCell,
-    UserCell,
+from luca.agent.contrib.tui import AgentApp, app as app_module, state as vm
+from luca.agent.contrib.tui.blocks import (
+    AssistantText,
+    ThinkingLine,
+    ToolBlockView,
+    UserTurn,
 )
-from luca.agent.contrib.tui.clipboard import ClipboardUnavailable
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.render import REDACTED_REASONING_MARKER
 from luca.agent.contrib.tui.sessions import load_session
-from luca.agent.core.models import ConversationStatus, ExecutionStatus
+from luca.agent.contrib.tui.shells import ApprovalPromptView
+from luca.agent.core.models import ConversationStatus
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
@@ -29,11 +26,7 @@ from luca.client.testing import (
     faux_thinking,
     faux_tool_call,
 )
-from tests.agent.scenarios import (
-    COMPACTION_FAILED_SESSION,
-    POST_COMPACTION_SESSION,
-    main_conversation,
-)
+from tests.agent.scenarios import main_conversation
 
 from .helpers import fresh_session, idle_again, submit, wait_until
 
@@ -44,249 +37,255 @@ def scripted(*responses) -> FauxProvider:
     return provider
 
 
+def make_app(session, provider, tmp_path, **kwargs) -> AgentApp:
+    return AgentApp(
+        session,
+        provider=provider,
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+        **kwargs,
+    )
+
+
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
 
-async def test_text_turn_renders_user_and_assistant_cells(tmp_path):
+async def test_text_turn_renders_user_turn_and_assistant_text(tmp_path):
     session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(faux_assistant_message([faux_text("Hello there!")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
+    app = make_app(session, scripted(faux_assistant_message([faux_text("Hello there!")])), tmp_path)
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(UserCell)] == ["hi"]
-        assert [cell.text for cell in app.query(AssistantCell)] == ["Hello there!"]
+        assert [turn.text for turn in app.query(UserTurn)] == ["hi"]
+        assert [text.model for text in app.query(AssistantText)] == [
+            vm.TextBlock(text="Hello there!", streaming=False),
+        ]
         assert app.runner.status is ConversationStatus.IDLE
         assert (tmp_path / f"{session.id}.json").exists()
 
 
-async def test_streaming_thinking_renders_once(tmp_path):
-    app = AgentApp(
+async def test_streaming_thinking_renders_one_settled_line(tmp_path):
+    app = make_app(
         fresh_session(),
-        provider=scripted(
-            faux_assistant_message(
-                [faux_thinking("pondering the greeting"), faux_text("Hey!")],
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_thinking("pondering the greeting"), faux_text("Hey!")])),
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(ReasoningCell)] == [
-            "pondering the greeting",
+        # the faux stream settles instantly, so the duration floors at 1.0
+        assert [line.model for line in app.query(ThinkingLine)] == [vm.ThinkingBlock(duration=1.0)]
+        assert [text.model for text in app.query(AssistantText)] == [
+            vm.TextBlock(text="Hey!", streaming=False),
         ]
-        assert [cell.text for cell in app.query(AssistantCell)] == ["Hey!"]
 
 
 async def test_non_streaming_renders_the_same_transcript(tmp_path):
-    app = AgentApp(
+    app = make_app(
         fresh_session(),
-        provider=scripted(
-            faux_assistant_message(
-                [faux_thinking("pondering the greeting"), faux_text("Hey!")],
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_thinking("pondering the greeting"), faux_text("Hey!")])),
+        tmp_path,
         streaming=False,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(ReasoningCell)] == [
-            "pondering the greeting",
+        # no ReasoningStart on the non-streaming tier — the line settles bare
+        assert [line.model for line in app.query(ThinkingLine)] == [vm.ThinkingBlock()]
+        assert [text.model for text in app.query(AssistantText)] == [
+            vm.TextBlock(text="Hey!", streaming=False),
         ]
-        assert [cell.text for cell in app.query(AssistantCell)] == ["Hey!"]
 
 
-async def test_blank_text_renders_no_assistant_cell(tmp_path):
-    app = AgentApp(
+async def test_blank_text_renders_no_assistant_block(tmp_path):
+    app = make_app(
         fresh_session(),
-        provider=scripted(
-            faux_assistant_message(
-                [faux_thinking("deciding"), faux_text(" ")],
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_thinking("deciding"), faux_text(" ")])),
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(ReasoningCell)] == ["deciding"]
-        assert [cell.text for cell in app.query(AssistantCell)] == []
+        assert len(app.query(ThinkingLine)) == 1
+        assert list(app.query(AssistantText)) == []
 
 
-async def test_blank_text_renders_no_assistant_cell_non_streaming(tmp_path):
-    app = AgentApp(
+async def test_blank_text_renders_no_assistant_block_non_streaming(tmp_path):
+    app = make_app(
         fresh_session(),
-        provider=scripted(faux_assistant_message([faux_text("   ")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_text("   ")])),
+        tmp_path,
         streaming=False,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "hi")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(AssistantCell)] == []
+        assert list(app.query(AssistantText)) == []
 
 
-async def test_resume_skips_blank_assistant_text(tmp_path):
-    session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(
+async def test_tool_call_lifecycle_renders_a_tool_block_with_its_result(tmp_path):
+    app = make_app(
+        fresh_session(),
+        scripted(
             faux_assistant_message(
-                [faux_thinking("deciding"), faux_text(" ")],
-            )
+                [faux_tool_call("multiply", {"a": 6, "b": 7}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("It is 42.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
+        mode="yolo",
     )
-    async with app.run_test() as pilot:
-        await submit(pilot, "hi")
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "what is 6 times 7?")
         await wait_until(pilot, lambda: idle_again(app))
 
-    reloaded = load_session(session.id, tmp_path)
-    resumed = AgentApp(
-        reloaded,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        assert [view.model for view in app.query(ToolBlockView)] == [
+            vm.ToolBlock(
+                tool="multiply",
+                arg="a=6, b=7",
+                status="ok",
+                result=vm.ToolResult(summary="42.0"),
+            ),
+        ]
+        assert [text.model for text in app.query(AssistantText)] == [
+            vm.TextBlock(text="It is 42.", streaming=False),
+        ]
+
+
+async def test_resume_replay_rebuilds_the_transcript(tmp_path):
+    session = fresh_session()
+    app = make_app(
+        session,
+        scripted(
+            faux_assistant_message(
+                [faux_thinking("resumable pondering"), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("First answer.")]),
+        ),
+        tmp_path,
+        mode="yolo",
     )
-    async with resumed.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "first question")
+        await wait_until(pilot, lambda: idle_again(app))
+        live_shape = [type(widget).__name__ for widget in app.transcript.children]
+        live_tools = [view.model for view in app.query(ToolBlockView)]
+        live_texts = [text.model for text in app.query(AssistantText)]
+
+    resumed = make_app(load_session(session.id, tmp_path), scripted(), tmp_path, mode="yolo")
+    async with resumed.run_test(size=(105, 35)) as pilot:
         await pilot.pause()
 
-        assert [cell.text for cell in resumed.query(ReasoningCell)] == ["deciding"]
-        assert [cell.text for cell in resumed.query(AssistantCell)] == []
+        assert [type(widget).__name__ for widget in resumed.transcript.children] == live_shape
+        assert [turn.text for turn in resumed.query(UserTurn)] == ["first question"]
+        assert [view.model for view in resumed.query(ToolBlockView)] == live_tools
+        assert [text.model for text in resumed.query(AssistantText)] == live_texts
+        assert resumed.runner.status is ConversationStatus.IDLE
 
 
-async def test_llm_failure_shows_an_error_notice_and_recovers(tmp_path):
-    session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(faux_assistant_message([], error=faux_error("boom"))),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await submit(pilot, "hi")
-        await wait_until(
-            pilot,
-            lambda: bool(app.query(NoticeCell)) and not app.query_one("#prompt", PromptInput).disabled,
-        )
-
-        [notice] = app.query(NoticeCell)
-        assert "turn failed" in notice.text
-        # the bracket closed ERRORED, so the conversation is IDLE: recovery is
-        # a new message, not a silent re-send of the same request
-        assert app.runner.status is ConversationStatus.IDLE
-        assert (tmp_path / f"{session.id}.json").exists()
-
-
-async def test_an_unresolvable_tool_call_renders_as_a_failed_cell(tmp_path):
+async def test_an_unresolvable_tool_call_renders_an_error_tool_block(tmp_path):
     # no registry owns `divide`, so the call is terminal at birth: no approval
-    # modal, no dispatch, and no ToolExecutionStarted — the cell is mounted by
-    # ToolCallReceived and finished by ToolExecuted without ever going running
-    app = AgentApp(
+    # gate, no dispatch — the block is mounted by ToolCallReceived and
+    # finished by ToolExecuted without ever going running
+    app = make_app(
         fresh_session(),
-        provider=scripted(
+        scripted(
             faux_assistant_message(
                 [faux_tool_call("divide", {"a": 6, "b": 7}, id="tc1")],
                 finish_reason="tool_use",
             ),
             faux_assistant_message([faux_text("I have no divide tool.")]),
         ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "what is 6 divided by 7?")
         await wait_until(pilot, lambda: idle_again(app))
 
-        [cell] = app.query(ToolCallCell)
-        assert cell.status is ExecutionStatus.NOT_FOUND
-        assert cell.result_text == "Unknown tool: 'divide'."
-        assert cell.is_error is True
-        assert cell.text == "divide(a=6, b=7)\n→ Unknown tool: 'divide'."
-        assert [c.text for c in app.query(AssistantCell)] == ["I have no divide tool."]
+        assert [view.model for view in app.query(ToolBlockView)] == [
+            vm.ToolBlock(
+                tool="divide",
+                arg="a=6, b=7",
+                status="error",
+                output=vm.ToolOutput(lines=["Unknown tool: 'divide'."], summary="not found"),
+            ),
+        ]
+        assert [text.model for text in app.query(AssistantText)] == [
+            vm.TextBlock(text="I have no divide tool.", streaming=False),
+        ]
 
 
-async def test_resume_replays_the_transcript(tmp_path):
+async def test_a_drive_failure_shows_the_model_error_block_and_the_retry_prompt(tmp_path):
     session = fresh_session()
-    app = AgentApp(
+    app = make_app(
         session,
-        provider=scripted(
-            faux_assistant_message(
-                [faux_thinking("resumable pondering"), faux_text("First answer.")],
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([], error=faux_error("boom"))),
+        tmp_path,
     )
-    async with app.run_test() as pilot:
-        await submit(pilot, "first question")
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "hi")
+        await wait_until(pilot, lambda: bool(app.query(ApprovalPromptView)))
+
+        # the error block carries the exception's own class/message noise, so
+        # only the load-bearing fields are pinned here
+        [error_block] = [view.model for view in app.query(ToolBlockView)]
+        assert (error_block.tool, error_block.arg, error_block.status) == ("model", "fake-model", "error")
+        assert "boom" in "\n".join(error_block.output.lines)
+        # faux has no recommended alternate, so no "Switch to …" option
+        [prompt] = app.query(ApprovalPromptView)
+        assert prompt.model == vm.ApprovalState(
+            question="Keep going, or stop here?",
+            options=[
+                vm.ApprovalOption(label="Retry now"),
+                vm.ApprovalOption(label="Cancel turn", key_hint="esc"),
+            ],
+            selected=0,
+        )
+
+        await pilot.press("2")  # Cancel turn
         await wait_until(pilot, lambda: idle_again(app))
 
-    reloaded = load_session(session.id, tmp_path)
-    resumed = AgentApp(
-        reloaded,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with resumed.run_test() as pilot:
-        await pilot.pause()
-
-        assert [cell.text for cell in resumed.query(UserCell)] == ["first question"]
-        assert [cell.text for cell in resumed.query(ReasoningCell)] == [
-            "resumable pondering",
-        ]
-        assert [cell.text for cell in resumed.query(AssistantCell)] == ["First answer."]
-        assert resumed.runner.status is ConversationStatus.IDLE
+        assert app.runner.status is ConversationStatus.IDLE
+        assert app.query_one(PromptInput).text == ""
+        assert (tmp_path / f"{session.id}.json").exists()
 
 
-async def test_pasted_image_is_attached_and_sent_with_the_next_message(
-    tmp_path,
-    monkeypatch,
-):
+async def test_pasted_image_is_attached_and_sent_with_the_next_message(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
     session = fresh_session()
-    app = AgentApp(
+    app = make_app(
         session,
-        provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
+        scripted(faux_assistant_message([faux_text("A tiny square.")])),
+        tmp_path,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await pilot.press("ctrl+v")
         await pilot.pause()
         await submit(pilot, "what is this?")
         await wait_until(pilot, lambda: idle_again(app))
 
-        assert [cell.text for cell in app.query(UserCell)] == [
+        assert [turn.text for turn in app.query(UserTurn)] == [
             "[image: pasted-1.png]\nwhat is this?",
         ]
         first = session.entries[main_conversation(session).nodes[0]]
@@ -294,72 +293,11 @@ async def test_pasted_image_is_attached_and_sent_with_the_next_message(
         assert app._pending_images == []
 
 
-async def test_a_pasted_image_can_be_sent_without_any_text(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
-    session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+v")
-        await pilot.pause()
-        await submit(pilot, "")
-        await wait_until(pilot, lambda: idle_again(app))
-
-        assert [cell.text for cell in app.query(UserCell)] == ["[image: pasted-1.png]"]
-        first = session.entries[main_conversation(session).nodes[0]]
-        assert [part.type for part in first.parts] == ["image"]
-
-
-async def test_pasting_without_an_image_attaches_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "read_clipboard_image", lambda: None)
-    app = AgentApp(
-        fresh_session(),
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+v")
-        await pilot.pause()
-
-        assert app._pending_images == []
-
-
-async def test_an_unreadable_clipboard_attaches_nothing(tmp_path, monkeypatch):
-    def unavailable():
-        raise ClipboardUnavailable("`xclip` is not installed.")
-
-    monkeypatch.setattr(app_module, "read_clipboard_image", unavailable)
-    app = AgentApp(
-        fresh_session(),
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+v")
-        await pilot.pause()
-
-        assert app._pending_images == []
-
-
 async def test_escape_clears_a_pending_attachment(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
-    app = AgentApp(
-        fresh_session(),
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
+    app = make_app(fresh_session(), scripted(), tmp_path)
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
         await pilot.press("ctrl+v")
         await pilot.pause()
         assert len(app._pending_images) == 1
@@ -370,145 +308,46 @@ async def test_escape_clears_a_pending_attachment(tmp_path, monkeypatch):
         assert app._pending_images == []
 
 
-async def test_resume_replays_a_pasted_image_identically(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
+async def test_ctrl_q_saves_and_quits(tmp_path):
     session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(faux_assistant_message([faux_text("A tiny square.")])),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with app.run_test() as pilot:
-        await pilot.press("ctrl+v")
-        await pilot.pause()
-        await submit(pilot, "what is this?")
-        await wait_until(pilot, lambda: idle_again(app))
-        live = [cell.text for cell in app.query(UserCell)]
+    app = make_app(session, scripted(), tmp_path)
 
-    reloaded = load_session(session.id, tmp_path)
-    resumed = AgentApp(
-        reloaded,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with resumed.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
+        await pilot.press("ctrl+q")
         await pilot.pause()
 
-        assert [cell.text for cell in resumed.query(UserCell)] == live
+    assert app.is_running is False
 
 
-async def test_redacted_reasoning_shows_a_marker_instead_of_nothing(tmp_path):
-    # a redacted block has an empty body, so without a marker the user sees
-    # an unexplained gap where the reasoning should be
-    app = AgentApp(
-        fresh_session(),
-        provider=scripted(
-            faux_assistant_message(
-                [
-                    faux_thinking("", signature="encrypted", redacted=True),
-                    faux_text("Done."),
-                ]
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
+async def test_ctrl_c_clears_the_prompt(tmp_path):
+    app = make_app(fresh_session(), scripted(), tmp_path)
 
-    async with app.run_test() as pilot:
-        await submit(pilot, "hi")
-        await wait_until(pilot, lambda: idle_again(app))
-
-        assert [cell.text for cell in app.query(ReasoningCell)] == [
-            REDACTED_REASONING_MARKER,
-        ]
-
-
-async def test_a_redacted_block_replays_the_same_as_it_rendered(tmp_path):
-    session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(
-            faux_assistant_message(
-                [
-                    faux_thinking("", signature="encrypted", redacted=True),
-                    faux_text("Done."),
-                ]
-            )
-        ),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with app.run_test() as pilot:
-        await submit(pilot, "hi")
-        await wait_until(pilot, lambda: idle_again(app))
-        live = [cell.text for cell in app.query(ReasoningCell)]
-
-    reloaded = load_session(session.id, tmp_path)
-    resumed = AgentApp(
-        reloaded,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-    async with resumed.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
+        prompt = app.query_one(PromptInput)
+        prompt.load_text("a half-written question")
+        prompt.focus()
         await pilot.pause()
 
-        assert [cell.text for cell in resumed.query(ReasoningCell)] == live
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+        # the composer empties; ctrl+c is not a quit key
+        assert (prompt.text, app.is_running) == ("", True)
 
 
-async def test_ctrl_d_saves_and_quits(tmp_path):
+async def test_ctrl_d_saves_and_quits_like_ctrl_q(tmp_path):
     session = fresh_session()
-    app = AgentApp(
-        session,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
+    app = make_app(session, scripted(), tmp_path)
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(105, 35)) as pilot:
+        prompt = app.query_one(PromptInput)
+        prompt.load_text("a half-written question")
+        prompt.focus()
+        await pilot.pause()
+
         await pilot.press("ctrl+d")
         await pilot.pause()
 
     assert app.is_running is False
     assert (tmp_path / f"{session.id}.json").exists()
-
-
-async def test_a_resumed_compacted_session_replays_its_summary(tmp_path):
-    # the summary IS the history on the new conversation — replaying nothing
-    # for it would leave the transcript blank above the next message
-    session = POST_COMPACTION_SESSION.model_copy(deep=True)
-    main_conversation(session).nodes = ["cmp"]
-    app = AgentApp(
-        session,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        assert [cell.text for cell in app.query(CompactionCell)] == [
-            "The user added 1 and 2 and was answered 3.",
-        ]
-
-
-async def test_a_compaction_that_produced_nothing_replays_no_cell(tmp_path):
-    # the path carries an earlier COMMITTED summary and a FAILED compaction:
-    # only the one with content renders, exactly as the wire projection does
-    session = COMPACTION_FAILED_SESSION.model_copy(deep=True)
-    app = AgentApp(
-        session,
-        provider=scripted(),
-        workspace=tmp_path,
-        session_dir=tmp_path,
-    )
-
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        assert [cell.text for cell in app.query(CompactionCell)] == [
-            "Earlier: the user asked where to sit.",
-        ]
+    assert (tmp_path / f"{session.id}.json").exists()

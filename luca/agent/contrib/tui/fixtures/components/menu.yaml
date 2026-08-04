@@ -1,0 +1,24 @@
+# Component sheet — the generic overlay menu (model / reasoning / theme picks).
+name: components/menu
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  tokens: 12.4k
+  cost: $0.08
+transcript:
+  - kind: user
+    text: /model
+overlay:
+  mode: menu
+  sigil: /
+  query: ""
+  counter: 4 of 4
+  selected: 1
+  column: 40
+  rows:
+    - {primary: claude-opus-4-8}
+    - {primary: claude-sonnet-5}
+    - {primary: claude-haiku-4-5}
+    - {primary: claude-fable-5}
+hints: [↑↓ move, enter pick, esc dismiss]

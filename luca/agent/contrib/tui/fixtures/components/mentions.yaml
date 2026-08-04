@@ -1,0 +1,67 @@
+# Component sheet — the `@` file-mention read rows that sit under a user turn.
+#
+# NOT tool calls: there is no ToolExecution behind them, no approval, and so
+# never a `approved by rule` note. They borrow the tool idiom because the
+# information has the same shape — one target, one line of result — and the
+# handoff already spends a vocabulary on exactly that.
+#
+# Every row here is a requirement. The first pair is the happy path; the rest
+# are the cases where the harness declines to inline and hands the file back
+# to the agent's own tools.
+name: components/mentions
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  tokens: 18.2k
+  cost: $0.11
+transcript:
+  # ── the shape: one user turn, one row per mention it carried ──────────────
+  - kind: user
+    text: 'Hello Agent. Read @design_handoff_luca_tui/README.md and @design_handoff_luca_tui/prompt.md and reply "Ok"'
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/design_handoff_luca_tui/README.md
+    result:
+      summary: 523 lines
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/design_handoff_luca_tui/prompt.md
+    result:
+      summary: 411 lines
+
+  # ── inlined as an ImageContent — size is the only thing worth saying ──────
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/design_handoff_luca_tui/logo.png
+    result:
+      summary: 7.1KB
+
+  # ── declined: over the token cap. The agent gets told to grep it instead ──
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/package-lock.json
+    status: error
+    result:
+      summary: "[error]×[/] file too long, defaulting to agent tool calling"
+
+  # ── declined: binary. Detection only — no per-format handling yet ─────────
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/design_handoff_luca_tui/doc.pdf
+    status: error
+    result:
+      summary: "[error]×[/] can't read binary files, defaulting to agent tool calling"
+
+  # ── declined: a directory. `@design_handoff_luca_tui/` is a plausible thing
+  # to type. A path that does NOT resolve gets no row at all — it stays prose,
+  # which is what keeps `@property` and `@types/node` from being read as files.
+  - kind: tool
+    tool: read
+    arg: /Users/santiagobasulto/code/python/python-py/design_handoff_luca_tui/
+    status: error
+    result:
+      summary: "[error]×[/] is a directory, defaulting to agent tool calling"
+composer:
+  placeholder: ask, or / for commands
+hints: [enter send, ⇥ complete, ^p palette]

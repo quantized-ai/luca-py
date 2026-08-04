@@ -1,0 +1,353 @@
+/* Luca TUI — the design source of truth for layout, spacing and color.
+ *
+ * Rules that hold everywhere:
+ *   - no hex literals — tokens from theme.py only ($accent, $text-faint, …)
+ *   - all spacing is 1, 2 or 3 cells; side gutters are 2
+ *   - exactly one horizontal rule (under the status bar) and one bordered
+ *     container in the default state (the composer)
+ *   - the selection treatment (.select-row) is defined ONCE, here
+ *
+ * Sections are commented with the design-handoff screen ids they serve.
+ */
+
+/* ── global frame — every screen (1a–1k) ─────────────────────────────────── */
+
+Screen {
+    background: $surface;
+    color: $foreground;
+}
+
+StatusBar {
+    height: 1;
+    padding: 0 2;
+    color: $foreground;
+}
+
+.rule {
+    height: 1;
+    background: $rule;
+}
+
+#transcript {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-size-vertical: 0;
+}
+
+#transcript.-dimmed {
+    opacity: 30%;
+}
+
+#dock {
+    height: auto;
+}
+
+HintLegend {
+    height: 1;
+    padding: 0 2;
+    color: $text-faint;
+}
+
+#too-narrow {
+    display: none;
+}
+
+Screen.-too-narrow #too-narrow {
+    display: block;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    color: $text-faint;
+    background: $surface;
+}
+
+Screen.-too-narrow #status,
+Screen.-too-narrow .rule,
+Screen.-too-narrow #transcript,
+Screen.-too-narrow #dock,
+Screen.-too-narrow #hints {
+    display: none;
+}
+
+/* ── composer — 1a, 1b, 1d, 1g ───────────────────────────────────────────── */
+
+#composer {
+    height: auto;
+    margin: 0 2;
+    padding: 0 1;
+    border: round $border-hairline;
+    layout: horizontal;
+}
+
+#composer .composer-glyph {
+    width: 2;
+    color: $accent;
+}
+
+#composer PromptInput {
+    width: 1fr;
+    height: auto;
+    max-height: 8;
+    background: transparent;
+    border: none;
+    padding: 0;
+    scrollbar-size-vertical: 0;
+}
+
+#composer PromptInput:focus {
+    background: transparent;
+    border: none;
+}
+
+#composer PromptInput .text-area--placeholder {
+    color: $text-faint;
+}
+
+/* ── transcript blocks — separated by one blank row, never bordered ──────── */
+
+.block {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+UserTurn .turn-glyph,
+ThinkingLine .turn-glyph {
+    width: 2;
+    color: $accent;
+}
+
+UserTurn .turn-body {
+    width: 1fr;
+    color: $foreground;
+}
+
+ThinkingLine {
+    color: $text-faint;
+}
+
+ThinkingLine .turn-glyph {
+    color: $text-faint;
+}
+
+ThinkingLine .turn-body {
+    width: 1fr;
+}
+
+AssistantText {
+    max-width: 84;
+    color: $foreground;
+}
+
+NoticeLine {
+    color: $text-faint;
+}
+
+NoticeLine.-error {
+    color: $error;
+}
+
+/* tool call + result — 1a, 1b, 1d, 1g, 1h */
+
+ToolHeader {
+    height: auto;
+}
+
+.gutter {
+    height: auto;
+    margin: 0 0 0 1;
+    padding: 0 0 0 2;
+    border-left: solid $rule;
+}
+
+.gutter.-error {
+    border-left: solid $error;
+}
+
+ToolBlockView {
+    height: auto;
+}
+
+ResultLine {
+    height: auto;
+    color: $text-faint;
+}
+
+OutputLines {
+    height: auto;
+    color: $text-muted;
+}
+
+/* list block — 1b plan, 1f context set, 1g skills, 1k consumers */
+
+ListBlockView {
+    height: auto;
+}
+
+/* diff block — 1c */
+
+/* `.block` (margin: 0 0 1 0) outranks a bare type selector, so the 1-cell
+ * gutter indent needs the class in the selector too. */
+DiffBlockView.block {
+    height: auto;
+    margin: 0 0 1 1;
+    padding: 0 0 0 2;
+    border-left: solid $rule;
+}
+
+DiffLineRow {
+    height: 1;
+    color: $text-faint;
+}
+
+DiffLineRow.-add {
+    color: $success;
+    background: $diff-add-bg;
+}
+
+DiffLineRow.-del {
+    color: $error;
+    background: $diff-del-bg;
+}
+
+/* subagent task block — vocabulary extension built from the gutter idiom */
+
+TaskBlockView {
+    height: auto;
+}
+
+TaskBlockView > .task-children {
+    height: auto;
+    margin: 0 0 0 1;
+    padding: 0 0 0 2;
+    border-left: solid $rule;
+}
+
+/* ── the ONE selection treatment — approval, overlays, settings, sessions ──
+ * A row is [1-cell accent bar][1-cell caret][2sp]…; the bar and caret columns
+ * are always allocated, so moving the highlight never reflows. */
+
+.select-row {
+    height: 1;
+    color: $text-muted;
+}
+
+.select-row.-selected {
+    background: $selection-bg;
+    color: $foreground;
+}
+
+/* ── approval prompt — 1c, 1h — replaces the composer while active ───────── */
+
+ApprovalPromptView {
+    height: auto;
+    margin: 0 2;
+    border: round $border-hairline;
+}
+
+ApprovalPromptView .prompt-question {
+    height: auto;
+    padding: 0 1;
+    color: $foreground;
+}
+
+ApprovalPromptView .inner-rule,
+OverlayListView .inner-rule {
+    height: 1;
+    background: $rule;
+}
+
+ApprovalPromptView .prompt-options,
+OverlayListView .overlay-options {
+    height: auto;
+    padding: 1 0;
+}
+
+/* ── overlay lists — 1e palette, 1f context picker ───────────────────────── */
+
+OverlayListView {
+    height: auto;
+    margin: 0 2;
+    border: round $border-hairline;
+}
+
+OverlayListView .overlay-query {
+    height: 1;
+    padding: 0 1;
+}
+
+/* ── modal screens — 1i sessions, 1j settings, 1k cost ───────────────────── */
+
+LucaModalScreen {
+    background: $surface;
+    color: $foreground;
+}
+
+LucaModalScreen #modal-body {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-size-vertical: 0;
+}
+
+.faint-line {
+    height: 1;
+    color: $text-faint;
+}
+
+/* sessions (1i) */
+
+.count-line {
+    margin-bottom: 1;
+}
+
+.sessions-table {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.table-header {
+    height: 1;
+    color: $text-faint;
+}
+
+PreviewGutter {
+    height: auto;
+}
+
+/* settings (1j) */
+
+.group-label {
+    height: 1;
+}
+
+.group-gap {
+    height: 1;
+}
+
+.swatch-line {
+    height: 1;
+}
+
+/* cost (1k) */
+
+.cost-headline {
+    height: 1;
+    margin-bottom: 1;
+}
+
+.cost-items {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.meter-row {
+    height: 1;
+}
+
+.context-window {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.consumers {
+    height: auto;
+}

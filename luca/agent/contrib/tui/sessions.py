@@ -103,7 +103,7 @@ def resolve_session_directory(
 
 @dataclass(frozen=True)
 class SessionSummary:
-    """One row of the resume picker."""
+    """One row of the sessions screen."""
 
     id: str
     path: Path
@@ -111,11 +111,18 @@ class SessionSummary:
     title: str
     turns: int
     model: str
+    tokens: int = 0
+    cost: float | None = None
+    size_bytes: int = 0
+    preview: list[str] | None = None
 
 
 def summarize_session(path: Path) -> SessionSummary | None:
-    """One stored session as a picker row, or `None` when it cannot be read.
-    One unloadable file must never stop the picker opening."""
+    """One stored session as a sessions-screen row, or `None` when it cannot
+    be read. One unloadable file must never stop the screen opening."""
+    from .render import preview_rows
+    from .usage import estimated_cost, usage_totals
+
     try:
         session = AgentSession.model_validate_json(path.read_text())
     except (OSError, UnicodeDecodeError, ValueError):
@@ -131,7 +138,15 @@ def summarize_session(path: Path) -> SessionSummary | None:
         title=title[:TITLE_LENGTH],
         turns=len(messages),
         model=session.session_config.llm_config.model,
+        tokens=usage_totals(session).total,
+        cost=estimated_cost(session),
+        size_bytes=path.stat().st_size,
+        preview=preview_rows(session),
     )
+
+
+def delete_session(session_id: str, directory: str | os.PathLike[str] = ".") -> None:
+    session_path(session_id, directory).unlink(missing_ok=True)
 
 
 def list_sessions(directory: str | os.PathLike[str]) -> list[SessionSummary]:

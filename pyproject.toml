@@ -16,6 +16,7 @@ dev = [
     "pre-commit>=4.6.1",
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pytest-textual-snapshot>=1.1.0",
     "pytest-xdist>=3.8.0",
     "python-dotenv>=1.2.2",
     "ruff>=0.16.0",
@@ -24,6 +25,7 @@ docker = [
     "aiodocker>=0.27.0",
 ]
 tui = [
+    "pyyaml>=6",
     "textual>=8.2.8",
     "textual-dev>=1.8.0",
 ]

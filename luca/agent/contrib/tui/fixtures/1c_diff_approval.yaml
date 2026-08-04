@@ -1,0 +1,37 @@
+# 1c — Diff review + approval prompt (the composer is replaced).
+name: 1c_diff_approval
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 18.9k
+  cost: $0.12
+transcript:
+  - kind: tool
+    tool: edit
+    arg: luca/events.py
+    status: pending
+    stat: {add: 6, del: 2}
+  - kind: diff
+    lines:
+      - {num: 41, text: 'def format(self, events, fmt="text"):'}
+      - {num: 42, text: '    out = []'}
+      - {num: 43, sign: '-', text: '    for e in events:'}
+      - {num: 44, sign: '-', text: '        out.append(f"{e.ts}  {e.kind}  {e.summary}")'}
+      - {num: 43, sign: '+', text: '    if fmt == "json":'}
+      - {num: 44, sign: '+', text: '        return [json.dumps(asdict(e)) for e in events]'}
+      - {num: 45, sign: '+', text: ''}
+      - {num: 46, sign: '+', text: '    for e in events:'}
+      - {num: 47, sign: '+', text: '        out.append(f"{e.ts}  {e.kind:<9}  {e.summary}")'}
+      - {num: 48, sign: '+', text: ''}
+      - {num: 49, text: '    return out'}
+approval:
+  question: Apply this edit to [accent]luca/events.py[/]?
+  selected: 0
+  options:
+    - {label: Approve once}
+    - {label: Approve always — edits under luca/}
+    - {label: Deny — tell Luca what to do instead}
+    - {label: Cancel turn, key_hint: esc}
+hints: [↑↓ move, enter confirm, 1–4 pick, ^d full diff]

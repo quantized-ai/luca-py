@@ -61,7 +61,7 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   },
 
   "theme": {
-    "name": "nord"               // Textual theme name
+    "name": "luca-dark"          // a registered theme (luca-dark ships)
   },
 
   "runtime": {                   // any RuntimeConfig knob (ms; -1 = disabled)

@@ -1,0 +1,37 @@
+# 1b — Multi-step plan / todo tracking, mid-run (composer queues).
+name: 1b_plan
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 31.7k
+  cost: $0.21
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+  - kind: text
+    text: Four steps. I'll keep the jsonl reader behind a version check.
+  - kind: list
+    label: plan · 2 of 4
+    rows:
+      - {glyph: done, text: define the sqlite schema in luca/store/schema.sql}
+      - {glyph: done, text: write the writer and its round-trip test}
+      - {glyph: active, text: "port the reader, version-gated on session.format"}
+      - {glyph: pending, text: backfill script + drop the jsonl writer}
+  - kind: tool
+    tool: write
+    arg: luca/store/schema.sql
+    result:
+      stat: {add: 34}
+  - kind: tool
+    tool: bash
+    arg: pytest tests/test_store.py -q
+    result:
+      summary: "[success]6 passed[/] in 0.41s"
+  - kind: thinking
+    activity: reading luca/store/reader.py
+composer:
+  placeholder: working…
+  disabled: true
+hints: [enter queue, ^t plan, ^p palette, esc interrupt]

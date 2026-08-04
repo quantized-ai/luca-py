@@ -7,8 +7,8 @@
     uv run python -m luca.agent.contrib.tui --subagents-max-per-turn 5
     uv run python -m luca.agent.contrib.tui --subagents-max-workers 3
     uv run python -m luca.agent.contrib.tui --resume            # pick a past session
-    uv run python -m luca.agent.contrib.tui --conversation <id> # resume it by id
-    uv run python -m luca.agent.contrib.tui --conversation <id> --fork
+    uv run python -m luca.agent.contrib.tui --resume <id>       # resume it by id
+    uv run python -m luca.agent.contrib.tui --resume <id> --fork
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
@@ -17,11 +17,11 @@
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
     uv run python -m luca.agent.contrib.tui \
-        --conversation <id> --pretty-print                      # print and exit
+        --resume <id> --pretty-print                            # print and exit
 
 `--pretty-print` replaces the TUI entirely: it loads `<id>.json`, writes the
 `pretty_print` transcript to stdout and exits without starting the app, so it
-requires `--conversation` and ignores every other flag — config included, since
+requires `--resume <id>` and ignores every other flag — config included, since
 a transcript does not depend on it.
 
 Configuration layers, highest precedence first: CLI flags, then the nearest
@@ -38,8 +38,8 @@ to the workspace). `--no-instructions` withholds the last of those.
 Sessions persist to `~/.luca/projects/<encoded-project-path>/<session-id>.json`
 after every run — one directory per project, so nothing lands next to your code.
 `sessions.directory` in the config moves that root; the per-project
-subdirectory is always applied under it. `--resume` opens the picker on start,
-`/resume` opens it mid-session, and `--conversation <id>` still goes straight to
+subdirectory is always applied under it. A bare `--resume` opens the picker on
+start, `/resume` opens it mid-session, and `--resume <id>` goes straight to
 one. A real session needs a provider key (OPENROUTER_API_KEY by default) in
 the environment; `--faux` needs nothing — it plays back the scripted demo
 conversation (one turn: a gated `multiply` call, then the wrap-up).
@@ -70,19 +70,37 @@ from .config import (
     register_config_providers,
     resolve_config_path,
     resolve_llm_config,
+    resolve_read_limits,
     resolve_runtime_config,
 )
 from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
 
+PICKER = ""
+"""`--resume` given without an id: open the picker instead of loading one session."""
+
+
+def resume_id(args: argparse.Namespace) -> str | None:
+    """The session id named by `--resume <id>`. None for a bare `--resume`
+    (which opens the picker) and for no flag at all (a fresh session)."""
+    return args.resume or None
+
+
+def resume_picker(args: argparse.Namespace) -> bool:
+    """Whether `--resume` was given bare, i.e. asking for the picker."""
+    return args.resume == PICKER
+
 
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
-    parser.add_argument("--conversation", help="Session id to load (<id>.json).")
     parser.add_argument(
         "--resume",
-        action="store_true",
-        help="Open the session picker for this project on start (the same as /resume).",
+        nargs="?",
+        const=PICKER,
+        default=None,
+        metavar="ID",
+        help="Resume a session: `--resume <id>` loads <id>.json directly, bare "
+        "`--resume` opens the picker for this project (the same as /resume).",
     )
     parser.add_argument(
         "--config",
@@ -99,7 +117,17 @@ def arg_parser() -> argparse.ArgumentParser:
         "--pretty-print",
         action="store_true",
         help="Print the loaded conversation as a text transcript and exit "
-        "instead of starting the TUI. Requires --conversation.",
+        "instead of starting the TUI. Requires --resume <id>.",
+    )
+    parser.add_argument(
+        "--gallery",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="FIXTURE",
+        help="Boot the design-system gallery instead of a live agent: a bundled "
+        "fixture by name (e.g. 1a_agent_loop), a path to a YAML/JSON fixture, "
+        "or no value to browse them all.",
     )
     parser.add_argument(
         "--streaming",
@@ -209,8 +237,9 @@ def build_session(
     session_dir: Path | None = None,
 ) -> AgentSession:
     config = config or LucaConfig()
-    if args.conversation:
-        session = load_session(args.conversation, session_dir or ".")
+    session_id = resume_id(args)
+    if session_id:
+        session = load_session(session_id, session_dir or ".")
         if args.fork:
             session = fork_session(session)
     else:
@@ -254,8 +283,17 @@ def build_session(
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
-    if args.pretty_print and not args.conversation:
-        parser.error("--pretty-print requires --conversation <id>.")
+    if args.gallery is not None:
+        from .gallery import FixtureError, run_gallery
+
+        try:
+            run_gallery(args.gallery)
+        except FixtureError as exc:
+            sys.stderr.write(f"luca: {exc}\n")
+            raise SystemExit(1) from exc
+        return
+    if args.pretty_print and not resume_id(args):
+        parser.error("--pretty-print requires --resume <id>.")
     # Building the app is inside the try: composing it resolves the config's
     # `instructions` paths, and a typo there has to exit readably like any
     # other bad config value rather than traceback.
@@ -268,7 +306,7 @@ def main(argv: list[str] | None = None) -> None:
             config.sessions.directory,
         )
         if args.pretty_print:
-            print(pretty_print(load_session(args.conversation, store)))
+            print(pretty_print(load_session(resume_id(args), store)))
             return
         register_config_providers(config)
         session = build_session(args, config, store)
@@ -278,7 +316,8 @@ def main(argv: list[str] | None = None) -> None:
             session,
             provider=provider,
             session_dir=store,
-            resume=args.resume,
+            resume=resume_picker(args),
+            read_limits=resolve_read_limits(config),
             theme=pick(args.theme, config.theme.name, DEFAULT_THEME),
             streaming=pick(args.streaming, config.streaming, True),
             workspace=pick(args.workspace, config.workspace, "."),

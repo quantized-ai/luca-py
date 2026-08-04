@@ -1,0 +1,487 @@
+"""The three modal screens: sessions (1i), settings (1j), cost (1k).
+
+Presentation-first: each screen renders its `state` view-model and posts
+intent messages (`Resume`, `Adjusted`, `CompactRequested`, …) for the app to
+act on — in the gallery nothing listens and the screens are static, which is
+exactly what makes every state renderable from a fixture.
+"""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+from rich.style import Style
+from rich.text import Text
+from textual import events
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.message import Message
+from textual.widgets import Static
+
+from . import state as vm
+from .chrome import HintLegend
+from .format import spans
+from .shells import LucaModalScreen, SelectRow, SpanLine
+from .theme import Tokens, resolve_tokens
+
+# ── sessions (1i) ─────────────────────────────────────────────────────────────
+
+# (name, width, right-aligned) — drop order below the design width:
+# TOKENS first, then TURNS.
+SESSION_COLUMNS = (
+    ("WHEN", 11, False),
+    ("FIRST MESSAGE", 36, False),
+    ("TURNS", 7, True),
+    ("TOKENS", 8, True),
+    ("COST", 7, True),
+)
+
+
+def _visible_columns(width: int) -> list[tuple[str, int, bool]]:
+    columns = list(SESSION_COLUMNS)
+    needed = sum(w for _, w, _ in columns) + 2 * (len(columns) - 1) + 4
+    if width >= needed:
+        return columns
+    columns = [c for c in columns if c[0] != "TOKENS"]
+    needed = sum(w for _, w, _ in columns) + 2 * (len(columns) - 1) + 4
+    if width >= needed:
+        return columns
+    return [c for c in columns if c[0] != "TURNS"]
+
+
+def _column_cells(row: vm.SessionRow) -> dict[str, str]:
+    return {
+        "WHEN": row.when,
+        "FIRST MESSAGE": row.first_message,
+        "TURNS": row.turns,
+        "TOKENS": row.tokens,
+        "COST": row.cost,
+    }
+
+
+def _fit(value: str, width: int, right: bool) -> str:
+    if len(value) > width:
+        value = value[: width - 1] + "…"
+    return value.rjust(width) if right else value.ljust(width)
+
+
+class SessionsHeader(Static):
+    def __init__(self, screen: SessionsScreen) -> None:
+        super().__init__(markup=False, classes="table-header")
+        self._screen = screen
+
+    def render(self) -> Text:
+        cells = [_fit(name, width, right) for name, width, right in _visible_columns(self.size.width)]
+        return Text("  " + "  ".join(cells), no_wrap=True, overflow="ellipsis")
+
+
+class SessionRowView(SelectRow):
+    has_caret: ClassVar[bool] = False
+
+    def __init__(self, index: int, row: vm.SessionRow, *, selected: bool) -> None:
+        super().__init__(selected=selected)
+        self.index = index
+        self.row = row
+
+    def body(self, tokens: Tokens) -> Text:
+        values = _column_cells(self.row)
+        text = Text()
+        for name, width, right in _visible_columns(self.size.width):
+            value = _fit(values[name], width, right)
+            if name in ("WHEN", "FIRST MESSAGE"):
+                color = tokens.foreground if self.selected else tokens.muted
+            else:
+                color = tokens.muted if self.selected else tokens.faint
+            text.append(value, style=Style(color=color))
+            text.append("  ")
+        text.rstrip()
+        return text
+
+
+class PreviewGutter(Static):
+    """`preview · last turn` rows in the `│` gutter, `$text-muted`."""
+
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__(markup=False, classes="gutter")
+        self.lines = lines
+
+    def set_lines(self, lines: list[str]) -> None:
+        self.lines = lines
+        self.refresh(layout=True)
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        text = Text()
+        for index, line in enumerate(self.lines):
+            if index:
+                text.append("\n")
+            rendered = spans(line, tokens, Style(color=tokens.muted))
+            rendered.no_wrap = True
+            rendered.overflow = "ellipsis"
+            text.append_text(rendered)
+        return text
+
+
+class SessionsScreen(LucaModalScreen):
+    """`↑↓ move · enter resume · f fork · d delete · esc back`. Delete asks
+    for a second `d` (the confirm), `esc` clears it."""
+
+    class Highlighted(Message):
+        def __init__(self, screen: SessionsScreen, index: int) -> None:
+            super().__init__()
+            self.screen = screen
+            self.index = index
+
+    class Resume(Message):
+        def __init__(self, screen: SessionsScreen, row: vm.SessionRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    class Fork(Message):
+        def __init__(self, screen: SessionsScreen, row: vm.SessionRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    class Delete(Message):
+        def __init__(self, screen: SessionsScreen, row: vm.SessionRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    def __init__(self, state: vm.SessionsState, status: vm.StatusState, hints: list[str]) -> None:
+        super().__init__(status, hints)
+        self.state = state
+        self._pending_delete = False
+
+    def compose_body(self) -> ComposeResult:
+        yield SpanLine(self.state.count_line, classes="faint-line count-line")
+        with Vertical(classes="sessions-table"):
+            yield SessionsHeader(self)
+            for index, row in enumerate(self.state.rows):
+                yield SessionRowView(index, row, selected=index == self.state.selected)
+        yield SpanLine("preview · last turn", classes="faint-line preview-label")
+        yield PreviewGutter(self.state.preview)
+
+    def update_preview(self, lines: list[str]) -> None:
+        self.query_one(PreviewGutter).set_lines(lines)
+
+    def _move(self, delta: int) -> None:
+        count = len(self.state.rows)
+        if count == 0:
+            return
+        selected = (self.state.selected + delta) % count
+        self.state = self.state.model_copy(update={"selected": selected})
+        for row in self.query(SessionRowView):
+            row.set_selected(row.index == selected)
+        self._pending_delete = False
+        self.post_message(self.Highlighted(self, selected))
+
+    def _selected_row(self) -> vm.SessionRow | None:
+        if not self.state.rows:
+            return None
+        return self.state.rows[self.state.selected]
+
+    async def on_key(self, event: events.Key) -> None:
+        key = event.key
+        row = self._selected_row()
+        if key == "up":
+            self._move(-1)
+        elif key == "down":
+            self._move(1)
+        elif key == "enter" and row is not None:
+            self.post_message(self.Resume(self, row))
+        elif key == "f" and row is not None:
+            self.post_message(self.Fork(self, row))
+        elif key == "d" and row is not None:
+            if self._pending_delete:
+                self._pending_delete = False
+                self.post_message(self.Delete(self, row))
+            else:
+                self._pending_delete = True
+                self.notify_delete_pending()
+        elif key == "escape" and self._pending_delete:
+            self._pending_delete = False
+            self.notify_delete_cleared()
+        else:
+            return
+        event.stop()
+        event.prevent_default()
+
+    def notify_delete_pending(self) -> None:
+        self.query_one(HintLegend).set_hints(["d again delete", "esc keep"])
+
+    def notify_delete_cleared(self) -> None:
+        self.query_one(HintLegend).set_hints(self._hints)
+
+
+# ── settings (1j) ─────────────────────────────────────────────────────────────
+
+_VALUE_COLORS = {
+    "accent": "accent",
+    "error": "error",
+    "muted": "muted",
+    "foreground": "foreground",
+}
+
+SETTINGS_NAME_COLUMN = 24
+
+
+class SettingRowView(SelectRow):
+    def __init__(self, index: int, row: vm.SettingRow, *, selected: bool) -> None:
+        super().__init__(selected=selected)
+        self.index = index
+        self.row = row
+
+    def body(self, tokens: Tokens) -> Text:
+        text = Text()
+        name_color = tokens.foreground if self.selected else tokens.muted
+        text.append(self.row.name.ljust(SETTINGS_NAME_COLUMN), style=Style(color=name_color))
+        if self.row.color is not None:
+            value_color = getattr(tokens, _VALUE_COLORS[self.row.color])
+        else:
+            value_color = tokens.foreground if self.selected else tokens.muted
+        text.append(self.row.value, style=Style(color=value_color))
+        return text
+
+    def trailing(self, tokens: Tokens) -> Text | None:
+        if self.selected:
+            return Text("← →", style=Style(color=tokens.faint))
+        return None
+
+
+class SwatchLine(Static):
+    """`luca-dark  ▕▏██ ██ …` — the seven theme colors in scale order. The
+    first swatch is the background color, drawn as a hairline outline pair so
+    it stays visible on itself."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__(markup=False, classes="swatch-line")
+        self.label = label
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        text = Text(no_wrap=True)
+        text.append(self.label, style=Style(color=tokens.faint))
+        text.append("  ")
+        # Left eighth-block first, right eighth-block last: the hairline
+        # strokes sit at the swatch's OUTER edges, outlining it.
+        text.append("▏▕", style=Style(color=tokens.hairline))
+        for color in (
+            tokens.rule,
+            tokens.muted,
+            tokens.foreground,
+            tokens.accent,
+            tokens.success,
+            tokens.error,
+        ):
+            text.append(" ")
+            text.append("██", style=Style(color=color))
+        return text
+
+
+class SettingsScreen(LucaModalScreen):
+    """Three labelled groups; `← →` adjusts the focused row, `esc` saves and
+    closes. Value edits are posted as intents — the app owns what is real."""
+
+    class Adjusted(Message):
+        def __init__(self, screen: SettingsScreen, row: vm.SettingRow, delta: int) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+            self.delta = delta
+
+    class Closed(Message):
+        def __init__(self, screen: SettingsScreen) -> None:
+            super().__init__()
+            self.screen = screen
+
+    def __init__(self, state: vm.SettingsState, status: vm.StatusState, hints: list[str]) -> None:
+        super().__init__(status, hints)
+        self.state = state
+
+    def action_close_modal(self) -> None:
+        # esc is "save & close": the app hears Closed and writes through.
+        self.post_message(self.Closed(self))
+        self.dismiss(None)
+
+    def _flat_rows(self) -> list[vm.SettingRow]:
+        return [row for group in self.state.groups for row in group.rows]
+
+    def compose_body(self) -> ComposeResult:
+        index = 0
+        for group in self.state.groups:
+            yield SpanLine(group.label, classes="faint-line group-label")
+            for row in group.rows:
+                yield SettingRowView(index, row, selected=index == self.state.selected)
+                index += 1
+            yield Static(classes="group-gap")
+        if self.state.swatch_label:
+            yield SwatchLine(self.state.swatch_label)
+
+    def set_state(self, state: vm.SettingsState) -> None:
+        """Re-render values in place after the app applied an adjustment."""
+        self.state = state
+        rows = self._flat_rows()
+        for view in self.query(SettingRowView):
+            view.row = rows[view.index]
+            view.set_selected(view.index == state.selected)
+
+    def _move(self, delta: int) -> None:
+        count = len(self._flat_rows())
+        if count == 0:
+            return
+        selected = (self.state.selected + delta) % count
+        self.state = self.state.model_copy(update={"selected": selected})
+        for view in self.query(SettingRowView):
+            view.set_selected(view.index == selected)
+
+    async def on_key(self, event: events.Key) -> None:
+        key = event.key
+        rows = self._flat_rows()
+        if key == "up":
+            self._move(-1)
+        elif key == "down":
+            self._move(1)
+        elif key in ("left", "right") and rows:
+            delta = -1 if key == "left" else 1
+            self.post_message(self.Adjusted(self, rows[self.state.selected], delta))
+        elif key == "enter" and rows:
+            self.post_message(self.Adjusted(self, rows[self.state.selected], 1))
+        else:
+            return
+        event.stop()
+        event.prevent_default()
+
+
+# ── cost (1k) ─────────────────────────────────────────────────────────────────
+
+METER_COLUMNS = (18, 8, 8)
+CONTEXT_BAR_WIDTH = 60
+
+_METER_COLORS = {
+    "accent": "accent",
+    "foreground": "foreground",
+    "faint": "faint",
+    "rule": "rule",
+    "hairline": "hairline",
+}
+
+
+class CostHeadline(Static):
+    def __init__(self, state: vm.CostState) -> None:
+        super().__init__(markup=False, classes="cost-headline")
+        self.state = state
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        text = Text(no_wrap=True)
+        text.append(self.state.headline, style=Style(color=tokens.foreground, bold=True))
+        text.append("  ")
+        text.append(self.state.subline, style=Style(color=tokens.faint))
+        return text
+
+
+class MeterRow(Static):
+    """`input   26.3k  $0.079  ███…` — the meter is proportional to COST."""
+
+    def __init__(self, item: vm.CostItem) -> None:
+        super().__init__(markup=False, classes="meter-row")
+        self.item = item
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        label_w, tokens_w, cost_w = METER_COLUMNS
+        text = Text(no_wrap=True)
+        text.append(self.item.label.ljust(label_w), style=Style(color=tokens.muted))
+        text.append(self.item.tokens.rjust(tokens_w), style=Style(color=tokens.foreground))
+        text.append("  ")
+        text.append(self.item.cost.rjust(cost_w), style=Style(color=tokens.faint))
+        text.append("  ")
+        available = self.size.width - text.cell_len
+        filled = max(0, round(available * max(0.0, min(self.item.fraction, 1.0))))
+        color = getattr(tokens, _METER_COLORS[self.item.color])
+        text.append("█" * filled, style=Style(color=color))
+        return text
+
+
+class ContextWindowView(Static):
+    """The stacked 60-cell context bar with its usage line and legend."""
+
+    def __init__(self, state: vm.ContextWindowState) -> None:
+        super().__init__(markup=False, classes="context-window")
+        self.state = state
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        text = Text()
+        text.append("context window", style=Style(color=tokens.faint))
+        text.append("\n")
+        text.append(self.state.used, style=Style(color=tokens.muted))
+        text.append("  ")
+        text.append(self.state.percent, style=Style(color=tokens.faint))
+        text.append("\n")
+        width = min(CONTEXT_BAR_WIDTH, max(self.size.width, 10))
+        context_cells = round(width * max(0.0, min(self.state.context_fraction, 1.0)))
+        reply_cells = round(width * max(0.0, min(self.state.reply_fraction, 1.0)))
+        free_cells = max(0, width - context_cells - reply_cells)
+        text.append("█" * context_cells, style=Style(color=tokens.accent))
+        text.append("█" * reply_cells, style=Style(color=tokens.foreground))
+        text.append("█" * free_cells, style=Style(color=tokens.rule))
+        text.append("\n")
+        for index, item in enumerate(self.state.legend):
+            if index:
+                text.append("   ")
+            text.append_text(spans(item, tokens, Style(color=tokens.faint)))
+        return text
+
+
+class ConsumersView(Static):
+    """`biggest consumers` — 36-cell label column, faint token counts."""
+
+    def __init__(self, consumers: list[vm.ConsumerRow]) -> None:
+        super().__init__(markup=False, classes="consumers")
+        self.consumers = consumers
+
+    def render(self) -> Text:
+        tokens = resolve_tokens(self.app)
+        text = Text()
+        text.append("biggest consumers", style=Style(color=tokens.faint))
+        for row in self.consumers:
+            text.append("\n")
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append(row.label.ljust(36), style=Style(color=tokens.muted))
+            line.append("  ")
+            line.append(row.tokens, style=Style(color=tokens.faint))
+            text.append_text(line)
+        return text
+
+
+class CostScreen(LucaModalScreen):
+    class CompactRequested(Message):
+        def __init__(self, screen: CostScreen) -> None:
+            super().__init__()
+            self.screen = screen
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("ctrl+k", "compact", show=False),
+    ]
+
+    def __init__(self, state: vm.CostState, status: vm.StatusState, hints: list[str]) -> None:
+        super().__init__(status, hints)
+        self.state = state
+
+    def compose_body(self) -> ComposeResult:
+        yield CostHeadline(self.state)
+        with Vertical(classes="cost-items"):
+            for item in self.state.items:
+                yield MeterRow(item)
+        if self.state.context is not None:
+            yield ContextWindowView(self.state.context)
+        if self.state.consumers:
+            yield ConsumersView(self.state.consumers)
+
+    def action_compact(self) -> None:
+        self.post_message(self.CompactRequested(self))

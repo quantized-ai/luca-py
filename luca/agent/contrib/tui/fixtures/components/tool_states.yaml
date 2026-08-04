@@ -1,0 +1,68 @@
+# Component sheet — one tool block per lifecycle state.
+name: components/tool_states
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  tokens: 9.9k
+  cost: $0.05
+transcript:
+  - kind: tool
+    tool: read
+    arg: luca/cli.py
+    status: pending
+  - kind: tool
+    tool: read
+    arg: luca/cli.py
+    result:
+      summary: 84 lines
+  - kind: tool
+    tool: edit
+    arg: luca/events.py
+    status: pending
+    stat: {add: 6, del: 2}
+  - kind: tool
+    tool: edit
+    arg: luca/events.py
+    result:
+      stat: {add: 3, del: 1}
+      note: approved by rule · edits under luca/
+  - kind: tool
+    tool: bash
+    arg: rm -rf build/ dist/
+    status: denied
+    result:
+      summary: denied
+      note: "rule: never · destructive shell"
+  - kind: tool
+    tool: bash
+    arg: pytest -q
+    output:
+      lines:
+        - "..F..                                                                [100%]"
+        - "[error]FAILED tests/test_events.py::test_json_roundtrip[/]"
+        - "[error]1 failed[/], [success]4 passed[/] in 0.31s"
+      summary: exit 1 · 0.4s · 2 lines hidden
+      expand_hint: true
+      hidden_lines:
+        - "collected 5 items"
+        - "run details elided"
+  - kind: tool
+    tool: model
+    arg: sonnet-4.5
+    status: error
+    output:
+      lines:
+        - "[error]overloaded_error · 529[/]"
+        - "Retrying in 4s — attempt 2 of 5."
+  - kind: tool
+    tool: skill
+    arg: sqlite-migrations
+    note_right: loaded
+    output:
+      lines:
+        - "[faint].luca/skills/sqlite-migrations/SKILL.md[/]"
+        - "[faint]3 references · 1 script · 1.7k tokens[/]"
+composer:
+  placeholder: ask, or / for commands
+hints: [enter send, ⇥ complete, ^p palette]

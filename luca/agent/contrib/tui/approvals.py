@@ -2,24 +2,24 @@
 
 Translates a pending `ToolExecution`'s uncovered `PermissionRequest`s (via
 `PermissionStrategy.pending_requests` — rule-covered steps stay silent) into
-display-ready `ApprovalPrompt`s whose options carry fully-built
-`ApprovalAnswer`s. The modal only shows labels and returns the picked option;
-every decision-policy choice lives here, unit-testable without Textual.
+the design's fixed prompt shape:
 
-The policy (an app choice, not framework behavior — same as the classic REPL
-demo): "Approve once" / "Deny" answer with the request's exact pairs at scope
-ONCE; picking a tool-suggested option applies it at scope ALWAYS (writing
-rules). An option with `answer=None` means "abandon the turn" — the caller
-cancels instead of answering. A resourceless tool without the permission
-mixin gets a synthesized single-step request.
+    ❯  1  Approve once
+       2  Approve always — <exactly what is being widened>
+       3  Deny — tell Luca what to do instead
+       4  Cancel turn                                        esc
 
-Deny semantics are the caller's job: a DENY answer makes the whole call dead,
-so the remaining prompts of that execution must be skipped.
+Option 2 only exists when the tool suggested a widening (`answer_options`);
+its suffix is generated from that suggestion — a bare "Approve always" is
+never rendered. Choosing Deny answers DENY and gives the composer back;
+Cancel turn aborts the whole turn (`esc` binds to it). All decision policy
+lives here, unit-testable without Textual.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,48 +34,52 @@ from luca.agent.contrib.resource_permissions import (
 )
 from luca.agent.core.models import ToolExecution
 
+from . import state as vm
+
+OptionKind = Literal["approve", "always", "deny", "cancel"]
+
+DENY_LABEL = "Deny — tell Luca what to do instead"
+CANCEL_LABEL = "Cancel turn"
+
 
 class PromptOption(BaseModel):
-    """One selectable answer. `answer=None` is the abandon-turn option."""
+    """One selectable answer. `answer=None` is the cancel-turn option."""
 
     label: str
+    kind: OptionKind
     answer: ApprovalAnswer | None = None
+    key_hint: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
     @property
-    def is_abandon(self) -> bool:
-        return self.answer is None
+    def is_cancel(self) -> bool:
+        return self.kind == "cancel"
 
     @property
     def is_deny(self) -> bool:
-        return self.answer is not None and self.answer.decision is AnswerDecision.DENY
+        return self.kind == "deny"
 
 
-class ApprovalPrompt(BaseModel):
+class ApprovalPromptModel(BaseModel):
     """One approval step of one execution, ready for display."""
 
     tool_name: str
+    question: str  # theme-token spans allowed
     step: int
     total_steps: int
-    resources: list[str]
-    preview: str
     options: list[PromptOption]
-    # Which conversation is asking, when it is not the main one. `None` for the
-    # main agent — the ordinary case, where naming it would be noise. The
-    # execution carries this itself (`ToolExecution.conversation_id`), which is
-    # exactly why no wrapper type is needed to attribute a gate.
     conversation_id: str | None = None
-    # The same subagent, said in words. An id answers "which one" only if you
-    # already know which is which, and two subagents can gate at the same
-    # moment — so the thing the user decides with is the TASK, not the key.
-    # None whenever `conversation_id` is, and whenever nothing named it.
     conversation_label: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
-
-ABANDON_LABEL = "Abandon turn (cancel — unanswered calls never run)"
+    def to_state(self) -> vm.ApprovalState:
+        return vm.ApprovalState(
+            question=self.question,
+            options=[vm.ApprovalOption(label=o.label, key_hint=o.key_hint) for o in self.options],
+            selected=0,
+        )
 
 
 def _pair_label(pair: ResourcePermission) -> str:
@@ -84,10 +88,10 @@ def _pair_label(pair: ResourcePermission) -> str:
     return f"{pair.permission}:{pair.resource}"
 
 
-def _option_label(option: AnswerOption) -> str:
+def _scope_label(option: AnswerOption) -> str:
     preview = option.metadata.get("preview")
     if preview:
-        return preview
+        return str(preview)
     return ", ".join(_pair_label(pair) for pair in option.resource_permissions)
 
 
@@ -96,34 +100,43 @@ def _build_options(request: PermissionRequest) -> list[PromptOption]:
     options = [
         PromptOption(
             label="Approve once",
-            answer=ApprovalAnswer(
-                answer_option=exact,
-                decision=AnswerDecision.APPROVE,
-            ),
+            kind="approve",
+            answer=ApprovalAnswer(answer_option=exact, decision=AnswerDecision.APPROVE),
         ),
     ]
-    options.extend(
-        PromptOption(
-            label=_option_label(option),
-            answer=ApprovalAnswer(
-                answer_option=option,
-                decision=AnswerDecision.APPROVE,
-                scope=AnswerScope.ALWAYS,
-            ),
+    if request.answer_options:
+        # The FIRST suggestion is the offered widening; the prompt stays four
+        # options by design. The user always sees exactly what they widen.
+        suggested = request.answer_options[0]
+        options.append(
+            PromptOption(
+                label=f"Approve always — {_scope_label(suggested)}",
+                kind="always",
+                answer=ApprovalAnswer(
+                    answer_option=suggested,
+                    decision=AnswerDecision.APPROVE,
+                    scope=AnswerScope.ALWAYS,
+                ),
+            )
         )
-        for option in request.answer_options
-    )
     options.append(
         PromptOption(
-            label="Deny",
-            answer=ApprovalAnswer(
-                answer_option=exact,
-                decision=AnswerDecision.DENY,
-            ),
+            label=DENY_LABEL,
+            kind="deny",
+            answer=ApprovalAnswer(answer_option=exact, decision=AnswerDecision.DENY),
         )
     )
-    options.append(PromptOption(label=ABANDON_LABEL, answer=None))
+    options.append(PromptOption(label=CANCEL_LABEL, kind="cancel", key_hint="esc"))
     return options
+
+
+def _question(tool_name: str, request: PermissionRequest, step: int, total: int) -> str:
+    preview = request.metadata.get("preview")
+    body = str(preview) if preview else f"Run {tool_name}"
+    question = body.rstrip("?.") + "?"
+    if total > 1:
+        question += f"  (step {step} of {total})"
+    return question
 
 
 def build_approval_prompts(
@@ -132,19 +145,10 @@ def build_approval_prompts(
     *,
     main_conversation_id: str | None = None,
     subagent_labels: Mapping[str, str] | None = None,
-) -> list[ApprovalPrompt]:
+) -> list[ApprovalPromptModel]:
     """The execution's UNCOVERED approval steps as display-ready prompts.
-
-    `main_conversation_id`, when given, is what makes "which conversation is
-    asking" answerable: a gate from anything else is labelled as a subagent's.
-    Now that `pending_approvals()` is subtree-scoped, a flat list can mix the
-    main agent's requests with several subagents' — and the execution
-    attributes itself, so no wrapper type is needed.
-
-    `subagent_labels` maps a conversation id to what that subagent was asked to
-    do. Optional, because attribution and naming are different jobs: the id is
-    always available here, the task only to a caller that tracks its
-    subagents."""
+    A gate raised by a subagent names the task it belongs to in the question,
+    so two simultaneous gates stay tellable apart."""
     name = execution.raw_tool_call.name
     requests = strategy.pending_requests(execution)
     if not requests:  # resourceless tool without the mixin (add/subtract/…)
@@ -160,17 +164,17 @@ def build_approval_prompts(
         else None
     )
     label = (subagent_labels or {}).get(asking) if asking is not None else None
-    prompts: list[ApprovalPrompt] = []
+    prompts: list[ApprovalPromptModel] = []
     for index, request in enumerate(requests):
-        resources = [_pair_label(pair) for pair in request.resources]
-        preview = request.metadata.get("preview") or ", ".join(resources)
+        question = _question(name, request, index + 1, len(requests))
+        if asking is not None:
+            question = f"[faint]task · {label or asking} —[/] {question}"
         prompts.append(
-            ApprovalPrompt(
+            ApprovalPromptModel(
                 tool_name=name,
+                question=question,
                 step=index + 1,
                 total_steps=len(requests),
-                resources=resources,
-                preview=preview,
                 options=_build_options(request),
                 conversation_id=asking,
                 conversation_label=label,
