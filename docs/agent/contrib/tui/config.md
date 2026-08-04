@@ -147,7 +147,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   does not know: a custom provider, or a local `ollama`. See
   [`10-catalog.md`](../../../client/10-catalog.md).
 - `tools.native` set to `false` turns off provider-defined tools, so every
-  model gets luca's own. On by default; this is the escape hatch when a
+  model gets luca's own. Note the two differ in more than name: Anthropic's
+  `bash` keeps one shell alive across calls, luca's runs each command in a
+  fresh subprocess. On by default; this is the escape hatch when a
   native tool misbehaves against a particular model.
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.

@@ -22,9 +22,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from luca.agent.contrib.resource_permissions import PermissionRequest
-from luca.agent.core import AgentSession, CancellationToken, ExecutionResult, ToolKind
+from luca.agent.contrib.resource_permissions import (
+    AnswerOption,
+    PermissionRequest,
+    ResourcePermission,
+)
+from luca.agent.core import (
+    AgentSession,
+    CancellationToken,
+    ExecutionResult,
+    TextContent,
+    ToolKind,
+)
 
+from .session_shell import PersistentShell, ShellResult
 from .tools import (
     EditTool,
     FileReadTracker,
@@ -252,6 +263,12 @@ def _editor_type(model: str) -> str:
     return TEXT_EDITOR_TYPE_CURRENT
 
 
+def native_bash_type(provider: str, model: str) -> str | None:
+    """The bash tool type for this route, or None. Same transport rule as the
+    editor; `bash_20250124` is not versioned by model generation."""
+    return BASH_TYPE if _is_anthropic_route(provider, model) else None
+
+
 def native_editor_type(provider: str, model: str) -> str | None:
     """The text-editor type string for this route, or None when there is none.
 
@@ -260,11 +277,146 @@ def native_editor_type(provider: str, model: str) -> str | None:
     tool declared by `type` — so a model-family check would confidently send a
     tool that gets rejected. Only the provider whose transport is Anthropic's
     own qualifies."""
+    return _editor_type(model) if _is_anthropic_route(provider, model) else None
+
+
+def _is_anthropic_route(provider: str, model: str) -> bool:
     from luca.client.transports.anthropic.transport import AnthropicTransport
 
     transport = _resolve_transport(provider)
     if transport is None or not issubclass(transport, AnthropicTransport):
-        return None
-    if "claude" not in model.lower():
-        return None
-    return _editor_type(model)
+        return False
+    return "claude" in model.lower()
+
+
+# ── Anthropic's bash tool ────────────────────────────────────────────────────
+
+BASH_TYPE = "bash_20250124"
+BASH_NAME = "bash"
+
+BASH_DEFAULT_TIMEOUT_MS = 120_000
+
+
+class NativeBashTool(ShellTool):
+    """Anthropic's `bash`: one shell session, kept alive between calls.
+
+    The provider's contract is that state persists — the working directory,
+    the environment and any background process are still there next time — and
+    that `restart` starts clean. luca's own `bash` is a fresh subprocess per
+    call, so this is a different tool rather than a rename, and it owns a
+    `PersistentShell` instead.
+
+    ONE SHELL PER CONVERSATION. A tool instance is shared by the main agent and
+    every subagent; a single session would mean one conversation's `cd`
+    silently relocating another's next command.
+    """
+
+    name = BASH_NAME
+    description = (
+        "Anthropic's bash tool: run commands in a persistent shell session. "
+        "The schema is defined by the provider; this description is never sent."
+    )
+    provider_type = BASH_TYPE
+    tool_kind = ToolKind.EXECUTE
+    timeout_in_ms = BASH_DEFAULT_TIMEOUT_MS
+
+    class Args(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        command: str | None = Field(default=None, description="The command to run")
+        restart: bool | None = Field(default=None, description="Restart the shell session")
+
+    def __init__(
+        self,
+        workdir: str | os.PathLike[str] | None = None,
+        shell: str | None = None,
+    ) -> None:
+        super().__init__(workdir)
+        self.shell = shell
+        self._shells: dict[str, PersistentShell] = {}
+
+    def shell_for(self, conversation_id: str) -> PersistentShell:
+        if conversation_id not in self._shells:
+            self._shells[conversation_id] = PersistentShell(self.workdir, self.shell)
+        return self._shells[conversation_id]
+
+    async def close(self) -> None:
+        """Every session this tool opened. The plugin calls it when the run
+        ends; a shell left behind is a process the user never sees."""
+        for session_shell in list(self._shells.values()):
+            await session_shell.close()
+        self._shells.clear()
+
+    def build_permission_requests(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[PermissionRequest]:
+        """The same two steps luca's own `bash` opens with, so a native call is
+        gated identically. `restart` touches no directory and runs nothing, so
+        it asks for nothing."""
+        command = (args.get("command") or "").strip()
+        if not command:
+            return []
+        head = command.split()[0]
+        return [
+            self._access_request(self.workdir),
+            PermissionRequest(
+                resources=[ResourcePermission(permission="bash", resource=command)],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(permission="bash", resource=f"{head} *"),
+                        ],
+                        metadata={"preview": f"Run any '{head}' command"},
+                    ),
+                ],
+                metadata={"preview": f"Run command: {command}"},
+            ),
+        ]
+
+    async def _run(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        if args.get("restart"):
+            await self.shell_for(conversation_id).restart()
+            return ExecutionResult(content=[TextContent(text="Shell session restarted.")])
+        command = args.get("command")
+        if not command or not command.strip():
+            raise ShellToolError("`bash` requires a command, or restart: true.")
+        result = await self.shell_for(conversation_id).run(
+            command,
+            timeout_ms=BASH_DEFAULT_TIMEOUT_MS,
+        )
+        return self._render(result)
+
+    def _render(self, result: ShellResult) -> ExecutionResult:
+        if result.outcome == "timed_out":
+            return ExecutionResult(
+                content=[
+                    TextContent(text=f"Command timed out after {BASH_DEFAULT_TIMEOUT_MS}ms; the shell was restarted.")
+                ],
+                is_error=True,
+                metadata={"outcome": result.outcome},
+            )
+        parts = [text for text in (result.stdout, result.stderr) if text]
+        body = "\n".join(parts) if parts else "(no output)"
+        if result.outcome == "died":
+            return ExecutionResult(
+                content=[TextContent(text=f"{body}\n\nThe shell session ended; the next command starts a new one.")],
+                is_error=True,
+                metadata={"outcome": result.outcome},
+            )
+        if result.exit_code:
+            body = f"{body}\n\nExited with code {result.exit_code}."
+        return ExecutionResult(
+            content=[TextContent(text=body)],
+            is_error=bool(result.exit_code),
+            metadata={"exit_code": result.exit_code, "outcome": result.outcome},
+        )

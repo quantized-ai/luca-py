@@ -40,7 +40,7 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.tools import Tool
 from luca.agent.core import AgentSession, ApprovalOption
 
-from .native import NativeTextEditorTool
+from .native import NativeBashTool, NativeTextEditorTool
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -74,6 +74,7 @@ class ShellAccessPlugin:
         mode: PermissionMode | str = PermissionMode.ASK,
         extra_rules: list | None = None,
         native_editor_type: str | None = None,
+        native_bash_type: str | None = None,
     ) -> None:
         self.workspace = _absolute(workspace)
         self.additional_directories = [_absolute(directory) for directory in additional_directories or []]
@@ -110,8 +111,26 @@ class ShellAccessPlugin:
             GrepTool(workdir=self.workspace),
             *file_tools[1:],
             ApplyPatchTool(workdir=self.workspace),
-            BashTool(workdir=self.workspace),
+            # Anthropic's `bash` keeps ONE shell alive across calls; luca's
+            # spawns a fresh subprocess each time. Same name, different
+            # contract, so it is a swap rather than a rename.
+            NativeBashTool(workdir=self.workspace)
+            if native_bash_type is not None
+            else BashTool(workdir=self.workspace),
         ]
+
+    async def close(self) -> None:
+        """Release anything the tools hold open.
+
+        Only the native bash tool does: it keeps a shell alive per
+        conversation. A shell dies on its own when the process exits (its stdin
+        closes), but a long-lived TUI rebuilds this plugin on every session
+        swap, so without this each `/clear` would leave another idle shell
+        behind for the rest of the run."""
+        for tool in self.tools:
+            closer = getattr(tool, "close", None)
+            if closer is not None:
+                await closer()
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
         return SimpleToolRegistry(

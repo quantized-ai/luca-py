@@ -10,9 +10,12 @@ does each command reach the tool that already implements it. Real files under
 import pytest
 
 from luca.agent.contrib.shell.native import (
+    BASH_NAME,
+    BASH_TYPE,
     TEXT_EDITOR_NAME,
     TEXT_EDITOR_TYPE_CURRENT,
     TEXT_EDITOR_TYPE_LEGACY,
+    NativeBashTool,
     NativeTextEditorTool,
     native_editor_type,
 )
@@ -374,6 +377,122 @@ async def test_the_wire_list_swaps_the_editor_in_and_lucas_own_out(tmp_path):
     tools = {tool.name: tool.provider_type for tool in runner.build_tool_list(runner.main_conversation_id, specs)}
 
     assert tools[TEXT_EDITOR_NAME] == TEXT_EDITOR_TYPE_CURRENT
+    assert tools[BASH_NAME] == BASH_TYPE
     assert {"read", "edit", "write"}.isdisjoint(tools)
-    # everything else still travels as an ordinary tool
-    assert tools["bash"] is None
+    # the tools with no native counterpart still travel as ordinary ones
+    assert tools["glob"] is None
+    assert tools["apply_patch"] is None
+
+
+# ── Anthropic's bash ─────────────────────────────────────────────────────────
+
+
+async def bash_run(tool, conversation=CONVERSATION, **args):
+    return await tool.execute(
+        tool.Args.model_validate(args).model_dump(),
+        SESSION,
+        conversation,
+        cancellation_token=CancellationToken(),
+    )
+
+
+async def test_the_bash_spec_carries_the_provider_type(tmp_path):
+    tool = NativeBashTool(tmp_path)
+    try:
+        spec = tool.get_tool_spec()
+        assert (spec.name, spec.provider_type, spec.tool_kind) == (BASH_NAME, BASH_TYPE, ToolKind.EXECUTE)
+        assert list(spec.input_schema["properties"]) == ["command", "restart"]
+    finally:
+        await tool.close()
+
+
+async def test_bash_state_persists_between_calls(tmp_path):
+    (tmp_path / "sub").mkdir()
+    tool = NativeBashTool(tmp_path)
+    try:
+        await bash_run(tool, command="cd sub")
+        result = await bash_run(tool, command="pwd")
+
+        assert result.content[0].text.strip().endswith("/sub")
+    finally:
+        await tool.close()
+
+
+async def test_bash_restart_clears_the_session(tmp_path):
+    (tmp_path / "sub").mkdir()
+    tool = NativeBashTool(tmp_path)
+    try:
+        await bash_run(tool, command="cd sub")
+        restarted = await bash_run(tool, restart=True)
+        result = await bash_run(tool, command="pwd")
+
+        assert "restarted" in restarted.content[0].text
+        assert not result.content[0].text.strip().endswith("/sub")
+    finally:
+        await tool.close()
+
+
+async def test_each_conversation_gets_its_own_shell(tmp_path):
+    # a tool instance is shared by the main agent and every subagent; one
+    # session would mean a subagent's `cd` relocating the main agent
+    (tmp_path / "sub").mkdir()
+    tool = NativeBashTool(tmp_path)
+    try:
+        await bash_run(tool, conversation="subagent", command="cd sub")
+        main = await bash_run(tool, conversation=CONVERSATION, command="pwd")
+
+        assert not main.content[0].text.strip().endswith("/sub")
+        assert tool.shell_for("subagent") is not tool.shell_for(CONVERSATION)
+    finally:
+        await tool.close()
+
+
+async def test_a_failing_command_is_an_error_result_carrying_the_code(tmp_path):
+    tool = NativeBashTool(tmp_path)
+    try:
+        result = await bash_run(tool, command="sh -c 'exit 3'")
+
+        assert result.is_error
+        assert result.metadata["exit_code"] == 3
+    finally:
+        await tool.close()
+
+
+async def test_bash_with_neither_command_nor_restart_is_an_error(tmp_path):
+    tool = NativeBashTool(tmp_path)
+    try:
+        result = await bash_run(tool)
+
+        assert result.is_error
+        assert "requires a command" in result.content[0].text
+    finally:
+        await tool.close()
+
+
+def test_bash_asks_for_the_same_permissions_lucas_own_does(tmp_path):
+    from luca.agent.contrib.shell.tools import BashTool
+
+    native = NativeBashTool(tmp_path)
+    plain = BashTool(workdir=tmp_path)
+
+    assert _resources(native.build_permission_requests({"command": "ls -la"}, SESSION, CONVERSATION)) == _resources(
+        plain.build_permission_requests({"command": "ls -la"}, SESSION, CONVERSATION)
+    )
+
+
+def test_restart_asks_for_nothing(tmp_path):
+    # it runs no command and touches no directory
+    tool = NativeBashTool(tmp_path)
+
+    assert tool.build_permission_requests({"restart": True}, SESSION, CONVERSATION) == []
+
+
+async def test_closing_the_tool_ends_every_shell_it_opened(tmp_path):
+    tool = NativeBashTool(tmp_path)
+    await bash_run(tool, conversation="a", command="true")
+    await bash_run(tool, conversation="b", command="true")
+    shells = [tool.shell_for("a"), tool.shell_for("b")]
+
+    await tool.close()
+
+    assert not any(shell.running for shell in shells)

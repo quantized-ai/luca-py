@@ -152,7 +152,18 @@ plain call would produce. Only `insert` has no counterpart, and even that
 splices and then writes through `write` so the guard, the lock and the BOM
 handling stay in one place.
 
-It REPLACES `read` / `edit` / `write` rather than joining them — two tools for
+`NativeBashTool` is Anthropic's `bash`, and it is a different tool rather than a
+rename: the provider specifies ONE shell session whose working directory,
+environment and background processes survive between calls, with a `restart`
+that starts clean. luca's own `bash` is a fresh subprocess per call.
+`session_shell.py` holds the session — a long-lived shell driven over its stdin,
+each command followed by a per-call random marker carrying `$?`. One shell PER
+CONVERSATION, because a tool instance is shared by the main agent and every
+subagent and a single session would mean one conversation's `cd` relocating
+another's next command. `ShellAccessPlugin.close()` releases them; the TUI calls
+it on quit and on every session swap, or a long run accumulates idle shells.
+
+The editor REPLACES `read` / `edit` / `write` rather than joining them — two tools for
 one job is a choice the model should not have to make. `glob`, `grep`,
 `apply_patch` and `bash` have no native equivalent and always stay.
 

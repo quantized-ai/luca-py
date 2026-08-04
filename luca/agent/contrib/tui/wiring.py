@@ -24,7 +24,7 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.prompts import InstructionsPlugin, SystemPromptPlugin
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
-from luca.agent.contrib.shell.native import native_editor_type
+from luca.agent.contrib.shell.native import native_bash_type, native_editor_type
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.skills import SkillsPlugin
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME, SubagentsPlugin
@@ -145,12 +145,14 @@ def build_runner(
     # so the decision is visible at composition rather than buried in a plugin.
     llm = session.session_config.llm_config
     editor_type = native_editor_type(llm.provider, llm.model) if native_tools else None
+    bash_type = native_bash_type(llm.provider, llm.model) if native_tools else None
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
         additional_directories=readable,
         extra_rules=extra_rules,
         native_editor_type=editor_type,
+        native_bash_type=bash_type,
     )
     strategy = shell.permission_strategy
     registry = SimpleToolRegistry(

@@ -864,6 +864,7 @@ class AgentApp(LucaApp):
 
     async def _quit(self) -> None:
         save_session(self.runner.session, self._session_dir)
+        await self._close_plugins()
         self.exit()
 
     # ── session plumbing ──────────────────────────────────────────────────────
@@ -893,7 +894,18 @@ class AgentApp(LucaApp):
         else:  # gated / parked cancel / retry-ready — resume driving
             self._start_drive()
 
+    async def _close_plugins(self) -> None:
+        """Let the outgoing runner's plugins release what they hold — the
+        native bash tool keeps a shell alive per conversation."""
+        for plugin in getattr(self.runner, "plugins", ()):
+            closer = getattr(plugin, "close", None)
+            if closer is not None:
+                await closer()
+
     async def _reset_session(self, session: AgentSession) -> None:
+        # Before the swap: the outgoing runner is the only handle on its
+        # plugins, and one of them may be holding a shell open.
+        await self._close_plugins()
         self.runner, self.strategy = self._build_runner(session)
         await self.clear_transcript()
         self._live_thinking.clear()
