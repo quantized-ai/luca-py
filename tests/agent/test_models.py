@@ -236,7 +236,7 @@ def test_spec_id_is_the_sha256_hex_of_the_canonical_json():
         '{"description":"Run a shell command.",'
         '"input_schema":{"properties":{},"type":"object"},'
         '"is_private":false,"metadata":null,"name":"bash","namespace":null,'
-        '"output_schema":null,"timeout_in_ms":null,'
+        '"output_schema":null,"provider_type":null,"timeout_in_ms":null,'
         '"tool_kind":"execute","version":null}'
     )
 

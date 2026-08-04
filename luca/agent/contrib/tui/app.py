@@ -136,6 +136,7 @@ class AgentApp(LucaApp):
         extra_skill_locations: list[str] | None = None,
         instructions: bool = True,
         extra_instructions: list[str] | None = None,
+        native_tools: bool = True,
         resume: bool = False,
         read_limits: ReadLimits | None = None,
     ) -> None:
@@ -155,6 +156,7 @@ class AgentApp(LucaApp):
         self._extra_skill_locations = extra_skill_locations
         self._instructions = instructions
         self._extra_instructions = extra_instructions
+        self._native_tools = native_tools
         self._resume = resume
         self.runner, self.strategy = self._build_runner(session)
         self._current_run: AgentRun | None = None
@@ -880,6 +882,7 @@ class AgentApp(LucaApp):
             extra_skill_locations=self._extra_skill_locations,
             instructions=self._instructions,
             extra_instructions=self._extra_instructions,
+            native_tools=self._native_tools,
         )
 
     def _settle(self) -> None:

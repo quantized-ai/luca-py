@@ -20,6 +20,12 @@ class Tool(BaseModel):
     name: str
     description: str
     parameters: Any  # one of: dict, type[BaseModel], TypeAdapter
+    # A provider-defined tool: the provider owns the schema and the model was
+    # trained on it, so the wire carries this type string and the transport
+    # skips `description` / `parameters` entirely. `None` is an ordinary tool.
+    # A transport that does not know a given type must say so rather than
+    # silently send a tool the model cannot use.
+    provider_type: str | None = None
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 

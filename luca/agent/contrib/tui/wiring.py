@@ -24,6 +24,7 @@ from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.prompts import InstructionsPlugin, SystemPromptPlugin
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
+from luca.agent.contrib.shell.native import native_editor_type
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.skills import SkillsPlugin
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME, SubagentsPlugin
@@ -125,6 +126,7 @@ def build_runner(
     extra_skill_locations: list[str] | None = None,
     instructions: bool = True,
     extra_instructions: list[str] | None = None,
+    native_tools: bool = True,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
@@ -138,11 +140,17 @@ def build_runner(
     readable = [*(additional_directories or [])]
     if skills_plugin is not None:
         readable.extend(str(directory) for directory in skills_plugin.skill_directories)
+    # Which tools the shell plugin installs depends on the session's model:
+    # a provider that defines its own editor gets that one. Resolved here, once,
+    # so the decision is visible at composition rather than buried in a plugin.
+    llm = session.session_config.llm_config
+    editor_type = native_editor_type(llm.provider, llm.model) if native_tools else None
     shell = ShellAccessPlugin(
         workspace=Path(workspace),
         mode=mode,
         additional_directories=readable,
         extra_rules=extra_rules,
+        native_editor_type=editor_type,
     )
     strategy = shell.permission_strategy
     registry = SimpleToolRegistry(

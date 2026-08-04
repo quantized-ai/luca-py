@@ -136,3 +136,29 @@ The verb steps:
   normpath-no-symlink convention as `ShellTool._resolve` (mixed conventions
   break rule matching), ONE `FileReadTracker` and one workdir across the
   tools, seeded rules derived from the roots only.
+
+## Provider-defined tools
+
+Some providers define their own tools and train the model on the schema.
+`native.py` holds them. The request carries a type string instead of a schema,
+the model emits an ordinary `tool_use` block, and LUCA still executes it — so
+approval, the read-first guard, the recorded execution and replay are unchanged.
+
+`NativeTextEditorTool` is Anthropic's `str_replace_based_edit_tool`. It does not
+reimplement anything: each command translates the provider's arguments into
+luca's and delegates to `read` / `edit` / `write`, including for
+`build_permission_requests`, so a native call is gated by exactly the rules a
+plain call would produce. Only `insert` has no counterpart, and even that
+splices and then writes through `write` so the guard, the lock and the BOM
+handling stay in one place.
+
+It REPLACES `read` / `edit` / `write` rather than joining them — two tools for
+one job is a choice the model should not have to make. `glob`, `grep`,
+`apply_patch` and `bash` have no native equivalent and always stay.
+
+`native_editor_type(provider, model)` decides, and it keys on the TRANSPORT, not
+the model family. Bedrock and OpenRouter both serve Claude models and neither
+speaks the Messages API, so a "is this a Claude?" check would confidently send a
+tool the API rejects. Anthropic's editor version is keyed to the model
+generation, which is why the type is an instance attribute rather than a
+ClassVar.

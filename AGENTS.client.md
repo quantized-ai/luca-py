@@ -129,7 +129,19 @@ The helper builds a `ChatCompletionRequest` **once**. Provider and transport rec
 
 Providers and transports do **not** import `luca.client.catalog`. They read `request.model_info` only, which the helper has already populated.
 
-### 5. The catalog is metadata, never a gate
+### 5. Provider-defined tools pass through, they are not re-described
+
+`Tool.provider_type` marks a tool the PROVIDER defines and the model was
+trained on — Anthropic's `text_editor_20250728`. The transport then sends the
+provider's own form (`{type, name}`) and skips `description` and `parameters`
+entirely, because a request that redefines the schema is rejected. A transport
+that does not know a given type raises rather than sending it; a 400 from the
+API would name the wire field instead of the mistake.
+
+The tool is still executed by the caller. Nothing about the response path
+changes: it arrives as an ordinary tool call.
+
+### 6. The catalog is metadata, never a gate
 
 Records are generated from [models.dev](https://models.dev), which cannot be
 complete — a provider's line-up moves faster than a release does, and `ollama`
@@ -140,7 +152,7 @@ Nothing may start refusing a model because the catalog has not heard of it.
 Regenerate the vendored file with `python -m luca.client.catalog.refresh
 --vendor`; never hand-edit `_data/models.json`.
 
-### 6. No automatic model translation
+### 7. No automatic model translation
 
 `provider:author/model` is the canonical model string, split at the first `:`. Everything after the colon is the wire model id, passed verbatim. No alias expansion, no name mapping.
 

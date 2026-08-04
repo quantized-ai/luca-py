@@ -1,5 +1,15 @@
 {
   "$defs": {
+    "ClientSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "file_read": {
+          "$ref": "#/$defs/FileReadSettings"
+        }
+      },
+      "title": "ClientSettings",
+      "type": "object"
+    },
     "CompactionSettings": {
       "additionalProperties": false,
       "properties": {
@@ -53,6 +63,38 @@
         }
       },
       "title": "CompactionSettings",
+      "type": "object"
+    },
+    "FileReadSettings": {
+      "additionalProperties": false,
+      "description": "The `@`-mention inline ceiling. The effective cap is the SMALLER of the\nhard limit and the model's context share, so a small-context model is never\nhanded a 25k-token file just because the hard limit permits it.",
+      "properties": {
+        "max_read_file_tokens_hard_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Read File Tokens Hard Limit"
+        },
+        "max_read_file_tokens_context_percentage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Read File Tokens Context Percentage"
+        }
+      },
+      "title": "FileReadSettings",
       "type": "object"
     },
     "ModelConfig": {
@@ -438,6 +480,26 @@
       ],
       "title": "ToolKind",
       "type": "string"
+    },
+    "ToolSettings": {
+      "additionalProperties": false,
+      "description": "`native` opts out of provider-defined tools. On (the default) a model\nwhose provider defines its own editor gets that one; off restores luca's\nown tools for every model, which is the escape hatch when a native tool\nmisbehaves.",
+      "properties": {
+        "native": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native"
+        }
+      },
+      "title": "ToolSettings",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -462,6 +524,12 @@
     },
     "sessions": {
       "$ref": "#/$defs/SessionSettings"
+    },
+    "tools": {
+      "$ref": "#/$defs/ToolSettings"
+    },
+    "client": {
+      "$ref": "#/$defs/ClientSettings"
     },
     "runtime": {
       "$ref": "#/$defs/RuntimeSettings"

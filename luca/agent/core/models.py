@@ -334,6 +334,18 @@ class ToolSpec(BaseModel):
     # Like every other field it is definition-scoped and participates in
     # `spec_id()`, so a tool that gains it is a new row.
     is_private: bool = False
+    # The provider's own name for this tool, when the tool is one the PROVIDER
+    # defines rather than the application — Anthropic's `bash_20250124`, or
+    # OpenAI's `apply_patch`. Set means the wire carries that type string in
+    # place of name/description/input_schema, because the model was trained on
+    # the provider's schema and the provider rejects a redefinition of it.
+    #
+    # `input_schema` stays populated regardless. It stops being the
+    # advertisement and becomes luca's own record of the shape: the permission
+    # layer reads arguments through it, and it is what still describes the tool
+    # in a resumed session years later. A spec that dropped it would be an
+    # identity snapshot that no longer says what the tool took.
+    provider_type: str | None = None
     metadata: dict | None = None  # free-form, registry-owned; never interpreted
     tool_kind: ToolKind = ToolKind.OTHER  # permission/classification kind
     namespace: str | None = None  # owning tool group, e.g. "builtin.shell_tools"

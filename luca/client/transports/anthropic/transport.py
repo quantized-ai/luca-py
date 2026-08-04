@@ -322,9 +322,24 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             ],
         }
 
+    # Anthropic-defined client tools this transport can put on the wire. The
+    # model was trained on the schema, so the request carries the type and the
+    # name and nothing else — sending a description or an input_schema for one
+    # of these is rejected.
+    PROVIDER_TOOL_TYPES = frozenset(
+        {
+            "bash_20250124",
+            "text_editor_20250124",
+            "text_editor_20250728",
+        }
+    )
+
     def _project_tools(self, tools: list) -> list[dict]:
         out = []
         for t in tools:
+            if t.provider_type is not None:
+                out.append(self._project_provider_tool(t))
+                continue
             schema = tool_parameters_to_json_schema(t.parameters)
             out.append(
                 {
@@ -334,6 +349,19 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 }
             )
         return out
+
+    def _project_provider_tool(self, tool) -> dict:
+        """A provider-defined tool as Anthropic wants it: `type` and `name`.
+
+        An unknown type is refused HERE rather than sent. The alternative is a
+        400 from the API for a tool the caller believed was installed, and the
+        message would name the wire field rather than the mistake."""
+        if tool.provider_type not in self.PROVIDER_TOOL_TYPES:
+            raise UnsupportedParameterError(
+                f"anthropic does not accept the provider tool type {tool.provider_type!r} "
+                f"(tool {tool.name!r}); known types: {', '.join(sorted(self.PROVIDER_TOOL_TYPES))}"
+            )
+        return {"type": tool.provider_type, "name": tool.name}
 
     def _project_tool_choice(self, choice: Any) -> Any:
         if isinstance(choice, str):

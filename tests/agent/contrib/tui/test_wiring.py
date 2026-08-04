@@ -174,3 +174,62 @@ def test_faux_provider_starts_unconsumed():
     provider = build_faux_provider()
 
     assert provider.requests == []
+
+
+# ── provider-native tools ────────────────────────────────────────────────────
+
+
+async def test_an_anthropic_session_gets_the_providers_editor(tmp_path):
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="claude-opus-5", provider="anthropic")
+
+    runner, _ = build_runner(session, workspace=tmp_path)
+
+    names = {tool.name for tool in await _wire_tools(runner)}
+    assert "str_replace_based_edit_tool" in names
+    assert {"read", "edit", "write"}.isdisjoint(names)
+
+
+async def test_a_non_anthropic_session_keeps_lucas_own_tools(tmp_path):
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="gpt-5.4", provider="openai")
+
+    runner, _ = build_runner(session, workspace=tmp_path)
+
+    names = {tool.name for tool in await _wire_tools(runner)}
+    assert {"read", "edit", "write"} <= names
+    assert "str_replace_based_edit_tool" not in names
+
+
+async def test_bedrock_keeps_lucas_own_tools_even_for_a_claude(tmp_path):
+    # Converse does not accept a tool declared by `type`, so a model-family
+    # check would confidently send something the API rejects
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="anthropic.claude-opus-5", provider="bedrock")
+
+    runner, _ = build_runner(session, workspace=tmp_path)
+
+    names = {tool.name for tool in await _wire_tools(runner)}
+    assert {"read", "edit", "write"} <= names
+    assert "str_replace_based_edit_tool" not in names
+
+
+async def test_native_tools_off_restores_lucas_own(tmp_path):
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="claude-opus-5", provider="anthropic")
+
+    runner, _ = build_runner(session, workspace=tmp_path, native_tools=False)
+
+    names = {tool.name for tool in await _wire_tools(runner)}
+    assert {"read", "edit", "write"} <= names
+    assert "str_replace_based_edit_tool" not in names
+
+
+async def test_the_native_editor_reaches_the_wire_without_a_schema(tmp_path):
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="claude-opus-5", provider="anthropic")
+
+    runner, _ = build_runner(session, workspace=tmp_path)
+
+    editor = next(t for t in await _wire_tools(runner) if t.name == "str_replace_based_edit_tool")
+    assert editor.provider_type == "text_editor_20250728"

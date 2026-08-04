@@ -56,4 +56,5 @@ def tool_spec_to_luca_tool(spec: ToolSpec) -> LucaTool:
         name=spec.name,
         description=spec.description,
         parameters=spec.input_schema,
+        provider_type=spec.provider_type,
     )

@@ -348,6 +348,7 @@ def main(argv: list[str] | None = None) -> None:
             extra_skill_locations=config.extra_skill_locations or None,
             instructions=args.instructions,
             extra_instructions=config.instructions or None,
+            native_tools=config.tools.native is not False,
         )
     except (LucaConfigError, InstructionsError) as exc:
         sys.stderr.write(f"luca: {exc}\n")

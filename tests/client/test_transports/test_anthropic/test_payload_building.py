@@ -11,6 +11,7 @@ from luca.client.types import (
     ChatCompletionRequest,
     TextBlock,
     ThinkingBlock,
+    Tool,
     UserMessage,
 )
 
@@ -507,3 +508,78 @@ def test_structured_output_is_accepted_on_a_4_1_model(anthropic_transport_factor
     )
 
     assert payload["output_config"]["format"]["type"] == "json_schema"
+
+
+# ── provider-defined tools ────────────────────────────────────────────────────
+
+
+def test_a_provider_tool_is_sent_as_a_type_and_a_name(anthropic_transport_factory):
+    # the model was trained on Anthropic's schema, so the request must NOT
+    # redefine it — a description or an input_schema here is rejected upstream
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-test",
+            provider="anthropic",
+            messages=[UserMessage(content="Hi")],
+            tools=[
+                Tool(
+                    name="str_replace_based_edit_tool",
+                    description="never sent",
+                    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                    provider_type="text_editor_20250728",
+                )
+            ],
+        )
+    )
+
+    assert payload["tools"] == [{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"}]
+
+
+def test_provider_tools_and_ordinary_tools_travel_together(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+
+    payload = transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="claude-test",
+            provider="anthropic",
+            messages=[UserMessage(content="Hi")],
+            tools=[
+                Tool(
+                    name="str_replace_based_edit_tool",
+                    description="never sent",
+                    parameters={"type": "object", "properties": {}},
+                    provider_type="text_editor_20250728",
+                ),
+                Tool(name="grep", description="Search.", parameters={"type": "object", "properties": {}}),
+            ],
+        )
+    )
+
+    assert payload["tools"] == [
+        {"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"},
+        {"name": "grep", "description": "Search.", "input_schema": {"type": "object", "properties": {}}},
+    ]
+
+
+def test_an_unknown_provider_tool_type_is_refused_before_the_request(anthropic_transport_factory):
+    # a 400 from the API would name the wire field, not the mistake
+    transport = anthropic_transport_factory()
+
+    with pytest.raises(UnsupportedParameterError, match="does not accept the provider tool type"):
+        transport._build_chat_completion_payload(
+            ChatCompletionRequest(
+                model="claude-test",
+                provider="anthropic",
+                messages=[UserMessage(content="Hi")],
+                tools=[
+                    Tool(
+                        name="apply_patch",
+                        description="d",
+                        parameters={},
+                        provider_type="apply_patch",
+                    )
+                ],
+            )
+        )

@@ -112,6 +112,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   "sessions": {
     "directory": "~/.luca/projects"  // the session store ROOT
   },
+  "tools": {
+    "native": true                   // use provider-defined tools when offered
+  },
   "streaming": true
 }
 ```
@@ -143,6 +146,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   own list comes from the model catalog, so this key is for hosts models.dev
   does not know: a custom provider, or a local `ollama`. See
   [`10-catalog.md`](../../../client/10-catalog.md).
+- `tools.native` set to `false` turns off provider-defined tools, so every
+  model gets luca's own. On by default; this is the escape hatch when a
+  native tool misbehaves against a particular model.
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

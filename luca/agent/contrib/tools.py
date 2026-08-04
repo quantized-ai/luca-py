@@ -125,6 +125,14 @@ class Tool:
     # records NOT_FOUND. Write a private tool exactly like any other.
     is_private: ClassVar[bool] = False
 
+    # Set when the PROVIDER defines this tool rather than the application:
+    # Anthropic's `bash_20250124`, OpenAI's `apply_patch`. The wire then
+    # carries that type string instead of name/description/schema, because the
+    # model was trained on the provider's schema and the provider rejects a
+    # redefinition. `Args` stays required and stays honest — it is what
+    # validates the incoming call and what the permission layer reads.
+    provider_type: ClassVar[str | None] = None
+
     tool_kind: ClassVar[ToolKind] = ToolKind.OTHER
     namespace: ClassVar[str | None] = None
     version: ClassVar[str | None] = None
@@ -158,6 +166,7 @@ class Tool:
             input_schema=self.Args.model_json_schema(),
             output_schema=(self.output_schema.model_json_schema() if self.output_schema is not None else None),
             is_private=self.is_private,
+            provider_type=self.provider_type,
             tool_kind=self.tool_kind,
             namespace=self.namespace,
             version=self.version,

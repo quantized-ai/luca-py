@@ -40,6 +40,7 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.tools import Tool
 from luca.agent.core import AgentSession, ApprovalOption
 
+from .native import NativeTextEditorTool
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -72,6 +73,7 @@ class ShellAccessPlugin:
         additional_directories: list[str | os.PathLike[str]] | None = None,
         mode: PermissionMode | str = PermissionMode.ASK,
         extra_rules: list | None = None,
+        native_editor_type: str | None = None,
     ) -> None:
         self.workspace = _absolute(workspace)
         self.additional_directories = [_absolute(directory) for directory in additional_directories or []]
@@ -83,12 +85,30 @@ class ShellAccessPlugin:
             mode=self.mode,
             rules=[*self._default_rules(), *(extra_rules or [])],
         )
+        # The provider's editor REPLACES read/edit/write rather than joining
+        # them: it covers the same ground, and offering both asks the model to
+        # choose between two tools that do one job. `glob`, `grep`,
+        # `apply_patch` and `bash` have no native equivalent and always stay.
+        file_tools: list[Tool] = (
+            [
+                ReadTool(workdir=self.workspace, tracker=self.tracker),
+                EditTool(workdir=self.workspace, tracker=self.tracker),
+                WriteTool(workdir=self.workspace, tracker=self.tracker),
+            ]
+            if native_editor_type is None
+            else [
+                NativeTextEditorTool(
+                    self.workspace,
+                    self.tracker,
+                    provider_type=native_editor_type,
+                )
+            ]
+        )
         self.tools: list[Tool] = [
-            ReadTool(workdir=self.workspace, tracker=self.tracker),
+            *file_tools[:1],
             GlobTool(workdir=self.workspace),
             GrepTool(workdir=self.workspace),
-            EditTool(workdir=self.workspace, tracker=self.tracker),
-            WriteTool(workdir=self.workspace, tracker=self.tracker),
+            *file_tools[1:],
             ApplyPatchTool(workdir=self.workspace),
             BashTool(workdir=self.workspace),
         ]

@@ -79,6 +79,8 @@ luca/agent/
 │   │                    #   subclass and override one; /model moves the prompt)
 │   │                    #   + InstructionsPlugin
 │   └── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
+│                        #   native.py: provider-DEFINED tools luca executes
+│                        #   (Anthropic's editor), selected by TRANSPORT
 └── core/
     ├── __init__.py      # external surface: AgentSessionRunner, ToolRegistry, PreparedTool,
     │                    #   SystemPromptAssembler, all entry types, exceptions.

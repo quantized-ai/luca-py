@@ -281,3 +281,31 @@ async def test_yolo_mode_allows_everything(tmp_path, session):
     decision = await plugin.permission_strategy.decide(SESSION, execution)
 
     assert decision.decision == ApprovalOption.ALLOW
+
+
+# ── the provider's editor replacing luca's ───────────────────────────────────
+
+
+def test_a_native_editor_replaces_read_edit_and_write(tmp_path):
+    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
+
+    names = [tool.name for tool in plugin.tools]
+
+    assert names == ["str_replace_based_edit_tool", "glob", "grep", "apply_patch", "bash"]
+
+
+def test_the_tools_with_no_native_equivalent_are_untouched(tmp_path):
+    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
+
+    names = {tool.name for tool in plugin.tools}
+
+    assert {"glob", "grep", "apply_patch", "bash"} <= names
+
+
+def test_the_native_editor_shares_the_plugins_one_tracker(tmp_path):
+    # the read-first guard only holds while every file tool sees the same state
+    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
+
+    editor = plugin.tools[0]
+
+    assert editor.tracker is plugin.tracker
