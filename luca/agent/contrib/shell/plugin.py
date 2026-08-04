@@ -40,7 +40,14 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.tools import Tool
 from luca.agent.core import AgentSession, ApprovalOption
 
-from .native import NativeBashTool, NativeTextEditorTool
+from .native import (
+    APPLY_PATCH_TYPE,
+    SHELL_TYPE,
+    NativeApplyPatchTool,
+    NativeBashTool,
+    NativeShellTool,
+    NativeTextEditorTool,
+)
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -75,6 +82,7 @@ class ShellAccessPlugin:
         extra_rules: list | None = None,
         native_editor_type: str | None = None,
         native_bash_type: str | None = None,
+        native_openai_types: tuple[str, ...] = (),
     ) -> None:
         self.workspace = _absolute(workspace)
         self.additional_directories = [_absolute(directory) for directory in additional_directories or []]
@@ -105,18 +113,27 @@ class ShellAccessPlugin:
                 )
             ]
         )
+        patch_tool: Tool = (
+            NativeApplyPatchTool(workdir=self.workspace)
+            if APPLY_PATCH_TYPE in native_openai_types
+            else ApplyPatchTool(workdir=self.workspace)
+        )
+        # Anthropic's `bash` and OpenAI's `shell` both keep ONE shell alive
+        # across calls; luca's `bash` spawns a fresh subprocess each time. Same
+        # job, different contract, so each is a swap rather than a rename.
+        if native_bash_type is not None:
+            run_tool: Tool = NativeBashTool(workdir=self.workspace)
+        elif SHELL_TYPE in native_openai_types:
+            run_tool = NativeShellTool(workdir=self.workspace)
+        else:
+            run_tool = BashTool(workdir=self.workspace)
         self.tools: list[Tool] = [
             *file_tools[:1],
             GlobTool(workdir=self.workspace),
             GrepTool(workdir=self.workspace),
             *file_tools[1:],
-            ApplyPatchTool(workdir=self.workspace),
-            # Anthropic's `bash` keeps ONE shell alive across calls; luca's
-            # spawns a fresh subprocess each time. Same name, different
-            # contract, so it is a swap rather than a rename.
-            NativeBashTool(workdir=self.workspace)
-            if native_bash_type is not None
-            else BashTool(workdir=self.workspace),
+            patch_tool,
+            run_tool,
         ]
 
     async def close(self) -> None:

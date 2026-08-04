@@ -37,6 +37,7 @@ from luca.agent.core import (
 
 from .session_shell import PersistentShell, ShellResult
 from .tools import (
+    ApplyPatchTool,
     EditTool,
     FileReadTracker,
     ReadTool,
@@ -263,6 +264,27 @@ def _editor_type(model: str) -> str:
     return TEXT_EDITOR_TYPE_CURRENT
 
 
+# OpenAI's tools need the Responses API. The plain chat-completions transport
+# that groq / deepseek / ollama and custom hosts use has no `shell` at all, and
+# the item types apply_patch rides on are Responses-shaped.
+_OPENAI_NATIVE_MODELS = ("gpt-5.1", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.6")
+
+
+def _is_openai_responses_route(provider: str, model: str) -> bool:
+    from luca.client.transports.openai_responses.transport import OpenAIResponsesTransport
+
+    transport = _resolve_transport(provider)
+    if transport is None or not issubclass(transport, OpenAIResponsesTransport):
+        return False
+    identifier = model.lower()
+    return any(known in identifier for known in _OPENAI_NATIVE_MODELS)
+
+
+def native_openai_tool_types(provider: str, model: str) -> tuple[str, ...]:
+    """`apply_patch` and `shell` when the route can serve them, else nothing."""
+    return (APPLY_PATCH_TYPE, SHELL_TYPE) if _is_openai_responses_route(provider, model) else ()
+
+
 def native_bash_type(provider: str, model: str) -> str | None:
     """The bash tool type for this route, or None. Same transport rule as the
     editor; `bash_20250124` is not versioned by model generation."""
@@ -420,3 +442,210 @@ class NativeBashTool(ShellTool):
             is_error=bool(result.exit_code),
             metadata={"exit_code": result.exit_code, "outcome": result.outcome},
         )
+
+
+# ── OpenAI's apply_patch and shell ───────────────────────────────────────────
+
+APPLY_PATCH_TYPE = "apply_patch"
+SHELL_TYPE = "shell"
+
+_PATCH_HEADERS = {
+    "create_file": "*** Add File: ",
+    "update_file": "*** Update File: ",
+    "delete_file": "*** Delete File: ",
+}
+
+
+def to_patch_envelope(operation: dict) -> str:
+    """One `apply_patch_call` operation as the patch text luca already parses.
+
+    The provider sends a per-file operation — a type, a path and the hunks —
+    where luca's own `apply_patch` takes a whole `*** Begin Patch` envelope.
+    The hunk syntax is the same family, so this wraps rather than reimplements:
+    the parser, the fuzzy context matching and the diff rendering are the ones
+    that already ship."""
+    kind = operation.get("type")
+    header = _PATCH_HEADERS.get(kind)
+    if header is None:
+        raise ShellToolError(f"unknown apply_patch operation {kind!r}")
+    path = operation.get("path")
+    if not path:
+        raise ShellToolError("apply_patch operation requires a path")
+    lines = ["*** Begin Patch", f"{header}{path}"]
+    if kind != "delete_file":
+        diff = (operation.get("diff") or "").rstrip("\n")
+        if not diff:
+            raise ShellToolError(f"apply_patch {kind} requires a diff for {path}")
+        lines.append(diff)
+    lines.append("*** End Patch")
+    return "\n".join(lines)
+
+
+class NativeApplyPatchTool(ShellTool):
+    """OpenAI's `apply_patch`, translated onto luca's own.
+
+    The provider's call arrives as one file operation rather than a patch
+    envelope, and its result goes back as a verdict rather than a transcript;
+    both are the transport's business. Here it is a shape change and a
+    delegation."""
+
+    name = "apply_patch"
+    description = (
+        "OpenAI's apply_patch tool: create, update and delete files with a diff. "
+        "The schema is defined by the provider; this description is never sent."
+    )
+    provider_type = APPLY_PATCH_TYPE
+    tool_kind = ToolKind.EDIT
+
+    class Args(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        type: Literal["create_file", "update_file", "delete_file"] = Field(description="The file operation")
+        path: str = Field(min_length=1, description="The file to operate on")
+        diff: str | None = Field(default=None, description="V4A diff; absent for delete_file")
+
+    def __init__(
+        self,
+        workdir: str | os.PathLike[str] | None = None,
+    ) -> None:
+        super().__init__(workdir)
+        self.patcher = ApplyPatchTool(workdir=workdir)
+
+    def build_permission_requests(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[PermissionRequest]:
+        return self.patcher.build_permission_requests(
+            {"patch_text": to_patch_envelope(args)},
+            session,
+            conversation_id,
+        )
+
+    async def _run(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        return await self.patcher.execute(
+            {"patch_text": to_patch_envelope(args)},
+            session,
+            conversation_id,
+            cancellation_token=cancellation_token,
+        )
+
+
+class NativeShellTool(ShellTool):
+    """OpenAI's `shell`, run locally.
+
+    The provider sends a LIST of commands per call and expects them run in
+    order in one session, which is exactly what `PersistentShell` is. Same
+    per-conversation rule as Anthropic's bash, and the same reason.
+    """
+
+    name = "shell"
+    description = (
+        "OpenAI's shell tool: run commands in a local shell session. "
+        "The schema is defined by the provider; this description is never sent."
+    )
+    provider_type = SHELL_TYPE
+    tool_kind = ToolKind.EXECUTE
+
+    class Args(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        commands: list[str] = Field(description="Commands to run in order")
+        timeout_ms: int | None = Field(default=None, description="Per-call deadline")
+        max_output_length: int | None = Field(default=None, description="Output cap")
+
+    def __init__(
+        self,
+        workdir: str | os.PathLike[str] | None = None,
+        shell: str | None = None,
+    ) -> None:
+        super().__init__(workdir)
+        self.shell = shell
+        self._shells: dict[str, PersistentShell] = {}
+
+    def shell_for(self, conversation_id: str) -> PersistentShell:
+        if conversation_id not in self._shells:
+            self._shells[conversation_id] = PersistentShell(self.workdir, self.shell)
+        return self._shells[conversation_id]
+
+    async def close(self) -> None:
+        for session_shell in list(self._shells.values()):
+            await session_shell.close()
+        self._shells.clear()
+
+    def build_permission_requests(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[PermissionRequest]:
+        """One `bash` step per command, plus the directory. A call carrying
+        three commands asks about three commands: approving a batch by its
+        first line is how the other two get in unseen."""
+        commands = [command.strip() for command in args.get("commands") or [] if command.strip()]
+        if not commands:
+            return []
+        requests = [self._access_request(self.workdir)]
+        for command in commands:
+            head = command.split()[0]
+            requests.append(
+                PermissionRequest(
+                    resources=[ResourcePermission(permission="bash", resource=command)],
+                    answer_options=[
+                        AnswerOption(
+                            resource_permissions=[
+                                ResourcePermission(permission="bash", resource=f"{head} *"),
+                            ],
+                            metadata={"preview": f"Run any '{head}' command"},
+                        ),
+                    ],
+                    metadata={"preview": f"Run command: {command}"},
+                )
+            )
+        return requests
+
+    async def _run(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        commands = [command for command in args.get("commands") or [] if command.strip()]
+        if not commands:
+            raise ShellToolError("`shell` requires at least one command.")
+        timeout_ms = args.get("timeout_ms") or BASH_DEFAULT_TIMEOUT_MS
+        session_shell = self.shell_for(conversation_id)
+        blocks: list[str] = []
+        failed = False
+        for command in commands:
+            result = await session_shell.run(command, timeout_ms=timeout_ms)
+            blocks.append(self._render_one(command, result))
+            if result.outcome != "completed" or result.exit_code:
+                # Stop at the first failure: the provider runs them in order,
+                # and a later command usually assumes the earlier one worked.
+                failed = True
+                break
+        return ExecutionResult(
+            content=[TextContent(text="\n\n".join(blocks))],
+            is_error=failed,
+        )
+
+    def _render_one(self, command: str, result: ShellResult) -> str:
+        if result.outcome == "timed_out":
+            return f"$ {command}\n(timed out; the shell was restarted)"
+        if result.outcome == "died":
+            return f"$ {command}\n(the shell session ended)"
+        body = "\n".join(text for text in (result.stdout, result.stderr) if text) or "(no output)"
+        if result.exit_code:
+            body = f"{body}\n(exit {result.exit_code})"
+        return f"$ {command}\n{body}"

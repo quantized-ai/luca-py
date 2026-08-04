@@ -15,11 +15,15 @@ from luca.agent.contrib.shell.native import (
     TEXT_EDITOR_NAME,
     TEXT_EDITOR_TYPE_CURRENT,
     TEXT_EDITOR_TYPE_LEGACY,
+    NativeApplyPatchTool,
     NativeBashTool,
+    NativeShellTool,
     NativeTextEditorTool,
     native_editor_type,
+    native_openai_tool_types,
+    to_patch_envelope,
 )
-from luca.agent.contrib.shell.tools import EditTool, FileReadTracker, ReadTool, WriteTool
+from luca.agent.contrib.shell.tools import EditTool, FileReadTracker, ReadTool, ShellToolError, WriteTool
 from luca.agent.core import CancellationToken
 from luca.agent.core.models import LLMConfig, ToolKind
 from luca.agent.core.runner import AgentSessionRunner
@@ -496,3 +500,169 @@ async def test_closing_the_tool_ends_every_shell_it_opened(tmp_path):
     await tool.close()
 
     assert not any(shell.running for shell in shells)
+
+
+# ── OpenAI's apply_patch ─────────────────────────────────────────────────────
+
+
+def test_an_update_operation_becomes_a_patch_envelope():
+    envelope = to_patch_envelope({"type": "update_file", "path": "lib/fib.py", "diff": "@@\n-a\n+b"})
+
+    assert envelope == "*** Begin Patch\n*** Update File: lib/fib.py\n@@\n-a\n+b\n*** End Patch"
+
+
+def test_a_create_operation_uses_the_add_header():
+    envelope = to_patch_envelope({"type": "create_file", "path": "new.py", "diff": "+hello"})
+
+    assert envelope == "*** Begin Patch\n*** Add File: new.py\n+hello\n*** End Patch"
+
+
+def test_a_delete_operation_carries_no_diff():
+    envelope = to_patch_envelope({"type": "delete_file", "path": "gone.py"})
+
+    assert envelope == "*** Begin Patch\n*** Delete File: gone.py\n*** End Patch"
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ({"type": "rename_file", "path": "a"}, "unknown apply_patch operation"),
+        ({"type": "update_file"}, "requires a path"),
+        ({"type": "update_file", "path": "a"}, "requires a diff"),
+    ],
+    ids=["unknown-type", "no-path", "no-diff"],
+)
+def test_a_malformed_operation_is_refused(operation, message):
+    with pytest.raises(ShellToolError, match=message):
+        to_patch_envelope(operation)
+
+
+async def test_apply_patch_creates_a_file(tmp_path):
+    tool = NativeApplyPatchTool(tmp_path)
+
+    result = await tool.execute(
+        {"type": "create_file", "path": "greet.py", "diff": "+print('hi')"},
+        SESSION,
+        CONVERSATION,
+        cancellation_token=CancellationToken(),
+    )
+
+    assert not result.is_error
+    assert (tmp_path / "greet.py").read_text() == "print('hi')\n"
+
+
+async def test_apply_patch_deletes_a_file(tmp_path):
+    doomed = tmp_path / "gone.py"
+    doomed.write_text("x\n")
+    tool = NativeApplyPatchTool(tmp_path)
+
+    result = await tool.execute(
+        {"type": "delete_file", "path": "gone.py"},
+        SESSION,
+        CONVERSATION,
+        cancellation_token=CancellationToken(),
+    )
+
+    assert not result.is_error
+    assert not doomed.exists()
+
+
+def test_apply_patch_is_gated_like_lucas_own(tmp_path):
+    from luca.agent.contrib.shell.tools import ApplyPatchTool
+
+    native = NativeApplyPatchTool(tmp_path)
+    plain = ApplyPatchTool(workdir=tmp_path)
+    operation = {"type": "create_file", "path": "a.py", "diff": "+x"}
+
+    assert _resources(native.build_permission_requests(operation, SESSION, CONVERSATION)) == _resources(
+        plain.build_permission_requests({"patch_text": to_patch_envelope(operation)}, SESSION, CONVERSATION)
+    )
+
+
+# ── OpenAI's shell ───────────────────────────────────────────────────────────
+
+
+async def test_shell_runs_every_command_in_order(tmp_path):
+    tool = NativeShellTool(tmp_path)
+    try:
+        result = await tool.execute(
+            {"commands": ["echo one", "echo two"]},
+            SESSION,
+            CONVERSATION,
+            cancellation_token=CancellationToken(),
+        )
+
+        assert not result.is_error
+        assert "one" in result.content[0].text
+        assert "two" in result.content[0].text
+    finally:
+        await tool.close()
+
+
+async def test_shell_commands_share_one_session(tmp_path):
+    (tmp_path / "sub").mkdir()
+    tool = NativeShellTool(tmp_path)
+    try:
+        result = await tool.execute(
+            {"commands": ["cd sub", "pwd"]},
+            SESSION,
+            CONVERSATION,
+            cancellation_token=CancellationToken(),
+        )
+
+        assert "/sub" in result.content[0].text
+    finally:
+        await tool.close()
+
+
+async def test_shell_stops_at_the_first_failure(tmp_path):
+    # they run in order, so a later command usually assumes the earlier worked
+    tool = NativeShellTool(tmp_path)
+    try:
+        result = await tool.execute(
+            {"commands": ["false", "echo unreachable"]},
+            SESSION,
+            CONVERSATION,
+            cancellation_token=CancellationToken(),
+        )
+
+        assert result.is_error
+        assert "unreachable" not in result.content[0].text
+    finally:
+        await tool.close()
+
+
+def test_shell_asks_about_every_command_not_just_the_first(tmp_path):
+    # approving a batch by its first line is how the rest get in unseen
+    tool = NativeShellTool(tmp_path)
+
+    requests = tool.build_permission_requests({"commands": ["ls", "rm -rf /"]}, SESSION, CONVERSATION)
+
+    assert ("bash", "ls") in _resources(requests)
+    assert ("bash", "rm -rf /") in _resources(requests)
+
+
+async def test_shell_with_no_commands_is_an_error(tmp_path):
+    tool = NativeShellTool(tmp_path)
+    try:
+        result = await tool.execute({"commands": []}, SESSION, CONVERSATION, cancellation_token=CancellationToken())
+
+        assert result.is_error
+        assert "at least one command" in result.content[0].text
+    finally:
+        await tool.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("openai", "gpt-5.4", ("apply_patch", "shell")),
+        ("openai", "gpt-5.6", ("apply_patch", "shell")),
+        ("openai", "gpt-4o", ()),  # predates the tools
+        ("groq", "gpt-5.4", ()),  # chat completions: no shell item types
+        ("anthropic", "claude-opus-5", ()),
+        ("faux", "fake-model", ()),
+    ],
+)
+def test_only_the_responses_transport_gets_openais_tools(provider, model, expected):
+    assert native_openai_tool_types(provider, model) == expected

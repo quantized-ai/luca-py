@@ -16,6 +16,7 @@ from luca.client.types import (
     MediaURL,
     TextBlock,
     ThinkingBlock,
+    Tool,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -402,3 +403,230 @@ def test_a_generic_model_name_is_sanitized_for_the_wire(responses_transport_fact
 
     # `Box[int].__name__` is literally "Box[int]", which the wire rejects.
     assert payload["text"]["format"]["name"] == "Box_int_"
+
+
+# ── provider-defined tools ────────────────────────────────────────────────────
+
+PATCH_TOOL = Tool(
+    name="apply_patch",
+    description="never sent",
+    parameters={"type": "object", "properties": {}},
+    provider_type="apply_patch",
+)
+SHELL_TOOL = Tool(
+    name="shell",
+    description="never sent",
+    parameters={"type": "object", "properties": {}},
+    provider_type="shell",
+)
+
+
+def _request(transport, **kwargs):
+    return transport._build_chat_completion_payload(
+        ChatCompletionRequest(
+            model="gpt-5.4",
+            provider="openai",
+            messages=kwargs.pop("messages", [UserMessage(content="Hi")]),
+            **kwargs,
+        )
+    )
+
+
+def test_apply_patch_is_sent_as_a_bare_type(responses_transport_factory):
+    payload = _request(responses_transport_factory(), tools=[PATCH_TOOL])
+
+    assert payload["tools"] == [{"type": "apply_patch"}]
+
+
+def test_shell_declares_a_local_environment(responses_transport_factory):
+    # the alternative is a container OpenAI provisions, which is not what luca
+    # executes
+    payload = _request(responses_transport_factory(), tools=[SHELL_TOOL])
+
+    assert payload["tools"] == [{"type": "shell", "environment": {"type": "local"}}]
+
+
+def test_an_unknown_provider_tool_type_is_refused(responses_transport_factory):
+    unknown = Tool(name="x", description="d", parameters={}, provider_type="computer_20250124")
+
+    with pytest.raises(UnsupportedParameterError, match="does not accept the provider tool type"):
+        _request(responses_transport_factory(), tools=[unknown])
+
+
+def test_an_apply_patch_call_is_parsed_as_an_ordinary_tool_call(responses_transport_factory):
+    # the item carries no tool name; the name comes from the tool that was
+    # offered with that provider type
+    transport = responses_transport_factory()
+    data = {
+        "id": "resp_1",
+        "model": "gpt-5.4",
+        "output": [
+            {
+                "type": "apply_patch_call",
+                "call_id": "call_1",
+                "status": "completed",
+                "operation": {"type": "update_file", "path": "lib/fib.py", "diff": "@@\n-a\n+b"},
+            }
+        ],
+    }
+
+    message = transport._parse_assistant_message(
+        data,
+        ChatCompletionRequest(model="gpt-5.4", provider="openai", messages=[], tools=[PATCH_TOOL]),
+    )
+
+    assert message.content == [
+        ToolCall(
+            id="call_1",
+            name="apply_patch",
+            arguments={"type": "update_file", "path": "lib/fib.py", "diff": "@@\n-a\n+b"},
+            complete=True,
+        )
+    ]
+
+
+def test_a_shell_call_is_parsed_as_an_ordinary_tool_call(responses_transport_factory):
+    transport = responses_transport_factory()
+    data = {
+        "id": "resp_1",
+        "model": "gpt-5.4",
+        "output": [
+            {
+                "type": "shell_call",
+                "call_id": "call_2",
+                "status": "in_progress",
+                "action": {"commands": ["ls -l"], "timeout_ms": 120000},
+            }
+        ],
+    }
+
+    message = transport._parse_assistant_message(
+        data,
+        ChatCompletionRequest(model="gpt-5.4", provider="openai", messages=[], tools=[SHELL_TOOL]),
+    )
+
+    assert message.content == [
+        ToolCall(id="call_2", name="shell", arguments={"commands": ["ls -l"], "timeout_ms": 120000}, complete=True)
+    ]
+
+
+def test_a_native_item_is_ignored_when_nothing_claimed_that_type(responses_transport_factory):
+    # exactly what happens to every other hosted-tool item
+    transport = responses_transport_factory()
+    data = {
+        "id": "resp_1",
+        "model": "gpt-5.4",
+        "output": [{"type": "apply_patch_call", "call_id": "c", "operation": {}}],
+    }
+
+    message = transport._parse_assistant_message(
+        data, ChatCompletionRequest(model="gpt-5.4", provider="openai", messages=[])
+    )
+
+    assert message.content == []
+
+
+def test_an_apply_patch_result_goes_back_as_a_verdict(responses_transport_factory):
+    # a function_call_output answering an apply_patch_call is rejected
+    payload = _request(
+        responses_transport_factory(),
+        tools=[PATCH_TOOL],
+        messages=[
+            UserMessage(content="fix it"),
+            AssistantMessage(
+                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+            ToolMessage(tool_call_id="call_1", content="Success."),
+        ],
+    )
+
+    assert payload["input"][-1] == {
+        "type": "apply_patch_call_output",
+        "call_id": "call_1",
+        "status": "completed",
+        "output": "Success.",
+    }
+
+
+def test_a_failed_patch_reports_failed(responses_transport_factory):
+    payload = _request(
+        responses_transport_factory(),
+        tools=[PATCH_TOOL],
+        messages=[
+            UserMessage(content="fix it"),
+            AssistantMessage(
+                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+            ToolMessage(tool_call_id="call_1", content="File not found", is_error=True),
+        ],
+    )
+
+    assert payload["input"][-1]["status"] == "failed"
+
+
+def test_a_shell_result_goes_back_in_the_shell_shape(responses_transport_factory):
+    payload = _request(
+        responses_transport_factory(),
+        tools=[SHELL_TOOL],
+        messages=[
+            UserMessage(content="list"),
+            AssistantMessage(
+                content=[ToolCall(id="call_2", name="shell", arguments={"commands": ["ls"]})],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+            ToolMessage(tool_call_id="call_2", content="a.py\n"),
+        ],
+    )
+
+    assert payload["input"][-1] == {
+        "type": "shell_call_output",
+        "call_id": "call_2",
+        "output": [{"stdout": "a.py\n", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}],
+    }
+
+
+def test_a_replayed_native_call_keeps_its_item_type(responses_transport_factory):
+    # a resumed conversation has to match what the provider recorded
+    payload = _request(
+        responses_transport_factory(),
+        tools=[PATCH_TOOL],
+        messages=[
+            UserMessage(content="fix it"),
+            AssistantMessage(
+                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+        ],
+    )
+
+    assert payload["input"][-1] == {
+        "type": "apply_patch_call",
+        "call_id": "call_1",
+        "operation": {"type": "delete_file", "path": "a.py"},
+    }
+
+
+def test_an_ordinary_tool_is_untouched_alongside_a_native_one(responses_transport_factory):
+    ordinary = Tool(name="grep", description="Search.", parameters={"type": "object", "properties": {}})
+
+    payload = _request(responses_transport_factory(), tools=[PATCH_TOOL, ordinary])
+
+    assert payload["tools"] == [
+        {"type": "apply_patch"},
+        {
+            "type": "function",
+            "name": "grep",
+            "description": "Search.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    ]

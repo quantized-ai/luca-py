@@ -20,7 +20,7 @@ Completions worth highlighting:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -169,13 +169,21 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         whether a reasoning item may be replayed depends on the model this
         call is going to."""
         out: list[dict] = []
+        # call_id → provider type, built from the history as we walk it: a
+        # result has to go back in the item type its call arrived in, and a
+        # `function_call_output` answering an `apply_patch_call` is rejected.
+        native: dict[str, str] = {}
+        names = self._native_tool_names(request)
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, ToolCall) and block.name in names:
+                        native[block.id] = names[block.name]
                 out.extend(self._project_assistant_message(msg, request))
             elif isinstance(msg, ToolMessage):
-                out.append(self._project_tool_message(msg))
+                out.append(self._project_tool_message(msg, native))
             else:
                 raise BadRequestError(
                     f"Unknown message type {type(msg).__name__}",
@@ -236,6 +244,10 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                     }
                 )
             elif isinstance(block, ToolCall):
+                provider_type = self._native_tool_names(request).get(block.name)
+                if provider_type is not None:
+                    items.append(self._project_provider_call(block, provider_type))
+                    continue
                 items.append(
                     {
                         "type": "function_call",
@@ -278,7 +290,21 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             item["summary"] = [{"type": "summary_text", "text": block.text}]
         return item
 
-    def _project_tool_message(self, msg: ToolMessage) -> dict:
+    def _project_provider_call(self, block: ToolCall, provider_type: str) -> dict:
+        """Replaying a native call: the same item the model sent, rebuilt.
+
+        `operation` / `action` is where the arguments live; the parse put them
+        there and this puts them back, so a resumed conversation matches what
+        the provider recorded."""
+        item_type = self.PROVIDER_CALL_ITEMS[provider_type]
+        payload_key = "operation" if item_type == "apply_patch_call" else "action"
+        return {
+            "type": item_type,
+            "call_id": block.id,
+            payload_key: dict(block.arguments or {}),
+        }
+
+    def _project_tool_message(self, msg: ToolMessage, native: dict[str, str] | None = None) -> dict:
         if isinstance(msg.content, str):
             output = msg.content
         else:
@@ -293,23 +319,81 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                     provider=self._provider,
                 )
             output = "".join(b.text for b in msg.content)
+        provider_type = (native or {}).get(msg.tool_call_id)
+        if provider_type == "apply_patch":
+            # The provider wants a verdict, not a transcript: `output` is a
+            # message, and `status` is what says whether the patch landed.
+            return {
+                "type": "apply_patch_call_output",
+                "call_id": msg.tool_call_id,
+                "status": "failed" if msg.is_error else "completed",
+                "output": output,
+            }
+        if provider_type == "shell":
+            return {
+                "type": "shell_call_output",
+                "call_id": msg.tool_call_id,
+                "output": [
+                    {
+                        "stdout": output,
+                        "stderr": "",
+                        "outcome": {"type": "exit", "exit_code": 1 if msg.is_error else 0},
+                    }
+                ],
+            }
         return {
             "type": "function_call_output",
             "call_id": msg.tool_call_id,
             "output": output,
         }
 
+    # OpenAI-defined tools this transport can serve, and the wire object each
+    # one needs. `shell` runs LOCALLY: the alternative is a container OpenAI
+    # provisions, which is a different product and not what luca executes.
+    PROVIDER_TOOLS: ClassVar[dict[str, dict]] = {
+        "apply_patch": {"type": "apply_patch"},
+        "shell": {"type": "shell", "environment": {"type": "local"}},
+    }
+
+    # The response item a provider tool arrives in, and the input item its
+    # result goes back in. Neither is a `function_call`.
+    PROVIDER_CALL_ITEMS: ClassVar[dict[str, str]] = {
+        "apply_patch": "apply_patch_call",
+        "shell": "shell_call",
+    }
+
     def _project_tools(self, tools: list) -> list[dict]:
         """Flat, unlike chat completions — no `function` envelope."""
-        return [
-            {
-                "type": "function",
-                "name": t.name,
-                "description": t.description,
-                "parameters": tool_parameters_to_json_schema(t.parameters),
-            }
-            for t in tools
-        ]
+        out: list[dict] = []
+        for t in tools:
+            if t.provider_type is not None:
+                shape = self.PROVIDER_TOOLS.get(t.provider_type)
+                if shape is None:
+                    raise UnsupportedParameterError(
+                        f"the responses API does not accept the provider tool type {t.provider_type!r} "
+                        f"(tool {t.name!r}); known types: {', '.join(sorted(self.PROVIDER_TOOLS))}",
+                        provider=self._provider,
+                    )
+                out.append(dict(shape))
+                continue
+            out.append(
+                {
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": tool_parameters_to_json_schema(t.parameters),
+                }
+            )
+        return out
+
+    def _native_tool_names(self, request: ChatCompletionRequest) -> dict[str, str]:
+        """Tool name → provider type, for the tools being sent on THIS request.
+
+        The wire tells us nothing: an `apply_patch_call` carries no tool name,
+        so the only thing that says whether `apply_patch` means the provider's
+        or luca's own is which one was offered. Keyed per request rather than
+        remembered, so the transport stays stateless."""
+        return {t.name: t.provider_type for t in (request.tools or []) if t.provider_type is not None}
 
     def _project_tool_choice(self, choice: Any) -> Any:
         if isinstance(choice, str):
@@ -375,6 +459,8 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                         complete=True,
                     )
                 )
+            elif (native := self._parse_provider_call(item, item_type, request)) is not None:
+                content.append(native)
             # Hosted-tool items (web_search_call, file_search_call, …) have no
             # canonical block; ignored rather than guessed at.
         return AssistantMessage(
@@ -384,6 +470,34 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             response_model=data.get("model"),
             response_id=data.get("id"),
         )
+
+    def _parse_provider_call(
+        self,
+        item: dict,
+        item_type: str | None,
+        request: ChatCompletionRequest,
+    ) -> ToolCall | None:
+        """An `apply_patch_call` / `shell_call` as an ordinary `ToolCall`.
+
+        The item carries no tool name, so the name comes from whichever tool
+        was offered with that provider type. Everything above the transport
+        then sees a normal call and needs to know nothing about the item type:
+        resolution, approval, execution and the recorded history are unchanged.
+
+        `None` when the item is not one of ours, or when nothing on this
+        request claimed it — the caller falls through to ignoring it, which is
+        what happens to every other hosted-tool item."""
+        for name, provider_type in self._native_tool_names(request).items():
+            if self.PROVIDER_CALL_ITEMS.get(provider_type) != item_type:
+                continue
+            payload = item.get("operation") if item_type == "apply_patch_call" else item.get("action")
+            return ToolCall(
+                id=item["call_id"],
+                name=name,
+                arguments=dict(payload or {}),
+                complete=True,
+            )
+        return None
 
     def _parse_reasoning_item(self, item: dict) -> ThinkingBlock:
         """A reasoning item's renderable text is its SUMMARY — the raw chain of

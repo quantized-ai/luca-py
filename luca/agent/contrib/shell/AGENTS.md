@@ -167,9 +167,30 @@ The editor REPLACES `read` / `edit` / `write` rather than joining them — two t
 one job is a choice the model should not have to make. `glob`, `grep`,
 `apply_patch` and `bash` have no native equivalent and always stay.
 
-`native_editor_type(provider, model)` decides, and it keys on the TRANSPORT, not
-the model family. Bedrock and OpenRouter both serve Claude models and neither
-speaks the Messages API, so a "is this a Claude?" check would confidently send a
-tool the API rejects. Anthropic's editor version is keyed to the model
+OpenAI's two are a different shape. `apply_patch` and `shell` do not arrive as
+`tool_use` blocks at all: the model emits `apply_patch_call` / `shell_call`
+items and expects `apply_patch_call_output` / `shell_call_output` back, so the
+Responses transport parses them into ordinary `ToolCall`s on the way in and
+rebuilds the matching item on the way out. Above the transport nothing knows.
+The item carries no tool name, so which luca tool a call belongs to comes from
+whichever tool was offered with that provider type on the same request.
+
+`NativeApplyPatchTool` wraps the provider's per-file operation in a
+`*** Begin Patch` envelope and hands it to `ApplyPatchTool` — the hunk syntax is
+the same family, so the parser, the fuzzy context matching and the diff
+rendering are the ones that already ship. `NativeShellTool` runs the call's
+command LIST in one `PersistentShell`, stopping at the first failure, and asks
+approval for every command rather than only the first.
+
+`shell` declares `environment: {"type": "local"}`. The alternative is a
+container OpenAI provisions, which is a different product and not what luca
+executes.
+
+`native_editor_type` / `native_bash_type` / `native_openai_tool_types` decide,
+and they key on the TRANSPORT, not the model family. Bedrock and OpenRouter both
+serve Claude models and neither speaks the Messages API, so a "is this a
+Claude?" check would confidently send a tool the API rejects. The same on the
+other side: groq and deepseek serve GPT-shaped ids over chat completions, where
+`shell` does not exist at all. Anthropic's editor version is keyed to the model
 generation, which is why the type is an instance attribute rather than a
 ClassVar.
