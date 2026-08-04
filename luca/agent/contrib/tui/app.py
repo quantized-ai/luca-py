@@ -185,6 +185,7 @@ class AgentApp(LucaApp):
         self._menu_rows: list[vm.OverlayRow] = []
         self._menu_all_rows: list[vm.OverlayRow] = []
         self._picker_selected: set[str] = set()
+        self._picker_files: list[str] = []
 
     @property
     def current_run(self) -> AgentRun | None:
@@ -683,9 +684,14 @@ class AgentApp(LucaApp):
     async def open_context_picker(self, query: str = "") -> None:
         """`@` picker. Each open starts unchecked: the paths it commits go into
         the composer as text, so there is no standing set to reopen onto."""
+        from .files import list_workspace_files
+
         composer = self.composer()
         self._composer_prefix = composer.input.text if composer is not None else ""
         self._picker_selected = set()
+        # Listed ONCE per open. This shells out to `git ls-files`; doing it per
+        # keystroke costs ~9ms on a small repo and far more on a large one.
+        self._picker_files = list_workspace_files(self._workspace)
         self._menu_all_rows = self._context_rows(query)
         self._menu_handler = self._commit_context
         await self._refresh_overlay("picker", "@", query, filtered=False)
@@ -785,10 +791,9 @@ class AgentApp(LucaApp):
         await run_palette_choice(self, row.primary)
 
     def _context_rows(self, query: str) -> list[vm.OverlayRow]:
-        from .files import list_workspace_files, match_files
+        from .files import match_files
 
-        files = list_workspace_files(self._workspace)
-        matches = match_files(files, query)
+        matches = match_files(self._picker_files, query, self._workspace)
         rows = []
         for path, marked, tokens in matches:
             rows.append(
