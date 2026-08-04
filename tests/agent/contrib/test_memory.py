@@ -5,12 +5,12 @@ list (`update_todos` replaces the whole list in one call).
 
 The memory tools are contrib `Tool`s (`luca.agent.contrib.tools`), so their
 bodies take the live `AgentSession` where they used to take a `ToolContext`.
-The package reads NOTHING from it — the stores live on the plugin — so one
-inert session literal is handed to every entry point and is an invariant
-everywhere.
+The package reads NOTHING from it — the stores are handed in — so one inert
+session literal is passed to every entry point and is an invariant everywhere.
 
 No runner here — the plugin-to-runner wiring is covered by
-`tests/agent/contrib/test_plugins.py`.
+`tests/agent/contrib/test_plugins.py`, and the TUI's choice to keep the stores
+on the session by `tests/agent/contrib/tui/`.
 """
 
 import pytest
@@ -20,11 +20,9 @@ from luca.agent.contrib.memory import (
     MemoryPlugin,
     ReadScratchPadTool,
     ReadTodoTool,
-    TodoLifecycleMiddleware,
     TodoListResult,
     UpdateTodosTool,
     WriteScratchPadTool,
-    todos_from_session,
 )
 from luca.agent.contrib.memory.plugin import (
     SCRATCHPAD_SYSTEM_PROMPT,
@@ -38,20 +36,14 @@ from luca.agent.core import (
     AgentSession,
     CancellationToken,
     ExecutionResult,
-    ExecutionStatus,
     SessionConfig,
     TextContent,
-    ToolCall,
-    ToolExecution,
     ToolSpec,
-    UserMessage,
 )
 from tests.agent.scenarios import (
     MODEL,
     conversation,
     main_conversation,
-    make_session,
-    spec,
 )
 
 SESSION = AgentSession(
@@ -226,6 +218,40 @@ def test_get_tools_returns_the_memory_tools_sharing_the_plugin_stores():
     assert tools[1].store is plugin.scratchpad_store
     assert tools[2].store is plugin.todo_store
     assert tools[3].store is plugin.todo_store
+
+
+def test_a_plugin_given_no_stores_makes_its_own():
+    plugin = MemoryPlugin()
+
+    assert (plugin.scratchpad_store, plugin.todo_store) == ({}, {})
+
+
+def test_the_stores_a_plugin_is_given_are_the_stores_its_tools_write():
+    # The whole persistence contract: hand in a dict and it IS the memory.
+    # Whoever owns the dict decides whether it outlives the process.
+    scratchpad: dict = {}
+    todos: dict = {"c1": {"todos": [{"id": 1, "content": "T1", "status": "pending"}], "next_id": 2}}
+
+    plugin = MemoryPlugin(scratchpad_store=scratchpad, todo_store=todos)
+
+    assert [tool.store for tool in plugin.get_tools()] == [scratchpad, scratchpad, todos, todos]
+
+
+async def test_a_handed_in_todo_store_is_mutated_in_place():
+    todos: dict = {CONVERSATION: {"todos": [{"id": 1, "content": "T1", "status": "pending"}], "next_id": 2}}
+    _, _, _, update_todos = MemoryPlugin(todo_store=todos).get_tools()
+
+    await write(update_todos, items(("T1", "completed"), ("T2", "pending")))
+
+    assert todos == {
+        CONVERSATION: {
+            "todos": [
+                {"id": 1, "content": "T1", "status": "completed"},
+                {"id": 2, "content": "T2", "status": "pending"},
+            ],
+            "next_id": 3,
+        }
+    }
 
 
 def test_get_tool_registry_wraps_the_tools_in_an_auto_allowing_registry():
@@ -436,42 +462,27 @@ def test_update_todos_args_reject_an_unknown_status():
 # ── the list's lifetime ───────────────────────────────────────────────────────
 
 
-async def test_a_settled_list_is_cleared_by_the_next_user_message():
+async def test_a_settled_list_stands_until_the_next_write():
+    # Nothing sweeps a finished plan up on a schedule: these two tools write
+    # the store and nothing else does.
     plugin = MemoryPlugin()
-    _, _, _, update_todos = plugin.get_tools()
-    middleware = plugin.get_middleware(SESSION)[0]
+    _, _, read_todo, update_todos = plugin.get_tools()
     await write(update_todos, items(("T1", "completed"), ("T2", "cancelled")))
 
-    middleware.before_post_message([])
-
-    assert plugin.todo_store[CONVERSATION] == {"todos": [], "next_id": 3}
-
-
-async def test_a_list_with_work_left_survives_the_next_user_message():
-    plugin = MemoryPlugin()
-    _, _, _, update_todos = plugin.get_tools()
-    middleware = plugin.get_middleware(SESSION)[0]
-    await write(update_todos, items(("T1", "completed"), ("T2", "pending")))
-
-    middleware.before_post_message([])
-
-    assert plugin.todo_store[CONVERSATION] == {
+    assert (await write(read_todo, {})).structured_content == {
         "todos": [
             {"id": 1, "content": "T1", "status": "completed"},
-            {"id": 2, "content": "T2", "status": "pending"},
+            {"id": 2, "content": "T2", "status": "cancelled"},
         ],
-        "next_id": 3,
+        "changed": [],
     }
 
 
-async def test_numbering_carries_on_past_a_cleared_list():
-    # The list is what gets dismissed, not the counter: an item added after
-    # two finished ones is #3, never a second #1.
-    plugin = MemoryPlugin()
-    _, _, _, update_todos = plugin.get_tools()
-    middleware = plugin.get_middleware(SESSION)[0]
+async def test_numbering_carries_on_into_the_plan_after_a_settled_one():
+    # Replacement IS the lifecycle: unseen content takes the next number, so
+    # the plan after two finished items starts at #3, never a second #1.
+    _, _, _, update_todos = MemoryPlugin().get_tools()
     await write(update_todos, items(("T1", "completed"), ("T2", "completed")))
-    middleware.before_post_message([])
 
     result = await write(update_todos, items(("T3", "pending")))
 
@@ -481,91 +492,15 @@ async def test_numbering_carries_on_past_a_cleared_list():
     }
 
 
-# ── rebuilding a stored session's list ────────────────────────────────────────
+async def test_a_finished_item_that_comes_back_keeps_its_number():
+    # Content is the identity, and it does not expire: a task reopened after
+    # it settled is the same task, under the number the user already saw.
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("T1", "completed")))
 
+    result = await write(update_todos, items(("T1", "in_progress")))
 
-def todo_execution(entry_id: str, todos: list[dict]) -> ToolExecution:
-    return ToolExecution(
-        id=entry_id,
-        created_at=500,
-        tool_call_id=f"tc_{entry_id}",
-        raw_tool_call=ToolCall(id=f"tc_{entry_id}", name="update_todos", arguments={"todos": []}),
-        tool_spec=spec("update_todos", namespace="contrib.memory"),
-        status=ExecutionStatus.COMPLETED,
-        result=ExecutionResult(
-            content=[TextContent(text="ok")],
-            structured_content={"todos": todos, "changed": [item["id"] for item in todos]},
-        ),
-    )
-
-
-def stored(entry_ids: list[str], entries: dict) -> AgentSession:
-    return make_session(
-        id="s_stored",
-        entries=entries,
-        conversations={"c1": conversation("c1", entry_ids, created_at=500, updated_at=500)},
-        main_conversation_id="c1",
-        session_config=SessionConfig(llm_config=MODEL),
-    )
-
-
-def test_todos_from_session_rebuilds_the_last_written_list():
-    session = stored(
-        ["te1", "te2"],
-        {
-            "te1": todo_execution("te1", [{"id": 1, "content": "T1", "status": "pending"}]),
-            "te2": todo_execution(
-                "te2",
-                [
-                    {"id": 1, "content": "T1", "status": "completed"},
-                    {"id": 2, "content": "T2", "status": "pending"},
-                ],
-            ),
-        },
-    )
-
-    assert todos_from_session(session) == {
-        "todos": [
-            {"id": 1, "content": "T1", "status": "completed"},
-            {"id": 2, "content": "T2", "status": "pending"},
-        ],
-        "next_id": 3,
+    assert result.structured_content == {
+        "todos": [{"id": 1, "content": "T1", "status": "in_progress"}],
+        "changed": [1],
     }
-
-
-def test_todos_from_session_replays_the_clear_and_keeps_the_counter():
-    # A plan that finished two turns ago rebuilds as an empty list — but one
-    # whose numbering has already reached 3, so a resumed session does not
-    # start handing out ids the user has seen.
-    session = stored(
-        ["te1", "u1"],
-        {
-            "te1": todo_execution(
-                "te1",
-                [
-                    {"id": 1, "content": "T1", "status": "completed"},
-                    {"id": 2, "content": "T2", "status": "completed"},
-                ],
-            ),
-            "u1": UserMessage(id="u1", created_at=600, parts=[TextContent(text="thanks")]),
-        },
-    )
-
-    assert todos_from_session(session) == {"todos": [], "next_id": 3}
-
-
-def test_todos_from_a_session_with_no_todo_history_is_empty():
-    assert todos_from_session(stored([], {})) == {"todos": [], "next_id": 1}
-
-
-def test_get_middleware_hydrates_the_plugin_onto_the_session():
-    session = stored(
-        ["te1"],
-        {"te1": todo_execution("te1", [{"id": 1, "content": "T1", "status": "in_progress"}])},
-    )
-    plugin = MemoryPlugin()
-
-    middleware = plugin.get_middleware(session)
-
-    assert [type(m) for m in middleware] == [TodoLifecycleMiddleware]
-    assert plugin.todo_store == {"c1": {"todos": [{"id": 1, "content": "T1", "status": "in_progress"}], "next_id": 2}}

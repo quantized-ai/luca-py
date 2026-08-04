@@ -31,7 +31,7 @@ from typing import ClassVar
 from textual.binding import Binding
 from textual.widgets import TextArea
 
-from luca.agent.contrib.memory import MemoryPlugin, changed_of, is_todo_tool, is_todo_update
+from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
@@ -84,6 +84,8 @@ from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
 from .prompt_files import ReadLimits, parse_prompt
 from .render import (
+    SCRATCHPAD_STORE_KEY,
+    TODO_STORE_KEY,
     child_links,
     entry_blocks,
     filter_rows,
@@ -91,6 +93,8 @@ from .render import (
     mention_blocks,
     picker_rows,
     plan_block,
+    plan_dismissed,
+    session_todos,
     subagent_task,
     tool_block,
     user_transcript_text,
@@ -235,9 +239,10 @@ class AgentApp(LucaApp):
         except AgentError as exc:
             await self._notice(str(exc), error=True)
             return
-        # A settled plan is dismissed by the next thing the user says — the
-        # memory plugin's middleware did that inside `post_message`, and this
-        # is the panel catching up with it.
+        # A new turn is not a new plan: the list stays exactly as the agent
+        # left it. What is dropped is the HIGHLIGHT — `changed` belongs to the
+        # write that produced it, and carrying it into the next turn would
+        # lead the panel with items nothing has touched since.
         self._plan_changed = []
         self._render_plan()
         event.prompt_input.clear()
@@ -516,7 +521,9 @@ class AgentApp(LucaApp):
                 else:
                     await view.apply(block)
                 self.scroll_transcript_end()
-            case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED):
+            case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED, new_conversation_id=new_id):
+                if new_id is not None:
+                    self._move_memory_stores(source, new_id)
                 replaced = len(entry.compacted_nodes or [])
                 text = f"context compacted · {replaced} entries summarized" if entry.parts else "nothing to compact"
                 await self._mount_widget_block(vm.NoticeBlock(text=text), source)
@@ -561,18 +568,26 @@ class AgentApp(LucaApp):
     # ── the sticky plan panel ─────────────────────────────────────────────────
 
     def _todos(self) -> list[dict]:
-        """The main conversation's todo list, read from the memory plugin's
-        own store. THE STORE IS THE TRUTH: it is what the agent answers from,
-        and it is where the clear-when-settled rule already ran, so a panel
-        derived from it cannot claim work the agent has forgotten. A runner
-        composed without the plugin simply has no list."""
-        for plugin in getattr(self.runner, "plugins", []):
-            if isinstance(plugin, MemoryPlugin):
-                slot = plugin.todo_store.get(self.runner.main_conversation_id) or {}
-                return slot.get("todos", [])
-        return []
+        """The main conversation's todo list. THE STORE IS THE TRUTH: `wiring`
+        handed the plugin a dict that lives on the session, so reading it back
+        off the session reads exactly what the agent answers from."""
+        return session_todos(self.runner.session)
+
+    def _move_memory_stores(self, outgoing: str, incoming: str) -> None:
+        """Compaction installs a NEW conversation id, and both memory stores
+        are keyed by the old one. Nothing in the agent moves them: the stores
+        are the app's, handed to the plugin at construction, so keeping them
+        addressable is the app's job. Mutated IN PLACE — the plugin's tools
+        hold these same dicts by reference."""
+        for key in (TODO_STORE_KEY, SCRATCHPAD_STORE_KEY):
+            store = self.runner.session.extras.get(key)
+            if isinstance(store, dict) and outgoing in store:
+                store[incoming] = store.pop(outgoing)
 
     def _render_plan(self, *, running: bool = False) -> None:
+        if plan_dismissed(self.runner.session):
+            self.set_plan(None)
+            return
         self.set_plan(plan_block(self._todos(), changed=self._plan_changed, running=running))
 
     async def _mount_widget(self, widget, conversation_id: str | None) -> None:

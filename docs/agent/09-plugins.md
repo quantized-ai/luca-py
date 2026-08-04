@@ -75,19 +75,20 @@ what an application renders — a model asked to preserve its own numbering does
 not reliably do so, and a number the user can point at ("complete #2") has to
 survive a reordering.
 
-The list and the numbering have deliberately different lifetimes:
-`TodoLifecycleMiddleware` empties a list with nothing open the next time the
-user posts a message, but never resets the counter — so the todo after two
-completed ones is `#3`, not a second `#1`.
+Replacement is the whole lifecycle. Nothing sweeps a finished plan up on a
+schedule — the next `update_todos` overwrites it, and since the counter is
+never reset, the todo after two completed ones is `#3`, not a second `#1`.
+The plugin ships no middleware: the stores are written by the four tools and
+by nothing else.
 
 The plugin itself is the whole pattern
 ([full source](../../luca/agent/contrib/memory/plugin.py)):
 
 ```python
 class MemoryPlugin:
-    def __init__(self) -> None:
-        self.scratchpad_store: dict = {}
-        self.todo_store: dict = {}
+    def __init__(self, scratchpad_store=None, todo_store=None) -> None:
+        self.scratchpad_store: dict = {} if scratchpad_store is None else scratchpad_store
+        self.todo_store: dict = {} if todo_store is None else todo_store
 
     def get_tools(self) -> list[Tool]:          # not a hook — see below
         return [
@@ -104,10 +105,6 @@ class MemoryPlugin:
 
     def get_system_prompt_parts(self, agent_session):
         return [SCRATCHPAD_SYSTEM_PROMPT, TODO_SYSTEM_PROMPT]
-
-    def get_middleware(self, agent_session):
-        self.hydrate(agent_session)             # adopt the session being resumed
-        return [TodoLifecycleMiddleware(self.todo_store, agent_session.main_conversation_id)]
 ```
 
 > ⚠️ **Two different `get_tools`.** The plugin's takes no arguments and returns
@@ -117,7 +114,7 @@ class MemoryPlugin:
 > `async get_tools(session, conversation_id) -> list[ToolSpec]`
 > ([03](03-tools.md)); a plugin never implements it, its registry does.
 
-The plugin owns the shared state (one store handed to each tool pair) — the
+The plugin routes the shared state (one store handed to each tool pair) — the
 piece you couldn't express by passing loose tools — and its Yolo registry means
 memory tools auto-run regardless of how the app gates its own tools.
 
@@ -132,19 +129,31 @@ One plugin instance is shared by the main agent and every subagent
 overwriting each other's private working memory — silently, the moment a second
 conversation exists. Anything a plugin holds needs the same treatment.
 
-> ⚠️ **Not persisted — but the todo list is rebuildable.** The stores live on
-> the plugin instance, not the session: one `MemoryPlugin()` = one scratchpad
-> + one todo list, and a new instance starts blank. The todo list is the
-> exception, because the session already records every `update_todos`:
-> `get_middleware()` calls `hydrate()`, which replays that history — each write
-> setting the list, each user message clearing a settled one — so resuming a
-> session mid-plan keeps the plan and the numbering. The scratchpad has no such
-> record and starts empty. Durable memory would write through a store you
-> persist yourself.
+### The stores are yours
 
-`todos_from_session(session)` is that replay on its own, so an application can
-render the list without an agent, a provider or a key — which is how the TUI
-draws the plan panel for a stored session it has not resumed.
+`MemoryPlugin()` makes its own dicts: everything works and nothing outlives the
+process. That is the right default for a script and the wrong one for anything
+a user comes back to. **Pass dicts in and they are the memory** — the tools
+mutate what they are handed:
+
+```python
+plugin = MemoryPlugin(
+    scratchpad_store=session.extras.setdefault("scratchpad", {}),
+    todo_store=session.extras.setdefault("todos", {}),
+)
+```
+
+`AgentSession.extras` is a free-form dict the core stores verbatim and never
+reads ([02](02-data-model.md)), so a store kept there is saved with the session
+and a resumed run picks the plan up mid-flight with its numbering intact — no
+sidecar file and no second save path. An application that persists differently
+passes its own dicts instead; the plugin cannot tell.
+
+> ⚠️ **Compaction re-keys.** A compaction installs a NEW conversation id, and
+> the slots are still filed under the old one. An application that persists the
+> stores moves them when it sees `CompactionFinished.new_conversation_id`; one
+> that does not, does not care. Nothing in the plugin watches for this — it
+> never sees an event.
 
 ## 3. Equivalence
 

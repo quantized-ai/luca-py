@@ -1024,5 +1024,34 @@
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
     }
+  },
+  "extras": {
+    "todos": {
+      "c1": {
+        "todos": [
+          {
+            "id": 1,
+            "content": "audit the reader and draft the split",
+            "status": "completed"
+          },
+          {
+            "id": 2,
+            "content": "move the write path into writer.py",
+            "status": "completed"
+          },
+          {
+            "id": 3,
+            "content": "update every import site",
+            "status": "in_progress"
+          },
+          {
+            "id": 4,
+            "content": "backfill the tests",
+            "status": "pending"
+          }
+        ],
+        "next_id": 5
+      }
+    }
   }
 }

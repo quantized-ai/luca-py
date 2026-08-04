@@ -12,6 +12,7 @@ from luca.agent.contrib.tui.render import (
     entry_blocks,
     is_runtime_plumbing,
     plan_block,
+    plan_dismissed,
     plan_from_session,
     preview_rows,
     subagent_task,
@@ -511,7 +512,10 @@ def test_running_plan_block_leads_with_what_the_last_write_moved():
     )
 
 
-def test_plan_from_session_replays_the_last_write():
+def test_plan_from_session_reads_the_list_off_the_session():
+    # The panel is a LOOKUP, not a reconstruction: the app hands the memory
+    # plugin a dict that lives under `extras`, so a stored session carries the
+    # list and the entries only say when it was written.
     session = make_session(
         id="s_plan",
         entries={
@@ -522,6 +526,7 @@ def test_plan_from_session_replays_the_last_write():
         conversations={"c1": conversation("c1", ["u1", "te1", "te2"])},
         main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
+        extras={"todos": {"c1": {"todos": [todo(1, "a", "completed"), todo(2, "b", "pending")], "next_id": 3}}},
     )
 
     assert plan_from_session(session) == vm.ListBlock(
@@ -534,8 +539,9 @@ def test_plan_from_session_replays_the_last_write():
 
 
 def test_plan_from_session_is_none_once_a_settled_list_was_dismissed():
-    # The list finished, then the user spoke — which is what clears it. The
-    # panel a resumed session shows has to agree with the agent's own list.
+    # The list finished, then the user spoke past it. The agent still holds
+    # the list; the dock is what gives up the rows, and a resumed session has
+    # to give them up at exactly the same point the live one did.
     session = make_session(
         id="s_plan_done",
         entries={
@@ -546,9 +552,45 @@ def test_plan_from_session_is_none_once_a_settled_list_was_dismissed():
         conversations={"c1": conversation("c1", ["u1", "te1", "u2"])},
         main_conversation_id="c1",
         session_config=SessionConfig(llm_config=MODEL),
+        extras={"todos": {"c1": {"todos": [todo(1, "a", "completed")], "next_id": 2}}},
     )
 
     assert plan_from_session(session) is None
+
+
+def test_a_settled_list_is_not_dismissed_until_the_user_speaks():
+    session = make_session(
+        id="s_plan_settled",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="plan it")]),
+            "te1": todo_execution("te1", [todo(1, "a", "completed")], [1]),
+        },
+        conversations={"c1": conversation("c1", ["u1", "te1"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+        extras={"todos": {"c1": {"todos": [todo(1, "a", "completed")], "next_id": 2}}},
+    )
+
+    assert plan_dismissed(session) is False
+
+
+def test_a_dismissed_list_comes_back_when_the_agent_writes_again():
+    # Dismissal is not a state anything stores — it is a question about the
+    # LAST write, so reopening an item answers it differently on its own.
+    session = make_session(
+        id="s_plan_reopened",
+        entries={
+            "te1": todo_execution("te1", [todo(1, "a", "completed")], [1]),
+            "u1": UserMessage(id="u1", created_at=600, parts=[TextContent(text="actually, redo it")]),
+            "te2": todo_execution("te2", [todo(1, "a", "in_progress")], [1]),
+        },
+        conversations={"c1": conversation("c1", ["te1", "u1", "te2"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+        extras={"todos": {"c1": {"todos": [todo(1, "a", "in_progress")], "next_id": 2}}},
+    )
+
+    assert plan_dismissed(session) is False
 
 
 # ── runtime plumbing ──────────────────────────────────────────────────────────

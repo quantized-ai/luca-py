@@ -291,5 +291,29 @@
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
     }
+  },
+  "extras": {
+    "todos": {
+      "c1": {
+        "todos": [
+          {
+            "id": 1,
+            "content": "read the failing test",
+            "status": "completed"
+          },
+          {
+            "id": 2,
+            "content": "fix the off-by-one in the cursor",
+            "status": "completed"
+          },
+          {
+            "id": 3,
+            "content": "re-run the suite",
+            "status": "completed"
+          }
+        ],
+        "next_id": 4
+      }
+    }
   }
 }

@@ -35,7 +35,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -1449,6 +1449,14 @@ class AgentSession(BaseModel):
     # re-points it at the successor it installed.
     main_conversation_id: str
     session_config: SessionConfig
+    # Free-form application state, stored verbatim and never interpreted by
+    # the core — the session-level twin of `ToolExecution.extras`. It exists so
+    # a tool, a registry or a plugin can keep state that outlives the process
+    # without the application inventing a second file to put it in: whoever
+    # composes the runner hands the state in and it rides along on every save.
+    # Namespace your key (the tool's `namespace` is the obvious choice) and
+    # keep the value JSON-serializable — this is dumped with the session.
+    extras: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 

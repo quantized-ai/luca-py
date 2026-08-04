@@ -21,17 +21,19 @@ IDS ARE ASSIGNED HERE, NOT BY THE MODEL. `update_todos` takes the same
 is replacing: same content keeps its id, new content mints one from a
 per-conversation counter. Ids are what a user points at ("complete #2"), so
 they have to survive a reordering, and a model asked to preserve its own
-numbering does not reliably do so.
+numbering does not reliably do so. The counter is never reset — an item
+added after two that have been dropped is `#3`, not a second `#1`.
 
-TWO LIFETIMES, DELIBERATELY DIFFERENT. The list is cleared once every item
-has settled and the user speaks again — a finished plan should not follow the
-conversation around. The counter is never reset, so the todo after a cleared
-pair of items is `#3` rather than a second `#1`.
+A finished list is not swept up on any schedule. `update_todos` replaces it
+whole, so the next plan simply overwrites it, and the numbering rule already
+hands unseen content a fresh id. Nothing here observes messages or turns.
 
-One plugin instance = one scratchpad + one todo list PER CONVERSATION; the
-stores live on the plugin, not the session. Nothing here serializes — but
-`hydrate()` replays a stored session's todo history back into the store, so
-resuming a session mid-plan does not lose the plan.
+WHOEVER BUILDS THE PLUGIN OWNS THE STORES. `MemoryPlugin()` makes its own
+dicts and everything works, for exactly as long as the process lives. Pass
+dicts in and they are the store: the tools mutate what they are given, so an
+application that hands in state it persists gets persistence, and one that
+hands in nothing gets a clean list every run. Nothing in this package reads or
+writes a file, and nothing here knows what a session save is.
 """
 
 from __future__ import annotations
@@ -49,12 +51,10 @@ from luca.agent.contrib.tools import Tool
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
-    ContentPart,
     ExecutionResult,
     ExecutionStatus,
     TextContent,
     ToolExecution,
-    UserMessage,
 )
 
 SCRATCHPAD_SYSTEM_PROMPT = """
@@ -74,7 +74,7 @@ Items are numbered for you and both tools return the numbered list, so you never
 and you rarely need read_todo, because update_todos already reports what the list now holds.
 An item keeps its number for as long as its content is unchanged; rewording an item gives it a new one.
 Mark the item you are working on in_progress, and complete it before starting the next.
-Once every item is completed the list is cleared the next time the user writes, and numbering carries on.
+Once the work is done, send the next plan whenever you start one — it replaces the old list, and numbering carries on.
 """.strip()
 
 # The namespace every tool in this package declares, and the two names that
@@ -214,18 +214,6 @@ def changed_ids(previous: list[dict], todos: list[dict]) -> list[int]:
     return [item["id"] for item in todos if before.get(item["id"]) != item["status"]]
 
 
-def clear_settled(store: dict, conversation_id: str) -> bool:
-    """Empty a list with nothing open, keeping the id counter. True when it
-    cleared something."""
-    slot = store.get(conversation_id)
-    if not slot or not slot["todos"]:
-        return False
-    if any(is_open(item["status"]) for item in slot["todos"]):
-        return False
-    slot["todos"] = []
-    return True
-
-
 class ReadTodoTool(Tool):
     namespace = MEMORY_NAMESPACE
     name = "read_todo"
@@ -329,63 +317,36 @@ def changed_of(execution: ToolExecution) -> list[int]:
     return changed if isinstance(changed, list) else []
 
 
-def todos_from_session(session: AgentSession, conversation_id: str | None = None) -> dict:
-    """Replay a stored conversation's todo history into a fresh store slot.
-
-    The whole lifecycle, not just the last write: each `update_todos` sets the
-    list and each user message clears a settled one, which is exactly what ran
-    live. So a session whose plan finished two turns ago rebuilds as an empty
-    list with the counter carried forward, and one abandoned mid-plan rebuilds
-    with the open items intact."""
-    conversation_id = conversation_id or session.main_conversation_id
-    conversation = session.conversations.get(conversation_id)
-    slot = new_slot()
-    if conversation is None:
-        return slot
-    store = {conversation_id: slot}
-    for node_id in conversation.nodes:
-        entry = session.entries.get(node_id)
-        if isinstance(entry, UserMessage):
-            clear_settled(store, conversation_id)
-        elif isinstance(entry, ToolExecution) and is_todo_update(entry):
-            todos = todos_of(entry)
-            if todos is None:
-                continue
-            slot["todos"] = [dict(item) for item in todos]
-            # The counter tracks the highest id ever handed out, not the
-            # highest one still on the list: a cleared list must not reissue
-            # the numbers the user just saw.
-            for item in todos:
-                slot["next_id"] = max(slot["next_id"], item["id"] + 1)
-    return slot
-
-
-class TodoLifecycleMiddleware:
-    """Clears a settled todo list when the user speaks again.
-
-    `before_post_message` is the one hook that fires exactly at the boundary
-    the rule is about, and user messages only ever land on the main
-    conversation — a subagent's list lives and dies with the subagent."""
-
-    def __init__(self, store: dict, conversation_id: str) -> None:
-        self.store = store
-        self.conversation_id = conversation_id
-
-    def before_post_message(self, parts: list[ContentPart]) -> list[ContentPart]:
-        clear_settled(self.store, self.conversation_id)
-        return parts
-
-
 class MemoryPlugin:
     """Bundles the memory tools (scratchpad + todo list) with the
     system-prompt parts that teach the model to use them. A plain class
     implementing only the plugin hooks it needs. The tools ship in their own
     auto-allowing registry — an application that wants them gated composes its
-    own registry over `get_tools()`'s output."""
+    own registry over `get_tools()`'s output.
 
-    def __init__(self) -> None:
-        self.scratchpad_store: dict = {}
-        self.todo_store: dict = {}
+    THE STORES ARE ARGUMENTS, and this is the whole persistence story:
+
+        MemoryPlugin()                      # works, forgets everything on exit
+        MemoryPlugin(todo_store=mine)       # works, and `mine` is the memory
+
+    Each store is a plain `{conversation_id: slot}` dict the tools mutate in
+    place. Hand in a dict you keep somewhere durable — `AgentSession.extras`
+    is the obvious somewhere, since it is saved with the session — and a
+    resumed run picks the list up mid-plan with its numbering intact. Hand in
+    nothing and the plugin makes its own, which is the right default for a
+    script and wrong for anything a user comes back to. Both dicts are
+    JSON-shaped all the way down, so whoever owns them can store them however
+    they like.
+
+    Compaction is the application's to handle too: it installs a NEW
+    conversation id, and the slot is still filed under the old one. An
+    application that persists the stores re-keys them when it sees
+    `CompactionFinished.new_conversation_id`; one that does not, does not
+    care."""
+
+    def __init__(self, scratchpad_store: dict | None = None, todo_store: dict | None = None) -> None:
+        self.scratchpad_store: dict = {} if scratchpad_store is None else scratchpad_store
+        self.todo_store: dict = {} if todo_store is None else todo_store
 
     def get_tools(self) -> list[Tool]:
         return [
@@ -403,17 +364,3 @@ class MemoryPlugin:
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list[str]:
         return [SCRATCHPAD_SYSTEM_PROMPT, TODO_SYSTEM_PROMPT]
-
-    def get_middleware(self, agent_session: AgentSession) -> list:
-        """The lifecycle middleware — AND the moment the plugin adopts the
-        session it is being installed on. Hydrating here rather than in the
-        constructor is what makes the plugin resumable: it is called once,
-        with the session, at runner construction, which is the only point the
-        plugin ever sees one."""
-        self.hydrate(agent_session)
-        return [TodoLifecycleMiddleware(self.todo_store, agent_session.main_conversation_id)]
-
-    def hydrate(self, agent_session: AgentSession) -> None:
-        """Rebuild the main conversation's todo list from what the session
-        already records. A fresh session replays to an empty list."""
-        self.todo_store[agent_session.main_conversation_id] = todos_from_session(agent_session)

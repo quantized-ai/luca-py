@@ -117,10 +117,22 @@ completions scroll past as they happen; **once the run settles** it goes back
 to open-first. Settled rows are struck (Rich `Style(strike=True)`, which
 survives SVG export, so snapshots catch it).
 
-The list itself is read from the `MemoryPlugin`'s store rather than kept as a
-second copy — the store is what the agent answers from, and it is where the
-clear-when-settled rule already ran. Only the main conversation's list is
-docked: one panel cannot speak for a parent and three subagents at once.
+**The app owns the list.** `wiring.build_runner` hands `MemoryPlugin` two dicts
+that live on `session.extras` (`"todos"` and `"scratchpad"`), so the tools write
+straight into the session the app was already saving — which is the whole
+reason a plan and a scratchpad survive `--resume`. The panel reads the same
+dicts back (`session_todos`), so it cannot disagree with what the model sees,
+and `plan_from_session` draws a stored session's panel with no runner at all.
+Compaction installs a new conversation id, and `CompactionFinished` is where the
+app moves both slots over. Only the main conversation's list is docked: one
+panel cannot speak for a parent and three subagents at once.
+
+**When the panel gives the rows back.** A plan with nothing open is dismissed
+once the user speaks past it (`plan_dismissed`) — the agent keeps the list,
+because its numbering is built on it and the model may reopen an item, but a
+finished plan stops costing the transcript five rows. It comes back the moment
+the next `update_todos` lands. The rule reads the session and changes nothing,
+so the live panel and a resumed one dismiss at exactly the same point.
 
 ## 3. Slash commands
 

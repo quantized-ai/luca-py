@@ -15,7 +15,6 @@ from luca.agent.contrib.memory import (
     is_open,
     is_todo_tool,
     is_todo_update,
-    todos_from_session,
     todos_of,
 )
 from luca.agent.core import declares_spawn
@@ -290,6 +289,15 @@ def _completed_summary(tool: str, lines: list[str]) -> str | None:
 
 # ── the sticky plan (todo) panel ──────────────────────────────────────────────
 
+# Where THE APP keeps the memory plugin's two stores inside
+# `AgentSession.extras`. The plugin takes both dicts as constructor arguments
+# and never looks a key up, so these names are the application's choice alone
+# — `wiring.py` hands the dicts over, this module reads them back, and the
+# session save persists them because they live on the session. An application
+# composing `MemoryPlugin` differently picks its own names, or none.
+TODO_STORE_KEY = "todos"
+SCRATCHPAD_STORE_KEY = "scratchpad"
+
 # How many todo rows the panel shows before it collapses the rest into one
 # summary row. The panel is docked, so every row it takes is a row the
 # transcript never gets back.
@@ -375,6 +383,45 @@ def plan_block(
     return vm.ListBlock(label=_plan_label(todos), rows=rows)
 
 
+def session_todos(session: AgentSession, conversation_id: str | None = None) -> list[dict]:
+    """One conversation's todo list, read back out of the session the app
+    stores it in. The SAME dict the tools write — the app hands it to
+    `MemoryPlugin` at construction and it rides along on every save — so this
+    is a lookup, never a reconstruction.
+
+    A session written by an application that composed the plugin differently
+    (or not at all) has nothing here, and the panel simply has no list."""
+    conversation_id = conversation_id or session.main_conversation_id
+    slot = session.extras.get(TODO_STORE_KEY, {}).get(conversation_id) or {}
+    return slot.get("todos", [])
+
+
+def plan_dismissed(session: AgentSession, conversation_id: str | None = None) -> bool:
+    """The PANEL's own rule, and nothing the agent knows about: a plan with
+    nothing left open stops taking rows from the transcript once the user has
+    spoken past it. The list itself stays — its numbering is built on it and
+    the model may reopen an item — so this is a question about the dock,
+    changing nothing.
+
+    Live and resumed go through it alike, which is what keeps a reopened
+    session's panel identical to the one the user closed."""
+    conversation_id = conversation_id or session.main_conversation_id
+    todos = session_todos(session, conversation_id)
+    if not todos or any(is_open(item["status"]) for item in todos):
+        return False
+    conversation = session.conversations.get(conversation_id)
+    if conversation is None:
+        return False
+    spoken_since = False
+    for node_id in conversation.nodes:
+        entry = session.entries.get(node_id)
+        if isinstance(entry, UserMessage):
+            spoken_since = True
+        elif isinstance(entry, ToolExecution) and is_todo_update(entry):
+            spoken_since = False
+    return spoken_since
+
+
 def last_todo_update(session: AgentSession) -> ToolExecution | None:
     """The most recent `update_todos` on the main conversation."""
     for node_id in reversed(session.conversations[session.main_conversation_id].nodes):
@@ -385,9 +432,12 @@ def last_todo_update(session: AgentSession) -> ToolExecution | None:
 
 
 def plan_from_session(session: AgentSession, *, running: bool = False) -> vm.ListBlock | None:
-    """The panel a stored session shows. Replays the same lifecycle the plugin
-    does, so the panel and the agent's own list cannot disagree."""
-    todos = todos_from_session(session)["todos"]
+    """The panel a stored session shows. Rebuilt the same way the plugin
+    rebuilds its store on resume, so the panel and the agent's own list cannot
+    disagree."""
+    if plan_dismissed(session):
+        return None
+    todos = session_todos(session)
     last = last_todo_update(session) if running else None
     return plan_block(todos, changed=changed_of(last) if last is not None else (), running=running)
 

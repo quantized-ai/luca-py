@@ -9,9 +9,14 @@ auto-allowing registry) with the system-prompt parts that teach the model to
 use them; install it with `plugins=[MemoryPlugin()]` on a
 `PluginAgentSessionRunner` (`luca.agent.contrib.plugins`).
 
-The reading helpers — `is_todo_tool`, `todos_of`, `changed_of`,
-`todos_from_session` — are how an application renders the list without
-hard-coding tool names or re-deriving the id scheme.
+Both stores are constructor arguments. `MemoryPlugin()` keeps its own and
+forgets them when the process ends; `MemoryPlugin(todo_store=…)` mutates
+whatever it is handed, which is how an application makes the list durable —
+see `MemoryPlugin`'s docstring.
+
+The reading helpers — `is_todo_tool`, `todos_of`, `changed_of` — are how an
+application renders the list without hard-coding tool names or re-deriving the
+id scheme.
 """
 
 from .plugin import (
@@ -23,7 +28,6 @@ from .plugin import (
     ReadTodoTool,
     StoredTodo,
     TodoItem,
-    TodoLifecycleMiddleware,
     TodoListResult,
     TodoStatus,
     UpdateTodosTool,
@@ -32,7 +36,6 @@ from .plugin import (
     is_open,
     is_todo_tool,
     is_todo_update,
-    todos_from_session,
     todos_of,
 )
 
@@ -45,7 +48,6 @@ __all__ = [
     "ReadTodoTool",
     "StoredTodo",
     "TodoItem",
-    "TodoLifecycleMiddleware",
     "TodoListResult",
     "TodoStatus",
     "UpdateTodosTool",
@@ -54,6 +56,5 @@ __all__ = [
     "is_open",
     "is_todo_tool",
     "is_todo_update",
-    "todos_from_session",
     "todos_of",
 ]

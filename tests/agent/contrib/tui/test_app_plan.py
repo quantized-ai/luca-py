@@ -11,6 +11,7 @@ Everything runs against a scripted `FauxProvider`: the model calls
 
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.blocks import ListBlockView, ToolBlockView
+from luca.agent.contrib.tui.sessions import load_session
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
@@ -161,6 +162,31 @@ async def test_numbering_carries_on_after_a_dismissed_list(tmp_path):
 
         # #3, not a second #1 — the list was dismissed, the counter was not.
         assert rows(app) == [("pending", "[faint]#3 -[/] buy milk", False)]
+
+
+async def test_the_list_is_written_into_the_session_the_app_saves(tmp_path):
+    # THE PERSISTENCE CONTRACT, end to end. `wiring` hands the memory plugin a
+    # dict that lives on the session, so the tools writing the list write into
+    # the file the app was already saving — no second store, no sidecar.
+    provider = scripted(
+        faux_assistant_message([write_todos(("port the reader", "in_progress"))]),
+        faux_assistant_message([faux_text("Working through it.")]),
+    )
+    app = make_app(provider, tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "plan the migration")
+        await wait_until(pilot, lambda: idle_again(app))
+        session_id = app.runner.session.id
+
+    reloaded = load_session(session_id, tmp_path)
+
+    assert reloaded.extras["todos"] == {
+        reloaded.main_conversation_id: {
+            "todos": [{"id": 1, "content": "port the reader", "status": "in_progress"}],
+            "next_id": 2,
+        }
+    }
 
 
 async def test_a_resumed_session_docks_the_plan_it_was_left_with(tmp_path):

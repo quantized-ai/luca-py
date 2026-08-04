@@ -156,6 +156,28 @@ def todo_call(
     return execution
 
 
+def with_todo_store(session: AgentSession) -> AgentSession:
+    """Give a hand-built session the memory store a REAL one carries.
+
+    The app hands `MemoryPlugin` a dict that lives on `session.extras`, so a
+    saved session holds the list itself and the panel is a lookup. Nothing
+    derives one from the entries at runtime — but a fixture assembles the
+    entries first, so this fills in the state they imply, per conversation."""
+    store: dict = {}
+    for conversation_id, conv in session.conversations.items():
+        for node_id in conv.nodes:
+            entry = session.entries.get(node_id)
+            if not isinstance(entry, ToolExecution) or entry.raw_tool_call.name != "update_todos":
+                continue
+            todos = ((entry.result.structured_content if entry.result else None) or {}).get("todos", [])
+            store[conversation_id] = {
+                "todos": [dict(item) for item in todos],
+                "next_id": max((item["id"] for item in todos), default=0) + 1,
+            }
+    session.extras["todos"] = store
+    return session
+
+
 def turn(index: int, minutes: float) -> TurnStart:
     return TurnStart(id=f"ts{index}", created_at=at(minutes))
 
@@ -304,7 +326,7 @@ def conversation_session() -> AgentSession:
             "a5": usage("c1", "a5", input=13_100, output=880, cache_read=51_000, cache_write=180),
         }
     }
-    return session
+    return with_todo_store(session)
 
 
 def _edit_request() -> PermissionRequest:
@@ -709,7 +731,7 @@ def planning_session() -> AgentSession:
         "c2": {"a_c2b": usage("c2", "a_c2b", input=5_800, output=240, cache_read=11_000)},
         "c3": {"a_c3b": usage("c3", "a_c3b", input=4_900, output=310, cache_read=9_000)},
     }
-    return session
+    return with_todo_store(session)
 
 
 def todos_session() -> AgentSession:
@@ -760,7 +782,7 @@ def todos_session() -> AgentSession:
             "a2": usage("c1", "a2", input=6_400, output=180, cache_read=14_000),
         }
     }
-    return session
+    return with_todo_store(session)
 
 
 def todos_done_session() -> AgentSession:
@@ -789,7 +811,7 @@ def todos_done_session() -> AgentSession:
         session_config=SessionConfig(llm_config=MODEL),
     )
     session.usages = {"c1": {"a1": usage("c1", "a1", input=4_200, output=260, cache_read=8_000)}}
-    return session
+    return with_todo_store(session)
 
 
 BUILDERS = {

@@ -530,5 +530,74 @@
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
     }
+  },
+  "extras": {
+    "todos": {
+      "c1": {
+        "todos": [
+          {
+            "id": 1,
+            "content": "port the reader",
+            "status": "completed"
+          },
+          {
+            "id": 2,
+            "content": "port the writer",
+            "status": "completed"
+          },
+          {
+            "id": 3,
+            "content": "port the index",
+            "status": "completed"
+          },
+          {
+            "id": 4,
+            "content": "port the compactor",
+            "status": "completed"
+          },
+          {
+            "id": 5,
+            "content": "migrate the schema",
+            "status": "completed"
+          },
+          {
+            "id": 6,
+            "content": "backfill old sessions",
+            "status": "completed"
+          },
+          {
+            "id": 7,
+            "content": "drop the jsonl writer",
+            "status": "completed"
+          },
+          {
+            "id": 8,
+            "content": "update every import site",
+            "status": "pending"
+          },
+          {
+            "id": 9,
+            "content": "rewrite the store tests",
+            "status": "pending"
+          },
+          {
+            "id": 10,
+            "content": "benchmark the new path",
+            "status": "pending"
+          },
+          {
+            "id": 11,
+            "content": "document the format",
+            "status": "pending"
+          },
+          {
+            "id": 12,
+            "content": "cut the release note",
+            "status": "pending"
+          }
+        ],
+        "next_id": 13
+      }
+    }
   }
 }

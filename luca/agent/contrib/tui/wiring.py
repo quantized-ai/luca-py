@@ -38,6 +38,8 @@ from luca.client.testing import (
     faux_tool_call,
 )
 
+from .render import SCRATCHPAD_STORE_KEY, TODO_STORE_KEY
+
 # ── demo math tools ────────────────────────────────────────────────────────────
 # Resourceless tools without the permission mixin: the approval layer
 # synthesizes a plain "run <name>" request for them, exercising the
@@ -150,7 +152,16 @@ def build_runner(
     # First in the list, so the persona and the model addendum open the
     # assembled prompt and every plugin's tool blurb follows them. The env and
     # instruction parts carry positive priorities and sort to the tail.
-    plugins: list = [SystemPromptPlugin(workspace=workspace), MemoryPlugin(), shell]
+    # THE APP OWNS THE MEMORY. The plugin takes whatever dicts it is handed and
+    # mutates them in place; putting them on the session is what makes the todo
+    # list and the scratchpad survive a resume, because `save_session` writes
+    # the session and they are part of it. `setdefault` so a reloaded session
+    # is picked up as-is and a fresh one starts empty.
+    memory = MemoryPlugin(
+        scratchpad_store=session.extras.setdefault(SCRATCHPAD_STORE_KEY, {}),
+        todo_store=session.extras.setdefault(TODO_STORE_KEY, {}),
+    )
+    plugins: list = [SystemPromptPlugin(workspace=workspace), memory, shell]
     if skills_plugin is not None:
         plugins.append(skills_plugin)
     if instructions:

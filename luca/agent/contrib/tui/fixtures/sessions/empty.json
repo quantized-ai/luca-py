@@ -42,5 +42,6 @@
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
     }
-  }
+  },
+  "extras": {}
 }

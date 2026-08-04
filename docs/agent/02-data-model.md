@@ -419,6 +419,18 @@ The full container:
 | `conversations` | the CATALOG: `dict[str, Conversation]` — every path over the bag, live or archived |
 | `main_conversation_id` | which one the user is talking to |
 | `session_config` | `LLMConfig` + `RuntimeConfig` (§10) |
+| `extras` | free-form application state, stored verbatim and never interpreted — the session-level twin of `ToolExecution.extras` |
+
+`extras` exists so a tool, a registry or a plugin can keep state that outlives
+the process without the application inventing a second file for it. Whoever
+composes the runner hands the state in; it rides along on every save:
+
+```python
+plugin = MemoryPlugin(todo_store=session.extras.setdefault("todos", {}))
+```
+
+Namespace your key and keep the value JSON-serializable — this is dumped with
+the session. The core never reads it ([09](09-plugins.md)).
 
 A `Conversation` is a path and its bookkeeping — `id`, `nodes`, `created_at`,
 `updated_at`, `previous_conversation_id` (the one a compaction replaced, §9) and
