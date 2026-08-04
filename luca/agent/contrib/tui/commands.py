@@ -105,9 +105,11 @@ def recent_models(
     return newest or list((configured or {}).get(provider, ()))[:limit]
 
 
-def _model_annotation(provider: str, model: str) -> str | None:
+def model_context_note(provider: str, model: str) -> str | None:
     """The context window, when the catalog knows it — the one fact that
-    actually differentiates rows in a list this long."""
+    actually tells rows apart in a list this long. Rendered as the row's
+    SECONDARY: a menu row draws primary and secondary, never `annotation`,
+    which only the `@` picker's row uses."""
     record = catalog.get(provider, model)
     if record is None or record.context_window is None:
         return None
@@ -160,13 +162,13 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
             await app._notice(f"model set to {provider}:{model}")
 
         await app.open_menu(
-            [vm.OverlayRow(primary=model, annotation=_model_annotation(provider, model)) for model in models[provider]],
+            [vm.OverlayRow(primary=model, secondary=model_context_note(provider, model)) for model in models[provider]],
             picked_model,
             column=40,
         )
 
     await app.open_menu(
-        [vm.OverlayRow(primary=provider, annotation=f"{len(models[provider])}") for provider in models],
+        [vm.OverlayRow(primary=provider, secondary=f"{len(models[provider])} models") for provider in models],
         picked_provider,
         column=40,
     )

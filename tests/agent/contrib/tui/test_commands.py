@@ -13,7 +13,7 @@ import os
 import time
 
 from luca.agent.contrib.tui import state as vm
-from luca.agent.contrib.tui.app import MENU_MAX_ROWS, AgentApp
+from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, UserTurn
 from luca.agent.contrib.tui.commands import (
     COMMANDS,
@@ -25,11 +25,11 @@ from luca.agent.contrib.tui.commands import (
     recent_models,
     run_palette_choice,
 )
-from luca.agent.contrib.tui.format import short_model
+from luca.agent.contrib.tui.format import fmt_tokens, short_model
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.sessions import save_session
-from luca.agent.contrib.tui.shells import OverlayListView
+from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig, RuntimeConfig
 from luca.client import catalog
@@ -622,8 +622,54 @@ async def test_a_filtered_pick_applies_the_row_that_was_highlighted(tmp_path):
         assert _config(app) == LLMConfig(model=highlighted, provider="openrouter")
 
 
-async def test_a_long_model_list_is_capped_for_display_but_searched_in_full(tmp_path):
-    # the overlay grows to fit its rows and never scrolls
+async def test_every_model_is_offered_and_the_list_scrolls(tmp_path):
+    # the whole line-up is reachable: the stylesheet bounds what is VISIBLE and
+    # the container scrolls, rather than the row list being trimmed
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        await pilot.pause()
+        options = app.query_one(OverlayListView).query_one(".overlay-options")
+
+        assert len(app._menu_rows) == len(pickable_models()["openrouter"])
+        assert options.virtual_size.height > options.size.height  # scrollable
+
+
+async def test_the_query_line_stays_on_screen_under_a_long_list(tmp_path):
+    # without a ceiling the overlay grows past the terminal and takes the
+    # query line with it, leaving no way to narrow the list
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.query_one(OverlayListView).query_one(QueryLine).region.y < app.screen.size.height
+
+
+async def test_arrowing_past_the_visible_rows_scrolls_the_caret_into_view(tmp_path):
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        options = app.query_one(OverlayListView).query_one(".overlay-options")
+        assert options.scroll_offset.y == 0
+
+        for _ in range(25):
+            await pilot.press("down")
+        await pilot.pause()
+
+        assert options.scroll_offset.y > 0
+
+
+async def test_a_model_far_down_the_list_is_reachable_by_typing(tmp_path):
     app = agent_app(tmp_path)
     async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "/model")
@@ -631,16 +677,26 @@ async def test_a_long_model_list_is_capped_for_display_but_searched_in_full(tmp_
         await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
         await pilot.pause()
 
-        assert len(app._menu_rows) == MENU_MAX_ROWS
-        assert len(app._menu_all_rows) > MENU_MAX_ROWS
-
-        # a model far past the cap is still reachable by typing
         view = app.query_one(OverlayListView)
         view.post_message(OverlayListView.QueryChanged(view, "qwen3.8-max"))
         await pilot.pause()
         await pilot.pause()
 
         assert [row.primary for row in app._menu_rows] == ["qwen/qwen3.8-max"]
+
+
+async def test_a_model_row_shows_its_context_window(tmp_path):
+    # a menu row renders `primary` and `secondary`; `annotation` is the @
+    # picker's field and would never appear here
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("enter")  # anthropic
+        await pilot.pause()
+
+        row = next(row for row in app._menu_rows if row.primary == "claude-sonnet-5")
+        assert row.secondary == fmt_tokens(catalog.get("anthropic", "claude-sonnet-5").context_window)
 
 
 async def test_a_model_the_catalog_does_not_list_is_still_selectable(tmp_path):

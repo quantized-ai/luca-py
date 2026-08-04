@@ -108,12 +108,6 @@ from .wiring import build_runner
 __all__ = ["AgentApp", "DEFAULT_THEME"]
 
 
-# The overlay grows to fit its rows and never scrolls, so a long list is
-# trimmed for display the way `files.MAX_ROWS` trims file matches. The query
-# searches every row regardless; the counter reports how many matched.
-MENU_MAX_ROWS = 12
-
-
 class AgentApp(LucaApp):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel_run", show=False),
@@ -715,19 +709,14 @@ class AgentApp(LucaApp):
         self.set_hints(HINTS["menu"])
 
     def _filter_rows(self, query: str) -> list[vm.OverlayRow]:
-        """Rows matching the query, capped for display.
-
-        The overlay grows to fit its rows — it has no scroll — so a list of
-        hundreds has to be trimmed the same way the `@` picker trims its file
-        matches. The query still searches EVERY row; only the display is
-        bounded, and the counter says how many matched."""
+        """Every row matching the query. The overlay list scrolls, so a long
+        result set is bounded by the stylesheet rather than trimmed here."""
         needle = query.lower()
-        matches = [
+        return [
             row
             for row in self._menu_all_rows
             if not needle or needle in row.primary.lower() or needle in (row.secondary or "").lower()
         ]
-        return matches[:MENU_MAX_ROWS]
 
     async def _refresh_overlay(
         self,
@@ -740,8 +729,7 @@ class AgentApp(LucaApp):
         selected: int = 0,
     ) -> None:
         rows = self._filter_rows(query) if filtered else self._menu_all_rows
-        shown = len(rows)
-        counter = f"{shown} of {len(self._menu_all_rows)}" if filtered else f"{shown} files"
+        counter = f"{len(rows)} of {len(self._menu_all_rows)}" if filtered else f"{len(rows)} files"
         state = vm.OverlayState(
             mode=mode,
             rows=rows,

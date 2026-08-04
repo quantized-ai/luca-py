@@ -40,6 +40,9 @@ StatusBar {
 
 #dock {
     height: auto;
+    /* A model list runs to hundreds of rows. Without a ceiling the dock grows
+       past the terminal and takes the transcript and the composer with it. */
+    max-height: 60%;
 }
 
 HintLegend {
@@ -256,10 +259,21 @@ OverlayListView .inner-rule {
     background: $rule;
 }
 
-ApprovalPromptView .prompt-options,
-OverlayListView .overlay-options {
+ApprovalPromptView .prompt-options {
     height: auto;
     padding: 1 0;
+}
+
+OverlayListView .overlay-options {
+    height: auto;
+    /* Bounded so the list scrolls instead of pushing the query line off the
+       screen — a model list runs to hundreds of rows. A cell count, not a
+       percentage: a percentage here resolves against the CONTENT, which is the
+       thing being bounded. Sized to leave the transcript readable under the
+       dock's own ceiling. */
+    max-height: 15;
+    padding: 1 0;
+    scrollbar-size-vertical: 0;
 }
 
 /* ── overlay lists — 1e palette, 1f context picker ───────────────────────── */
