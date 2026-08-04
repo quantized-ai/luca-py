@@ -61,7 +61,7 @@
       "parent_id": null,
       "created_at": 1700000024000,
       "type": "tool_execution",
-      "context_tokens": 95,
+      "context_tokens": 68,
       "tool_call_id": "tc_te_plan",
       "conversation_id": null,
       "raw_tool_call": {
@@ -89,7 +89,7 @@
           ]
         }
       },
-      "tool_spec_id": "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b",
+      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -98,17 +98,141 @@
         "content": [
           {
             "type": "text",
-            "text": "plan updated",
+            "text": "Todo list updated successfully",
+            "metadata": {}
+          },
+          {
+            "type": "text",
+            "text": "[{\"id\": 1, \"content\": \"audit the reader and draft the split\", \"status\": \"in_progress\"}, {\"id\": 2, \"content\": \"move the write path into writer.py\", \"status\": \"pending\"}, {\"id\": 3, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 4, \"content\": \"backfill the tests\", \"status\": \"pending\"}]",
             "metadata": {}
           }
         ],
-        "structured_content": null,
+        "structured_content": {
+          "todos": [
+            {
+              "id": 1,
+              "content": "audit the reader and draft the split",
+              "status": "in_progress"
+            },
+            {
+              "id": 2,
+              "content": "move the write path into writer.py",
+              "status": "pending"
+            },
+            {
+              "id": 3,
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "id": 4,
+              "content": "backfill the tests",
+              "status": "pending"
+            }
+          ],
+          "changed": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
         "metadata": {},
         "is_error": false
       },
       "error": null,
       "started_at": 1700000024000,
       "ended_at": 1700000024400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "te_plan2": {
+      "id": "te_plan2",
+      "parent_id": null,
+      "created_at": 1700000491999,
+      "type": "tool_execution",
+      "context_tokens": 68,
+      "tool_call_id": "tc_te_plan2",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te_plan2",
+        "name": "update_todos",
+        "arguments": {
+          "todos": [
+            {
+              "content": "audit the reader and draft the split",
+              "status": "completed"
+            },
+            {
+              "content": "move the write path into writer.py",
+              "status": "completed"
+            },
+            {
+              "content": "update every import site",
+              "status": "in_progress"
+            },
+            {
+              "content": "backfill the tests",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Todo list updated successfully",
+            "metadata": {}
+          },
+          {
+            "type": "text",
+            "text": "[{\"id\": 1, \"content\": \"audit the reader and draft the split\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"move the write path into writer.py\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"update every import site\", \"status\": \"in_progress\"}, {\"id\": 4, \"content\": \"backfill the tests\", \"status\": \"pending\"}]",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "todos": [
+            {
+              "id": 1,
+              "content": "audit the reader and draft the split",
+              "status": "completed"
+            },
+            {
+              "id": 2,
+              "content": "move the write path into writer.py",
+              "status": "completed"
+            },
+            {
+              "id": 3,
+              "content": "update every import site",
+              "status": "in_progress"
+            },
+            {
+              "id": 4,
+              "content": "backfill the tests",
+              "status": "pending"
+            }
+          ],
+          "changed": [
+            1,
+            2,
+            3
+          ]
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000491999,
+      "ended_at": 1700000492399,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -683,7 +807,7 @@
     }
   },
   "tool_specs": {
-    "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b": {
+    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
       "name": "update_todos",
       "description": "update_todos tool.",
       "input_schema": {
@@ -694,7 +818,7 @@
       "is_private": false,
       "metadata": null,
       "tool_kind": "other",
-      "namespace": null,
+      "namespace": "contrib.memory",
       "version": null,
       "timeout_in_ms": null
     },
@@ -832,6 +956,7 @@
         "cc1",
         "sp2",
         "cc2",
+        "te_plan2",
         "a3",
         "tf1"
       ],

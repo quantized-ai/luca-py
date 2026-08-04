@@ -39,7 +39,16 @@ def test_every_authored_world_is_committed():
 
 
 def test_the_library_covers_the_states_that_matter():
-    assert sorted(LIBRARY) == ["approval", "conversation", "empty", "failures", "planning", "subagents"]
+    assert sorted(LIBRARY) == [
+        "approval",
+        "conversation",
+        "empty",
+        "failures",
+        "planning",
+        "subagents",
+        "todos",
+        "todos-done",
+    ]
 
 
 def test_an_unreadable_world_names_itself(tmp_path):
@@ -191,7 +200,9 @@ def test_the_sessions_screen_lists_the_whole_library_against_a_fixed_clock():
     assert [(row.when, row.first_message) for row in sessions.rows] == [
         ("18m ago", "migrate the event store to sqlite"),
         ("42m ago", "split @luca/store/reader.py into a reader and a writer"),
+        ("55m ago", "plan the whole sqlite migration, step by step"),
         ("2h ago", "add a --json flag to the events command"),
+        ("2h ago", "the pagination test is failing — sort it out"),
         ("3h ago", "clean the build directory and re-run the suite"),
         ("5h ago", "audit the docs and the tests for stale references"),
         ("yesterday", "(empty)"),
@@ -247,17 +258,51 @@ def test_the_mention_path_does_not_depend_on_where_you_run_from(monkeypatch, tmp
     assert row.arg == "/quantized/luca/luca/store/reader.py"
 
 
-def test_the_plan_shows_its_first_step_active():
-    plan = next(b for b in SCREENS["chat"](scene("planning")).transcript if b.kind == "list")
-    assert plan == vm.ListBlock(
-        label="plan · 1 of 4",
+def test_the_plan_is_the_docked_panel_and_not_a_transcript_block():
+    state = SCREENS["chat"](scene("planning"))
+    assert [b for b in state.transcript if b.kind == "list"] == []
+    assert state.plan == vm.ListBlock(
+        label="4 tasks (2 done, 2 open)",
         rows=[
-            vm.ListRow(glyph="active", text="audit the reader and draft the split"),
-            vm.ListRow(glyph="pending", text="move the write path into writer.py"),
-            vm.ListRow(glyph="pending", text="update every import site"),
-            vm.ListRow(glyph="pending", text="backfill the tests"),
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] audit the reader and draft the split", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#2 -[/] move the write path into writer.py", strike=True),
+            vm.ListRow(glyph="active", text="[faint]#3 -[/] update every import site"),
+            vm.ListRow(glyph="pending", text="[faint]#4 -[/] backfill the tests"),
         ],
     )
+
+
+def test_a_busy_world_turns_the_panel_towards_what_the_last_write_moved():
+    assert SCREENS["chat"](scene("todos", busy=True)).plan == vm.ListBlock(
+        label="12 tasks (7 done, 5 open)",
+        rows=[
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] port the reader", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#2 -[/] port the writer", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#3 -[/] port the index", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#4 -[/] port the compactor", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#5 -[/] migrate the schema", strike=True),
+            vm.ListRow(glyph="none", text="[faint]… +7 more[/]"),
+        ],
+    )
+
+
+def test_an_idle_world_leads_with_what_is_still_open():
+    assert SCREENS["chat"](scene("todos")).plan.rows == [
+        vm.ListRow(glyph="pending", text="[faint]#8 -[/] update every import site"),
+        vm.ListRow(glyph="pending", text="[faint]#9 -[/] rewrite the store tests"),
+        vm.ListRow(glyph="pending", text="[faint]#10 -[/] benchmark the new path"),
+        vm.ListRow(glyph="pending", text="[faint]#11 -[/] document the format"),
+        vm.ListRow(glyph="pending", text="[faint]#12 -[/] cut the release note"),
+        vm.ListRow(glyph="none", text="[faint]… +7 completed[/]"),
+    ]
+
+
+def test_a_finished_plan_says_done():
+    assert SCREENS["chat"](scene("todos-done")).plan.label == "Done (3 tasks completed)"
+
+
+def test_a_world_with_no_todos_docks_no_panel():
+    assert SCREENS["chat"](scene("empty")).plan is None
 
 
 def test_the_first_plan_step_fans_out_into_two_tasks_one_reading_one_editing():

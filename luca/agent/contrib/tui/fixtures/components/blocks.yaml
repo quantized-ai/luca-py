@@ -24,12 +24,13 @@ transcript:
     text: an error notice — turn failed
     error: true
   - kind: list
-    label: plan · 2 of 4
+    label: 4 tasks (2 done, 2 open)
     rows:
-      - {glyph: done, text: a completed step}
-      - {glyph: done, text: another completed step}
-      - {glyph: active, text: the step in progress}
-      - {glyph: pending, text: a pending step}
+      - {glyph: active, text: "[faint]#3 -[/] the step in progress"}
+      - {glyph: pending, text: "[faint]#4 -[/] a pending step"}
+      - {glyph: done, text: "[faint]#1 -[/] a completed step", strike: true}
+      - {glyph: done, text: "[faint]#2 -[/] another completed step", strike: true}
+      - {glyph: none, text: "[faint]… +2 completed[/]"}
   - kind: list
     label: context · 2 files · 3.3k tokens
     column: 31

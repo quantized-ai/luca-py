@@ -58,7 +58,7 @@ Transcript block vocabulary (`blocks.py`, rendered from `state.py` models):
 | thinking | `∴ thought for 3s` collapsed; `∴ <activity>` while in progress |
 | text | assistant prose at an 84-column measure; `` `code spans` `` in accent; streaming ends with a block cursor |
 | tool | `▸ name arg` header (6-cell name column), then the result in a `1+│+2` gutter: a faint summary (`84 lines`, `exit 0 · removed 12 paths`), a diff stat (`+7 −1`), or verbatim output with `^o expand`. Denied calls turn `▸` and `denied` to `$error`; **every automatic permission decision is stated** (`approved by rule`, `denied · by rule`) |
-| list | plan / active skills / context set / consumers: a faint label row + glyph rows (`☑ ◉ ☐ ✓`) |
+| list | active skills / context set / consumers, and the docked plan panel (§2.2): a faint label row + glyph rows (`☑ ◉ ☐ ✓`), settled rows struck through |
 | diff | unified diff in the gutter: `[5 line-no][3 sign][code]`, added/removed row backgrounds spanning the block |
 | notice | one faint (or `$error`) row: cancellations, turn failures |
 | task | a subagent: `task · <description> · <status>` label, the child's own blocks nested in a gutter (see §2.1) |
@@ -67,7 +67,7 @@ Interactions: the composer stays enabled while the agent works (mid-turn
 posts queue into the open turn; the placeholder flips to `working…` and the
 legend to `enter queue`); `esc` interrupts a run, backs out of a modal, and
 selects Cancel turn at an approval prompt — it never quits (`ctrl+q` does,
-saving first). `^p` palette, `^t` jump to the plan, `^s` skills, `^o` expand
+saving first). `^p` palette, `^s` skills, `^o` expand
 the last clipped output, `ctrl+v` attach a clipboard image. A drive failure
 renders as a `▸ model` error block plus a recovery prompt (retry / switch
 model / cancel turn; `^r` retries).
@@ -84,6 +84,43 @@ the private result tool renders as nothing (both matched by DECLARATION —
 `is_private`, `is_subagent_spawn` — never by name). A task settles off the
 resolved `ChildConversation`, not the result tool's event, so a cancelled
 subagent stops saying `running`. Resume replays the same tree.
+
+### 2.2 The docked plan panel
+
+The todo list is not a transcript block. It sits in its own region between the
+transcript and the dock (`#plan-dock`), which means it outlives the turn that
+wrote it and stays put while an approval prompt or an overlay takes the dock.
+`ScreenState.plan` carries it, so the gallery and the snapshot suite see
+exactly what the live app draws.
+
+Neither `read_todo` nor `update_todos` renders a transcript row — both are
+matched by DECLARATION (`ToolSpec.namespace == "contrib.memory"` plus the tool
+name, so an application's own `update_todos` is untouched) and swallowed. The
+panel is the only thing either one produces.
+
+What it shows:
+
+```
+12 tasks (7 done, 5 open)      ← zero terms are omitted; `Done (N tasks completed)` when finished
+☐ #8 - update every import site
+☐ #9 - rewrite the store tests
+☐ #10 - benchmark the new path
+☐ #11 - document the format
+☐ #12 - cut the release note
+… +7 completed                 ← names a status only when the hidden rows share one, else `+N more`
+```
+
+Five rows, because every row it takes is a row the transcript never gets back.
+Which five depends on the turn: **while a run is live** it leads with the items
+the last write moved (`structured_content.changed`), struck through, so
+completions scroll past as they happen; **once the run settles** it goes back
+to open-first. Settled rows are struck (Rich `Style(strike=True)`, which
+survives SVG export, so snapshots catch it).
+
+The list itself is read from the `MemoryPlugin`'s store rather than kept as a
+second copy — the store is what the agent answers from, and it is where the
+clear-when-settled rule already ran. Only the main conversation's list is
+docked: one panel cannot speak for a parent and three subagents at once.
 
 ## 3. Slash commands
 

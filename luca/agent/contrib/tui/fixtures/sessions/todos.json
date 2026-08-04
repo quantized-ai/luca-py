@@ -1,0 +1,534 @@
+{
+  "id": "todos",
+  "entries": {
+    "ts1": {
+      "id": "ts1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "turn_start",
+      "context_tokens": 0
+    },
+    "u1": {
+      "id": "u1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "plan the whole sqlite migration, step by step",
+          "metadata": {}
+        }
+      ]
+    },
+    "te1": {
+      "id": "te1",
+      "parent_id": null,
+      "created_at": 1700000018000,
+      "type": "tool_execution",
+      "context_tokens": 164,
+      "tool_call_id": "tc_te1",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te1",
+        "name": "update_todos",
+        "arguments": {
+          "todos": [
+            {
+              "content": "port the reader",
+              "status": "pending"
+            },
+            {
+              "content": "port the writer",
+              "status": "pending"
+            },
+            {
+              "content": "port the index",
+              "status": "pending"
+            },
+            {
+              "content": "port the compactor",
+              "status": "pending"
+            },
+            {
+              "content": "migrate the schema",
+              "status": "pending"
+            },
+            {
+              "content": "backfill old sessions",
+              "status": "pending"
+            },
+            {
+              "content": "drop the jsonl writer",
+              "status": "pending"
+            },
+            {
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "content": "rewrite the store tests",
+              "status": "pending"
+            },
+            {
+              "content": "benchmark the new path",
+              "status": "pending"
+            },
+            {
+              "content": "document the format",
+              "status": "pending"
+            },
+            {
+              "content": "cut the release note",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Todo list updated successfully",
+            "metadata": {}
+          },
+          {
+            "type": "text",
+            "text": "[{\"id\": 1, \"content\": \"port the reader\", \"status\": \"pending\"}, {\"id\": 2, \"content\": \"port the writer\", \"status\": \"pending\"}, {\"id\": 3, \"content\": \"port the index\", \"status\": \"pending\"}, {\"id\": 4, \"content\": \"port the compactor\", \"status\": \"pending\"}, {\"id\": 5, \"content\": \"migrate the schema\", \"status\": \"pending\"}, {\"id\": 6, \"content\": \"backfill old sessions\", \"status\": \"pending\"}, {\"id\": 7, \"content\": \"drop the jsonl writer\", \"status\": \"pending\"}, {\"id\": 8, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 9, \"content\": \"rewrite the store tests\", \"status\": \"pending\"}, {\"id\": 10, \"content\": \"benchmark the new path\", \"status\": \"pending\"}, {\"id\": 11, \"content\": \"document the format\", \"status\": \"pending\"}, {\"id\": 12, \"content\": \"cut the release note\", \"status\": \"pending\"}]",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "todos": [
+            {
+              "id": 1,
+              "content": "port the reader",
+              "status": "pending"
+            },
+            {
+              "id": 2,
+              "content": "port the writer",
+              "status": "pending"
+            },
+            {
+              "id": 3,
+              "content": "port the index",
+              "status": "pending"
+            },
+            {
+              "id": 4,
+              "content": "port the compactor",
+              "status": "pending"
+            },
+            {
+              "id": 5,
+              "content": "migrate the schema",
+              "status": "pending"
+            },
+            {
+              "id": 6,
+              "content": "backfill old sessions",
+              "status": "pending"
+            },
+            {
+              "id": 7,
+              "content": "drop the jsonl writer",
+              "status": "pending"
+            },
+            {
+              "id": 8,
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "id": 9,
+              "content": "rewrite the store tests",
+              "status": "pending"
+            },
+            {
+              "id": 10,
+              "content": "benchmark the new path",
+              "status": "pending"
+            },
+            {
+              "id": 11,
+              "content": "document the format",
+              "status": "pending"
+            },
+            {
+              "id": 12,
+              "content": "cut the release note",
+              "status": "pending"
+            }
+          ],
+          "changed": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000018000,
+      "ended_at": 1700000018400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a1": {
+      "id": "a1",
+      "parent_id": null,
+      "created_at": 1700000030000,
+      "type": "assistant",
+      "context_tokens": 28,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Twelve steps. Starting at the top.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "tf1": {
+      "id": "tf1",
+      "parent_id": null,
+      "created_at": 1700000036000,
+      "type": "turn_finish",
+      "context_tokens": 0,
+      "outcome": "completed",
+      "error": null
+    },
+    "ts2": {
+      "id": "ts2",
+      "parent_id": null,
+      "created_at": 1700000240000,
+      "type": "turn_start",
+      "context_tokens": 0
+    },
+    "u2": {
+      "id": "u2",
+      "parent_id": null,
+      "created_at": 1700000240000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "carry on until the jsonl writer is gone",
+          "metadata": {}
+        }
+      ]
+    },
+    "te2": {
+      "id": "te2",
+      "parent_id": null,
+      "created_at": 1700000564000,
+      "type": "tool_execution",
+      "context_tokens": 164,
+      "tool_call_id": "tc_te2",
+      "conversation_id": null,
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "tc_te2",
+        "name": "update_todos",
+        "arguments": {
+          "todos": [
+            {
+              "content": "port the reader",
+              "status": "completed"
+            },
+            {
+              "content": "port the writer",
+              "status": "completed"
+            },
+            {
+              "content": "port the index",
+              "status": "completed"
+            },
+            {
+              "content": "port the compactor",
+              "status": "completed"
+            },
+            {
+              "content": "migrate the schema",
+              "status": "completed"
+            },
+            {
+              "content": "backfill old sessions",
+              "status": "completed"
+            },
+            {
+              "content": "drop the jsonl writer",
+              "status": "completed"
+            },
+            {
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "content": "rewrite the store tests",
+              "status": "pending"
+            },
+            {
+              "content": "benchmark the new path",
+              "status": "pending"
+            },
+            {
+              "content": "document the format",
+              "status": "pending"
+            },
+            {
+              "content": "cut the release note",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "extras": {},
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Todo list updated successfully",
+            "metadata": {}
+          },
+          {
+            "type": "text",
+            "text": "[{\"id\": 1, \"content\": \"port the reader\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"port the writer\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"port the index\", \"status\": \"completed\"}, {\"id\": 4, \"content\": \"port the compactor\", \"status\": \"completed\"}, {\"id\": 5, \"content\": \"migrate the schema\", \"status\": \"completed\"}, {\"id\": 6, \"content\": \"backfill old sessions\", \"status\": \"completed\"}, {\"id\": 7, \"content\": \"drop the jsonl writer\", \"status\": \"completed\"}, {\"id\": 8, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 9, \"content\": \"rewrite the store tests\", \"status\": \"pending\"}, {\"id\": 10, \"content\": \"benchmark the new path\", \"status\": \"pending\"}, {\"id\": 11, \"content\": \"document the format\", \"status\": \"pending\"}, {\"id\": 12, \"content\": \"cut the release note\", \"status\": \"pending\"}]",
+            "metadata": {}
+          }
+        ],
+        "structured_content": {
+          "todos": [
+            {
+              "id": 1,
+              "content": "port the reader",
+              "status": "completed"
+            },
+            {
+              "id": 2,
+              "content": "port the writer",
+              "status": "completed"
+            },
+            {
+              "id": 3,
+              "content": "port the index",
+              "status": "completed"
+            },
+            {
+              "id": 4,
+              "content": "port the compactor",
+              "status": "completed"
+            },
+            {
+              "id": 5,
+              "content": "migrate the schema",
+              "status": "completed"
+            },
+            {
+              "id": 6,
+              "content": "backfill old sessions",
+              "status": "completed"
+            },
+            {
+              "id": 7,
+              "content": "drop the jsonl writer",
+              "status": "completed"
+            },
+            {
+              "id": 8,
+              "content": "update every import site",
+              "status": "pending"
+            },
+            {
+              "id": 9,
+              "content": "rewrite the store tests",
+              "status": "pending"
+            },
+            {
+              "id": 10,
+              "content": "benchmark the new path",
+              "status": "pending"
+            },
+            {
+              "id": 11,
+              "content": "document the format",
+              "status": "pending"
+            },
+            {
+              "id": 12,
+              "content": "cut the release note",
+              "status": "pending"
+            }
+          ],
+          "changed": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "metadata": {},
+        "is_error": false
+      },
+      "error": null,
+      "started_at": 1700000564000,
+      "ended_at": 1700000564400,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "a2": {
+      "id": "a2",
+      "parent_id": null,
+      "created_at": 1700000576000,
+      "type": "assistant",
+      "context_tokens": 30,
+      "parts": [
+        {
+          "type": "text",
+          "text": "The jsonl writer is gone. Five steps left.",
+          "metadata": {}
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "reasoning": null
+      },
+      "stop_reason": "end_turn"
+    },
+    "tf2": {
+      "id": "tf2",
+      "parent_id": null,
+      "created_at": 1700000582000,
+      "type": "turn_finish",
+      "context_tokens": 0,
+      "outcome": "completed",
+      "error": null
+    }
+  },
+  "tool_specs": {
+    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+      "name": "update_todos",
+      "description": "update_todos tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": null,
+      "is_private": false,
+      "metadata": null,
+      "tool_kind": "other",
+      "namespace": "contrib.memory",
+      "version": null,
+      "timeout_in_ms": null
+    }
+  },
+  "usages": {
+    "c1": {
+      "a1": {
+        "conversation_id": "c1",
+        "entry_id": "a1",
+        "input": 3100,
+        "output": 210,
+        "cache_read": 0,
+        "cache_write": 900,
+        "total_tokens": 0
+      },
+      "a2": {
+        "conversation_id": "c1",
+        "entry_id": "a2",
+        "input": 6400,
+        "output": 180,
+        "cache_read": 14000,
+        "cache_write": 0,
+        "total_tokens": 0
+      }
+    }
+  },
+  "conversations": {
+    "c1": {
+      "id": "c1",
+      "nodes": [
+        "ts1",
+        "u1",
+        "te1",
+        "a1",
+        "tf1",
+        "ts2",
+        "u2",
+        "te2",
+        "a2",
+        "tf2"
+      ],
+      "created_at": 1700000000000,
+      "updated_at": 1700000582000,
+      "previous_conversation_id": null,
+      "depth": 0
+    }
+  },
+  "main_conversation_id": "c1",
+  "session_config": {
+    "extras": {},
+    "llm_config": {
+      "extras": {},
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "reasoning": null
+    },
+    "runtime_config": {
+      "extras": {},
+      "builtin_client_completion_timeout_in_ms": -1,
+      "client_completion_timeout_in_ms": -1,
+      "tool_execution_timeout_in_ms": -1,
+      "llm_completion_cancellation_grace_period": 0,
+      "tool_cancellation_grace_period": 0,
+      "soft_max_steps": -1,
+      "hard_max_steps": -1,
+      "doom_loop_threshold": -1,
+      "subagents_enabled": false,
+      "subagents_max_depth": 1,
+      "subagents_max_per_turn": -1,
+      "subagents_max_workers": -1,
+      "subagent_soft_max_steps": null,
+      "subagent_hard_max_steps": null,
+      "wake_parent_on_subagent_completion": true,
+      "limit_tool_choice_on_soft_max_steps_reached": true,
+      "limit_tool_choice_on_doom_loop_flagged": true
+    }
+  }
+}

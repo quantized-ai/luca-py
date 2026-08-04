@@ -1,10 +1,10 @@
 """luca.agent.contrib.tui — the Textual terminal UI, built as a design system.
 
-A full-screen (alt-screen) app: one scrolling conversation column, a single
-dock slot (composer / approval prompt / overlay list), and modal screens for
-sessions, settings and cost. The visual spec is the design handoff's eleven
-screens; every state is expressible as declarative data and renderable
-without an agent.
+A full-screen (alt-screen) app: one scrolling conversation column, the sticky
+todo panel beneath it, a single dock slot (composer / approval prompt /
+overlay list), and modal screens for sessions, settings and cost. The visual
+spec is the design handoff's eleven screens; every state is expressible as
+declarative data and renderable without an agent.
 
 Layering (the Textual-free modules are the unit-testable core):
 

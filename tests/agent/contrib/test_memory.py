@@ -20,8 +20,11 @@ from luca.agent.contrib.memory import (
     MemoryPlugin,
     ReadScratchPadTool,
     ReadTodoTool,
+    TodoLifecycleMiddleware,
+    TodoListResult,
     UpdateTodosTool,
     WriteScratchPadTool,
+    todos_from_session,
 )
 from luca.agent.contrib.memory.plugin import (
     SCRATCHPAD_SYSTEM_PROMPT,
@@ -34,13 +37,21 @@ from luca.agent.contrib.simple_tool_registry import (
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
+    ExecutionResult,
+    ExecutionStatus,
     SessionConfig,
+    TextContent,
+    ToolCall,
+    ToolExecution,
     ToolSpec,
+    UserMessage,
 )
 from tests.agent.scenarios import (
     MODEL,
     conversation,
     main_conversation,
+    make_session,
+    spec,
 )
 
 SESSION = AgentSession(
@@ -95,6 +106,50 @@ WRITE_SCRATCHPAD_SPEC = ToolSpec(
     },
 )
 
+# Both todo tools report the same shape, so the payload schema is written
+# once. Ids are ON the way out and absent from `update_todos`' arguments: the
+# store numbers the list, the model never does.
+TODO_STATUS_SCHEMA = {
+    "enum": ["pending", "in_progress", "completed", "cancelled"],
+    "title": "TodoStatus",
+    "type": "string",
+}
+
+TODO_LIST_RESULT_SCHEMA = {
+    "$defs": {
+        "StoredTodo": {
+            "additionalProperties": False,
+            "description": "One item as the store holds it — the model's item plus its id.",
+            "properties": {
+                "id": {
+                    "description": "The item's stable number, assigned by the store",
+                    "title": "Id",
+                    "type": "integer",
+                },
+                "content": {
+                    "description": "What this todo item is about",
+                    "title": "Content",
+                    "type": "string",
+                },
+                "status": {"$ref": "#/$defs/TodoStatus", "description": "The item's current status"},
+            },
+            "required": ["id", "content", "status"],
+            "title": "StoredTodo",
+            "type": "object",
+        },
+        "TodoStatus": TODO_STATUS_SCHEMA,
+    },
+    "additionalProperties": False,
+    "description": TodoListResult.__doc__,
+    "properties": {
+        "todos": {"items": {"$ref": "#/$defs/StoredTodo"}, "title": "Todos", "type": "array"},
+        "changed": {"items": {"type": "integer"}, "title": "Changed", "type": "array"},
+    },
+    "required": ["todos", "changed"],
+    "title": "TodoListResult",
+    "type": "object",
+}
+
 READ_TODO_SPEC = ToolSpec(
     name="read_todo",
     description="Read the current todo list",
@@ -105,6 +160,7 @@ READ_TODO_SPEC = ToolSpec(
         "title": "Args",
         "type": "object",
     },
+    output_schema=TODO_LIST_RESULT_SCHEMA,
 )
 
 UPDATE_TODOS_SPEC = ToolSpec(
@@ -117,6 +173,7 @@ UPDATE_TODOS_SPEC = ToolSpec(
         "$defs": {
             "TodoItem": {
                 "additionalProperties": False,
+                "description": "One item as the MODEL sends it. No id: the store assigns those.",
                 "properties": {
                     "content": {
                         "description": "What this todo item is about",
@@ -132,11 +189,7 @@ UPDATE_TODOS_SPEC = ToolSpec(
                 "title": "TodoItem",
                 "type": "object",
             },
-            "TodoStatus": {
-                "enum": ["pending", "in_progress", "completed", "cancelled"],
-                "title": "TodoStatus",
-                "type": "string",
-            },
+            "TodoStatus": TODO_STATUS_SCHEMA,
         },
         "additionalProperties": False,
         "properties": {
@@ -151,6 +204,7 @@ UPDATE_TODOS_SPEC = ToolSpec(
         "title": "Args",
         "type": "object",
     },
+    output_schema=TODO_LIST_RESULT_SCHEMA,
 )
 
 
@@ -257,80 +311,261 @@ async def test_each_plugin_instance_owns_its_own_scratchpad():
 # ── todo-list behavior ────────────────────────────────────────────────────────
 
 
-async def test_read_empty_todo_list_returns_empty_list_repr():
+def items(*pairs: tuple[str, str]) -> dict:
+    return {"todos": [{"content": content, "status": status} for content, status in pairs]}
+
+
+async def write(tool, args: dict) -> ExecutionResult:
+    return await tool.execute(args, SESSION, CONVERSATION, **run_kwargs())
+
+
+async def test_read_empty_todo_list_returns_an_empty_list():
     _, _, read_todo, _ = MemoryPlugin().get_tools()
 
-    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == "[]"
+    assert await write(read_todo, {}) == ExecutionResult(
+        content=[TextContent(text="[]")],
+        structured_content={"todos": [], "changed": []},
+    )
+
+
+async def test_update_todos_numbers_the_list_and_reports_it_back():
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+
+    assert await write(update_todos, items(("T1", "pending"), ("T2", "in_progress"))) == ExecutionResult(
+        content=[
+            TextContent(text="Todo list updated successfully"),
+            TextContent(
+                text='[{"id": 1, "content": "T1", "status": "pending"}, '
+                '{"id": 2, "content": "T2", "status": "in_progress"}]'
+            ),
+        ],
+        structured_content={
+            "todos": [
+                {"id": 1, "content": "T1", "status": "pending"},
+                {"id": 2, "content": "T2", "status": "in_progress"},
+            ],
+            "changed": [1, 2],
+        },
+    )
 
 
 async def test_update_todos_then_read_round_trips():
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("T1", "pending")))
 
-    output = await update_todos._execute(
-        {
-            "todos": [
-                {"content": "T1", "status": "pending"},
-                {"content": "T2", "status": "in_progress"},
-            ]
-        },
-        SESSION,
-        CONVERSATION,
-        **run_kwargs(),
-    )
-
-    assert output == "Todo list updated successfully"
-    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'in_progress'}]"
+    assert await write(read_todo, {}) == ExecutionResult(
+        content=[TextContent(text='[{"id": 1, "content": "T1", "status": "pending"}]')],
+        structured_content={"todos": [{"id": 1, "content": "T1", "status": "pending"}], "changed": []},
     )
 
 
 async def test_update_todos_replaces_the_whole_list():
-    _, _, read_todo, update_todos = MemoryPlugin().get_tools()
-    await update_todos._execute(
-        {
-            "todos": [
-                {"content": "T1", "status": "pending"},
-                {"content": "T2", "status": "pending"},
-                {"content": "T3", "status": "pending"},
-            ]
-        },
-        SESSION,
-        CONVERSATION,
-        **run_kwargs(),
-    )
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("T1", "pending"), ("T2", "pending"), ("T3", "pending")))
 
-    await update_todos._execute(
-        {
-            "todos": [
-                {"content": "T1", "status": "pending"},
-                {"content": "T2", "status": "completed"},
-            ]
-        },
-        SESSION,
-        CONVERSATION,
-        **run_kwargs(),
-    )
+    result = await write(update_todos, items(("T1", "pending"), ("T2", "completed")))
 
-    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'pending'}, {'content': 'T2', 'status': 'completed'}]"
-    )
+    assert result.structured_content == {
+        "todos": [
+            {"id": 1, "content": "T1", "status": "pending"},
+            {"id": 2, "content": "T2", "status": "completed"},
+        ],
+        "changed": [2],
+    }
+
+
+async def test_an_item_keeps_its_id_through_a_reordering():
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("T1", "pending"), ("T2", "pending")))
+
+    result = await write(update_todos, items(("T2", "completed"), ("T1", "pending")))
+
+    assert result.structured_content == {
+        "todos": [
+            {"id": 2, "content": "T2", "status": "completed"},
+            {"id": 1, "content": "T1", "status": "pending"},
+        ],
+        "changed": [2],
+    }
+
+
+async def test_duplicate_contents_keep_their_own_ids():
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("retry", "pending"), ("retry", "pending")))
+
+    result = await write(update_todos, items(("retry", "completed"), ("retry", "pending")))
+
+    assert result.structured_content["todos"] == [
+        {"id": 1, "content": "retry", "status": "completed"},
+        {"id": 2, "content": "retry", "status": "pending"},
+    ]
+
+
+async def test_rewording_an_item_mints_a_new_id():
+    _, _, _, update_todos = MemoryPlugin().get_tools()
+    await write(update_todos, items(("T1", "pending")))
+
+    result = await write(update_todos, items(("T1, but rephrased", "pending")))
+
+    assert result.structured_content == {
+        "todos": [{"id": 2, "content": "T1, but rephrased", "status": "pending"}],
+        "changed": [2],
+    }
 
 
 async def test_update_todos_stores_registry_validated_args_as_plain_text():
-    # The registry's prepare() hands _execute the
+    # The registry's prepare() hands execute() the
     # Args.model_validate(...).model_dump() dict, whose statuses are
     # TodoStatus members — the store (and the next read_todo) must still see
     # plain strings.
     _, _, read_todo, update_todos = MemoryPlugin().get_tools()
     args = UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "completed"}]}).model_dump()
 
-    await update_todos._execute(args, SESSION, CONVERSATION, **run_kwargs())
+    await write(update_todos, args)
 
-    assert await read_todo._execute({}, SESSION, CONVERSATION, **run_kwargs()) == (
-        "[{'content': 'T1', 'status': 'completed'}]"
-    )
+    assert (await write(read_todo, {})).content == [
+        TextContent(text='[{"id": 1, "content": "T1", "status": "completed"}]')
+    ]
 
 
 def test_update_todos_args_reject_an_unknown_status():
     with pytest.raises(ValidationError):
         UpdateTodosTool.Args.model_validate({"todos": [{"content": "T1", "status": "done"}]})
+
+
+# ── the list's lifetime ───────────────────────────────────────────────────────
+
+
+async def test_a_settled_list_is_cleared_by_the_next_user_message():
+    plugin = MemoryPlugin()
+    _, _, _, update_todos = plugin.get_tools()
+    middleware = plugin.get_middleware(SESSION)[0]
+    await write(update_todos, items(("T1", "completed"), ("T2", "cancelled")))
+
+    middleware.before_post_message([])
+
+    assert plugin.todo_store[CONVERSATION] == {"todos": [], "next_id": 3}
+
+
+async def test_a_list_with_work_left_survives_the_next_user_message():
+    plugin = MemoryPlugin()
+    _, _, _, update_todos = plugin.get_tools()
+    middleware = plugin.get_middleware(SESSION)[0]
+    await write(update_todos, items(("T1", "completed"), ("T2", "pending")))
+
+    middleware.before_post_message([])
+
+    assert plugin.todo_store[CONVERSATION] == {
+        "todos": [
+            {"id": 1, "content": "T1", "status": "completed"},
+            {"id": 2, "content": "T2", "status": "pending"},
+        ],
+        "next_id": 3,
+    }
+
+
+async def test_numbering_carries_on_past_a_cleared_list():
+    # The list is what gets dismissed, not the counter: an item added after
+    # two finished ones is #3, never a second #1.
+    plugin = MemoryPlugin()
+    _, _, _, update_todos = plugin.get_tools()
+    middleware = plugin.get_middleware(SESSION)[0]
+    await write(update_todos, items(("T1", "completed"), ("T2", "completed")))
+    middleware.before_post_message([])
+
+    result = await write(update_todos, items(("T3", "pending")))
+
+    assert result.structured_content == {
+        "todos": [{"id": 3, "content": "T3", "status": "pending"}],
+        "changed": [3],
+    }
+
+
+# ── rebuilding a stored session's list ────────────────────────────────────────
+
+
+def todo_execution(entry_id: str, todos: list[dict]) -> ToolExecution:
+    return ToolExecution(
+        id=entry_id,
+        created_at=500,
+        tool_call_id=f"tc_{entry_id}",
+        raw_tool_call=ToolCall(id=f"tc_{entry_id}", name="update_todos", arguments={"todos": []}),
+        tool_spec=spec("update_todos", namespace="contrib.memory"),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(
+            content=[TextContent(text="ok")],
+            structured_content={"todos": todos, "changed": [item["id"] for item in todos]},
+        ),
+    )
+
+
+def stored(entry_ids: list[str], entries: dict) -> AgentSession:
+    return make_session(
+        id="s_stored",
+        entries=entries,
+        conversations={"c1": conversation("c1", entry_ids, created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+
+def test_todos_from_session_rebuilds_the_last_written_list():
+    session = stored(
+        ["te1", "te2"],
+        {
+            "te1": todo_execution("te1", [{"id": 1, "content": "T1", "status": "pending"}]),
+            "te2": todo_execution(
+                "te2",
+                [
+                    {"id": 1, "content": "T1", "status": "completed"},
+                    {"id": 2, "content": "T2", "status": "pending"},
+                ],
+            ),
+        },
+    )
+
+    assert todos_from_session(session) == {
+        "todos": [
+            {"id": 1, "content": "T1", "status": "completed"},
+            {"id": 2, "content": "T2", "status": "pending"},
+        ],
+        "next_id": 3,
+    }
+
+
+def test_todos_from_session_replays_the_clear_and_keeps_the_counter():
+    # A plan that finished two turns ago rebuilds as an empty list — but one
+    # whose numbering has already reached 3, so a resumed session does not
+    # start handing out ids the user has seen.
+    session = stored(
+        ["te1", "u1"],
+        {
+            "te1": todo_execution(
+                "te1",
+                [
+                    {"id": 1, "content": "T1", "status": "completed"},
+                    {"id": 2, "content": "T2", "status": "completed"},
+                ],
+            ),
+            "u1": UserMessage(id="u1", created_at=600, parts=[TextContent(text="thanks")]),
+        },
+    )
+
+    assert todos_from_session(session) == {"todos": [], "next_id": 3}
+
+
+def test_todos_from_a_session_with_no_todo_history_is_empty():
+    assert todos_from_session(stored([], {})) == {"todos": [], "next_id": 1}
+
+
+def test_get_middleware_hydrates_the_plugin_onto_the_session():
+    session = stored(
+        ["te1"],
+        {"te1": todo_execution("te1", [{"id": 1, "content": "T1", "status": "in_progress"}])},
+    )
+    plugin = MemoryPlugin()
+
+    middleware = plugin.get_middleware(session)
+
+    assert [type(m) for m in middleware] == [TodoLifecycleMiddleware]
+    assert plugin.todo_store == {"c1": {"todos": [{"id": 1, "content": "T1", "status": "in_progress"}], "next_id": 2}}

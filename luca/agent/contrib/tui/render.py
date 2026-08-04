@@ -10,6 +10,14 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 
+from luca.agent.contrib.memory import (
+    changed_of,
+    is_open,
+    is_todo_tool,
+    is_todo_update,
+    todos_from_session,
+    todos_of,
+)
 from luca.agent.core import declares_spawn
 from luca.agent.core.models import (
     NONTERMINAL_STATUSES,
@@ -280,7 +288,12 @@ def _completed_summary(tool: str, lines: list[str]) -> str | None:
     return None
 
 
-# ── plan (todo) blocks ────────────────────────────────────────────────────────
+# ── the sticky plan (todo) panel ──────────────────────────────────────────────
+
+# How many todo rows the panel shows before it collapses the rest into one
+# summary row. The panel is docked, so every row it takes is a row the
+# transcript never gets back.
+PLAN_ROWS = 5
 
 _TODO_GLYPHS = {
     "completed": "done",
@@ -290,28 +303,93 @@ _TODO_GLYPHS = {
 }
 
 
-def plan_block(todos: list[dict]) -> vm.ListBlock:
-    """The memory plugin's todo list as the design's plan block."""
-    rows = [
-        vm.ListRow(
-            glyph=_TODO_GLYPHS.get(str(item.get("status", "pending")), "pending"), text=str(item.get("content", ""))
-        )
-        for item in todos
+def _plan_label(todos: list[dict]) -> str:
+    """The panel's header. Zero terms are omitted, so a list nobody has
+    started reads `3 tasks (3 open)` rather than `(0 done, 3 open)`."""
+    total = len(todos)
+    noun = "task" if total == 1 else "tasks"
+    open_count = sum(1 for item in todos if is_open(str(item.get("status", ""))))
+    if open_count == 0:
+        return f"Done ({total} {noun} completed)"
+    done = total - open_count
+    counts = f"{done} done, {open_count} open" if done else f"{open_count} open"
+    return f"{total} {noun} ({counts})"
+
+
+def _plan_row(item: dict) -> vm.ListRow:
+    settled = not is_open(str(item.get("status", "")))
+    # The id is span-tagged rather than folded into the text so it stays faint
+    # against the item itself, which is what makes `#12` scannable.
+    return vm.ListRow(
+        glyph=_TODO_GLYPHS.get(str(item.get("status", "pending")), "pending"),
+        text=f"[faint]#{item.get('id', '?')} -[/] {item.get('content', '')}",
+        strike=settled,
+    )
+
+
+def _overflow_row(hidden: list[dict]) -> vm.ListRow:
+    """The `… +N` row. It names a status only when every hidden item shares
+    one — a mixed remainder that claimed to be `completed` would be a lie
+    about work still outstanding."""
+    statuses = {is_open(str(item.get("status", ""))) for item in hidden}
+    label = {frozenset({True}): "pending", frozenset({False}): "completed"}.get(frozenset(statuses), "more")
+    return vm.ListRow(glyph="none", text=f"[faint]… +{len(hidden)} {label}[/]")
+
+
+def _plan_order(todos: list[dict], changed: Sequence[int], running: bool) -> list[dict]:
+    """Which end of the list the window sits on.
+
+    A list that fits is left in its own order: reordering rows nobody was
+    going to lose is motion for its own sake, and the numbers are what the
+    user tracks. Past that, the order decides what survives the window —
+    while a turn runs the panel follows the work, leading with the items that
+    write just moved so completions scroll past as they happen; once it
+    settles the panel goes back to being a to-do list, open items first."""
+    if len(todos) <= PLAN_ROWS:
+        return list(todos)
+    if running and changed:
+        moved = set(changed)
+        return [item for item in todos if item.get("id") in moved] + [
+            item for item in todos if item.get("id") not in moved
+        ]
+    return [item for item in todos if is_open(str(item.get("status", "")))] + [
+        item for item in todos if not is_open(str(item.get("status", "")))
     ]
-    done = sum(1 for item in todos if str(item.get("status")) == "completed")
-    active = min(done + 1, len(todos))
-    return vm.ListBlock(label=f"plan · {active} of {len(todos)}", rows=rows)
 
 
-def is_plan_update(execution: ToolExecution) -> bool:
-    return execution.raw_tool_call.name == "update_todos"
-
-
-def plan_from_execution(execution: ToolExecution) -> vm.ListBlock | None:
-    todos = execution.raw_tool_call.arguments.get("todos")
-    if not isinstance(todos, list):
+def plan_block(
+    todos: list[dict],
+    *,
+    changed: Sequence[int] = (),
+    running: bool = False,
+) -> vm.ListBlock | None:
+    """The memory plugin's todo list as the sticky plan panel, or None when
+    there is nothing to show. `changed` is the ids the last write moved."""
+    if not todos:
         return None
-    return plan_block([item for item in todos if isinstance(item, dict)])
+    ordered = _plan_order(todos, changed, running)
+    shown, hidden = ordered[:PLAN_ROWS], ordered[PLAN_ROWS:]
+    rows = [_plan_row(item) for item in shown]
+    if hidden:
+        rows.append(_overflow_row(hidden))
+    return vm.ListBlock(label=_plan_label(todos), rows=rows)
+
+
+def last_todo_update(session: AgentSession) -> ToolExecution | None:
+    """The most recent `update_todos` on the main conversation."""
+    for node_id in reversed(session.conversations[session.main_conversation_id].nodes):
+        entry = session.entries.get(node_id)
+        if isinstance(entry, ToolExecution) and is_todo_update(entry):
+            return entry
+    return None
+
+
+def plan_from_session(session: AgentSession, *, running: bool = False) -> vm.ListBlock | None:
+    """The panel a stored session shows. Replays the same lifecycle the plugin
+    does, so the panel and the agent's own list cannot disagree."""
+    todos = todos_from_session(session)["todos"]
+    last = last_todo_update(session) if running else None
+    return plan_block(todos, changed=changed_of(last) if last is not None else (), running=running)
 
 
 # ── subagents ─────────────────────────────────────────────────────────────────
@@ -416,11 +494,11 @@ def _execution_blocks(entry: ToolExecution, resolve_result: ResultResolver | Non
         if entry.status is ExecutionStatus.REFUSED and entry.error is not None:
             return [vm.NoticeBlock(text=entry.error.error_message, error=True)]
         return []
-    if is_plan_update(entry):
-        if entry.status is not ExecutionStatus.COMPLETED:
-            return []
-        plan = plan_from_execution(entry)
-        return [plan] if plan is not None else []
+    if is_todo_tool(entry):
+        # Both halves of the pair render as the sticky panel, which is not a
+        # transcript block — so the transcript shows neither the write nor the
+        # read that so often precedes it.
+        return []
     result_text, is_error = None, False
     if resolve_result is not None and entry.status not in NONTERMINAL_STATUSES:
         result_text, is_error = resolve_result(entry)
@@ -463,10 +541,6 @@ def _conversation_blocks(
     if conversation is None:
         return []
     blocks: list[vm.Block] = []
-    # The plan is ONE block that the run kept rewriting, not one per update —
-    # the live app mutates it in place, so the derivation has to collapse it
-    # the same way or a resumed session and a derived fixture disagree.
-    plan_at: int | None = None
     for node_id in conversation.nodes:
         entry = session.entries.get(node_id)
         if isinstance(entry, ChildConversation):
@@ -479,13 +553,7 @@ def _conversation_blocks(
                 )
             )
             continue
-        for block in entry_blocks(entry, resolve_result=resolve_result, subagent=subagent):
-            if isinstance(block, vm.ListBlock):  # only a plan update makes one
-                if plan_at is not None:
-                    blocks[plan_at] = block
-                    continue
-                plan_at = len(blocks)
-            blocks.append(block)
+        blocks.extend(entry_blocks(entry, resolve_result=resolve_result, subagent=subagent))
     return blocks
 
 
@@ -517,6 +585,19 @@ def picker_rows(
 # ── session previews (1i) ─────────────────────────────────────────────────────
 
 
+def _preview_todo(execution: ToolExecution) -> str | None:
+    """A todo call as one preview row: the item in progress, or failing that
+    the first still open. A list with nothing open previews as nothing — the
+    plan is over and the rows are better spent on what came after it."""
+    todos = todos_of(execution) or []
+    active = next((item for item in todos if item.get("status") == "in_progress"), None)
+    if active is None:
+        active = next((item for item in todos if is_open(str(item.get("status", "")))), None)
+    if active is None:
+        return None
+    return f"[accent]◉[/] {active.get('content', '')}"
+
+
 def preview_rows(session: AgentSession, count: int = 3) -> list[str]:
     """The final transcript rows of a session, compact, span-tagged — the
     sessions screen's `preview · last turn` block, so resume is never blind."""
@@ -527,15 +608,14 @@ def preview_rows(session: AgentSession, count: int = 3) -> list[str]:
             break
         entry = session.entries.get(node_id)
         if isinstance(entry, ToolExecution):
-            if entry.raw_tool_call.name == "update_todos":
-                todos = entry.raw_tool_call.arguments.get("todos") or []
-                active = next(
-                    (t.get("content") for t in todos if isinstance(t, dict) and t.get("status") == "in_progress"),
-                    None,
-                )
-                if active:
-                    rows.append(f"[accent]◉[/] {active}")
-                    continue
+            if is_todo_tool(entry):
+                # The same rule the transcript follows: a todo call is the
+                # panel, not a row. The one thing worth previewing is what the
+                # session would resume ON — the item it was working through.
+                active = _preview_todo(entry)
+                if active is not None:
+                    rows.append(active)
+                continue
             rows.append(f"▸ {entry.raw_tool_call.name.ljust(6)} {tool_arg(entry)}")
         elif isinstance(entry, UserMessage):
             first = user_transcript_text(entry.parts).strip().splitlines()

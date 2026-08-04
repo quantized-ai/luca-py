@@ -22,7 +22,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from . import state as vm
-from .blocks import TaskBlockView, build_block
+from .blocks import ListBlockView, TaskBlockView, build_block
 from .chrome import Composer, HintLegend, StatusBar
 from .format import HINTS, MIN_COLUMNS
 from .modals import CostScreen, SessionsScreen, SettingsScreen
@@ -63,6 +63,10 @@ class LucaApp(App):
         yield StatusBar(id="status")
         yield Static(classes="rule")
         yield VerticalScroll(id="transcript", can_focus=False)
+        # Mounted once and hidden, never mounted on demand: the panel updates
+        # on every todo write, and `set_plan` has to stay callable from the
+        # synchronous paths (`_set_busy`) that mounting would not allow.
+        yield Vertical(ListBlockView(vm.ListBlock()), id="plan-dock")
         yield Vertical(id="dock")
         yield HintLegend(id="hints")
         yield Static("luca needs 60 columns", id="too-narrow", markup=False)
@@ -111,6 +115,21 @@ class LucaApp(App):
 
     def dim_transcript(self, dimmed: bool) -> None:
         self.transcript.set_class(dimmed, "-dimmed")
+
+    # ── the sticky plan panel ─────────────────────────────────────────────────
+
+    @property
+    def plan_view(self) -> ListBlockView:
+        return self.query_one("#plan-dock", Vertical).query_one(ListBlockView)
+
+    def set_plan(self, plan: vm.ListBlock | None) -> None:
+        """Show, update or hide the sticky todo panel. Synchronous by design —
+        it is called from the turn-boundary paths, not only from event
+        handlers."""
+        view = self.plan_view
+        view.display = plan is not None
+        if plan is not None:
+            view.apply(plan)
 
     # ── the dock: composer / approval / overlay ───────────────────────────────
 
@@ -177,6 +196,7 @@ class LucaApp(App):
         await self.clear_transcript()
         for block in state.transcript:
             await self.mount_block(block)
+        self.set_plan(state.plan)
         dock = state.dock()
         if dock == "approval":
             await self.show_approval(state.approval)

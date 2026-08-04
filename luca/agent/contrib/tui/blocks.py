@@ -360,7 +360,7 @@ class ListBlockView(_Line):
         body = row.text
         if self.model.column and row.annotation:
             body = body.ljust(self.model.column)
-        text.append_text(spans(body, tokens, Style(color=row_color)))
+        text.append_text(spans(body, tokens, Style(color=row_color, strike=row.strike or None)))
         if row.annotation:
             text.append("  ")
             text.append_text(spans(row.annotation, tokens, Style(color=tokens.faint)))

@@ -10,10 +10,9 @@ from luca.agent.contrib.tui.render import (
     child_links,
     diff_stat,
     entry_blocks,
-    is_plan_update,
     is_runtime_plumbing,
     plan_block,
-    plan_from_execution,
+    plan_from_session,
     preview_rows,
     subagent_task,
     task_status,
@@ -393,59 +392,163 @@ def test_diff_stat_is_none_without_changes():
     assert diff_stat("--- a/f\n+++ b/f\n context\n") is None
 
 
-# ── plan blocks ───────────────────────────────────────────────────────────────
+# ── the sticky plan panel ─────────────────────────────────────────────────────
 
 
-def test_plan_block_maps_statuses_to_glyphs_and_counts_progress():
+def todo(todo_id: int, content: str, status: str) -> dict:
+    return {"id": todo_id, "content": content, "status": status}
+
+
+def todo_execution(entry_id: str, todos: list[dict], changed: list[int]) -> ToolExecution:
+    """A completed `update_todos`, written the way the memory plugin writes
+    one — the numbered list on `structured_content`, never on the arguments."""
+    return execution(
+        "update_todos",
+        ExecutionStatus.COMPLETED,
+        {"todos": [{"content": item["content"], "status": item["status"]} for item in todos]},
+        id=entry_id,
+        tool_call_id=f"tc_{entry_id}",
+        tool_spec=spec("update_todos", namespace="contrib.memory"),
+        result=ExecutionResult(
+            content=[TextContent(text="Todo list updated successfully")],
+            structured_content={"todos": todos, "changed": changed},
+        ),
+    )
+
+
+def test_plan_block_numbers_the_rows_and_strikes_the_settled_ones():
+    # Four items fit the window, so they stay in their own order — nothing is
+    # at risk of being dropped, and the numbers are what the user tracks.
     assert plan_block(
         [
-            {"content": "read the file", "status": "completed"},
-            {"content": "edit it", "status": "in_progress"},
-            {"content": "run tests", "status": "pending"},
-            {"content": "drop the spike", "status": "cancelled"},
-            {"content": "unstated"},
+            todo(1, "read the file", "completed"),
+            todo(2, "edit it", "in_progress"),
+            todo(3, "run tests", "pending"),
+            todo(4, "drop the spike", "cancelled"),
         ]
     ) == vm.ListBlock(
-        label="plan · 2 of 5",
+        label="4 tasks (2 done, 2 open)",
         rows=[
-            vm.ListRow(glyph="done", text="read the file"),
-            vm.ListRow(glyph="active", text="edit it"),
-            vm.ListRow(glyph="pending", text="run tests"),
-            vm.ListRow(glyph="done", text="drop the spike"),
-            vm.ListRow(glyph="pending", text="unstated"),
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] read the file", strike=True),
+            vm.ListRow(glyph="active", text="[faint]#2 -[/] edit it"),
+            vm.ListRow(glyph="pending", text="[faint]#3 -[/] run tests"),
+            vm.ListRow(glyph="done", text="[faint]#4 -[/] drop the spike", strike=True),
         ],
     )
 
 
-def test_plan_block_clamps_the_active_step_to_the_list():
-    assert plan_block(
-        [
-            {"content": "a", "status": "completed"},
-            {"content": "b", "status": "completed"},
-        ]
-    ) == vm.ListBlock(
-        label="plan · 2 of 2",
+def test_a_list_that_overflows_the_window_leads_with_what_is_open():
+    assert [
+        row.text
+        for row in plan_block([todo(n, f"step {n}", "completed" if n < 3 else "pending") for n in range(1, 7)]).rows
+    ] == [
+        "[faint]#3 -[/] step 3",
+        "[faint]#4 -[/] step 4",
+        "[faint]#5 -[/] step 5",
+        "[faint]#6 -[/] step 6",
+        "[faint]#1 -[/] step 1",
+        "[faint]… +1 completed[/]",
+    ]
+
+
+def test_plan_block_omits_a_zero_done_count():
+    assert plan_block([todo(1, "a", "pending")]) == vm.ListBlock(
+        label="1 task (1 open)",
+        rows=[vm.ListRow(glyph="pending", text="[faint]#1 -[/] a")],
+    )
+
+
+def test_plan_block_of_a_finished_list_says_done():
+    assert plan_block([todo(1, "a", "completed"), todo(2, "b", "cancelled")]) == vm.ListBlock(
+        label="Done (2 tasks completed)",
         rows=[
-            vm.ListRow(glyph="done", text="a"),
-            vm.ListRow(glyph="done", text="b"),
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] a", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#2 -[/] b", strike=True),
         ],
     )
 
 
-def test_is_plan_update_matches_by_tool_name():
-    assert is_plan_update(execution("update_todos", ExecutionStatus.PENDING)) is True
-    assert is_plan_update(execution("bash", ExecutionStatus.PENDING)) is False
+def test_plan_block_of_an_empty_list_is_none():
+    assert plan_block([]) is None
 
 
-def test_plan_from_execution_reads_todos_and_drops_non_dict_items():
-    block = plan_from_execution(
-        execution("update_todos", ExecutionStatus.PENDING, {"todos": [{"content": "a", "status": "pending"}, "junk"]})
+def test_plan_block_windows_to_five_rows_and_names_a_uniform_remainder():
+    assert plan_block([todo(n, f"step {n}", "completed" if n <= 7 else "pending") for n in range(1, 13)]) == (
+        vm.ListBlock(
+            label="12 tasks (7 done, 5 open)",
+            rows=[
+                vm.ListRow(glyph="pending", text="[faint]#8 -[/] step 8"),
+                vm.ListRow(glyph="pending", text="[faint]#9 -[/] step 9"),
+                vm.ListRow(glyph="pending", text="[faint]#10 -[/] step 10"),
+                vm.ListRow(glyph="pending", text="[faint]#11 -[/] step 11"),
+                vm.ListRow(glyph="pending", text="[faint]#12 -[/] step 12"),
+                vm.ListRow(glyph="none", text="[faint]… +7 completed[/]"),
+            ],
+        )
     )
-    assert block == vm.ListBlock(label="plan · 1 of 1", rows=[vm.ListRow(glyph="pending", text="a")])
 
 
-def test_plan_from_execution_without_a_list_is_none():
-    assert plan_from_execution(execution("update_todos", ExecutionStatus.PENDING, {"todos": "nope"})) is None
+def test_plan_block_calls_a_mixed_remainder_more():
+    # Six open and two done: the window takes five of the open ones, so what
+    # is left over is one open item AND two settled ones. Calling that
+    # "completed" would claim work that is still outstanding.
+    block = plan_block([todo(n, f"step {n}", "completed" if n > 6 else "pending") for n in range(1, 9)])
+    assert block.rows[-1] == vm.ListRow(glyph="none", text="[faint]… +3 more[/]")
+
+
+def test_running_plan_block_leads_with_what_the_last_write_moved():
+    todos = [todo(n, f"step {n}", "completed" if n <= 3 else "pending") for n in range(1, 7)]
+    assert plan_block(todos, changed=[2, 3], running=True) == vm.ListBlock(
+        label="6 tasks (3 done, 3 open)",
+        rows=[
+            vm.ListRow(glyph="done", text="[faint]#2 -[/] step 2", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#3 -[/] step 3", strike=True),
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] step 1", strike=True),
+            vm.ListRow(glyph="pending", text="[faint]#4 -[/] step 4"),
+            vm.ListRow(glyph="pending", text="[faint]#5 -[/] step 5"),
+            vm.ListRow(glyph="none", text="[faint]… +1 pending[/]"),
+        ],
+    )
+
+
+def test_plan_from_session_replays_the_last_write():
+    session = make_session(
+        id="s_plan",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="plan it")]),
+            "te1": todo_execution("te1", [todo(1, "a", "pending"), todo(2, "b", "pending")], [1, 2]),
+            "te2": todo_execution("te2", [todo(1, "a", "completed"), todo(2, "b", "pending")], [1]),
+        },
+        conversations={"c1": conversation("c1", ["u1", "te1", "te2"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert plan_from_session(session) == vm.ListBlock(
+        label="2 tasks (1 done, 1 open)",
+        rows=[
+            vm.ListRow(glyph="done", text="[faint]#1 -[/] a", strike=True),
+            vm.ListRow(glyph="pending", text="[faint]#2 -[/] b"),
+        ],
+    )
+
+
+def test_plan_from_session_is_none_once_a_settled_list_was_dismissed():
+    # The list finished, then the user spoke — which is what clears it. The
+    # panel a resumed session shows has to agree with the agent's own list.
+    session = make_session(
+        id="s_plan_done",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="plan it")]),
+            "te1": todo_execution("te1", [todo(1, "a", "completed")], [1]),
+            "u2": UserMessage(id="u2", created_at=600, parts=[TextContent(text="thanks")]),
+        },
+        conversations={"c1": conversation("c1", ["u1", "te1", "u2"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert plan_from_session(session) is None
 
 
 # ── runtime plumbing ──────────────────────────────────────────────────────────
@@ -575,25 +678,10 @@ PREVIEW_SESSION = make_session(
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="ok")]),
         ),
-        "te2": ToolExecution(
-            id="te2",
-            conversation_id="c1",
-            parent_id="te1",
-            created_at=500,
-            tool_call_id="tc2",
-            raw_tool_call=ToolCall(
-                id="tc2",
-                name="update_todos",
-                arguments={
-                    "todos": [
-                        {"content": "read the file", "status": "completed"},
-                        {"content": "run tests", "status": "in_progress"},
-                    ]
-                },
-            ),
-            tool_spec=spec("update_todos"),
-            status=ExecutionStatus.COMPLETED,
-            result=ExecutionResult(content=[TextContent(text="ok")]),
+        "te2": todo_execution(
+            "te2",
+            [todo(1, "read the file", "completed"), todo(2, "run tests", "in_progress")],
+            [1, 2],
         ),
     },
     conversations={"c1": conversation("c1", ["u1", "ts", "a1", "te1", "te2"])},
@@ -749,16 +837,17 @@ def test_task_status_reads_the_link_not_the_tool():
 
 
 PLAN_SESSION = make_session(
-    id="s_plan",
+    id="s_plan_transcript",
     entries={
         "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="migrate the store")]),
-        "te1": execution("update_todos", ExecutionStatus.COMPLETED, {"todos": TODOS_FIRST}, id="te1"),
+        "te1": todo_execution("te1", [todo(1, "read the schema", "completed")], [1]),
         "te2": execution(
-            "update_todos",
+            "read_todo",
             ExecutionStatus.COMPLETED,
-            {"todos": TODOS_SECOND},
             id="te2",
             tool_call_id="tc2",
+            tool_spec=spec("read_todo", namespace="contrib.memory"),
+            result=ExecutionResult(content=[TextContent(text="[]")]),
         ),
     },
     conversations={"c1": conversation("c1", ["u1", "te1", "te2"])},
@@ -767,16 +856,31 @@ PLAN_SESSION = make_session(
 )
 
 
-def test_transcript_blocks_collapse_repeated_plan_updates_into_one_block():
-    assert transcript_blocks(PLAN_SESSION) == [
-        vm.UserBlock(text="migrate the store"),
-        vm.ListBlock(
-            label="plan · 2 of 2",
-            rows=[
-                vm.ListRow(glyph="done", text="read the schema"),
-                vm.ListRow(glyph="active", text="write the migration"),
-            ],
-        ),
+def test_transcript_blocks_omit_both_halves_of_the_todo_pair():
+    # The list is the docked panel, not a transcript block — and hiding only
+    # the write is what made a preceding `read_todo` look like it did the work.
+    assert transcript_blocks(PLAN_SESSION) == [vm.UserBlock(text="migrate the store")]
+
+
+def test_transcript_blocks_keep_a_same_named_tool_from_another_namespace():
+    session = make_session(
+        id="s_plan_foreign",
+        entries={
+            "te1": execution(
+                "update_todos",
+                ExecutionStatus.COMPLETED,
+                {"todos": []},
+                id="te1",
+                result=ExecutionResult(content=[TextContent(text="ok")]),
+            )
+        },
+        conversations={"c1": conversation("c1", ["te1"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert transcript_blocks(session) == [
+        vm.ToolBlock(tool="update_todos", arg="todos=[]", status="ok", result=vm.ToolResult(summary=""))
     ]
 
 

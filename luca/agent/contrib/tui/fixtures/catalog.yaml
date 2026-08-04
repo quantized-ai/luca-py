@@ -29,10 +29,29 @@
   session: subagents
 
 # A mentioned file, a plan, and the plan's first step carried out by two
-# subagents at once — one reading, one editing.
+# subagents at once — one reading, one editing. The plan itself is the docked
+# panel under the transcript, not a transcript block.
 - name: chat/planning
   screen: chat
   session: planning
+
+# The panel at scale: twelve steps, five rows, the rest collapsed. Idle, so it
+# leads with what is still open.
+- name: chat/todos
+  screen: chat
+  session: todos
+
+# The same list mid-turn: the panel follows the work, so the items the last
+# write just moved come first, struck through.
+- name: chat/todos-running
+  screen: chat
+  session: todos
+  world: {busy: true}
+
+# Everything done. The panel says so and stays until the user speaks again.
+- name: chat/todos-done
+  screen: chat
+  session: todos-done
 
 - name: chat/failures
   screen: chat

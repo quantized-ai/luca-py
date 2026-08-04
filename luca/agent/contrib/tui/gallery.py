@@ -38,7 +38,7 @@ from luca.agent.core.projection import ConversationProjector, tool_message_text
 from . import state as vm
 from .format import HINTS, short_model
 from .frame import LucaApp
-from .render import transcript_blocks
+from .render import plan_from_session, transcript_blocks
 from .shells import OverlayListView
 from .usage import status_counter
 
@@ -123,6 +123,7 @@ def session_state(session: AgentSession, *, cwd: str = "~") -> vm.ScreenState:
             cost=cost,
         ),
         transcript=transcript_blocks(session, resolve_result=resolve),
+        plan=plan_from_session(session),
         composer=vm.ComposerState(),
         hints=HINTS["idle"],
     )

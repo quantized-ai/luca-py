@@ -42,6 +42,13 @@ StatusBar {
     height: auto;
 }
 
+/* ── the sticky plan panel — between the transcript and the dock ─────────── */
+
+#plan-dock {
+    height: auto;
+    padding: 0 2;
+}
+
 HintLegend {
     height: 1;
     padding: 0 2;
@@ -64,6 +71,7 @@ Screen.-too-narrow #too-narrow {
 Screen.-too-narrow #status,
 Screen.-too-narrow .rule,
 Screen.-too-narrow #transcript,
+Screen.-too-narrow #plan-dock,
 Screen.-too-narrow #dock,
 Screen.-too-narrow #hints {
     display: none;

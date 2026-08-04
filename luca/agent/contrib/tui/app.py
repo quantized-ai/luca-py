@@ -31,6 +31,7 @@ from typing import ClassVar
 from textual.binding import Binding
 from textual.widgets import TextArea
 
+from luca.agent.contrib.memory import MemoryPlugin, changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
@@ -71,7 +72,6 @@ from . import state as vm
 from .approvals import build_approval_prompts
 from .blocks import (
     AssistantText,
-    ListBlockView,
     TaskBlockView,
     ThinkingLine,
     ToolBlockView,
@@ -87,11 +87,10 @@ from .render import (
     child_links,
     entry_blocks,
     filter_rows,
-    is_plan_update,
     is_runtime_plumbing,
     mention_blocks,
     picker_rows,
-    plan_from_execution,
+    plan_block,
     subagent_task,
     tool_block,
     user_transcript_text,
@@ -109,7 +108,6 @@ class AgentApp(LucaApp):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel_run", show=False),
         Binding("ctrl+p", "palette", show=False, priority=True),
-        Binding("ctrl+t", "goto_plan", show=False, priority=True),
         Binding("ctrl+s", "show_skills", show=False, priority=True),
         Binding("ctrl+o", "expand_output", show=False, priority=True),
         Binding("ctrl+v", "paste_image", show=False, priority=True),
@@ -163,8 +161,11 @@ class AgentApp(LucaApp):
         self._thinking_started: dict[str, float] = {}
         self._live_text: dict[str, AssistantText | None] = {}
         self._tool_views: dict[str, ToolBlockView] = {}
-        self._plan_views: dict[str, ListBlockView] = {}
         self._tasks: dict[str, TaskBlockView] = {}
+        # The ids the running turn's last todo write moved. Presentation only —
+        # the list itself is read straight off the memory plugin's store, so
+        # there is no second copy of it to keep in step.
+        self._plan_changed: list[int] = []
         self._pending_images: list[ImageContent] = []
         # Which calls the user answered at a prompt — everything else that ran
         # was decided by rule, and the transcript says so.
@@ -234,6 +235,11 @@ class AgentApp(LucaApp):
         except AgentError as exc:
             await self._notice(str(exc), error=True)
             return
+        # A settled plan is dismissed by the next thing the user says — the
+        # memory plugin's middleware did that inside `post_message`, and this
+        # is the panel catching up with it.
+        self._plan_changed = []
+        self._render_plan()
         event.prompt_input.clear()
         self._pending_images = []
         await self.mount_block(vm.UserBlock(text=user_transcript_text(parts)))
@@ -468,8 +474,8 @@ class AgentApp(LucaApp):
                 self._live_text[source] = None
             case ToolCallReceived(execution=execution) if is_runtime_plumbing(execution):
                 pass  # a spawn renders as its task block; private tools render nothing
-            case ToolCallReceived(execution=execution) if is_plan_update(execution):
-                pass  # renders on completion, as the plan block
+            case ToolCallReceived(execution=execution) if is_todo_tool(execution):
+                pass  # a todo call is the sticky panel, not a transcript row
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
                 view = ToolBlockView(tool_block(execution))
                 self._tool_views[tool_call_id] = view
@@ -480,10 +486,14 @@ class AgentApp(LucaApp):
                 if execution.status is ExecutionStatus.REFUSED:
                     await self._mount_widget_block(vm.NoticeBlock(text=result_text, error=True), source)
                 self._sync_tasks()
-            case ToolExecuted(execution=execution) if (
-                is_plan_update(execution) and execution.status is ExecutionStatus.COMPLETED
-            ):
-                await self._apply_plan(execution, source)
+            case ToolExecuted(execution=execution, result_text=result_text) if is_todo_tool(execution):
+                if execution.status is ExecutionStatus.REFUSED:
+                    await self._mount_widget_block(vm.NoticeBlock(text=result_text, error=True), source)
+                # Only the main agent's list is sticky: one panel cannot speak
+                # for a parent and three subagents at once.
+                elif source == self.runner.main_conversation_id and is_todo_update(execution):
+                    self._plan_changed = changed_of(execution)
+                    self._render_plan(running=True)
             case ToolExecuted(
                 tool_call_id=tool_call_id,
                 execution=execution,
@@ -547,20 +557,22 @@ class AgentApp(LucaApp):
             return False
         return was_auto_approved(execution)
 
-    async def _apply_plan(self, execution: ToolExecution, source: str) -> None:
-        plan = plan_from_execution(execution)
-        if plan is not None:
-            await self._apply_plan_block(plan, source)
+    # ── the sticky plan panel ─────────────────────────────────────────────────
 
-    async def _apply_plan_block(self, plan: vm.ListBlock, source: str) -> None:
-        """THE PLAN IS ONE BLOCK: every update rewrites the block the run
-        already has, so a ten-step plan never stacks ten copies."""
-        view = self._plan_views.get(source)
-        if view is None or not view.is_attached:
-            widget = await self.mount_block(plan, self._tasks.get(source))
-            self._plan_views[source] = widget
-        else:
-            view.apply(plan)
+    def _todos(self) -> list[dict]:
+        """The main conversation's todo list, read from the memory plugin's
+        own store. THE STORE IS THE TRUTH: it is what the agent answers from,
+        and it is where the clear-when-settled rule already ran, so a panel
+        derived from it cannot claim work the agent has forgotten. A runner
+        composed without the plugin simply has no list."""
+        for plugin in getattr(self.runner, "plugins", []):
+            if isinstance(plugin, MemoryPlugin):
+                slot = plugin.todo_store.get(self.runner.main_conversation_id) or {}
+                return slot.get("todos", [])
+        return []
+
+    def _render_plan(self, *, running: bool = False) -> None:
+        self.set_plan(plan_block(self._todos(), changed=self._plan_changed, running=running))
 
     async def _mount_widget(self, widget, conversation_id: str | None) -> None:
         task = self._tasks.get(conversation_id) if conversation_id else None
@@ -607,6 +619,9 @@ class AgentApp(LucaApp):
         session = self.runner.session
         await self._replay_path(session.conversations[session.main_conversation_id].nodes)
         self._sync_tasks()
+        # The plugin rebuilt its list from this same session when the runner
+        # was composed, so the panel just reads it back out.
+        self._render_plan()
 
     async def _replay_path(self, nodes: list[str], conversation_id: str | None = None) -> None:
         """Mount what `render.entry_blocks` derives, and keep the widgets a
@@ -621,16 +636,12 @@ class AgentApp(LucaApp):
                 if task is not None and child is not None:
                     await self._replay_path(child.nodes, entry.conversation_id)
                 continue
-            source = conversation_id or self.runner.main_conversation_id
             blocks = entry_blocks(
                 entry,
                 resolve_result=self._resolve_result,
                 subagent=conversation_id is not None,
             )
             for block in blocks:
-                if isinstance(block, vm.ListBlock):  # a plan update
-                    await self._apply_plan_block(block, source)
-                    continue
                 widget = await self._mount_widget_block(block, conversation_id)
                 if isinstance(entry, ToolExecution) and isinstance(block, vm.ToolBlock):
                     self._tool_views[entry.tool_call_id] = widget
@@ -781,12 +792,6 @@ class AgentApp(LucaApp):
             return
         await self.open_palette()
 
-    def action_goto_plan(self) -> None:
-        for view in reversed(list(self.query(ListBlockView))):
-            if view.model.label and view.model.label.startswith("plan"):
-                self.transcript.scroll_to_widget(view, animate=False)
-                return
-
     async def action_show_skills(self) -> None:
         from .commands import skills_block
 
@@ -873,8 +878,8 @@ class AgentApp(LucaApp):
         self._live_thinking.clear()
         self._live_text.clear()
         self._tool_views.clear()
-        self._plan_views.clear()
         self._tasks.clear()
+        self._plan_changed = []
         self._pending_images.clear()
         self._answered.clear()
         self._denied_by_user.clear()
@@ -892,6 +897,9 @@ class AgentApp(LucaApp):
             if not busy:
                 composer.input.focus()
         self.set_hints(HINTS["running"] if busy else HINTS["idle"])
+        # The panel follows the work while a turn runs and goes back to being
+        # a to-do list the moment it stops.
+        self._render_plan(running=busy)
         self._refresh_status()
 
     def _refresh_status(self) -> None:

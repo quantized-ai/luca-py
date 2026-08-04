@@ -180,7 +180,7 @@
           ]
         }
       },
-      "tool_spec_id": "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b",
+      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -189,11 +189,43 @@
         "content": [
           {
             "type": "text",
-            "text": "plan updated",
+            "text": "Todo list updated successfully",
+            "metadata": {}
+          },
+          {
+            "type": "text",
+            "text": "[{\"id\": 1, \"content\": \"sqlite schema + writer\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"port the reader\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"backfill script + drop the jsonl writer\", \"status\": \"in_progress\"}, {\"id\": 4, \"content\": \"update the docs\", \"status\": \"pending\"}]",
             "metadata": {}
           }
         ],
-        "structured_content": null,
+        "structured_content": {
+          "todos": [
+            {
+              "id": 1,
+              "content": "sqlite schema + writer",
+              "status": "completed"
+            },
+            {
+              "id": 2,
+              "content": "port the reader",
+              "status": "completed"
+            },
+            {
+              "id": 3,
+              "content": "backfill script + drop the jsonl writer",
+              "status": "in_progress"
+            },
+            {
+              "id": 4,
+              "content": "update the docs",
+              "status": "pending"
+            }
+          ],
+          "changed": [
+            2,
+            3
+          ]
+        },
         "metadata": {},
         "is_error": false
       },
@@ -537,7 +569,7 @@
       "version": null,
       "timeout_in_ms": null
     },
-    "a17b293d8fe70d74d08c76e4d51b4898eac13ff27550b45d44d78dbb3e032b8b": {
+    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
       "name": "update_todos",
       "description": "update_todos tool.",
       "input_schema": {
@@ -548,7 +580,7 @@
       "is_private": false,
       "metadata": null,
       "tool_kind": "other",
-      "namespace": null,
+      "namespace": "contrib.memory",
       "version": null,
       "timeout_in_ms": null
     },

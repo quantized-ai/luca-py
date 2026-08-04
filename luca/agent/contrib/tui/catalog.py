@@ -40,7 +40,7 @@ from .approvals import build_approval_prompts
 from .commands import build_sessions_state, build_settings_state, palette_rows
 from .files import rank_files
 from .format import HINTS, approval_hints, short_model
-from .render import filter_rows, picker_rows, transcript_blocks
+from .render import filter_rows, picker_rows, plan_from_session, transcript_blocks
 from .sessions import SessionSummary, summarize
 from .usage import cost_state, status_counter
 
@@ -169,9 +169,14 @@ def _composer(scene: Scene) -> vm.ComposerState:
 
 
 def _base(scene: Scene, *, label: str | None = None) -> dict:
-    """Status + transcript — what every screen sits on. A modal covers the
-    frame but the transcript is still what shows underneath it."""
-    return {"status": _status(scene, label=label), "transcript": _transcript(scene)}
+    """Status + transcript + the sticky plan — what every screen sits on. A
+    modal covers the frame but this is still what shows underneath it, and the
+    plan panel outlives whatever takes the dock."""
+    return {
+        "status": _status(scene, label=label),
+        "transcript": _transcript(scene),
+        "plan": plan_from_session(scene.session, running=scene.world.busy),
+    }
 
 
 # ── the screens ───────────────────────────────────────────────────────────────
@@ -310,7 +315,9 @@ def sessions_screen(scene: Scene) -> vm.ScreenState:
 AGES_MINUTES: dict[str, int] = {
     "conversation": 18,
     "planning": 42,
+    "todos": 55,
     "approval": 96,
+    "todos-done": 130,
     "failures": 191,
     "subagents": 320,
     "empty": 1450,

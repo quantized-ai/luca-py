@@ -170,7 +170,7 @@ def inline_paths(prefix: str, paths: list[str]) -> str:
 
 HINTS: dict[str, list[str]] = {
     "idle": ["enter send", "⇥ complete", "^p palette"],
-    "running": ["enter queue", "^t plan", "^p palette", "esc interrupt"],
+    "running": ["enter queue", "^p palette", "esc interrupt"],
     "approval": ["↑↓ move", "enter confirm", "1–4 pick"],
     "approval-diff": ["↑↓ move", "enter confirm", "1–4 pick", "^d full diff"],
     "retry": ["↑↓ move", "enter confirm", "^r retry now"],

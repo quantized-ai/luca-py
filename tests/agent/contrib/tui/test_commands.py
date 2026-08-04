@@ -300,7 +300,9 @@ async def test_help_mounts_the_command_list_block(tmp_path):
         await submit(pilot, "/help")
         await pilot.pause()
 
-        [view] = list(app.query(ListBlockView))
+        # Scoped to the transcript: the docked plan panel is a `ListBlockView`
+        # too, mounted from the start and hidden until there are todos.
+        [view] = list(app.transcript.query(ListBlockView))
         assert view.model == vm.ListBlock(
             label="commands · 14",
             column=24,
@@ -347,7 +349,7 @@ async def test_a_palette_pick_of_a_plain_command_runs_it(tmp_path):
         await run_palette_choice(app, "/help")
         await pilot.pause()
 
-        assert len(app.query(ListBlockView)) == 1
+        assert len(app.transcript.query(ListBlockView)) == 1
 
 
 # ── /quit ────────────────────────────────────────────────────────────────────

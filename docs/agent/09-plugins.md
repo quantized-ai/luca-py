@@ -60,14 +60,27 @@ parts that teach the model to use them:
 |---|---|---|
 | `read_scratchpad` | — | returns this conversation's content (empty string at first) |
 | `write_scratchpad` | `content: str` | replaces the whole content |
-| `read_todo` | — | returns this conversation's todo list, a `repr()` of `{"content", "status"}` dicts (`[]` at first) |
+| `read_todo` | — | returns this conversation's todo list as JSON (`[]` at first) |
 | `update_todos` | `todos: list[TodoItem]` | replaces the whole list — the model re-sends every item, including unchanged ones |
 
 A `TodoItem` is `{"content": str, "status": "pending" | "in_progress" |
 "completed" | "cancelled"}` — validated by the tool's `Args` schema, so a bad
 status is born INVALID and the body never runs.
 
-The plugin itself is the whole pattern in ~25 lines
+**Ids are assigned by the store, not by the model.** `update_todos` matches the
+items it is given against the list it is replacing: same content keeps its
+number, new content takes the next one. Both todo tools return the numbered
+list on `ExecutionResult.structured_content` (a `TodoListResult`), which is
+what an application renders — a model asked to preserve its own numbering does
+not reliably do so, and a number the user can point at ("complete #2") has to
+survive a reordering.
+
+The list and the numbering have deliberately different lifetimes:
+`TodoLifecycleMiddleware` empties a list with nothing open the next time the
+user posts a message, but never resets the counter — so the todo after two
+completed ones is `#3`, not a second `#1`.
+
+The plugin itself is the whole pattern
 ([full source](../../luca/agent/contrib/memory/plugin.py)):
 
 ```python
@@ -91,6 +104,10 @@ class MemoryPlugin:
 
     def get_system_prompt_parts(self, agent_session):
         return [SCRATCHPAD_SYSTEM_PROMPT, TODO_SYSTEM_PROMPT]
+
+    def get_middleware(self, agent_session):
+        self.hydrate(agent_session)             # adopt the session being resumed
+        return [TodoLifecycleMiddleware(self.todo_store, agent_session.main_conversation_id)]
 ```
 
 > ⚠️ **Two different `get_tools`.** The plugin's takes no arguments and returns
@@ -115,10 +132,19 @@ One plugin instance is shared by the main agent and every subagent
 overwriting each other's private working memory — silently, the moment a second
 conversation exists. Anything a plugin holds needs the same treatment.
 
-> ⚠️ **Not persisted.** The stores live on the plugin instance, not the
-> session: one `MemoryPlugin()` = one scratchpad + one todo list, and a new
-> instance starts blank. Durable memory would write through a store you
+> ⚠️ **Not persisted — but the todo list is rebuildable.** The stores live on
+> the plugin instance, not the session: one `MemoryPlugin()` = one scratchpad
+> + one todo list, and a new instance starts blank. The todo list is the
+> exception, because the session already records every `update_todos`:
+> `get_middleware()` calls `hydrate()`, which replays that history — each write
+> setting the list, each user message clearing a settled one — so resuming a
+> session mid-plan keeps the plan and the numbering. The scratchpad has no such
+> record and starts empty. Durable memory would write through a store you
 > persist yourself.
+
+`todos_from_session(session)` is that replay on its own, so an application can
+render the list without an agent, a provider or a key — which is how the TUI
+draws the plan panel for a stored session it has not resumed.
 
 ## 3. Equivalence
 

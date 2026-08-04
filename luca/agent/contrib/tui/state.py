@@ -113,6 +113,10 @@ class ListRow(BaseModel):
     glyph: ListGlyph = "none"
     text: str
     annotation: str | None = None
+    # Struck through — a settled todo. Said here rather than derived from the
+    # glyph: the other list users (skills, context set, consumers) share the
+    # vocabulary and none of them wants the treatment.
+    strike: bool = False
     model_config = _STRICT
 
 
@@ -341,12 +345,17 @@ class ScreenState(BaseModel):
 
     The dock is exactly one of `composer` / `approval` / `overlay` (an overlay
     dims the transcript). A `modal` covers the frame with its own screen; the
-    transcript and dock still describe what sits underneath it."""
+    transcript and dock still describe what sits underneath it.
+
+    `plan` is the sticky todo panel, which sits BETWEEN the transcript and the
+    dock and belongs to neither: it outlives the turn that wrote it and stays
+    put while an approval prompt or an overlay takes the dock."""
 
     name: str = "state"
     title: str | None = None
     status: StatusState = Field(default_factory=StatusState)
     transcript: list[Block] = Field(default_factory=list)
+    plan: ListBlock | None = None
     composer: ComposerState | None = None
     approval: ApprovalState | None = None
     overlay: OverlayState | None = None

@@ -17,6 +17,7 @@ the two cannot drift.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from luca.agent.contrib.resource_permissions import (
@@ -118,6 +119,43 @@ def text_result(*lines: str, **metadata) -> ExecutionResult:
     return ExecutionResult(content=[TextContent(text="\n".join(lines))], metadata=metadata)
 
 
+def todo_call(
+    entry_id: str,
+    todos: list[tuple[int, str, str]],
+    minutes: float,
+    *,
+    changed: list[int] | None = None,
+    context_tokens: int | None = None,
+) -> ToolExecution:
+    """An `update_todos` execution, written the way the memory plugin writes
+    one: the model's un-numbered `{content, status}` items on the call, the
+    numbered list on `structured_content`. `changed` defaults to every id, as
+    it is on the write that creates a list.
+
+    The spec carries the package's namespace because that — not the bare tool
+    name — is what the renderer matches on."""
+    stored = [{"id": todo_id, "content": content, "status": status} for todo_id, content, status in todos]
+    execution = call(
+        entry_id,
+        "update_todos",
+        {"todos": [{"content": content, "status": status} for _, content, status in todos]},
+        minutes,
+        result=ExecutionResult(
+            content=[
+                TextContent(text="Todo list updated successfully"),
+                TextContent(text=json.dumps(stored, ensure_ascii=False)),
+            ],
+            structured_content={
+                "todos": stored,
+                "changed": changed if changed is not None else [todo_id for todo_id, _, _ in todos],
+            },
+        ),
+        context_tokens=context_tokens if context_tokens is not None else 20 + 12 * len(todos),
+    )
+    execution.tool_spec = spec("update_todos", namespace="contrib.memory")
+    return execution
+
+
 def turn(index: int, minutes: float) -> TurnStart:
     return TurnStart(id=f"ts{index}", created_at=at(minutes))
 
@@ -168,19 +206,16 @@ def conversation_session() -> AgentSession:
             context_tokens=210,
         ),
         "a2": assistant("a2", 1.2, text="The reader is the only place that opens the jsonl file. Planning the move."),
-        "te3": call(
+        "te3": todo_call(
             "te3",
-            "update_todos",
-            {
-                "todos": [
-                    {"content": "sqlite schema + writer", "status": "completed"},
-                    {"content": "port the reader", "status": "completed"},
-                    {"content": "backfill script + drop the jsonl writer", "status": "in_progress"},
-                    {"content": "update the docs", "status": "pending"},
-                ]
-            },
+            [
+                (1, "sqlite schema + writer", "completed"),
+                (2, "port the reader", "completed"),
+                (3, "backfill script + drop the jsonl writer", "in_progress"),
+                (4, "update the docs", "pending"),
+            ],
             1.4,
-            result=text_result("plan updated"),
+            changed=[2, 3],
             context_tokens=90,
         ),
         "te4": call(
@@ -518,7 +553,11 @@ def mention(entry_id: str, text: str, path: str, lines: int, minutes: float) -> 
 
 def planning_session() -> AgentSession:
     """The fan-out shape: a mentioned file, a plan, and the plan's first step
-    carried out by two subagents at once — one reading, one editing."""
+    carried out by two subagents at once — one reading, one editing.
+
+    TWO writes to the same list, deliberately: the panel is a rewritten thing,
+    and a world with a single write is the one shape where every way of
+    rendering it happens to agree."""
     entries = {
         "ts1": turn(1, 0),
         "u1": mention(
@@ -529,20 +568,26 @@ def planning_session() -> AgentSession:
             0,
         ),
         "a1": assistant("a1", 0.2, thinking="sizing the split"),
-        "te_plan": call(
+        "te_plan": todo_call(
             "te_plan",
-            "update_todos",
-            {
-                "todos": [
-                    {"content": "audit the reader and draft the split", "status": "in_progress"},
-                    {"content": "move the write path into writer.py", "status": "pending"},
-                    {"content": "update every import site", "status": "pending"},
-                    {"content": "backfill the tests", "status": "pending"},
-                ]
-            },
+            [
+                (1, "audit the reader and draft the split", "in_progress"),
+                (2, "move the write path into writer.py", "pending"),
+                (3, "update every import site", "pending"),
+                (4, "backfill the tests", "pending"),
+            ],
             0.4,
-            result=text_result("plan updated"),
-            context_tokens=95,
+        ),
+        "te_plan2": todo_call(
+            "te_plan2",
+            [
+                (1, "audit the reader and draft the split", "completed"),
+                (2, "move the write path into writer.py", "completed"),
+                (3, "update every import site", "in_progress"),
+                (4, "backfill the tests", "pending"),
+            ],
+            8.2,
+            changed=[1, 2, 3],
         ),
         "a2": assistant(
             "a2", 0.6, text="Step one, in parallel: one subagent audits the reader, one drafts the writer."
@@ -645,7 +690,7 @@ def planning_session() -> AgentSession:
             "a_c3b", 7.8, text="`writer.py` holds the write path and `store/__init__.py` re-exports it."
         ),
     }
-    main = ["ts1", "u1", "a1", "te_plan", "a2", "sp1", "cc1", "sp2", "cc2", "a3", "tf1"]
+    main = ["ts1", "u1", "a1", "te_plan", "a2", "sp1", "cc1", "sp2", "cc2", "te_plan2", "a3", "tf1"]
     session = make_session(
         id="planning",
         entries=entries,
@@ -667,6 +712,86 @@ def planning_session() -> AgentSession:
     return session
 
 
+def todos_session() -> AgentSession:
+    """A list too long for the panel: 12 items, 7 of them settled. The point
+    is the window and the `… +N` row — five rows is the whole budget the
+    docked panel gets, and a twelve-step plan has to survive it."""
+    items = [
+        "port the reader",
+        "port the writer",
+        "port the index",
+        "port the compactor",
+        "migrate the schema",
+        "backfill old sessions",
+        "drop the jsonl writer",
+        "update every import site",
+        "rewrite the store tests",
+        "benchmark the new path",
+        "document the format",
+        "cut the release note",
+    ]
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": user("u1", "plan the whole sqlite migration, step by step", 0),
+        "te1": todo_call("te1", [(n, item, "pending") for n, item in enumerate(items, 1)], 0.3),
+        "a1": assistant("a1", 0.5, text="Twelve steps. Starting at the top."),
+        "tf1": finish(1, 0.6),
+        "ts2": turn(2, 4.0),
+        "u2": user("u2", "carry on until the jsonl writer is gone", 4.0),
+        "te2": todo_call(
+            "te2",
+            [(n, item, "completed" if n <= 7 else "pending") for n, item in enumerate(items, 1)],
+            9.4,
+            changed=[1, 2, 3, 4, 5, 6, 7],
+        ),
+        "a2": assistant("a2", 9.6, text="The jsonl writer is gone. Five steps left."),
+        "tf2": finish(2, 9.7),
+    }
+    session = make_session(
+        id="todos",
+        entries=entries,
+        conversations={"c1": conversation("c1", list(entries), created_at=T0, updated_at=at(9.7))},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {
+        "c1": {
+            "a1": usage("c1", "a1", input=3_100, output=210, cache_write=900),
+            "a2": usage("c1", "a2", input=6_400, output=180, cache_read=14_000),
+        }
+    }
+    return session
+
+
+def todos_done_session() -> AgentSession:
+    """A plan that ran its course. It stays on screen for the rest of the turn
+    that finished it and is dismissed by whatever the user says next — so this
+    world is what the last moment before that looks like."""
+    items = ["read the failing test", "fix the off-by-one in the cursor", "re-run the suite"]
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": user("u1", "the pagination test is failing — sort it out", 0),
+        "te1": todo_call("te1", [(n, item, "pending") for n, item in enumerate(items, 1)], 0.3),
+        "te2": todo_call(
+            "te2",
+            [(n, item, "completed") for n, item in enumerate(items, 1)],
+            2.8,
+            changed=[1, 2, 3],
+        ),
+        "a1": assistant("a1", 3.0, text="The cursor advanced one row too far on the last page. Suite is green."),
+        "tf1": finish(1, 3.1),
+    }
+    session = make_session(
+        id="todos-done",
+        entries=entries,
+        conversations={"c1": conversation("c1", list(entries), created_at=T0, updated_at=at(3.1))},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {"c1": {"a1": usage("c1", "a1", input=4_200, output=260, cache_read=8_000)}}
+    return session
+
+
 BUILDERS = {
     "empty": empty_session,
     "conversation": conversation_session,
@@ -674,6 +799,8 @@ BUILDERS = {
     "failures": failures_session,
     "subagents": subagents_session,
     "planning": planning_session,
+    "todos": todos_session,
+    "todos-done": todos_done_session,
 }
 
 
