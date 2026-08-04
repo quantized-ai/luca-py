@@ -271,7 +271,7 @@ OverlayListView .overlay-options {
        percentage: a percentage here resolves against the CONTENT, which is the
        thing being bounded. Sized to leave the transcript readable under the
        dock's own ceiling. */
-    max-height: 15;
+    max-height: 16;
     padding: 1 0;
     scrollbar-size-vertical: 0;
 }

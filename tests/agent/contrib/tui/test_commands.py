@@ -33,6 +33,7 @@ from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig, RuntimeConfig
 from luca.client import catalog
+from luca.client.catalog._data import cache_path
 from luca.client.providers import PROVIDERS
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 
@@ -718,3 +719,11 @@ async def test_a_model_id_containing_a_colon_survives_the_argument_form(tmp_path
         await pilot.pause()
 
         assert _config(app) == LLMConfig(model="amazon.nova-2-lite-v1:0", provider="bedrock")
+
+
+def test_the_tests_read_an_isolated_model_catalog_cache():
+    # `--refresh-models` writes `$XDG_CACHE_HOME/luca/models.json` and the
+    # catalog layers it over the vendored records. Without the conftest
+    # pinning that variable, a contributor who has refreshed would be testing
+    # against different models than CI.
+    assert str(cache_path()).startswith(os.environ["XDG_CACHE_HOME"])
