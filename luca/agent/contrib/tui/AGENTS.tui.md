@@ -55,7 +55,11 @@ YAML gotchas: quote strings containing commas inside `{...}` flow mappings, and 
 - `_reset_session` is the "switch to this session" primitive behind `/clear`, `/session` resume and fork: rebuild the runner, wipe the transcript, replay.
 - The sessions screen parses every stored session to build its rows (~3ms per 500KB session); no index file to keep in sync.
 - The `@` picker commits by writing `@path` mentions into the composer (`format.inline_paths`) — it does not attach file contents, so the paths reach the model as text and it reads them with its own tools.
-- Mock-only surfaces (until the agent grows the feature): the settings screen's `approval mode` row is read-only; dollar figures are estimates from `usage.PRICING` and are omitted for unlisted models.
+- Mock-only surfaces (until the agent grows the feature): the settings screen's `approval mode` row is read-only.
+- Model facts come from `luca.client.catalog`, generated from [models.dev](https://models.dev) and refreshed with `--refresh-models`. `commands.pickable_models()` is the one door for "what may `/model` offer": the catalog intersected with `luca.client.providers.PROVIDERS`, unioned with the `models` key from `luca.json`. Offering a host with no transport would be a dead end, and `ollama` and custom providers are not in models.dev, so config is their only route. `commands.recent_models()` is the short list for the settings row's `← →` and the retry-on-failure offer: newest first, one per `family`, because a host publishes the same model many times.
+- Dollar figures are estimates, but from the catalog now rather than a hand table, keyed on `(provider, model)`. Omitted for models the catalog does not price. A few models price by context tier and `ModelCost` carries one flat rate, so a very long session under-reports.
+- **The catalog is metadata, never a gate.** `/model provider:model` still switches to anything; a lookup miss means "no metadata", not "unusable".
+- The overlay grows to fit its rows and never scrolls, so a long list is trimmed for display — `app.MENU_MAX_ROWS` for menus, `files.MAX_ROWS` for the `@` picker. The query still searches every row, and the counter (`12 of 271`) says how many matched.
 
 ## Testing
 

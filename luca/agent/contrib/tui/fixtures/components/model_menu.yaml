@@ -1,0 +1,32 @@
+# Component sheet — the model menu against the real catalog, mid-query.
+#
+# The menu component itself is covered by components/menu.yaml with a short,
+# unfiltered list. This sheet is the state that only exists once models come
+# from models.dev: hundreds of rows, so the query is the way in, the display is
+# capped (the overlay grows to fit and never scrolls), and the counter says how
+# much is behind the filter. The annotation is the model's context window,
+# which is the one fact that tells these rows apart.
+name: components/model_menu
+status:
+  cwd: ~/quantized/luca
+  model: claude-sonnet-5
+  branch: main
+  tokens: 12.4k
+  cost: $0.08
+transcript:
+  - kind: user
+    text: /model
+overlay:
+  mode: menu
+  sigil: /
+  query: sonnet
+  counter: 5 of 271
+  selected: 3
+  column: 40
+  rows:
+    - {primary: anthropic/claude-sonnet-4, annotation: 200k}
+    - {primary: anthropic/claude-sonnet-4.5, annotation: 200k}
+    - {primary: anthropic/claude-sonnet-4.6, annotation: 1000.0k}
+    - {primary: anthropic/claude-sonnet-5, annotation: 1000.0k}
+    - {primary: mistralai/mistral-sonnet, annotation: 128k}
+hints: [↑↓ move, enter pick, esc dismiss]

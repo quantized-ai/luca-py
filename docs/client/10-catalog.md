@@ -5,10 +5,45 @@ covering pricing, context window, and capability flags. It lives behind
 exactly **one** door — the helper — so the request path is never gated by
 catalog state.
 
-`luca/client/catalog/` ships with a small curated set of records
-generated from
-[`models.dev`](https://models.dev) covering OpenAI / Anthropic /
-OpenRouter.
+## Where the records come from
+
+[`models.dev`](https://models.dev), narrowed twice. Its one endpoint carries
+~180 providers and ~6,000 models; luca keeps the providers it has a transport
+for, and within those the models an agent can actually drive — `tool_call` plus
+text in and text out, which drops the image, embedding and speech models. That
+is **450 records across 6 providers**.
+
+Two files, layered:
+
+| | |
+|---|---|
+| `luca/client/catalog/_data/models.json` | generated and shipped in the package. The offline floor — no import ever touches the network |
+| `$XDG_CACHE_HOME/luca/models.json` | written by a refresh, layered on top by `(provider, model)` |
+
+The cache adds and updates; it never subtracts. A missing, corrupt or
+partly-unreadable cache costs only the records it would have added, because
+`catalog.get` backs the context window that compaction, the cost screen, the
+status gauge and the `@`-mention size cap all read.
+
+```bash
+python -m luca.client.catalog.refresh            # update the local cache
+python -m luca.client.catalog.refresh --vendor   # regenerate the shipped file
+uv run python main.py --refresh-models           # the same, from the TUI
+```
+
+> **The catalog is metadata, never a gate.** A provider's line-up moves faster
+> than a release does, and `ollama` and custom hosts are not in models.dev at
+> all — so `catalog.get` returning `None` means "no metadata", not "cannot be
+> used". A request for an unlisted model runs on provider defaults.
+
+`release_date` and `family` come along for a reason: the TUI sorts "newest
+first" by the former and collapses a host's near-duplicates by the latter,
+which is how bedrock's `us.`/`eu.`/`jp.` copies of one model stop being four
+separate choices.
+
+Prices are per `(provider, model)`. A handful of models price by context tier —
+above a threshold the rate can double — and `ModelCost` carries one flat rate,
+so a very long session under-reports.
 
 ## Public surface
 

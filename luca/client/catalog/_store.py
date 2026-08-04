@@ -1,4 +1,10 @@
-"""In-memory dict-backed catalog store. Loaded lazily on first access."""
+"""In-memory dict-backed catalog store. Loaded lazily on first access.
+
+Two sources, layered: the records vendored in the package, then any a refresh
+wrote to the cache. The cache is an overlay keyed by `(provider, model)`, so a
+refresh adds and updates but never subtracts — a stale cache cannot take a model
+away, and a missing one costs nothing.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +24,11 @@ def _ensure_loaded() -> None:
     with _lock:
         if _loaded:
             return
-        from ._data import default_records
+        from ._data import cached_records, default_records
 
-        for info in default_records():
-            assert info.provider is not None
-            assert info.model is not None
+        for info in [*default_records(), *cached_records()]:
+            if info.provider is None or info.model is None:
+                continue
             _store[(info.provider, info.model)] = info
         _loaded = True
 

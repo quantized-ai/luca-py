@@ -1,13 +1,20 @@
 """`usage.py` — token totals, estimated cost, and the 1k cost screen state.
 
-Two session literals: `COSTED_SESSION` uses a model in `usage.PRICING`
-(claude-fable-5: $5/$25/$0.5/$6.25 per Mtok — every price binary-exact, so
-fractions assert exactly), `UNPRICED_SESSION` a model the table does not
-list. The consumers list is asserted through the public `cost_state` only.
+Two session literals: `COSTED_SESSION` uses a model this module REGISTERS in
+the catalog at $5/$25/$0.5/$6.25 per Mtok — every price binary-exact, so
+fractions assert exactly — and `UNPRICED_SESSION` a model nothing prices. The
+consumers list is asserted through the public `cost_state` only.
 
-The catalog knows no `faux` models, so the context window is the 200k
+The price is registered rather than read from the shipped catalog on purpose:
+these tests check the arithmetic, and pinning them to a real model would make
+them fail the day models.dev repriced it. Pricing is keyed on
+`(provider, model)`, so the registration names both.
+
+The catalog knows no other `faux` models, so the context window is the 200k
 default throughout.
 """
+
+import pytest
 
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.usage import UsageTotals, cost_state, estimated_cost, status_counter, usage_totals
@@ -29,6 +36,29 @@ from tests.agent.scenarios import conversation, make_session, spec
 
 PRICED_MODEL = LLMConfig(model="anthropic/claude-fable-5", provider="faux")
 UNPRICED_MODEL = LLMConfig(model="mystery-9", provider="faux")
+
+
+@pytest.fixture(autouse=True)
+def _priced_model():
+    from luca.client import catalog
+    from luca.client.catalog import _store
+    from luca.client.types import ModelCost, ModelInfo
+
+    catalog.register(
+        provider=PRICED_MODEL.provider,
+        model=PRICED_MODEL.model,
+        info=ModelInfo(
+            cost=ModelCost(
+                input_per_million_tokens=5.0,
+                output_per_million_tokens=25.0,
+                cached_input_per_million_tokens=0.5,
+                cache_write_per_million_tokens=6.25,
+            ),
+        ),
+    )
+    yield
+    _store._clear_for_tests()
+
 
 # One answered tool turn plus an archived conversation `c0` that still holds a
 # usage record — totals must sum across conversations AND entries.
