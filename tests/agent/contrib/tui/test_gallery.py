@@ -37,6 +37,7 @@ BUNDLED_NAMES = [
     "components/empty",
     "components/mentions",
     "components/menu",
+    "components/model_menu",
     "components/tasks",
     "components/tool_states",
 ]

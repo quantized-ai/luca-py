@@ -287,7 +287,10 @@ class OverlayListView(Vertical, can_focus=True):
         return PaletteRow(row, column=self._column, selected=selected)
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="overlay-options"):
+        # Scrolls: a model list runs to hundreds of rows and the dock is capped
+        # at a share of the screen, so the list has to move under the cursor
+        # rather than push the transcript and the composer off.
+        with VerticalScroll(classes="overlay-options"):
             for index, row in enumerate(self.model.rows):
                 yield self._row_widget(index, row)
         yield Static(classes="inner-rule")
@@ -296,9 +299,10 @@ class OverlayListView(Vertical, can_focus=True):
     async def set_state(self, model: vm.OverlayState) -> None:
         """Swap in a fresh state (new rows after a query change)."""
         self.model = model
-        options = self.query_one(".overlay-options", Vertical)
+        options = self.query_one(".overlay-options", VerticalScroll)
         await options.remove_children()
         await options.mount(*(self._row_widget(index, row) for index, row in enumerate(self.model.rows)))
+        options.scroll_home(animate=False)  # a new result set starts at the top
         self.query_one(QueryLine).refresh()
 
     def _move(self, delta: int) -> None:
@@ -307,8 +311,13 @@ class OverlayListView(Vertical, can_focus=True):
             return
         selected = (self.model.selected + delta) % count
         self.model = self.model.model_copy(update={"selected": selected})
-        for index, row in enumerate(self.query(SelectRow)):
+        rows = list(self.query(SelectRow))
+        for index, row in enumerate(rows):
             row.set_selected(index == selected)
+        # Keep the caret on screen; without this the cursor walks off the
+        # bottom of a long list and the highlight is invisible.
+        if selected < len(rows):
+            self.query_one(".overlay-options", VerticalScroll).scroll_to_widget(rows[selected], animate=False)
 
     def _set_query(self, value: str) -> None:
         self.model = self.model.model_copy(update={"query": value})

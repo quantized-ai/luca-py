@@ -113,7 +113,7 @@ def test_the_status_bar_reads_the_world_and_the_session():
         branch="topic",
         dirty=False,
         tokens="3.2k",
-        cost="$0.23",
+        cost="$0.15",
     )
 
 
@@ -170,8 +170,8 @@ def test_a_picker_world_can_replace_the_file_list():
 def test_the_cost_screen_sums_its_meters_to_the_headline():
     cost = SCREENS["cost"](scene()).modal.cost
     assert (cost.headline, [item.cost for item in cost.items]) == (
-        "$0.23",
-        ["$0.128", "$0.035", "$0.010", "$0.055"],
+        "$0.15",
+        ["$0.085", "$0.024", "$0.007", "$0.037"],
     )
 
 

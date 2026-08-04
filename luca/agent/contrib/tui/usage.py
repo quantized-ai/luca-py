@@ -1,9 +1,14 @@
 """Session usage → the status-bar counter and the cost screen's view-model.
 
-Token figures are real (summed from `AgentSession.usages`); dollar figures
-are ESTIMATES from a small built-in price table and are omitted whenever the
-model is not listed — the counter then shows tokens alone. Pure module, no
-Textual.
+Token figures are real (summed from `AgentSession.usages`); dollar figures come
+from the model catalog and are omitted whenever it does not price the model —
+the counter then shows tokens alone. Prices are per `(provider, model)`, so a
+model reached through two routes is costed as the route it was actually called
+on. Pure module, no Textual.
+
+They remain estimates. A handful of models price by context tier (above 200k
+tokens the rate can double) and `ModelCost` carries one flat rate, so a very
+long session under-reports.
 """
 
 from __future__ import annotations
@@ -17,25 +22,17 @@ from luca.agent.contrib.simple_context_manager import (
 from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
+    LLMConfig,
     ToolExecution,
     TurnStart,
     UserMessage,
 )
+from luca.client import catalog
+from luca.client.types import ModelCost
 
 from . import state as vm
 from .format import fmt_cost, fmt_duration, fmt_tokens, short_model
 from .render import tool_arg
-
-# USD per million tokens: (input, output, cache_read, cache_write).
-# An estimate table, not a price authority — unknown models show no cost.
-PRICING: dict[str, tuple[float, float, float, float]] = {
-    "claude-fable-5": (5.0, 25.0, 0.5, 6.25),
-    "claude-sonnet-5": (3.0, 15.0, 0.3, 3.75),
-    "claude-opus-4-8": (15.0, 75.0, 1.5, 18.75),
-    "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
-    "gpt-5.4": (1.75, 14.0, 0.175, 0.0),
-    "gpt-5.4-mini": (0.35, 2.8, 0.035, 0.0),
-}
 
 
 @dataclass(frozen=True)
@@ -61,26 +58,26 @@ def usage_totals(session: AgentSession) -> UsageTotals:
     return UsageTotals(input=input_, output=output, cache_read=cache_read, cache_write=cache_write)
 
 
-def _price(model: str) -> tuple[float, float, float, float] | None:
-    name = short_model(model)
-    for key, price in PRICING.items():
-        if name.startswith(key):
-            return price
-    return None
+def _price(config: LLMConfig) -> ModelCost | None:
+    """What the catalog charges for this exact route, or None when it does not
+    price the model. Keyed on `(provider, model)`, never on the bare name."""
+    record = catalog.get(config.provider, config.model)
+    return record.cost if record is not None else None
 
 
 def cost_breakdown(session: AgentSession) -> dict[str, float] | None:
-    """Estimated dollars per category, or None for an unlisted model."""
-    price = _price(session.session_config.llm_config.model)
+    """Estimated dollars per category, or None for a model the catalog does
+    not price. A rate the catalog leaves unset counts as zero, so a model
+    priced for input and output but not for cache still reports what it can."""
+    price = _price(session.session_config.llm_config)
     if price is None:
         return None
     totals = usage_totals(session)
-    per_input, per_output, per_cache_read, per_cache_write = price
     return {
-        "input": totals.input * per_input / 1_000_000,
-        "output": totals.output * per_output / 1_000_000,
-        "cache read": totals.cache_read * per_cache_read / 1_000_000,
-        "cache write": totals.cache_write * per_cache_write / 1_000_000,
+        "input": totals.input * (price.input_per_million_tokens or 0) / 1_000_000,
+        "output": totals.output * (price.output_per_million_tokens or 0) / 1_000_000,
+        "cache read": totals.cache_read * (price.cached_input_per_million_tokens or 0) / 1_000_000,
+        "cache write": totals.cache_write * (price.cache_write_per_million_tokens or 0) / 1_000_000,
     }
 
 

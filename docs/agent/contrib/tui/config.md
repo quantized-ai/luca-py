@@ -139,6 +139,10 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   project path is always appended under it, so two projects never share a
   session list. Defaults to `~/.luca/projects`; see
   [`tui/README.md`](README.md).
+- `models` ADDS to what `/model` offers rather than replacing it. The picker's
+  own list comes from the model catalog, so this key is for hosts models.dev
+  does not know: a custom provider, or a local `ollama`. See
+  [`10-catalog.md`](../../../client/10-catalog.md).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
 

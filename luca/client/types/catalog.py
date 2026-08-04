@@ -26,6 +26,12 @@ class ModelInfo(BaseModel):
     provider: str | None = None
     display_name: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    # ISO date the model shipped, when the source knows it. Sorts "newest
+    # first" lists — an alphabetical model list buries this year's releases.
+    release_date: str | None = None
+    # The model line this belongs to, when the source knows it. Collapses the
+    # near-duplicates a host publishes per region or revision.
+    family: str | None = None
 
     context_window: int | None = None
     max_tokens: int | None = None

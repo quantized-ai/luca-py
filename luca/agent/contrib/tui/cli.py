@@ -57,6 +57,7 @@ from pydantic import ValidationError
 from luca.agent.contrib.prompts import InstructionsError
 from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
 from luca.agent.core.models import AgentSession
+from luca.client.catalog.refresh import main as refresh_catalog
 from luca.client.types import Reasoning
 
 from .app import DEFAULT_THEME, AgentApp
@@ -93,6 +94,11 @@ def resume_picker(args: argparse.Namespace) -> bool:
 
 def arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="luca.agent Textual TUI")
+    parser.add_argument(
+        "--refresh-models",
+        action="store_true",
+        help="Pull the model catalog from models.dev into the local cache, then exit.",
+    )
     parser.add_argument(
         "--resume",
         nargs="?",
@@ -284,6 +290,10 @@ def build_session(
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
+    if args.refresh_models:
+        # An explicit empty argv: the refresh has its own parser, and letting it
+        # fall through to sys.argv would hand it this command's flags.
+        raise SystemExit(refresh_catalog([]))
     if args.gallery is not None:
         from .gallery import FixtureError, run_gallery
 

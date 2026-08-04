@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, get_args
 
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.agent.core.runner import AgentSessionRunner
+from luca.client import catalog
+from luca.client.providers import PROVIDERS
 from luca.client.types import Reasoning
 
 from . import state as vm
@@ -32,7 +34,6 @@ from .sessions import (
     load_session,
     save_session,
 )
-from .wiring import RECOMMENDED_MODELS
 
 if TYPE_CHECKING:
     from .app import AgentApp
@@ -46,6 +47,72 @@ class SlashCommand:
     summary: str
     handler: Callable[[AgentApp, str], Awaitable[None]]
     insert: bool = False  # palette pick inserts "/name " instead of running
+
+
+# ── what the model pickers may offer ─────────────────────────────────────────
+
+# `← →` on the settings row and the retry-on-failure offer want a handful, not
+# every model a provider hosts.
+RECENT_LIMIT = 5
+
+
+def pickable_models(configured: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """Provider → models for `/model`.
+
+    The catalog says what exists; the provider registry says what luca can
+    actually reach, and offering a host with no transport would be a dead end.
+    `configured` is the `models` map from luca.json, unioned on top — the only
+    route for a local or custom host, since neither is in models.dev.
+
+    Never a gate: `/model provider:model` still switches to anything, which
+    matters because a provider's line-up moves faster than a catalog does."""
+    models: dict[str, list[str]] = {}
+    for record in catalog.list():
+        if record.provider in PROVIDERS and record.model is not None:
+            models.setdefault(record.provider, []).append(record.model)
+    for provider, listed in (configured or {}).items():
+        models[provider] = sorted(set(models.get(provider, [])) | set(listed))
+    return {provider: sorted(entries) for provider, entries in sorted(models.items())}
+
+
+def recent_models(
+    provider: str,
+    limit: int = RECENT_LIMIT,
+    configured: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """The newest models one provider offers, one per family.
+
+    Newest first, because an alphabetical list buries this year's releases. One
+    per `family` because a host publishes the same model many times — bedrock
+    carries `us.`, `eu.`, `jp.` and `global.` copies of one model, and cycling
+    through four of them is not a choice. A model with no family stands alone.
+
+    Falls back to the configured list for a host the catalog has never heard
+    of, which is how `ollama` and custom providers still cycle."""
+    records = [record for record in catalog.list(provider=provider) if record.model is not None]
+    records.sort(key=lambda record: (record.release_date or "", record.model or ""), reverse=True)
+    seen: set[str] = set()
+    newest: list[str] = []
+    for record in records:
+        family = record.family or record.model
+        if family in seen:
+            continue
+        seen.add(family)
+        newest.append(record.model)
+        if len(newest) == limit:
+            break
+    return newest or list((configured or {}).get(provider, ()))[:limit]
+
+
+def model_context_note(provider: str, model: str) -> str | None:
+    """The context window, when the catalog knows it — the one fact that
+    actually tells rows apart in a list this long. Rendered as the row's
+    SECONDARY: a menu row draws primary and secondary, never `annotation`,
+    which only the `@` picker's row uses."""
+    record = catalog.get(provider, model)
+    if record is None or record.context_window is None:
+        return None
+    return fmt_tokens(record.context_window)
 
 
 # ── handlers ──────────────────────────────────────────────────────────────────
@@ -77,24 +144,30 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
         await app._notice(f"model set to {app.runner.session.session_config.llm_config.model}")
         return
 
-    models = app.recommended_models or RECOMMENDED_MODELS
+    models = pickable_models(app.recommended_models)
 
+    # Both steps read the choice back out of `app._menu_rows`, which is what the
+    # overlay is actually showing. The index the overlay reports counts the rows
+    # left after the query narrowed them, so indexing the unfiltered list would
+    # apply a different model than the one under the cursor — and with hundreds
+    # of models, typing to narrow is the only way to use this picker.
     async def picked_provider(index: int) -> None:
-        provider = list(models)[index]
+        provider = app._menu_rows[index].primary
 
         async def picked_model(model_index: int) -> None:
+            model = app._menu_rows[model_index].primary
             await app._restore_composer()
-            _apply(app, provider=provider, model=models[provider][model_index])
-            await app._notice(f"model set to {provider}:{models[provider][model_index]}")
+            _apply(app, provider=provider, model=model)
+            await app._notice(f"model set to {provider}:{model}")
 
         await app.open_menu(
-            [vm.OverlayRow(primary=model) for model in models[provider]],
+            [vm.OverlayRow(primary=model, secondary=model_context_note(provider, model)) for model in models[provider]],
             picked_model,
             column=40,
         )
 
     await app.open_menu(
-        [vm.OverlayRow(primary=provider) for provider in models],
+        [vm.OverlayRow(primary=provider, secondary=f"{len(models[provider])} models") for provider in models],
         picked_provider,
         column=40,
     )
@@ -365,15 +438,14 @@ def adjust_setting(app: AgentApp, screen: SettingsScreen, row: vm.SettingRow, de
     """`← →` on a settings row. Model/reasoning/theme/streaming/counter are
     live; the approval mode is display-only until mode switching is real."""
     if row.name == "model":
-        models = app.recommended_models or RECOMMENDED_MODELS
-        flat = [(provider, model) for provider, names in models.items() for model in names]
+        # Within the current provider only, and only its newest handful: this
+        # row cycles one keypress at a time, and the catalog holds hundreds.
         config = app.runner.session.session_config.llm_config
-        current = next(
-            (i for i, (p, m) in enumerate(flat) if p == config.provider and m == config.model),
-            -1,
-        )
-        provider, model = flat[(current + delta) % len(flat)]
-        _apply(app, provider=provider, model=model)
+        models = recent_models(config.provider, configured=app.recommended_models)
+        if not models:
+            return
+        current = models.index(config.model) if config.model in models else -1
+        _apply(app, model=models[(current + delta) % len(models)])
     elif row.name == "provider":
         return
     elif row.name == "reasoning":

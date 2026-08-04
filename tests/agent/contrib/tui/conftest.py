@@ -6,6 +6,7 @@ import pytest
 pytest.importorskip("textual")
 
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
+from luca.client.catalog import _store
 from luca.client.providers import PROVIDERS
 
 
@@ -16,6 +17,12 @@ def _isolated_config_environment(monkeypatch, tmp_path):
     instructions read `~/.config/luca/LUCA.md`."""
     monkeypatch.delenv(ENV_CONFIG_PATH, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # The model catalog layers `$XDG_CACHE_HOME/luca/models.json` over the
+    # vendored records, so without this a contributor who has run
+    # `--refresh-models` tests against different models than CI does.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    # the store loads once per process; drop it so the patched env is what it reads
+    _store._clear_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
