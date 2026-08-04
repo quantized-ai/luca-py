@@ -23,7 +23,7 @@ fixtures/     the declarative screen states: 1a–1k + components/ sheets
 app.py        AgentApp(LucaApp) — the live agent wiring (drive worker, events)
 ```
 
-Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost state), `gitinfo.py` (branch/dirty), `files.py` (@-picker file listing), `sessions.py` (session store + summaries), `commands.py` (the 14 slash commands + live modal-state builders), `approvals.py` (the 4-option prompt model), `config.py` (`luca.json`), `cli.py`, `prompt.py` (the composer's TextArea).
+Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost state), `gitinfo.py` (branch/dirty), `files.py` (@-picker file listing), `prompt_files/` (`@`-mention expansion: `parse_prompt` → content parts, via a first-match-wins handler chain — add a format by adding a handler above `BinaryHandler`, nothing else changes), `sessions.py` (session store + summaries), `commands.py` (the 14 slash commands + live modal-state builders), `approvals.py` (the 4-option prompt model), `config.py` (`luca.json`), `cli.py`, `prompt.py` (the composer's TextArea).
 
 ## Hard rules (from the design handoff)
 
@@ -34,6 +34,7 @@ Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost s
 - **Plain keys** — arrows, tab, enter, esc, digits, documented `^` pairs. The hint legend always reflects the focused context.
 - **Every automatic permission decision is stated in the transcript** (`approved by rule`, `denied · by rule`).
 - Don't invent UI the handoff doesn't specify. The two sanctioned extensions are `NoticeBlock` (turn-level notices) and `TaskBlock` (subagent conversations, built from the handoff's gutter idiom).
+- `@` file mentions render as ordinary `ToolBlock`s (`tool: read`) under the user turn — same idiom, no new block kind. They are NOT tool calls: no `ToolExecution` backs them, so they never carry an approval note. A declined mention (too long, binary, a directory) is `status: error` with a `[error]×[/]` summary; a path that does not resolve gets no row at all and stays prose, which is what keeps `@property` and `@types/node` from being read as files. See `fixtures/components/mentions.yaml`, the requirements sheet for the feature.
 
 ## The gallery is the catalog
 
@@ -53,7 +54,8 @@ YAML gotchas: quote strings containing commas inside `{...}` flow mappings, and 
 - Sessions live in `~/.luca/projects/<encoded-project-path>/<id>.json`, keyed on the WORKSPACE. `resolve_session_directory` in `sessions.py` computes it.
 - `_reset_session` is the "switch to this session" primitive behind `/clear`, `/session` resume and fork: rebuild the runner, wipe the transcript, replay.
 - The sessions screen parses every stored session to build its rows (~3ms per 500KB session); no index file to keep in sync.
-- Mock-only surfaces (until the agent grows the feature): the `@` context picker's committed set is display-only; the settings screen's `approval mode` row is read-only; dollar figures are estimates from `usage.PRICING` and are omitted for unlisted models.
+- The `@` picker commits by writing `@path` mentions into the composer (`format.inline_paths`) — it does not attach file contents, so the paths reach the model as text and it reads them with its own tools.
+- Mock-only surfaces (until the agent grows the feature): the settings screen's `approval mode` row is read-only; dollar figures are estimates from `usage.PRICING` and are omitted for unlisted models.
 
 ## Testing
 

@@ -15,7 +15,8 @@ prompt (keep retrying / switch model / cancel turn).
 
 The composer stays enabled while the agent works: submitting mid-turn posts
 into the open turn. Slash commands stay idle-only. Typing `/` in an empty
-composer opens the palette; `@` opens the (mock) context picker.
+composer opens the palette; `@` opens the context picker, which writes the
+paths it commits back into the composer as text.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from typing import ClassVar
 from textual.binding import Binding
 from textual.widgets import TextArea
 
+from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
 from luca.agent.core.events import (
     ApprovalRequired,
@@ -82,15 +84,17 @@ from .blocks import (
     ToolBlockView,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
-from .format import HINTS, fmt_tokens, home_path, short_model
+from .format import HINTS, fmt_tokens, home_path, inline_paths, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
+from .prompt_files import ReadLimits, parse_prompt
 from .render import (
     child_links,
     is_plan_update,
     is_runtime_plumbing,
+    mention_blocks,
     plan_from_execution,
     subagent_task,
     tool_block,
@@ -134,8 +138,10 @@ class AgentApp(LucaApp):
         instructions: bool = True,
         extra_instructions: list[str] | None = None,
         resume: bool = False,
+        read_limits: ReadLimits | None = None,
     ) -> None:
         super().__init__(theme=theme)
+        self._read_limits = read_limits or ReadLimits()
         self._session_dir = Path(session_dir)
         self._streaming = streaming
         self._workspace = workspace
@@ -171,10 +177,10 @@ class AgentApp(LucaApp):
         self._retry_prompt_active = False
         self._git = GitInfo()
         self._show_counter = True
-        # The mock context set (`@` picker) — display-only until the feature
-        # lands in the agent.
-        self._context_files: list[tuple[str, int]] = []
-        self._context_list_view: ListBlockView | None = None
+        # What the composer held when an overlay replaced it. Opening one wipes
+        # the dock, so the half-typed message has to be carried across and put
+        # back — with the `@` picker's paths inlined, or unchanged on esc.
+        self._composer_prefix = ""
         self._menu_handler = None
         self._menu_rows: list[vm.OverlayRow] = []
         self._menu_all_rows: list[vm.OverlayRow] = []
@@ -222,9 +228,7 @@ class AgentApp(LucaApp):
             if await dispatch(self, text):
                 event.prompt_input.clear()
                 return
-        parts: list[ContentPart] = [*self._pending_images]
-        if text:
-            parts.append(TextContent(text=text))
+        parts: list[ContentPart] = [*self._pending_images, *self._expand_mentions(text)]
         if not parts:
             return
         try:
@@ -235,8 +239,23 @@ class AgentApp(LucaApp):
         event.prompt_input.clear()
         self._pending_images = []
         await self.mount_block(vm.UserBlock(text=user_transcript_text(parts)))
+        for block in mention_blocks(parts):
+            await self.mount_block(block)
         if not self._driving:
             self._start_drive()
+
+    def _expand_mentions(self, text: str) -> list[ContentPart]:
+        """The typed text plus one part per resolvable `@path`. A file that
+        cannot be read still yields a part — one that tells the agent to reach
+        for its own tools — so a mention is never silently dropped."""
+        if not text:
+            return []
+        return parse_prompt(
+            text,
+            workspace=self._workspace,
+            limits=self._read_limits,
+            context_window=get_context_window_size(self.runner.session),
+        )
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """`/` in an empty composer opens the palette; `@` opens the context
@@ -398,9 +417,11 @@ class AgentApp(LucaApp):
             self.strategy.apply_answer(execution, answers)
         await self._restore_composer()
 
-    async def _restore_composer(self) -> None:
+    async def _restore_composer(self, text: str = "") -> None:
         placeholder = "working…" if self._driving else "ask, or / for commands"
-        await self.show_composer(vm.ComposerState(placeholder=placeholder))
+        composer = await self.show_composer(vm.ComposerState(placeholder=placeholder, text=text))
+        if text:
+            composer.input.move_cursor(composer.input.document.end)
         self._set_busy(self._driving)
 
     # ── event rendering ───────────────────────────────────────────────────────
@@ -594,6 +615,11 @@ class AgentApp(LucaApp):
             if isinstance(entry, UserMessage):
                 if conversation_id is None:  # a subagent's seed lives on its label
                     await self.mount_block(vm.UserBlock(text=user_transcript_text(entry.parts)))
+                    # Derived from the parts' metadata, exactly as the live
+                    # path does — the inlined file is never re-read on resume,
+                    # so the transcript reproduces what the model actually saw.
+                    for block in mention_blocks(entry.parts):
+                        await self.mount_block(block)
             elif isinstance(entry, AssistantMessage):
                 for part in entry.parts:
                     if isinstance(part, ThinkingContent):
@@ -648,13 +674,18 @@ class AgentApp(LucaApp):
     async def open_palette(self, query: str = "") -> None:
         from .commands import palette_rows
 
+        self._composer_prefix = ""  # the palette only opens on a lone `/`
         self._menu_all_rows = palette_rows()
         self._menu_handler = self._run_palette_choice
         await self._refresh_overlay("palette", "/", query)
         self.set_hints(HINTS["palette"])
 
     async def open_context_picker(self, query: str = "") -> None:
-        self._picker_selected = {path for path, _tokens in self._context_files}
+        """`@` picker. Each open starts unchecked: the paths it commits go into
+        the composer as text, so there is no standing set to reopen onto."""
+        composer = self.composer()
+        self._composer_prefix = composer.input.text if composer is not None else ""
+        self._picker_selected = set()
         self._menu_all_rows = self._context_rows(query)
         self._menu_handler = self._commit_context
         await self._refresh_overlay("picker", "@", query, filtered=False)
@@ -664,6 +695,7 @@ class AgentApp(LucaApp):
         self, rows: list[vm.OverlayRow], handler, *, sigil: str = "/", column: int | None = None
     ) -> None:
         """A generic single-pick overlay (model / reasoning / theme lists)."""
+        self._composer_prefix = ""
         self._menu_all_rows = rows
         self._menu_handler = handler
         await self._refresh_overlay("menu", sigil, "", column=column)
@@ -687,6 +719,7 @@ class AgentApp(LucaApp):
         *,
         filtered: bool = True,
         column: int | None = None,
+        selected: int = 0,
     ) -> None:
         rows = self._filter_rows(query) if filtered else self._menu_all_rows
         counter = f"{len(rows)} of {len(self._menu_all_rows)}" if filtered else f"{len(rows)} files"
@@ -696,7 +729,7 @@ class AgentApp(LucaApp):
             query=query,
             sigil=sigil,
             counter=counter,
-            selected=0,
+            selected=min(selected, max(len(rows) - 1, 0)),
             column=column,
         )
         self._menu_rows = rows
@@ -725,7 +758,9 @@ class AgentApp(LucaApp):
             self._picker_selected.add(path)
         query = message.view.model.query
         self._menu_all_rows = self._context_rows(query)
-        await self._refresh_overlay("picker", "@", query, filtered=False)
+        # Keep the highlight where it was: checking a box must not bounce the
+        # cursor back to the top row, or multi-select is unusable.
+        await self._refresh_overlay("picker", "@", query, filtered=False, selected=message.index)
 
     async def on_overlay_list_view_committed(self, message: OverlayListView.Committed) -> None:
         handler = self._menu_handler
@@ -735,7 +770,9 @@ class AgentApp(LucaApp):
 
     async def on_overlay_list_view_dismissed(self, message: OverlayListView.Dismissed) -> None:
         self._menu_handler = None
-        await self._restore_composer()
+        # esc gives the half-typed message back untouched — dismissing a picker
+        # you opened by mistake must not cost you what you had written.
+        await self._restore_composer(self._composer_prefix)
 
     async def _run_palette_choice(self, index: int) -> None:
         from .commands import run_palette_choice
@@ -763,30 +800,13 @@ class AgentApp(LucaApp):
             )
         return rows
 
-    async def _commit_context(self, _index: int) -> None:
-        from .files import estimate_tokens
-
-        selected = sorted(self._picker_selected)
-        self._context_files = [(path, estimate_tokens(Path(self._workspace) / path)) for path in selected]
-        await self._restore_composer()
-        await self._refresh_context_block()
-
-    async def _refresh_context_block(self) -> None:
-        if not self._context_files:
-            return
-        total = sum(tokens for _path, tokens in self._context_files)
-        block = vm.ListBlock(
-            label=f"context · {len(self._context_files)} files · {fmt_tokens(total)} tokens",
-            column=31,
-            rows=[
-                vm.ListRow(glyph="included", text=path, annotation=fmt_tokens(tokens))
-                for path, tokens in self._context_files
-            ],
-        )
-        if self._context_list_view is not None and self._context_list_view.is_attached:
-            self._context_list_view.apply(block)
-        else:
-            self._context_list_view = await self.mount_block(block)
+    async def _commit_context(self, index: int) -> None:
+        """Write the picked paths into the composer. Nothing checked means the
+        highlighted row — picking one file should not need `space` first."""
+        paths = sorted(self._picker_selected)
+        if not paths and self._menu_rows:
+            paths = [_strip_spans(self._menu_rows[index].primary)]
+        await self._restore_composer(inline_paths(self._composer_prefix, paths))
 
     # ── actions ───────────────────────────────────────────────────────────────
 

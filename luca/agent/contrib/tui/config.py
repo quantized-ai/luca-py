@@ -38,6 +38,8 @@ from luca.client.providers import register_provider
 from luca.client.transports import TRANSPORTS
 from luca.client.types import Reasoning
 
+from .prompt_files import ReadLimits
+
 _STRICT = ConfigDict(extra="forbid")
 
 
@@ -62,6 +64,21 @@ class SessionSettings(BaseModel):
     subdirectory is always appended under it."""
 
     directory: str | None = None
+    model_config = _STRICT
+
+
+class FileReadSettings(BaseModel):
+    """The `@`-mention inline ceiling. The effective cap is the SMALLER of the
+    hard limit and the model's context share, so a small-context model is never
+    handed a 25k-token file just because the hard limit permits it."""
+
+    max_read_file_tokens_hard_limit: int | None = None
+    max_read_file_tokens_context_percentage: float | None = None
+    model_config = _STRICT
+
+
+class ClientSettings(BaseModel):
+    file_read: FileReadSettings = Field(default_factory=FileReadSettings)
     model_config = _STRICT
 
 
@@ -143,6 +160,7 @@ class LucaConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
     sessions: SessionSettings = Field(default_factory=SessionSettings)
+    client: ClientSettings = Field(default_factory=ClientSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
@@ -328,6 +346,20 @@ def resolve_runtime_config(base: RuntimeConfig, config: LucaConfig) -> RuntimeCo
         return RuntimeConfig.model_validate({**base.model_dump(), **updates})
     except ValidationError as exc:
         raise LucaConfigError(f"luca.json runtime is invalid:\n{exc}") from exc
+
+
+def resolve_read_limits(config: LucaConfig) -> ReadLimits:
+    """`config.client.file_read` over the built-in defaults."""
+    settings = config.client.file_read
+    defaults = ReadLimits()
+    return ReadLimits(
+        hard_limit=pick(None, settings.max_read_file_tokens_hard_limit, defaults.hard_limit),
+        context_percentage=pick(
+            None,
+            settings.max_read_file_tokens_context_percentage,
+            defaults.context_percentage,
+        ),
+    )
 
 
 def build_permission_rules(config: LucaConfig) -> list[ToolKindRule | ToolRule]:

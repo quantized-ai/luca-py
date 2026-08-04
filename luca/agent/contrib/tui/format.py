@@ -100,6 +100,15 @@ def fmt_tokens(count: int) -> str:
     return str(count)
 
 
+def fmt_bytes(count: int) -> str:
+    """`7.1KB` — the figure shown for content with no line count (an image)."""
+    if count >= 1_048_576:
+        return f"{count / 1_048_576:.1f}MB"
+    if count >= 1024:
+        return f"{count / 1024:.1f}KB"
+    return f"{count}B"
+
+
 def fmt_cost(amount: float, *, precision: int = 2) -> str:
     return f"${amount:.{precision}f}"
 
@@ -145,6 +154,16 @@ def short_model(model: str) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def inline_paths(prefix: str, paths: list[str]) -> str:
+    """The composer text the `@` picker commits: every path carries its own `@`
+    (each one is a mention in its own right), comma-joined, surrounded by
+    spaces, appended to whatever was typed before the `@` that opened the
+    picker. `prefix` is right-trimmed so its trailing space never doubles up."""
+    if not paths:
+        return prefix
+    return f"{prefix.rstrip()} {','.join('@' + path for path in paths)} "
+
+
 # ── hint legends ──────────────────────────────────────────────────────────────
 # One entry per focus context; the legend always reflects the focused context
 # and is the app's only discoverability mechanism.
@@ -156,7 +175,7 @@ HINTS: dict[str, list[str]] = {
     "approval-diff": ["↑↓ move", "enter confirm", "1–4 pick", "^d full diff"],
     "retry": ["↑↓ move", "enter confirm", "^r retry now"],
     "palette": ["↑↓ move", "enter run", "esc dismiss"],
-    "picker": ["↑↓ move", "space toggle", "enter add", "esc dismiss"],
+    "picker": ["↑↓ move", "space toggle", "enter insert", "esc dismiss"],
     "menu": ["↑↓ move", "enter pick", "esc dismiss"],
     "sessions": ["↑↓ move", "enter resume", "f fork", "d delete", "esc back"],
     "settings": ["↑↓ move", "← → change", "enter edit", "esc save & close"],

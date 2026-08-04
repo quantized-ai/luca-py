@@ -317,4 +317,37 @@ async def test_ctrl_q_saves_and_quits(tmp_path):
         await pilot.pause()
 
     assert app.is_running is False
+
+
+async def test_ctrl_c_clears_the_prompt(tmp_path):
+    app = make_app(fresh_session(), scripted(), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        prompt = app.query_one(PromptInput)
+        prompt.load_text("a half-written question")
+        prompt.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+        # the composer empties; ctrl+c is not a quit key
+        assert (prompt.text, app.is_running) == ("", True)
+
+
+async def test_ctrl_d_saves_and_quits_like_ctrl_q(tmp_path):
+    session = fresh_session()
+    app = make_app(session, scripted(), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        prompt = app.query_one(PromptInput)
+        prompt.load_text("a half-written question")
+        prompt.focus()
+        await pilot.pause()
+
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+
+    assert app.is_running is False
+    assert (tmp_path / f"{session.id}.json").exists()
     assert (tmp_path / f"{session.id}.json").exists()

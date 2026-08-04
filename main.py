@@ -11,8 +11,8 @@ Usage:
     uv run python main.py                          # start a fresh session
     uv run python main.py --faux                   # offline scripted demo, no key
     uv run python main.py --resume                 # pick a past session
-    uv run python main.py --conversation <id>      # resume that session by id
-    uv run python main.py --conversation <id> --fork  # branch into a new session
+    uv run python main.py --resume <id>            # resume that session by id
+    uv run python main.py --resume <id> --fork     # branch into a new session
     uv run python main.py --no-subagents           # no parallel subagents
     uv run python main.py --subagents-max-depth 1  # no nesting (default 3)
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
@@ -24,7 +24,7 @@ Usage:
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --no-skills              # ignore SKILL.md skills
     uv run python main.py --no-instructions        # ignore AGENTS.md
-    uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
+    uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 
 Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
 except with `--faux`. Sessions persist to

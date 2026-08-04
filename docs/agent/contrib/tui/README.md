@@ -22,13 +22,13 @@ from luca.agent.contrib.tui import AgentApp, GalleryApp, LucaApp, build_runner, 
 uv run python main.py                     # fresh session (needs OPENROUTER_API_KEY)
 uv run python main.py --faux              # offline scripted demo — no key, no network
 uv run python main.py --resume            # pick a past session for this project
-uv run python main.py --conversation <id> # resume that session (--fork to branch)
+uv run python main.py --resume <id>       # resume that session (--fork to branch)
 uv run python main.py --gallery           # the design-system gallery — no agent at all
 uv run python main.py --no-streaming      # block-level events instead of deltas
 uv run python main.py --no-subagents      # stop it spawning subagents that work in parallel
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high
 uv run python main.py --config ./ci.json  # use THIS config file, skip discovery
-uv run python main.py --conversation <id> --pretty-print  # transcript, then exit
+uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 ```
 
 `--model` / `--provider` / `--reasoning` update the session's `LLMConfig`;
@@ -39,7 +39,7 @@ Subagent flags (`--subagents-max-depth`, `--subagents-max-per-turn`,
 [`config.md`](config.md) for the `luca.json` equivalents.
 
 > ⚠️ **Old session files do not load.** A `<id>.json` written before tool-spec
-> normalization fails validation on `--conversation` and on `--pretty-print`.
+> normalization fails validation on `--resume` and on `--pretty-print`.
 > There is no migration — start a fresh session.
 
 ## 2. What's on screen
@@ -95,7 +95,7 @@ sent to the agent as a normal message, so `/etc/hosts` is never swallowed.
 |---|---|
 | `/skill [name]` | Sends `/skill <name>` to the agent (the model loads it with the skill tool); the palette inserts `/skill ` for the argument |
 | `/session`, `/resume` | The sessions screen: `↑↓` move, `enter` resume, `f` fork, `d` (twice) delete, with a last-turn preview per row |
-| `/context` | The `@` context picker (also opened by typing `@` inline) — mock: the committed set renders as a context list block, display-only for now |
+| `/context` | The `@` context picker (also opened by typing `@` inline) — `space` checks rows, `enter` writes the picked paths into the composer as `@path` mentions (comma-joined); nothing checked takes the highlighted row |
 | `/cost` | The cost screen: estimated spend per category with cost-proportional meters, the context window bar, biggest consumers; `^k` compacts |
 | `/settings` | The settings screen: `← →` adjusts model / reasoning / streaming / theme / counter live; `esc` saves and closes |
 | `/clear`, `/new` | Save, then start a fresh session carrying the runtime config |

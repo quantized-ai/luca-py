@@ -24,7 +24,7 @@ from luca.agent.core.models import (
 )
 
 from . import state as vm
-from .format import fmt_duration
+from .format import fmt_bytes, fmt_duration, home_path
 
 OUTPUT_HEAD_LINES = 8
 ARG_VALUE_MAX_CHARS = 80
@@ -33,17 +33,66 @@ SUMMARY_MAX_CHARS = 84
 # ── user content ──────────────────────────────────────────────────────────────
 
 
+def mention_of(part: ContentPart) -> dict | None:
+    """The `@`-mention annotation on a part, or None for ordinary content.
+    Read best-effort: a part written by an older build, or by an application
+    that annotates differently, must not break the transcript."""
+    mention = (getattr(part, "metadata", None) or {}).get("mention")
+    return mention if isinstance(mention, dict) else None
+
+
 def user_transcript_text(parts: Iterable[ContentPart]) -> str:
     """A user message's parts as transcript text: text verbatim, each image
-    as a `[image: name]` placeholder line."""
+    as a `[image: name]` placeholder line.
+
+    `@`-mention parts are skipped — an inlined file belongs in its own read
+    row, not dumped into the user's own words."""
     lines: list[str] = []
     for part in parts:
+        if mention_of(part) is not None:
+            continue
         if isinstance(part, TextContent):
             lines.append(part.text)
         elif isinstance(part, ImageContent):
             label = part.metadata.get("name") or part.source.media_type or "image"
             lines.append(f"[image: {label}]")
     return "\n".join(lines)
+
+
+def mention_blocks(parts: Iterable[ContentPart]) -> list[vm.ToolBlock]:
+    """The `▸ read` rows under a user turn, one per `@`-mention part.
+
+    They render in the tool idiom but are NOT tool calls: no execution backs
+    them, so they never carry an approval note. The path is shown home-
+    contracted for reading; `metadata["mention"]["path"]` stays absolute and
+    is the source of truth."""
+    blocks: list[vm.ToolBlock] = []
+    for part in parts:
+        mention = mention_of(part)
+        if mention is None:
+            continue
+        blocks.append(
+            vm.ToolBlock(
+                tool="read",
+                arg=home_path(str(mention.get("path", ""))),
+                status="ok" if mention.get("success") else "error",
+                result=vm.ToolResult(summary=mention_summary(mention)),
+            )
+        )
+    return blocks
+
+
+def mention_summary(mention: dict) -> str:
+    """`523 lines` when it was inlined; `× <reason>, defaulting to agent tool
+    calling` when it was declined."""
+    if mention.get("success"):
+        lines = mention.get("lines")
+        if lines is not None:
+            return f"{lines} lines"
+        size = mention.get("bytes")
+        return fmt_bytes(size) if size is not None else "read"
+    reason = mention.get("reason") or "not inlined"
+    return f"[error]×[/] {reason}, defaulting to agent tool calling"
 
 
 # ── tool calls ────────────────────────────────────────────────────────────────

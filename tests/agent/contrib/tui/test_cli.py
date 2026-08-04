@@ -5,7 +5,13 @@ import json
 import pytest
 
 from luca.agent.contrib.tui.app import AgentApp
-from luca.agent.contrib.tui.cli import arg_parser, build_session, main
+from luca.agent.contrib.tui.cli import (
+    arg_parser,
+    build_session,
+    main,
+    resume_id,
+    resume_picker,
+)
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.agent.contrib.tui.sessions import (
     encode_project_path,
@@ -22,7 +28,7 @@ from .helpers import fresh_session
 def test_default_args():
     args = arg_parser().parse_args([])
 
-    assert (args.conversation, args.fork, args.streaming, args.faux) == (
+    assert (args.resume, args.fork, args.streaming, args.faux) == (
         None,
         False,
         None,
@@ -53,12 +59,25 @@ def test_no_skills_turns_skill_loading_off():
     assert arg_parser().parse_args(["--no-skills"]).skills is False
 
 
-def test_resume_is_off_unless_asked_for():
-    assert arg_parser().parse_args([]).resume is False
-    assert arg_parser().parse_args(["--resume"]).resume is True
+def test_no_resume_flag_means_a_fresh_session():
+    args = arg_parser().parse_args([])
+
+    assert (args.resume, resume_id(args), resume_picker(args)) == (None, None, False)
 
 
-def test_resume_reaches_the_app(tmp_path, monkeypatch):
+def test_a_bare_resume_asks_for_the_picker():
+    args = arg_parser().parse_args(["--resume"])
+
+    assert (resume_id(args), resume_picker(args)) == (None, True)
+
+
+def test_resume_with_an_id_names_that_session_and_skips_the_picker():
+    args = arg_parser().parse_args(["--resume", "5ac92996"])
+
+    assert (resume_id(args), resume_picker(args)) == ("5ac92996", False)
+
+
+def test_a_bare_resume_reaches_the_app(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     seen: dict[str, bool] = {}
     monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(resume=self._resume))
@@ -83,12 +102,17 @@ def test_a_conversation_is_loaded_from_the_store_not_the_launch_directory(tmp_pa
     monkeypatch.chdir(tmp_path)
     session = fresh_session()
     save_session(session, resolve_session_directory("."))
-    seen: dict[str, str] = {}
-    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(id=self.runner.session.id))
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        AgentApp,
+        "run",
+        lambda self: seen.update(id=self.runner.session.id, picker=self._resume),
+    )
 
-    main(["--conversation", session.id])
+    main(["--resume", session.id])
 
-    assert seen == {"id": session.id}
+    # named outright, so the app opens on it instead of on the picker
+    assert seen == {"id": session.id, "picker": False}
     assert not (tmp_path / f"{session.id}.json").exists()
 
 
@@ -204,7 +228,7 @@ def test_provider_override_applies_on_resume(tmp_path, monkeypatch):
     resumed = build_session(
         arg_parser().parse_args(
             [
-                "--conversation",
+                "--resume",
                 session.id,
                 "--provider",
                 "quantized",
@@ -239,7 +263,7 @@ def test_model_override_applies_on_resume(tmp_path, monkeypatch):
     resumed = build_session(
         arg_parser().parse_args(
             [
-                "--conversation",
+                "--resume",
                 session.id,
                 "--model",
                 "moonshotai/kimi-k2.7-code",
@@ -395,7 +419,7 @@ def test_pretty_print_writes_the_transcript_and_never_starts_the_app(
         lambda self: pytest.fail("the app must not start"),
     )
 
-    main(["--conversation", session.id, "--pretty-print"])
+    main(["--resume", session.id, "--pretty-print"])
 
     assert capsys.readouterr().out == pretty_print(session) + "\n"
 
@@ -405,7 +429,7 @@ def test_pretty_print_without_a_conversation_exits_with_a_usage_error(capsys):
         main(["--pretty-print"])
 
     assert exit_info.value.code == 2
-    assert "--pretty-print requires --conversation" in capsys.readouterr().err
+    assert "--pretty-print requires --resume" in capsys.readouterr().err
 
 
 def test_resume_and_fork(tmp_path, monkeypatch):
@@ -416,12 +440,12 @@ def test_resume_and_fork(tmp_path, monkeypatch):
     save_session(session)
 
     resumed = build_session(
-        arg_parser().parse_args(["--conversation", session.id]),
+        arg_parser().parse_args(["--resume", session.id]),
     )
     assert resumed == session
 
     forked = build_session(
-        arg_parser().parse_args(["--conversation", session.id, "--fork"]),
+        arg_parser().parse_args(["--resume", session.id, "--fork"]),
     )
     assert forked.id != session.id
     assert forked.entries == session.entries

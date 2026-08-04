@@ -27,6 +27,7 @@ BUNDLED_NAMES = [
     "1k_cost",
     "components/blocks",
     "components/empty",
+    "components/mentions",
     "components/menu",
     "components/tasks",
     "components/tool_states",

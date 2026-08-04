@@ -20,6 +20,7 @@ from luca.agent.contrib.tui.format import (
     fmt_tokens,
     fmt_when,
     home_path,
+    inline_paths,
     short_model,
     spans,
 )
@@ -158,3 +159,27 @@ def test_approval_hints_scale_with_the_option_count():
 
 def test_approval_hints_add_the_diff_toggle():
     assert approval_hints(4, has_diff=True) == ["↑↓ move", "enter confirm", "1–4 pick", "^d full diff"]
+
+
+# ── the `@` picker's composer insertion ───────────────────────────────────────
+
+
+def test_one_picked_path_lands_surrounded_by_spaces():
+    assert inline_paths("", ["luca/agent/core/runner.py"]) == " @luca/agent/core/runner.py "
+
+
+def test_several_picked_paths_are_comma_joined_each_with_its_own_sigil():
+    assert inline_paths("", ["a.py", "b.py", "c.py"]) == " @a.py,@b.py,@c.py "
+
+
+def test_the_paths_append_to_what_was_typed_before_the_at_sign():
+    assert inline_paths("explain", ["a.py"]) == "explain @a.py "
+
+
+def test_a_trailing_space_on_the_prefix_does_not_double_up():
+    # the composer holds "explain " — `@` was stripped when the picker opened
+    assert inline_paths("explain ", ["a.py"]) == "explain @a.py "
+
+
+def test_no_paths_gives_the_prefix_back_untouched():
+    assert inline_paths("explain ", []) == "explain "

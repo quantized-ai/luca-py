@@ -36,8 +36,13 @@ class LucaApp(App):
     TITLE = "luca"
     CSS_PATH = "app.tcss"
 
+    # `priority` so the frame wins over the focused widget: the composer's
+    # TextArea claims ctrl+c (copy) and ctrl+d (delete right) for itself, and
+    # App binds ctrl+c to its own help-quit.
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+q", "quit", show=False, priority=True),
+        Binding("ctrl+d", "quit", show=False, priority=True),
+        Binding("ctrl+c", "clear_prompt", show=False, priority=True),
         Binding("pageup", "transcript_page(-1)", show=False, priority=True),
         Binding("pagedown", "transcript_page(1)", show=False, priority=True),
     ]
@@ -118,6 +123,13 @@ class LucaApp(App):
             return self.query_one(Composer)
         except Exception:
             return None
+
+    def action_clear_prompt(self) -> None:
+        """Empty the composer. A no-op while the dock holds an approval prompt
+        or an overlay — there is no text to throw away."""
+        composer = self.composer()
+        if composer is not None:
+            composer.input.clear()
 
     async def show_composer(
         self,
