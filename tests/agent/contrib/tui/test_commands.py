@@ -21,13 +21,20 @@ from luca.agent.contrib.tui.commands import (
     build_settings_state,
     dispatch,
     palette_rows,
+    pickable_models,
+    recent_models,
     run_palette_choice,
 )
+from luca.agent.contrib.tui.format import fmt_tokens, short_model
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.sessions import save_session
-from luca.agent.contrib.tui.shells import OverlayListView
+from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
+from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig, RuntimeConfig
+from luca.client import catalog
+from luca.client.catalog._data import cache_path
+from luca.client.providers import PROVIDERS
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 
 from .helpers import fresh_session, with_user_message
@@ -177,21 +184,29 @@ async def test_model_arg_rejects_an_empty_half(tmp_path):
 
 async def test_model_with_no_arg_drills_down_provider_then_model(tmp_path):
     # menu 1 lists providers (anthropic first); menu 2 that provider's models.
+    # Both come from the catalog, so the expectation is derived from the same
+    # door rather than restating a list that now has hundreds of entries.
+    offered = pickable_models()
+    provider = next(iter(offered))
+    model = offered[provider][0]
     app = agent_app(tmp_path)
     async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "/model")
         await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
-        await pilot.press("enter")  # provider 0: anthropic
+        await pilot.press("enter")  # provider 0
         await pilot.pause()
-        await pilot.press("enter")  # model 0 of anthropic
+        await pilot.press("enter")  # model 0 of that provider
         await wait_until(pilot, lambda: not app.query(OverlayListView))
 
-        assert _config(app) == LLMConfig(model="claude-opus-4-8", provider="anthropic")
-        assert _notices(app) == [("model set to anthropic:claude-opus-4-8", False)]
+        assert _config(app) == LLMConfig(model=model, provider=provider)
+        assert _notices(app) == [(f"model set to {provider}:{model}", False)]
 
 
 async def test_model_menu_arrows_pick_by_index(tmp_path):
-    # provider index 1 (openrouter), then its model index 1.
+    # provider index 1, then its model index 1 — both read off the catalog
+    offered = pickable_models()
+    provider = list(offered)[1]
+    model = offered[provider][1]
     app = agent_app(tmp_path)
     async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "/model")
@@ -203,7 +218,7 @@ async def test_model_menu_arrows_pick_by_index(tmp_path):
         await pilot.press("enter")
         await wait_until(pilot, lambda: not app.query(OverlayListView))
 
-        assert _config(app) == LLMConfig(model="openai/gpt-5.4", provider="openrouter")
+        assert _config(app) == LLMConfig(model=model, provider=provider)
 
 
 async def test_escaping_the_model_menu_changes_nothing(tmp_path):
@@ -397,18 +412,33 @@ def test_build_settings_state_reflects_the_runner_and_the_app(tmp_path):
     )
 
 
-async def test_settings_right_on_model_cycles_into_the_recommended_list(tmp_path):
-    # ("faux", "fake-model") is not in the list, so the first step lands on
-    # the first recommended pair
+async def test_settings_right_on_model_cycles_within_the_providers_recent_models(tmp_path):
+    # cycling stays on the current provider and walks its newest handful; the
+    # catalog holds hundreds, which is not something you step through
+    newest = recent_models("anthropic")
     app = agent_app(tmp_path)
+    app.runner.session.session_config.llm_config = LLMConfig(model=newest[0], provider="anthropic")
     async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, "/settings")
         await wait_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         await pilot.press("right")
         await pilot.pause()
 
-        assert _config(app) == LLMConfig(model="claude-opus-4-8", provider="anthropic")
-        assert app.screen.state.groups[0].rows[0] == vm.SettingRow(name="model", value="claude-opus-4-8")
+        assert _config(app) == LLMConfig(model=newest[1], provider="anthropic")
+        assert app.screen.state.groups[0].rows[0] == vm.SettingRow(name="model", value=short_model(newest[1]))
+
+
+async def test_settings_model_cycling_does_nothing_for_a_provider_nothing_lists(tmp_path):
+    # `faux` is in no catalog and no config, so there is nothing to cycle to
+    app = agent_app(tmp_path)
+    before = _config(app)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/settings")
+        await wait_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        await pilot.press("right")
+        await pilot.pause()
+
+        assert _config(app) == before
 
 
 async def test_settings_right_on_reasoning_cycles_through_the_levels(tmp_path):
@@ -506,3 +536,194 @@ def test_build_sessions_state_with_an_empty_store_returns_nothing(tmp_path):
     app = agent_app(tmp_path)
 
     assert build_sessions_state(app) == (None, [])
+
+
+# ── what the model pickers may offer ─────────────────────────────────────────
+
+
+def test_the_picker_offers_only_providers_luca_can_route_to():
+    offered = set(pickable_models())
+
+    assert offered <= set(PROVIDERS)
+    assert "anthropic" in offered
+    assert "openrouter" in offered
+    # models.dev carries google; luca has no google transport, so offering it
+    # would be a dead end
+    assert "google" not in offered
+
+
+def test_a_configured_host_is_unioned_in_even_though_models_dev_lacks_it():
+    offered = pickable_models({"quantized": ["anthropic/claude-opus-4.6"]})
+
+    assert offered["quantized"] == ["anthropic/claude-opus-4.6"]
+
+
+def test_configured_models_extend_a_provider_rather_than_replacing_it():
+    offered = pickable_models({"anthropic": ["claude-unreleased"]})
+
+    assert "claude-unreleased" in offered["anthropic"]
+    assert "claude-fable-5" in offered["anthropic"]
+
+
+def test_recent_models_are_newest_first_and_one_per_family():
+    # bedrock publishes `us.`/`eu.`/`jp.`/`global.` copies of one model; four
+    # rows for one choice is not a choice
+    newest = recent_models("bedrock", limit=6)
+
+    assert len(newest) == len(set(newest))
+    families = [catalog.get("bedrock", model).family for model in newest]
+    assert len(families) == len(set(families))
+
+
+def test_recent_models_is_bounded():
+    assert len(recent_models("openrouter", limit=3)) == 3
+
+
+def test_recent_models_falls_back_to_the_configured_list():
+    # `ollama` serves whatever you pulled; the catalog cannot know it
+    assert recent_models("ollama", configured={"ollama": ["llama3", "qwen"]}) == ["llama3", "qwen"]
+
+
+def test_recent_models_is_empty_for_a_host_nothing_lists():
+    assert recent_models("faux") == []
+
+
+def test_the_default_model_is_one_the_catalog_knows():
+    # a default models.dev no longer lists should fail the build, not the user
+    default = default_model()
+
+    assert catalog.get(default.provider, default.model) is not None
+
+
+# ── picking from a filtered menu ─────────────────────────────────────────────
+
+
+async def test_a_filtered_pick_applies_the_row_that_was_highlighted(tmp_path):
+    # THE risk of this feature. The overlay reports the index of the row among
+    # those left after the query, so resolving it against the unfiltered list
+    # would apply a different model than the one under the cursor.
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+
+        view = app.query_one(OverlayListView)
+        view.post_message(OverlayListView.QueryChanged(view, "sonnet"))
+        await pilot.pause()
+        await pilot.pause()
+        highlighted = app._menu_rows[1].primary
+        unfiltered = app._menu_all_rows[1].primary
+
+        view.post_message(OverlayListView.Committed(view, 1))
+        await wait_until(pilot, lambda: not app.query(OverlayListView))
+
+        assert highlighted != unfiltered  # or the test proves nothing
+        assert _config(app) == LLMConfig(model=highlighted, provider="openrouter")
+
+
+async def test_every_model_is_offered_and_the_list_scrolls(tmp_path):
+    # the whole line-up is reachable: the stylesheet bounds what is VISIBLE and
+    # the container scrolls, rather than the row list being trimmed
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        await pilot.pause()
+        options = app.query_one(OverlayListView).query_one(".overlay-options")
+
+        assert len(app._menu_rows) == len(pickable_models()["openrouter"])
+        assert options.virtual_size.height > options.size.height  # scrollable
+
+
+async def test_the_query_line_stays_on_screen_under_a_long_list(tmp_path):
+    # without a ceiling the overlay grows past the terminal and takes the
+    # query line with it, leaving no way to narrow the list
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.query_one(OverlayListView).query_one(QueryLine).region.y < app.screen.size.height
+
+
+async def test_arrowing_past_the_visible_rows_scrolls_the_caret_into_view(tmp_path):
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+        options = app.query_one(OverlayListView).query_one(".overlay-options")
+        assert options.scroll_offset.y == 0
+
+        for _ in range(25):
+            await pilot.press("down")
+        await pilot.pause()
+
+        assert options.scroll_offset.y > 0
+
+
+async def test_a_model_far_down_the_list_is_reachable_by_typing(tmp_path):
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("down", "down", "down", "down", "down", "enter")  # openrouter
+        await pilot.pause()
+
+        view = app.query_one(OverlayListView)
+        view.post_message(OverlayListView.QueryChanged(view, "qwen3.8-max"))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert [row.primary for row in app._menu_rows] == ["qwen/qwen3.8-max"]
+
+
+async def test_a_model_row_shows_its_context_window(tmp_path):
+    # a menu row renders `primary` and `secondary`; `annotation` is the @
+    # picker's field and would never appear here
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        await pilot.press("enter")  # anthropic
+        await pilot.pause()
+
+        row = next(row for row in app._menu_rows if row.primary == "claude-sonnet-5")
+        assert row.secondary == fmt_tokens(catalog.get("anthropic", "claude-sonnet-5").context_window)
+
+
+async def test_a_model_the_catalog_does_not_list_is_still_selectable(tmp_path):
+    # the catalog is metadata, never a gate
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model openrouter:some/unreleased-model")
+        await pilot.pause()
+
+        assert catalog.get("openrouter", "some/unreleased-model") is None
+        assert _config(app) == LLMConfig(model="some/unreleased-model", provider="openrouter")
+
+
+async def test_a_model_id_containing_a_colon_survives_the_argument_form(tmp_path):
+    # bedrock ids look like `amazon.nova-2-lite-v1:0`
+    app = agent_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model bedrock:amazon.nova-2-lite-v1:0")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(model="amazon.nova-2-lite-v1:0", provider="bedrock")
+
+
+def test_the_tests_read_an_isolated_model_catalog_cache():
+    # `--refresh-models` writes `$XDG_CACHE_HOME/luca/models.json` and the
+    # catalog layers it over the vendored records. Without the conftest
+    # pinning that variable, a contributor who has refreshed would be testing
+    # against different models than CI.
+    assert str(cache_path()).startswith(os.environ["XDG_CACHE_HOME"])

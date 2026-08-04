@@ -355,11 +355,12 @@ class AgentApp(LucaApp):
         return True
 
     def _alternate_model(self) -> tuple[str, str] | None:
-        from .wiring import RECOMMENDED_MODELS
+        """A sibling to offer after a turn fails — the newest model from the
+        same provider that is not the one that just failed."""
+        from .commands import recent_models
 
         config = self.runner.session.session_config.llm_config
-        models = (self.recommended_models or RECOMMENDED_MODELS).get(config.provider) or ()
-        for model in models:
+        for model in recent_models(config.provider, configured=self.recommended_models):
             if model != config.model:
                 return config.provider, model
         return None
@@ -708,13 +709,13 @@ class AgentApp(LucaApp):
         self.set_hints(HINTS["menu"])
 
     def _filter_rows(self, query: str) -> list[vm.OverlayRow]:
-        if not query:
-            return list(self._menu_all_rows)
+        """Every row matching the query. The overlay list scrolls, so a long
+        result set is bounded by the stylesheet rather than trimmed here."""
         needle = query.lower()
         return [
             row
             for row in self._menu_all_rows
-            if needle in row.primary.lower() or needle in (row.secondary or "").lower()
+            if not needle or needle in row.primary.lower() or needle in (row.secondary or "").lower()
         ]
 
     async def _refresh_overlay(

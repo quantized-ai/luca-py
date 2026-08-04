@@ -449,3 +449,34 @@ def test_resume_and_fork(tmp_path, monkeypatch):
     )
     assert forked.id != session.id
     assert forked.entries == session.entries
+
+
+# ── --refresh-models ─────────────────────────────────────────────────────────
+
+
+def test_refresh_models_is_off_unless_asked_for():
+    assert arg_parser().parse_args([]).refresh_models is False
+    assert arg_parser().parse_args(["--refresh-models"]).refresh_models is True
+
+
+def test_refresh_models_runs_the_refresh_and_exits(monkeypatch):
+    # the refresh owns a parser of its own; this command's flags must not
+    # reach it, so it is handed an explicit empty argv
+    seen: list = []
+    monkeypatch.setattr("luca.agent.contrib.tui.cli.refresh_catalog", lambda argv: seen.append(argv) or 0)
+    monkeypatch.setattr(AgentApp, "run", lambda self: pytest.fail("the app must not start"))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--refresh-models"])
+
+    assert exit_info.value.code == 0
+    assert seen == [[]]
+
+
+def test_a_failing_refresh_exits_non_zero(monkeypatch):
+    monkeypatch.setattr("luca.agent.contrib.tui.cli.refresh_catalog", lambda argv: 1)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--refresh-models"])
+
+    assert exit_info.value.code == 1
