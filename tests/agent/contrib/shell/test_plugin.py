@@ -376,3 +376,60 @@ async def test_a_model_switch_within_one_provider_keeps_the_tool_set(tmp_path):
 
     assert first is second
     await plugin.close()
+
+
+# ── the extension points ─────────────────────────────────────────────────────
+
+
+class _EditorOnlyPlugin(ShellAccessPlugin):
+    """A host luca does not know, serving a model it does not know, that the
+    developer knows takes Anthropic's editor and nothing else."""
+
+    def native_key_for(self, session):
+        return ("text_editor_20250728", None, ())
+
+
+class _NoPatchPlugin(ShellAccessPlugin):
+    """Everything the base composes, minus `apply_patch`."""
+
+    def install_tools(self, key):
+        super().install_tools(key)
+        self.tools = [tool for tool in self.tools if tool.name != "apply_patch"]
+
+
+async def test_native_key_for_is_an_override_point(tmp_path):
+    plugin = _EditorOnlyPlugin(tmp_path, native_tools=False)
+
+    tools = await plugin.sync_tools(_session("openai", "gpt-4o"))
+
+    # the subclass decides, not the route: native_tools=False and a non-Anthropic
+    # model would both have said no
+    assert [tool.name for tool in tools] == [
+        "str_replace_based_edit_tool",
+        "glob",
+        "grep",
+        "apply_patch",
+        "bash",
+    ]
+    await plugin.close()
+
+
+async def test_install_tools_is_an_override_point(tmp_path):
+    plugin = _NoPatchPlugin(tmp_path, native_tools=True)
+
+    tools = await plugin.sync_tools(_session("anthropic", "claude-opus-5"))
+
+    assert [tool.name for tool in tools] == ["str_replace_based_edit_tool", "glob", "grep", "bash"]
+    await plugin.close()
+
+
+async def test_an_overridden_selection_survives_a_model_switch(tmp_path):
+    # the registry re-asks the plugin, so the subclass stays in charge
+    plugin = _EditorOnlyPlugin(tmp_path, native_tools=True)
+    registry = plugin.get_tool_registry(_session("anthropic", "claude-opus-5"))
+    openai_session = _session("openai", "gpt-5.4")
+
+    specs = await registry.get_tools(openai_session, openai_session.main_conversation_id)
+
+    assert [spec.provider_type for spec in specs] == ["text_editor_20250728", None, None, None, None]
+    await plugin.close()

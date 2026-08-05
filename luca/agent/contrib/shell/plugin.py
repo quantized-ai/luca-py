@@ -101,12 +101,17 @@ class ShellAccessPlugin:
         self.native_tools = native_tools
         self.tools: list[Tool] = []
         self._native_key: tuple | None = None
-        self._install(_NO_NATIVE)
+        self.install_tools(_NO_NATIVE)
 
     # ── which tools exist ────────────────────────────────────────────────────
 
-    def _native_key_for(self, session: AgentSession | None) -> tuple:
+    def native_key_for(self, session: AgentSession | None) -> tuple:
         """The native tool types this session's model routes to.
+
+        AN OVERRIDE POINT. Subclass and return your own
+        `(editor_type, bash_type, openai_types)` to change which provider
+        tools a route gets — a host luca does not know, a type it has not
+        learned yet, or a policy that turns one of them off.
 
         Resolved from the SESSION rather than fixed at construction. Which
         tools exist is a function of the route, and `/model` changes the route
@@ -128,13 +133,18 @@ class ShellAccessPlugin:
         Awaited because the outgoing set may be holding shells open, and a
         swap that leaks one is the same bug as a session swap that leaks
         one."""
-        key = self._native_key_for(session)
+        key = self.native_key_for(session)
         if key != self._native_key:
             await self.close()
-            self._install(key)
+            self.install_tools(key)
         return self.tools
 
-    def _install(self, key: tuple) -> None:
+    def install_tools(self, key: tuple) -> None:
+        """Build `self.tools` for one set of native types.
+
+        THE OTHER OVERRIDE POINT: `native_key_for` decides, this one composes.
+        Subclass to add a tool, drop one, or swap in your own implementation
+        of a tool luca ships."""
         editor_type, bash_type, openai_types = key
         self._native_key = key
         # The provider's editor REPLACES read/edit/write rather than joining
@@ -193,7 +203,7 @@ class ShellAccessPlugin:
                 await closer()
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
-        return _ModelAwareRegistry(self, self.permission_strategy)
+        return ModelAwareRegistry(self, self.permission_strategy)
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list[str]:
         additional = ""
@@ -231,7 +241,7 @@ def _absolute(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.normpath(os.path.join(os.getcwd(), path)))
 
 
-class _ModelAwareRegistry(SimpleToolRegistry):
+class ModelAwareRegistry(SimpleToolRegistry):
     """The shell tool set, re-resolved from the session on every call.
 
     `get_tool_registry` runs ONCE, at runner construction, so a registry that
@@ -244,16 +254,19 @@ class _ModelAwareRegistry(SimpleToolRegistry):
         super().__init__(tools=list(plugin.tools), permission_policy=permission_policy)
         self._plugin = plugin
 
-    async def _sync(self, session: AgentSession) -> None:
+    async def sync(self, session: AgentSession) -> None:
+        """Point `self.tools` at whatever the plugin says the model needs now.
+        Public because a subclass overriding `get_tools` still has to call
+        it."""
         tools = await self._plugin.sync_tools(session)
         if tools is not self.tools:
             self.tools = list(tools)
             self.tools_by_name = {tool.name: tool for tool in self.tools}
 
     async def get_tools(self, session, conversation_id):
-        await self._sync(session)
+        await self.sync(session)
         return await super().get_tools(session, conversation_id)
 
     async def create_execution(self, session, conversation_id, call):
-        await self._sync(session)
+        await self.sync(session)
         return await super().create_execution(session, conversation_id, call)

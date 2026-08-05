@@ -246,3 +246,13 @@ Both native shells truncate like luca's `bash` does (2000 lines / 50 KiB, full
 output spilled to a temp file), and `shell` honours the `max_output_length` its
 schema advertises. Uncapped, one `cat` of a build log goes into the request,
 the response and every later save of the session file.
+
+`ShellAccessPlugin.native_key_for` and `.install_tools` are the OVERRIDE
+POINTS, and they are public for that reason: the first decides which provider
+tools a route gets, the second composes the list. A developer with a host luca
+does not know, or a policy of their own, subclasses one of them rather than
+patching a module function. `ModelAwareRegistry` is exported too, and its
+`sync` is public because a subclass overriding `get_tools` still has to call
+it. Both are covered by tests that actually subclass — an override point with
+no such test is a claim, not a seam.
+

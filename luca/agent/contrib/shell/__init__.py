@@ -7,7 +7,7 @@ plus `ShellAccessPlugin`, which bundles them behind one workspace with a
 shared `FileReadTracker` and a seeded `PermissionStrategy`.
 """
 
-from .plugin import ShellAccessPlugin
+from .plugin import ModelAwareRegistry, ShellAccessPlugin
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -29,6 +29,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "ReadTool",
+    "ModelAwareRegistry",
     "ShellAccessPlugin",
     "ShellTool",
     "ShellToolError",

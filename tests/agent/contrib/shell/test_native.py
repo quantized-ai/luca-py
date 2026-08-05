@@ -27,7 +27,7 @@ from luca.agent.contrib.shell.native import (
     to_patch_envelope,
 )
 from luca.agent.contrib.shell.tools import EditTool, FileReadTracker, ReadTool, ShellToolError, WriteTool
-from luca.agent.core import CancellationToken
+from luca.agent.core import CancellationToken, TextContent
 from luca.agent.core.models import LLMConfig, ToolKind
 from luca.agent.core.runner import AgentSessionRunner
 from tests.agent.scenarios import conversation
@@ -487,6 +487,37 @@ async def test_the_wire_list_swaps_the_editor_in_and_lucas_own_out(tmp_path):
 # ── Anthropic's bash ─────────────────────────────────────────────────────────
 
 
+@pytest.fixture
+async def bash(tmp_path):
+    """The tool AND its teardown. Every shell it opens is a live process, so
+    closing is the fixture's job — a `try/finally` in each body would be logic
+    in the test."""
+    tool = NativeBashTool(tmp_path)
+    yield tool
+    await tool.close()
+
+
+@pytest.fixture
+async def capped_bash(tmp_path):
+    tool = NativeBashTool(tmp_path, output_dir=str(tmp_path))
+    yield tool
+    await tool.close()
+
+
+@pytest.fixture
+async def native_shell(tmp_path):
+    tool = NativeShellTool(tmp_path)
+    yield tool
+    await tool.close()
+
+
+@pytest.fixture
+async def capped_shell(tmp_path):
+    tool = NativeShellTool(tmp_path, output_dir=str(tmp_path))
+    yield tool
+    await tool.close()
+
+
 async def bash_run(tool, conversation=CONVERSATION, **args):
     return await tool.execute(
         tool.Args.model_validate(args).model_dump(),
@@ -496,78 +527,54 @@ async def bash_run(tool, conversation=CONVERSATION, **args):
     )
 
 
-async def test_the_bash_spec_carries_the_provider_type(tmp_path):
-    tool = NativeBashTool(tmp_path)
-    try:
-        spec = tool.get_tool_spec()
-        assert (spec.name, spec.provider_type, spec.tool_kind) == (BASH_NAME, BASH_TYPE, ToolKind.EXECUTE)
-        assert list(spec.input_schema["properties"]) == ["command", "restart"]
-    finally:
-        await tool.close()
+async def test_the_bash_spec_carries_the_provider_type(bash):
+    spec = bash.get_tool_spec()
+    assert (spec.name, spec.provider_type, spec.tool_kind) == (BASH_NAME, BASH_TYPE, ToolKind.EXECUTE)
+    assert list(spec.input_schema["properties"]) == ["command", "restart"]
 
 
-async def test_bash_state_persists_between_calls(tmp_path):
+async def test_bash_state_persists_between_calls(bash, tmp_path):
     (tmp_path / "sub").mkdir()
-    tool = NativeBashTool(tmp_path)
-    try:
-        await bash_run(tool, command="cd sub")
-        result = await bash_run(tool, command="pwd")
+    await bash_run(bash, command="cd sub")
+    result = await bash_run(bash, command="pwd")
 
-        assert result.content[0].text.strip().endswith("/sub")
-    finally:
-        await tool.close()
+    assert result.content[0].text.strip().endswith("/sub")
 
 
-async def test_bash_restart_clears_the_session(tmp_path):
+async def test_bash_restart_clears_the_session(bash, tmp_path):
     (tmp_path / "sub").mkdir()
-    tool = NativeBashTool(tmp_path)
-    try:
-        await bash_run(tool, command="cd sub")
-        restarted = await bash_run(tool, restart=True)
-        result = await bash_run(tool, command="pwd")
+    await bash_run(bash, command="cd sub")
+    restarted = await bash_run(bash, restart=True)
+    result = await bash_run(bash, command="pwd")
 
-        assert "restarted" in restarted.content[0].text
-        assert not result.content[0].text.strip().endswith("/sub")
-    finally:
-        await tool.close()
+    assert "restarted" in restarted.content[0].text
+    assert not result.content[0].text.strip().endswith("/sub")
 
 
-async def test_each_conversation_gets_its_own_shell(tmp_path):
-    # a tool instance is shared by the main agent and every subagent; one
+async def test_each_conversation_gets_its_own_shell(bash, tmp_path):
+    # a bash instance is shared by the main agent and every subagent; one
     # session would mean a subagent's `cd` relocating the main agent
     (tmp_path / "sub").mkdir()
-    tool = NativeBashTool(tmp_path)
-    try:
-        await bash_run(tool, conversation="subagent", command="cd sub")
-        main = await bash_run(tool, conversation=CONVERSATION, command="pwd")
+    await bash_run(bash, conversation="subagent", command="cd sub")
+    main = await bash_run(bash, conversation=CONVERSATION, command="pwd")
 
-        assert not main.content[0].text.strip().endswith("/sub")
-        assert tool.shell_for("subagent") is not tool.shell_for(CONVERSATION)
-    finally:
-        await tool.close()
+    assert not main.content[0].text.strip().endswith("/sub")
+    assert bash.shell_for("subagent") is not bash.shell_for(CONVERSATION)
 
 
-async def test_a_failing_command_is_an_error_result_carrying_the_code(tmp_path):
-    tool = NativeBashTool(tmp_path)
-    try:
-        result = await bash_run(tool, command="sh -c 'exit 3'")
+async def test_a_failing_command_is_an_error_result_carrying_the_code(bash):
+    result = await bash_run(bash, command="sh -c 'exit 3'")
 
-        assert result.is_error
-        # "exit", the key luca's own bash writes and the TUI renders from
-        assert result.metadata == {"exit": 3, "outcome": "completed", "truncated": False, "output_path": None}
-    finally:
-        await tool.close()
+    assert result.is_error
+    # "exit", the key luca's own bash writes and the TUI renders from
+    assert result.metadata == {"exit": 3, "outcome": "completed", "truncated": False, "output_path": None}
 
 
-async def test_bash_with_neither_command_nor_restart_is_an_error(tmp_path):
-    tool = NativeBashTool(tmp_path)
-    try:
-        result = await bash_run(tool)
+async def test_bash_with_neither_command_nor_restart_is_an_error(bash):
+    result = await bash_run(bash)
 
-        assert result.is_error
-        assert "requires a command" in result.content[0].text
-    finally:
-        await tool.close()
+    assert result.is_error
+    assert "requires a command" in result.content[0].text
 
 
 def test_bash_asks_for_the_same_permissions_lucas_own_does(tmp_path):
@@ -688,54 +695,42 @@ async def shell_run(tool, conversation=CONVERSATION, **args):
     )
 
 
-async def test_shell_runs_every_command_in_order(tmp_path):
-    tool = NativeShellTool(tmp_path)
-    try:
-        result = await tool.execute(
-            {"commands": ["echo one", "echo two"]},
-            SESSION,
-            CONVERSATION,
-            cancellation_token=CancellationToken(),
-        )
+async def test_shell_runs_every_command_in_order(native_shell):
+    result = await native_shell.execute(
+        {"commands": ["echo one", "echo two"]},
+        SESSION,
+        CONVERSATION,
+        cancellation_token=CancellationToken(),
+    )
 
-        assert not result.is_error
-        assert "one" in result.content[0].text
-        assert "two" in result.content[0].text
-    finally:
-        await tool.close()
+    assert not result.is_error
+    assert "one" in result.content[0].text
+    assert "two" in result.content[0].text
 
 
-async def test_shell_commands_share_one_session(tmp_path):
+async def test_shell_commands_share_one_session(native_shell, tmp_path):
     (tmp_path / "sub").mkdir()
-    tool = NativeShellTool(tmp_path)
-    try:
-        result = await tool.execute(
-            {"commands": ["cd sub", "pwd"]},
-            SESSION,
-            CONVERSATION,
-            cancellation_token=CancellationToken(),
-        )
+    result = await native_shell.execute(
+        {"commands": ["cd sub", "pwd"]},
+        SESSION,
+        CONVERSATION,
+        cancellation_token=CancellationToken(),
+    )
 
-        assert "/sub" in result.content[0].text
-    finally:
-        await tool.close()
+    assert "/sub" in result.content[0].text
 
 
-async def test_shell_stops_at_the_first_failure(tmp_path):
+async def test_shell_stops_at_the_first_failure(native_shell):
     # they run in order, so a later command usually assumes the earlier worked
-    tool = NativeShellTool(tmp_path)
-    try:
-        result = await tool.execute(
-            {"commands": ["false", "echo unreachable"]},
-            SESSION,
-            CONVERSATION,
-            cancellation_token=CancellationToken(),
-        )
+    result = await native_shell.execute(
+        {"commands": ["false", "echo unreachable"]},
+        SESSION,
+        CONVERSATION,
+        cancellation_token=CancellationToken(),
+    )
 
-        assert result.is_error
-        assert "unreachable" not in result.content[0].text
-    finally:
-        await tool.close()
+    assert result.is_error
+    assert "unreachable" not in result.content[0].text
 
 
 def test_shell_asks_about_every_command_not_just_the_first(tmp_path):
@@ -748,15 +743,11 @@ def test_shell_asks_about_every_command_not_just_the_first(tmp_path):
     assert ("bash", "rm -rf /") in _resources(requests)
 
 
-async def test_shell_with_no_commands_is_an_error(tmp_path):
-    tool = NativeShellTool(tmp_path)
-    try:
-        result = await tool.execute({"commands": []}, SESSION, CONVERSATION, cancellation_token=CancellationToken())
+async def test_shell_with_no_commands_is_an_error(native_shell):
+    result = await native_shell.execute({"commands": []}, SESSION, CONVERSATION, cancellation_token=CancellationToken())
 
-        assert result.is_error
-        assert "at least one command" in result.content[0].text
-    finally:
-        await tool.close()
+    assert result.is_error
+    assert "at least one command" in result.content[0].text
 
 
 @pytest.mark.parametrize(
@@ -777,79 +768,64 @@ def test_only_the_responses_transport_gets_openais_tools(provider, model, expect
 # ── output caps, cancellation and the paging hint ────────────────────────────
 
 
-async def test_native_bash_truncates_like_lucas_own_bash(tmp_path):
+async def test_native_bash_truncates_like_lucas_own_bash(capped_bash):
     """`bash` caps at 2000 lines / 50 KiB and spills the rest to a file. The
     native replacement covers the same ground, so one `cat` of a build log
     would otherwise go into the request, the response, and every save of the
     session file."""
-    tool = NativeBashTool(tmp_path, output_dir=str(tmp_path))
-    try:
-        result = await bash_run(tool, command="for i in $(seq 1 5000); do echo line-$i; done")
+    result = await bash_run(capped_bash, command="for i in $(seq 1 5000); do echo line-$i; done")
 
-        text = result.content[0].text
-        assert text.startswith("...output truncated...")
-        assert result.metadata["truncated"] is True
-        assert Path(result.metadata["output_path"]).read_text().count("\n") == 5000
-    finally:
-        await tool.close()
+    spill = result.metadata["output_path"]  # a mkstemp name the test does not own
+    assert result.metadata == {"exit": 0, "outcome": "completed", "truncated": True, "output_path": spill}
+    assert result.content[0].text.startswith("...output truncated...")
+    assert Path(spill).read_text().count("\n") == 5000
 
 
-async def test_native_shell_honours_max_output_length(tmp_path):
+async def test_native_shell_honours_max_output_length(capped_shell):
     # declared in the provider's schema, so a model that asks for a bound gets one
-    tool = NativeShellTool(tmp_path, output_dir=str(tmp_path))
-    try:
-        result = await shell_run(tool, commands=["python3 -c \"print('x' * 20000)\""], max_output_length=500)
+    result = await shell_run(capped_shell, commands=["python3 -c \"print('x' * 20000)\""], max_output_length=500)
 
-        assert len(result.content[0].text.encode()) < 5_000
-        assert result.metadata["truncated"] is True
-    finally:
-        await tool.close()
+    spill = result.metadata["output_path"]  # a mkstemp name the test does not own
+    assert result.metadata == {"exit": 0, "outcome": "completed", "truncated": True, "output_path": spill}
+    assert len(result.content[0].text.encode()) < 5_000
 
 
-async def test_native_shell_leaves_small_output_alone(tmp_path):
-    tool = NativeShellTool(tmp_path)
-    try:
-        result = await shell_run(tool, commands=["echo hi"], max_output_length=500)
+async def test_native_shell_leaves_small_output_alone(native_shell):
+    result = await shell_run(native_shell, commands=["echo hi"], max_output_length=500)
 
-        assert result.content[0].text == "$ echo hi\nhi\n"
-        assert result.metadata == {"exit": 0, "outcome": "completed", "truncated": False, "output_path": None}
-    finally:
-        await tool.close()
+    assert result.content[0].text == "$ echo hi\nhi\n"
+    assert result.metadata == {"exit": 0, "outcome": "completed", "truncated": False, "output_path": None}
 
 
-async def test_cancelling_native_bash_returns_partial_output_and_says_the_session_reset(tmp_path):
+async def test_cancelling_native_bash_returns_partial_output_and_says_the_session_reset(bash):
     """luca's own `bash` hands back what the command printed before the ESC.
     The native one dropped the token entirely, so the runner hard-cancelled and
     the model got a bare `[tool execution interrupted]` — and the killed shell
     took the working directory and environment with it, silently."""
-    tool = NativeBashTool(tmp_path)
     token = CancellationToken()
     asyncio.get_running_loop().call_later(0.5, token.cancel)
-    try:
-        result = await tool.execute(
-            tool.Args.model_validate({"command": "echo early; sleep 30"}).model_dump(),
-            SESSION,
-            CONVERSATION,
-            cancellation_token=token,
+    result = await bash.execute(
+        bash.Args.model_validate({"command": "echo early; sleep 30"}).model_dump(),
+        SESSION,
+        CONVERSATION,
+        cancellation_token=token,
+    )
+
+    assert result.is_error
+    assert result.content == [
+        TextContent(
+            text="early\n\nCommand cancelled; the shell session was reset, so the working "
+            "directory and environment are back to their defaults."
         )
-
-        assert result.is_error
-        assert "early" in result.content[0].text
-        assert "shell session was reset" in result.content[0].text
-        assert result.metadata["outcome"] == "cancelled"
-    finally:
-        await tool.close()
+    ]
+    assert result.metadata == {"exit": None, "outcome": "cancelled", "truncated": False, "output_path": None}
 
 
-async def test_native_bash_sets_no_outer_deadline(tmp_path):
+async def test_native_bash_sets_no_outer_deadline(bash):
     """The runner's deadline starts before the spawn, so one equal to the
-    tool's own always wins: the tool's timeout branch would be dead code and
-    the model would get `[tool execution timed_out]` with no output."""
-    tool = NativeBashTool(tmp_path)
-    try:
-        assert tool.get_tool_spec().timeout_in_ms is None
-    finally:
-        await tool.close()
+    the tool's own always wins: the tool's timeout branch would be dead code
+    and the model would get `[tool execution timed_out]` with no output."""
+    assert bash.get_tool_spec().timeout_in_ms is None
 
 
 async def test_a_long_view_points_at_view_range_not_offset(editor, tmp_path):
@@ -873,31 +849,27 @@ def test_the_legacy_editor_uses_the_name_that_goes_with_its_type(tmp_path):
     assert legacy.get_tool_spec().name == "str_replace_editor"
 
 
-async def test_a_finished_subagents_shell_is_released(tmp_path):
+async def test_a_finished_subagents_shell_is_released(bash):
     """One shell per conversation, and nothing resumes a subagent — so without
     a release a run that spawns forty of them ends holding forty-one idle
     shells plus whatever each left in the background."""
     session = AgentSessionRunner.new_session(LLMConfig(model="claude-opus-5", provider="anthropic"))
     child = conversation("child", depth=1)
     session.conversations[child.id] = child
-    tool = NativeBashTool(tmp_path)
-    try:
-        await tool.execute(
-            tool.Args.model_validate({"command": "echo hi"}).model_dump(),
-            session,
-            child.id,
-            cancellation_token=CancellationToken(),
-        )
-        assert len(tool._shells) == 1
+    await bash.execute(
+        bash.Args.model_validate({"command": "echo hi"}).model_dump(),
+        session,
+        child.id,
+        cancellation_token=CancellationToken(),
+    )
+    assert len(bash._shells) == 1
 
-        await tool.execute(
-            tool.Args.model_validate({"command": "echo hi"}).model_dump(),
-            session,
-            session.main_conversation_id,
-            cancellation_token=CancellationToken(),
-        )
+    await bash.execute(
+        bash.Args.model_validate({"command": "echo hi"}).model_dump(),
+        session,
+        session.main_conversation_id,
+        cancellation_token=CancellationToken(),
+    )
 
-        assert len(tool._shells) == 1
-        assert session.main_conversation_id in tool._shells._shells
-    finally:
-        await tool.close()
+    assert len(bash._shells) == 1
+    assert session.main_conversation_id in bash._shells._shells

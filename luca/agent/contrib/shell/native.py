@@ -589,7 +589,9 @@ class NativeBashTool(ShellTool):
         body, truncated, output_path = self._truncate(_join_streams(result))
         note = _outcome_note(result.outcome, BASH_DEFAULT_TIMEOUT_MS)
         if note:
-            body = f"{body}\n\n{note}" if body != "(no output)" else note
+            # rstrip first: the command's own trailing newline plus the blank
+            # line separator would otherwise leave two blank lines.
+            body = f"{body.rstrip(chr(10))}\n\n{note}" if body != "(no output)" else note
         elif result.exit_code:
             body = f"{body}\n\nExited with code {result.exit_code}."
         return ExecutionResult(
