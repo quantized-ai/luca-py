@@ -520,9 +520,6 @@ class NativeBashTool(ShellTool):
     def shell_for(self, conversation_id: str) -> PersistentShell:
         return self._shells.get(conversation_id)
 
-    async def release(self, conversation_id: str) -> None:
-        await self._shells.release(conversation_id)
-
     async def close(self) -> None:
         """Every session this tool opened. The plugin calls it when the run
         ends; a shell left behind is a process the user never sees."""
@@ -731,9 +728,6 @@ class NativeShellTool(ShellTool):
 
     def shell_for(self, conversation_id: str) -> PersistentShell:
         return self._shells.get(conversation_id)
-
-    async def release(self, conversation_id: str) -> None:
-        await self._shells.release(conversation_id)
 
     async def close(self) -> None:
         await self._shells.close()
