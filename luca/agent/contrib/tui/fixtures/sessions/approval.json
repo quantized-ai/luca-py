@@ -59,9 +59,10 @@
         "name": "read",
         "arguments": {
           "path": "luca/events.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -120,9 +121,10 @@
         "name": "edit",
         "arguments": {
           "path": "luca/events.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f",
       "extras": {
         "approval_context": {
           "requests": [
@@ -166,7 +168,7 @@
     }
   },
   "tool_specs": {
-    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+    "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa": {
       "name": "read",
       "description": "read tool.",
       "input_schema": {
@@ -175,13 +177,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+    "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f": {
       "name": "edit",
       "description": "edit tool.",
       "input_schema": {
@@ -190,6 +193,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,

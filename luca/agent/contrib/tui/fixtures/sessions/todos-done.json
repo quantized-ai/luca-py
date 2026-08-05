@@ -49,9 +49,10 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -130,9 +131,10 @@
               "status": "completed"
             }
           ]
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -216,7 +218,7 @@
     }
   },
   "tool_specs": {
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c": {
       "name": "update_todos",
       "description": "update_todos tool.",
       "input_schema": {
@@ -225,6 +227,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",

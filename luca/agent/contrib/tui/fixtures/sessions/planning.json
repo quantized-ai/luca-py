@@ -87,9 +87,10 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -178,9 +179,10 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -273,9 +275,10 @@
         "arguments": {
           "description": "audit the reader",
           "prompt": "Read the store module and report what belongs on the write path."
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -342,9 +345,10 @@
         "arguments": {
           "description": "draft the writer",
           "prompt": "Create writer.py and move the write path into it."
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -477,9 +481,10 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/reader.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -517,9 +522,10 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/schema.sql"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -558,9 +564,10 @@
         "arguments": {
           "pattern": "def append|def flush",
           "path": "luca/store"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -656,9 +663,10 @@
         "name": "write",
         "arguments": {
           "path": "luca/store/writer.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62",
+      "tool_spec_id": "30b0e14fb83167eb8e13918d25c6f6305a38cb8d6d08eb0dc021727f7542e28e",
       "extras": {
         "approval_context": {
           "requests": [
@@ -727,9 +735,10 @@
         "name": "edit",
         "arguments": {
           "path": "luca/store/__init__.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f",
       "extras": {
         "approval_context": {
           "requests": [
@@ -807,7 +816,7 @@
     }
   },
   "tool_specs": {
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c": {
       "name": "update_todos",
       "description": "update_todos tool.",
       "input_schema": {
@@ -816,13 +825,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",
       "version": null,
       "timeout_in_ms": null
     },
-    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+    "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c": {
       "name": "task",
       "description": "task tool.",
       "input_schema": {
@@ -841,13 +851,14 @@
         ]
       },
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+    "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa": {
       "name": "read",
       "description": "read tool.",
       "input_schema": {
@@ -856,13 +867,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+    "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e": {
       "name": "grep",
       "description": "grep tool.",
       "input_schema": {
@@ -871,13 +883,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62": {
+    "30b0e14fb83167eb8e13918d25c6f6305a38cb8d6d08eb0dc021727f7542e28e": {
       "name": "write",
       "description": "write tool.",
       "input_schema": {
@@ -886,13 +899,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+    "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f": {
       "name": "edit",
       "description": "edit tool.",
       "input_schema": {
@@ -901,6 +915,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,

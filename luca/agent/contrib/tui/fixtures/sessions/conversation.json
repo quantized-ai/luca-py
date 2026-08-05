@@ -59,9 +59,10 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/reader.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -100,9 +101,10 @@
         "arguments": {
           "pattern": "def emit",
           "path": "luca"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -178,9 +180,10 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -250,9 +253,10 @@
         "name": "edit",
         "arguments": {
           "path": "luca/events.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f",
       "extras": {
         "approval_context": {
           "requests": [
@@ -321,9 +325,10 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest tests/store -q"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -437,9 +442,10 @@
         "name": "edit",
         "arguments": {
           "path": "luca/store/writer.py"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -479,9 +485,10 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest tests/store -q"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -539,7 +546,7 @@
     }
   },
   "tool_specs": {
-    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+    "b1f856da23f602416d91aa03197e026a67a723daf1687e384b89d16ab7ca03aa": {
       "name": "read",
       "description": "read tool.",
       "input_schema": {
@@ -548,13 +555,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+    "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e": {
       "name": "grep",
       "description": "grep tool.",
       "input_schema": {
@@ -563,13 +571,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "b9503102cdc6b50379c862be4c50c745c75d837e06cfeba4d2feb8a4f6c4d48c": {
       "name": "update_todos",
       "description": "update_todos tool.",
       "input_schema": {
@@ -578,13 +587,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",
       "version": null,
       "timeout_in_ms": null
     },
-    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+    "b4e4574e4c5edfae74358242bf0a900f43d06e6429d715510d396f798c09818f": {
       "name": "edit",
       "description": "edit tool.",
       "input_schema": {
@@ -593,13 +603,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b": {
+    "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63": {
       "name": "bash",
       "description": "bash tool.",
       "input_schema": {
@@ -608,6 +619,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,

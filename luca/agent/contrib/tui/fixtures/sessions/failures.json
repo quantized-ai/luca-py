@@ -59,9 +59,10 @@
         "name": "bash",
         "arguments": {
           "command": "rm -rf build/ dist/"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63",
       "extras": {
         "approval_context": {
           "requests": [
@@ -138,9 +139,10 @@
         "name": "bash",
         "arguments": {
           "command": "git clean -fdx build/"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -180,9 +182,10 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest -q"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -231,7 +234,7 @@
     }
   },
   "tool_specs": {
-    "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b": {
+    "6a72d64d6ca5927871a149eb31883012f0d064e5e7acd08f2aea281a96b6da63": {
       "name": "bash",
       "description": "bash tool.",
       "input_schema": {
@@ -240,6 +243,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,

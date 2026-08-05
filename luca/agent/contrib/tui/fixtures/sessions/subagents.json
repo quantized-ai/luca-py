@@ -58,9 +58,10 @@
         "arguments": {
           "description": "audit the docs",
           "prompt": "Read every page under docs/ and list stale references."
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -127,9 +128,10 @@
         "arguments": {
           "description": "audit the tests",
           "prompt": "Find tests referencing the jsonl store."
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -262,9 +264,10 @@
         "name": "glob",
         "arguments": {
           "pattern": "docs/**/*.md"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24",
+      "tool_spec_id": "875d6081d30a553fc31f4fc3b32fb70fd8d91adf6ffbeca1331f4973a70155b5",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -303,9 +306,10 @@
         "arguments": {
           "pattern": "jsonl",
           "path": "docs"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -402,9 +406,10 @@
         "arguments": {
           "pattern": "jsonl",
           "path": "tests"
-        }
+        },
+        "provider_type": null
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -423,7 +428,7 @@
     }
   },
   "tool_specs": {
-    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+    "d40ac40491dda35365ebd22a10a08603ee34853c8e3a0aad58e1cef12c45783c": {
       "name": "task",
       "description": "task tool.",
       "input_schema": {
@@ -442,13 +447,14 @@
         ]
       },
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24": {
+    "875d6081d30a553fc31f4fc3b32fb70fd8d91adf6ffbeca1331f4973a70155b5": {
       "name": "glob",
       "description": "glob tool.",
       "input_schema": {
@@ -457,13 +463,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+    "96ffe999d688513075a187d6cfe70fff787515f065a9b7a97bca4651b200fd8e": {
       "name": "grep",
       "description": "grep tool.",
       "input_schema": {
@@ -472,6 +479,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "provider_type": null,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
