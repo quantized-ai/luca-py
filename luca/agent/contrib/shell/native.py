@@ -92,7 +92,8 @@ class NativeTextEditorTool(ShellTool):
         path: str = Field(min_length=1, description="Absolute path to the file or directory")
         file_text: str | None = Field(default=None, description="Full contents, for `create`")
         insert_line: int | None = Field(default=None, description="Line to insert after, for `insert`")
-        new_str: str | None = Field(default=None, description="Replacement or inserted text")
+        insert_text: str | None = Field(default=None, description="Text to insert, for `insert`")
+        new_str: str | None = Field(default=None, description="Replacement text, for `str_replace`")
         old_str: str | None = Field(default=None, description="Text to replace, for `str_replace`")
         view_range: list[int] | None = Field(default=None, description="[start, end] lines, for `view`")
 
@@ -225,15 +226,23 @@ class NativeTextEditorTool(ShellTool):
         line = args.get("insert_line")
         if line is None:
             raise ShellToolError("`insert` requires insert_line.")
-        if args.get("new_str") is None:
-            raise ShellToolError("`insert` requires new_str.")
+        # The provider's field for `insert` is `insert_text`; `new_str` belongs
+        # to `str_replace`. Both are accepted because `Args` is a VALIDATOR
+        # here, not the advertisement — the schema on the wire is Anthropic's,
+        # so rejecting a field the model was trained to send just costs a
+        # round trip and teaches it nothing.
+        inserted = args.get("insert_text")
+        if inserted is None:
+            inserted = args.get("new_str")
+        if inserted is None:
+            raise ShellToolError("`insert` requires insert_text.")
         path = self._resolve(args["path"])
         if not path.is_file():
             raise ShellToolError(f"File not found: {path}")
         if not self.tracker.was_read(conversation_id, path):
             raise ShellToolError(f"File has not been read yet: view {path} before inserting into it.")
         async with _file_lock(path):
-            result = await asyncio.to_thread(self._splice, path, line, args["new_str"])
+            result = await asyncio.to_thread(self._splice, path, line, inserted)
         self.tracker.record(conversation_id, path)
         return result
 

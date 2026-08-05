@@ -75,6 +75,7 @@ def test_the_spec_carries_the_provider_type_instead_of_advertising_a_schema(edit
         "path",
         "file_text",
         "insert_line",
+        "insert_text",
         "new_str",
         "old_str",
         "view_range",
@@ -146,6 +147,26 @@ async def test_insert_places_text_after_the_given_line(editor, sample):
     result = await run(editor, command="insert", path=str(sample), insert_line=1, new_str="INSERTED")
 
     assert not result.is_error
+    assert sample.read_text() == "one\nINSERTED\ntwo\nthree\n"
+
+
+async def test_insert_takes_the_providers_insert_text_field(editor, sample):
+    """The real model sends `insert_text` for `insert` — `new_str` belongs to
+    `str_replace`. Rejecting it burned two round trips per insert against the
+    live API before the model fell back."""
+    await run(editor, command="view", path=str(sample))
+
+    await run(editor, command="insert", path=str(sample), insert_line=1, insert_text="INSERTED")
+
+    assert sample.read_text() == "one\nINSERTED\ntwo\nthree\n"
+
+
+async def test_insert_still_accepts_new_str(editor, sample):
+    # what the model retries with; Args validates, it does not advertise
+    await run(editor, command="view", path=str(sample))
+
+    await run(editor, command="insert", path=str(sample), insert_line=1, new_str="INSERTED")
+
     assert sample.read_text() == "one\nINSERTED\ntwo\nthree\n"
 
 
@@ -350,7 +371,7 @@ def test_insert_is_gated_as_an_edit(tmp_path, sample):
         ({"command": "create"}, "requires file_text"),
         ({"command": "str_replace"}, "requires old_str"),
         ({"command": "insert", "new_str": "x"}, "requires insert_line"),
-        ({"command": "insert", "insert_line": 1}, "requires new_str"),
+        ({"command": "insert", "insert_line": 1}, "requires insert_text"),
     ],
     ids=["create-no-text", "replace-no-old", "insert-no-line", "insert-no-str"],
 )

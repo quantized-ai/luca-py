@@ -303,6 +303,11 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             "type": item_type,
             "call_id": block.id,
             payload_key: dict(block.arguments or {}),
+            # Required on input, and not optional the way it reads: without it
+            # the API rejects the whole array with
+            # `Missing required parameter: input[N].status`. A replayed call is
+            # always finished — its result is the item right after it.
+            "status": "completed",
         }
 
     def _project_tool_message(self, msg: ToolMessage, native: dict[str, str] | None = None) -> dict:
@@ -334,6 +339,9 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             return {
                 "type": "shell_call_output",
                 "call_id": msg.tool_call_id,
+                # `status` says whether the CALL finished, which it did; a
+                # command that failed says so through its exit code.
+                "status": "completed",
                 "output": [
                     {
                         "stdout": output,

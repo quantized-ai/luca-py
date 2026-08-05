@@ -614,15 +614,21 @@ def test_a_shell_result_goes_back_in_the_shell_shape(responses_transport_factory
         ],
     )
 
+    # `status` is required on input. Shape pinned against
+    # openai.types.responses.ResponseFunctionShellToolCallOutput.
     assert payload["input"][-1] == {
         "type": "shell_call_output",
         "call_id": "call_2",
+        "status": "completed",
         "output": [{"stdout": "a.py\n", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}],
     }
 
 
 def test_a_replayed_native_call_keeps_its_item_type(responses_transport_factory):
-    # a resumed conversation has to match what the provider recorded
+    # A resumed conversation has to match what the provider recorded, and
+    # `status` is REQUIRED on the way back in: without it the API rejects the
+    # whole array with `Missing required parameter: input[N].status`. Shape
+    # pinned against openai.types.responses.ResponseApplyPatchToolCall.
     payload = _request(
         responses_transport_factory(),
         tools=[PATCH_TOOL],
@@ -648,6 +654,7 @@ def test_a_replayed_native_call_keeps_its_item_type(responses_transport_factory)
         "type": "apply_patch_call",
         "call_id": "call_1",
         "operation": {"type": "delete_file", "path": "a.py"},
+        "status": "completed",
     }
 
 

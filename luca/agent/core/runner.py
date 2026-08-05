@@ -3916,6 +3916,7 @@ class AgentSessionRunner:
                 id=tc.id,
                 name=tc.name,
                 arguments=copy.deepcopy(tc.arguments),
+                provider_type=tc.provider_type,
             )
 
             def build(
@@ -4104,6 +4105,7 @@ class AgentSessionRunner:
             id=tc.id,
             name=tc.name,
             arguments=copy.deepcopy(tc.arguments),
+            provider_type=tc.provider_type,
         )
         # `before_tool_creation` runs on the deep COPY, ahead of the private
         # check: a middleware that renames a call must be checked against the
