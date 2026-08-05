@@ -134,12 +134,28 @@ Providers and transports do **not** import `luca.client.catalog`. They read `req
 `Tool.provider_type` marks a tool the PROVIDER defines and the model was
 trained on — Anthropic's `text_editor_20250728`. The transport then sends the
 provider's own form (`{type, name}`) and skips `description` and `parameters`
-entirely, because a request that redefines the schema is rejected. A transport
-that does not know a given type raises rather than sending it; a 400 from the
-API would name the wire field instead of the mistake.
+entirely, because a request that redefines the schema is rejected.
+
+REFUSING is the default and understanding a type is the opt-in:
+`BaseTransport._reject_provider_tools` raises for anything the transport cannot
+express, and the two that serve these tools call it only for the rest. The
+other way round, a transport silently ships the tool as an ordinary function —
+advertising luca's internal validation schema as the contract, under a
+description that says it is never sent — and the model is handed a tool the
+provider never defined. Failing here names the mistake; a 400 from the API
+would only name the wire field.
 
 The tool is still executed by the caller. Nothing about the response path
 changes: it arrives as an ordinary tool call.
+
+OpenAI's `apply_patch` and `shell` are the exception to that last sentence.
+They ride their own response items (`apply_patch_call` / `shell_call`) and take
+their own input items back, so the Responses transport parses them into
+ordinary `ToolCall`s and rebuilds the items on the way out — in the streaming
+parser as well as the buffered one, or the item is dropped and the turn ends
+empty. Which item a RECORDED call replays as comes from
+`ToolCall.provider_type`, never from its name: names are not durable
+identifiers, and luca ships an `apply_patch` of its own.
 
 ### 6. The catalog is metadata, never a gate
 

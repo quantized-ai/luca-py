@@ -589,6 +589,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
             "id": "tc1",
             "name": "add",
             "arguments": {"a": 1, "b": 2},
+            "provider_type": None,
         },
         "tool_spec_id": ADD_SPEC.spec_id(),
         "extras": {},

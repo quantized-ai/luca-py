@@ -225,6 +225,10 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         return wire
 
     def _project_tools(self, tools: list) -> list[dict]:
+        # Chat completions has no provider-defined tools at all: `apply_patch`
+        # and `shell` are Responses-shaped, and Anthropic's are a different
+        # API entirely. groq, deepseek and ollama all land here.
+        self._reject_provider_tools(tools)
         out = []
         for t in tools:
             schema = tool_parameters_to_json_schema(t.parameters)

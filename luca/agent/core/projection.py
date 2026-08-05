@@ -330,6 +330,7 @@ class ConversationProjector:
                         id=part.id,
                         name=part.name,
                         arguments=part.arguments,
+                        provider_type=part.provider_type,
                     ),
                 )
             else:

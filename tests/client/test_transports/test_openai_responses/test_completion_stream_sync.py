@@ -22,6 +22,7 @@ from luca.client.types import (
     ThinkingDeltaEvent,
     ThinkingEndEvent,
     ThinkingStartEvent,
+    Tool,
     ToolCall,
     ToolCallDeltaEvent,
     ToolCallEndEvent,
@@ -50,6 +51,19 @@ REQ = ChatCompletionRequest(
     model="gpt-5.4",
     provider="openai",
     messages=[UserMessage(content="hi")],
+)
+
+# A provider call item carries no tool name, so what the stream resolves it to
+# comes from the tools this request offered — same rule as the non-streaming
+# parse, and the reason these cases need their own request.
+NATIVE_REQ = ChatCompletionRequest(
+    model="gpt-5.4",
+    provider="openai",
+    messages=[UserMessage(content="hi")],
+    tools=[
+        Tool(name="apply_patch", description="Patch.", parameters={}, provider_type="apply_patch"),
+        Tool(name="shell", description="Run.", parameters={}, provider_type="shell"),
+    ],
 )
 
 
@@ -418,6 +432,238 @@ CASES = [
                 provider_finish_reason="incomplete:max_output_tokens",
                 usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
                 tool_calls=[],
+            ),
+        ],
+    ),
+    StreamCase(
+        name="an_apply_patch_call_streams_as_a_tool_call",
+        request=NATIVE_REQ,
+        sse_chunks=[
+            _data(
+                '{"type":"response.output_item.added","output_index":0,"item":{"id":"i_1","type":"apply_patch_call","call_id":"call_1","status":"in_progress"}}'
+            ),
+            _data(
+                '{"type":"response.output_item.done","output_index":0,"item":{"id":"i_1","type":"apply_patch_call","call_id":"call_1","operation":{"type":"delete_file","path":"a.py"}}}'
+            ),
+            _data(
+                '{"type":"response.completed","response":{"id":"resp_9","status":"completed",'
+                '"usage":{"input_tokens":2,"output_tokens":2,"total_tokens":4}}}'
+            ),
+            _data("[DONE]"),
+        ],
+        expected_events=[
+            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
+            ToolCallStartEvent(
+                index=0,
+                id="call_1",
+                name="apply_patch",
+                partial=AssistantMessage(
+                    content=[ToolCall(id="call_1", name="apply_patch", complete=False, provider_type="apply_patch")],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            ToolCallDeltaEvent(
+                index=0,
+                arguments_delta='{"type": "delete_file", "path": "a.py"}',
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_1",
+                            name="apply_patch",
+                            partial_arguments='{"type": "delete_file", "path": "a.py"}',
+                            complete=False,
+                            provider_type="apply_patch",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            ToolCallEndEvent(
+                index=0,
+                tool_call=ToolCall(
+                    id="call_1",
+                    name="apply_patch",
+                    arguments={"type": "delete_file", "path": "a.py"},
+                    complete=True,
+                    provider_type="apply_patch",
+                ),
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_1",
+                            name="apply_patch",
+                            arguments={"type": "delete_file", "path": "a.py"},
+                            complete=True,
+                            provider_type="apply_patch",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            UsageEvent(
+                usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_1",
+                            name="apply_patch",
+                            arguments={"type": "delete_file", "path": "a.py"},
+                            complete=True,
+                            provider_type="apply_patch",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            FinishEvent(
+                message=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_1",
+                            name="apply_patch",
+                            arguments={"type": "delete_file", "path": "a.py"},
+                            complete=True,
+                            provider_type="apply_patch",
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                ),
+                finish_reason="tool_use",
+                provider_finish_reason="completed",
+                usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="apply_patch",
+                        arguments={"type": "delete_file", "path": "a.py"},
+                        complete=True,
+                        provider_type="apply_patch",
+                    )
+                ],
+            ),
+        ],
+    ),
+    StreamCase(
+        name="a_shell_call_streams_as_a_tool_call",
+        request=NATIVE_REQ,
+        sse_chunks=[
+            _data(
+                '{"type":"response.output_item.added","output_index":0,"item":{"id":"i_1","type":"shell_call","call_id":"call_2","status":"in_progress"}}'
+            ),
+            _data(
+                '{"type":"response.output_item.done","output_index":0,"item":{"id":"i_1","type":"shell_call","call_id":"call_2","action":{"commands":["ls"],"timeout_ms":5000}}}'
+            ),
+            _data(
+                '{"type":"response.completed","response":{"id":"resp_9","status":"completed",'
+                '"usage":{"input_tokens":2,"output_tokens":2,"total_tokens":4}}}'
+            ),
+            _data("[DONE]"),
+        ],
+        expected_events=[
+            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
+            ToolCallStartEvent(
+                index=0,
+                id="call_2",
+                name="shell",
+                partial=AssistantMessage(
+                    content=[ToolCall(id="call_2", name="shell", complete=False, provider_type="shell")],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            ToolCallDeltaEvent(
+                index=0,
+                arguments_delta='{"commands": ["ls"], "timeout_ms": 5000}',
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_2",
+                            name="shell",
+                            partial_arguments='{"commands": ["ls"], "timeout_ms": 5000}',
+                            complete=False,
+                            provider_type="shell",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            ToolCallEndEvent(
+                index=0,
+                tool_call=ToolCall(
+                    id="call_2",
+                    name="shell",
+                    arguments={"commands": ["ls"], "timeout_ms": 5000},
+                    complete=True,
+                    provider_type="shell",
+                ),
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_2",
+                            name="shell",
+                            arguments={"commands": ["ls"], "timeout_ms": 5000},
+                            complete=True,
+                            provider_type="shell",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            UsageEvent(
+                usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                partial=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_2",
+                            name="shell",
+                            arguments={"commands": ["ls"], "timeout_ms": 5000},
+                            complete=True,
+                            provider_type="shell",
+                        )
+                    ],
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+            ),
+            FinishEvent(
+                message=AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_2",
+                            name="shell",
+                            arguments={"commands": ["ls"], "timeout_ms": 5000},
+                            complete=True,
+                            provider_type="shell",
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                ),
+                finish_reason="tool_use",
+                provider_finish_reason="completed",
+                usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
+                tool_calls=[
+                    ToolCall(
+                        id="call_2",
+                        name="shell",
+                        arguments={"commands": ["ls"], "timeout_ms": 5000},
+                        complete=True,
+                        provider_type="shell",
+                    )
+                ],
             ),
         ],
     ),

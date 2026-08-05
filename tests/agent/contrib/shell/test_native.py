@@ -7,6 +7,9 @@ does each command reach the tool that already implements it. Real files under
 `tmp_path`; no runner.
 """
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from luca.agent.contrib.shell.native import (
@@ -27,6 +30,7 @@ from luca.agent.contrib.shell.tools import EditTool, FileReadTracker, ReadTool, 
 from luca.agent.core import CancellationToken
 from luca.agent.core.models import LLMConfig, ToolKind
 from luca.agent.core.runner import AgentSessionRunner
+from tests.agent.scenarios import conversation
 
 SESSION = AgentSessionRunner.new_session(LLMConfig(model="claude-opus-5", provider="anthropic"))
 CONVERSATION = SESSION.main_conversation_id
@@ -164,6 +168,77 @@ async def test_str_replace_on_a_file_never_viewed_is_refused(editor, sample):
     assert result.is_error
     assert "has not been read yet" in result.content[0].text
     assert sample.read_text() == "one\ntwo\nthree\n"
+
+
+async def test_insert_keeps_a_files_crlf_endings(editor, tmp_path):
+    """`read_text` folds CRLF to LF, so a one-line insert used to rewrite the
+    whole file. `edit` guards against this; `insert` has to as well or the two
+    disagree on the same user action."""
+    path = tmp_path / "windows.txt"
+    path.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+    await run(editor, command="view", path=str(path))
+
+    await run(editor, command="insert", path=str(path), insert_line=1, new_str="MID")
+
+    assert path.read_bytes() == b"one\r\nMID\r\ntwo\r\nthree\r\n"
+
+
+async def test_insert_at_the_top_of_a_bom_file_does_not_duplicate_the_bom(editor, tmp_path):
+    """Decoding as plain utf-8 leaves the BOM as the first character of line 1,
+    so splicing in front of it strands the old one mid-file while the write
+    prepends a fresh one."""
+    path = tmp_path / "bom.txt"
+    path.write_bytes(b"\xef\xbb\xbfone\ntwo\n")
+    await run(editor, command="view", path=str(path))
+
+    await run(editor, command="insert", path=str(path), insert_line=0, new_str="TOP")
+
+    assert path.read_bytes() == b"\xef\xbb\xbfTOP\none\ntwo\n"
+
+
+async def test_insert_counts_lines_the_way_view_numbers_them(editor, tmp_path):
+    """A form feed is a line break to `str.splitlines` and not to the read
+    tool, so the model's line numbers and the splice used to disagree."""
+    path = tmp_path / "pagebreak.py"
+    path.write_bytes(b"a = 1\n\x0c\nb = 2\nc = 3\n")
+    await run(editor, command="view", path=str(path))
+
+    await run(editor, command="insert", path=str(path), insert_line=3, new_str="INSERTED")
+
+    assert path.read_bytes() == b"a = 1\n\x0c\nb = 2\nINSERTED\nc = 3\n"
+
+
+async def test_insert_after_the_last_line_of_a_file_with_no_final_newline(editor, tmp_path):
+    path = tmp_path / "bare.txt"
+    path.write_bytes(b"one\ntwo")
+    await run(editor, command="view", path=str(path))
+
+    await run(editor, command="insert", path=str(path), insert_line=2, new_str="three")
+
+    assert path.read_bytes() == b"one\ntwo\nthree\n"
+
+
+async def test_insert_does_not_overwrite_a_concurrent_edit(editor, tmp_path):
+    """The read and the write have to be one locked region. Reading outside it
+    lets another conversation's `edit` commit in between, and the stale
+    snapshot lands on top of it — both calls reporting success."""
+    path = tmp_path / "shared.txt"
+    path.write_text("alpha\nbeta\ngamma\n")
+    await run(editor, command="view", path=str(path))
+    editor.tracker.record("other", path)
+    other = EditTool(tmp_path, editor.tracker)
+
+    await asyncio.gather(
+        other.execute(
+            {"file_path": str(path), "old_string": "beta", "new_string": "BETA", "replace_all": False},
+            SESSION,
+            "other",
+            cancellation_token=CancellationToken(),
+        ),
+        run(editor, command="insert", path=str(path), insert_line=3, new_str="delta"),
+    )
+
+    assert path.read_text() == "alpha\nBETA\ngamma\ndelta\n"
 
 
 async def test_insert_into_a_file_never_viewed_is_refused(editor, sample):
@@ -457,7 +532,8 @@ async def test_a_failing_command_is_an_error_result_carrying_the_code(tmp_path):
         result = await bash_run(tool, command="sh -c 'exit 3'")
 
         assert result.is_error
-        assert result.metadata["exit_code"] == 3
+        # "exit", the key luca's own bash writes and the TUI renders from
+        assert result.metadata == {"exit": 3, "outcome": "completed", "truncated": False, "output_path": None}
     finally:
         await tool.close()
 
@@ -582,6 +658,15 @@ def test_apply_patch_is_gated_like_lucas_own(tmp_path):
 # ── OpenAI's shell ───────────────────────────────────────────────────────────
 
 
+async def shell_run(tool, conversation=CONVERSATION, **args):
+    return await tool.execute(
+        tool.Args.model_validate(args).model_dump(),
+        SESSION,
+        conversation,
+        cancellation_token=CancellationToken(),
+    )
+
+
 async def test_shell_runs_every_command_in_order(tmp_path):
     tool = NativeShellTool(tmp_path)
     try:
@@ -666,3 +751,132 @@ async def test_shell_with_no_commands_is_an_error(tmp_path):
 )
 def test_only_the_responses_transport_gets_openais_tools(provider, model, expected):
     assert native_openai_tool_types(provider, model) == expected
+
+
+# ── output caps, cancellation and the paging hint ────────────────────────────
+
+
+async def test_native_bash_truncates_like_lucas_own_bash(tmp_path):
+    """`bash` caps at 2000 lines / 50 KiB and spills the rest to a file. The
+    native replacement covers the same ground, so one `cat` of a build log
+    would otherwise go into the request, the response, and every save of the
+    session file."""
+    tool = NativeBashTool(tmp_path, output_dir=str(tmp_path))
+    try:
+        result = await bash_run(tool, command="for i in $(seq 1 5000); do echo line-$i; done")
+
+        text = result.content[0].text
+        assert text.startswith("...output truncated...")
+        assert result.metadata["truncated"] is True
+        assert Path(result.metadata["output_path"]).read_text().count("\n") == 5000
+    finally:
+        await tool.close()
+
+
+async def test_native_shell_honours_max_output_length(tmp_path):
+    # declared in the provider's schema, so a model that asks for a bound gets one
+    tool = NativeShellTool(tmp_path, output_dir=str(tmp_path))
+    try:
+        result = await shell_run(tool, commands=["python3 -c \"print('x' * 20000)\""], max_output_length=500)
+
+        assert len(result.content[0].text.encode()) < 5_000
+        assert result.metadata["truncated"] is True
+    finally:
+        await tool.close()
+
+
+async def test_native_shell_leaves_small_output_alone(tmp_path):
+    tool = NativeShellTool(tmp_path)
+    try:
+        result = await shell_run(tool, commands=["echo hi"], max_output_length=500)
+
+        assert result.content[0].text == "$ echo hi\nhi\n"
+        assert result.metadata == {"exit": 0, "outcome": "completed", "truncated": False, "output_path": None}
+    finally:
+        await tool.close()
+
+
+async def test_cancelling_native_bash_returns_partial_output_and_says_the_session_reset(tmp_path):
+    """luca's own `bash` hands back what the command printed before the ESC.
+    The native one dropped the token entirely, so the runner hard-cancelled and
+    the model got a bare `[tool execution interrupted]` — and the killed shell
+    took the working directory and environment with it, silently."""
+    tool = NativeBashTool(tmp_path)
+    token = CancellationToken()
+    asyncio.get_running_loop().call_later(0.5, token.cancel)
+    try:
+        result = await tool.execute(
+            tool.Args.model_validate({"command": "echo early; sleep 30"}).model_dump(),
+            SESSION,
+            CONVERSATION,
+            cancellation_token=token,
+        )
+
+        assert result.is_error
+        assert "early" in result.content[0].text
+        assert "shell session was reset" in result.content[0].text
+        assert result.metadata["outcome"] == "cancelled"
+    finally:
+        await tool.close()
+
+
+async def test_native_bash_sets_no_outer_deadline(tmp_path):
+    """The runner's deadline starts before the spawn, so one equal to the
+    tool's own always wins: the tool's timeout branch would be dead code and
+    the model would get `[tool execution timed_out]` with no output."""
+    tool = NativeBashTool(tmp_path)
+    try:
+        assert tool.get_tool_spec().timeout_in_ms is None
+    finally:
+        await tool.close()
+
+
+async def test_a_long_view_points_at_view_range_not_offset(editor, tmp_path):
+    # `offset` is not in the native schema, so a model that follows the hint
+    # gets a validation error and burns a round trip
+    path = tmp_path / "long.txt"
+    path.write_text("".join(f"line {n}\n" for n in range(1, 3001)))
+
+    result = await run(editor, command="view", path=str(path))
+
+    assert "Use view_range=[2001, -1] to continue." in result.content[0].text
+    assert "offset=" not in result.content[0].text
+
+
+def test_the_legacy_editor_uses_the_name_that_goes_with_its_type(tmp_path):
+    # Anthropic pairs the type and the name; changing one alone is a 400
+    legacy = NativeTextEditorTool(tmp_path, provider_type="text_editor_20250124")
+    current = NativeTextEditorTool(tmp_path, provider_type="text_editor_20250728")
+
+    assert (legacy.name, current.name) == ("str_replace_editor", "str_replace_based_edit_tool")
+    assert legacy.get_tool_spec().name == "str_replace_editor"
+
+
+async def test_a_finished_subagents_shell_is_released(tmp_path):
+    """One shell per conversation, and nothing resumes a subagent — so without
+    a release a run that spawns forty of them ends holding forty-one idle
+    shells plus whatever each left in the background."""
+    session = AgentSessionRunner.new_session(LLMConfig(model="claude-opus-5", provider="anthropic"))
+    child = conversation("child", depth=1)
+    session.conversations[child.id] = child
+    tool = NativeBashTool(tmp_path)
+    try:
+        await tool.execute(
+            tool.Args.model_validate({"command": "echo hi"}).model_dump(),
+            session,
+            child.id,
+            cancellation_token=CancellationToken(),
+        )
+        assert len(tool._shells) == 1
+
+        await tool.execute(
+            tool.Args.model_validate({"command": "echo hi"}).model_dump(),
+            session,
+            session.main_conversation_id,
+            cancellation_token=CancellationToken(),
+        )
+
+        assert len(tool._shells) == 1
+        assert session.main_conversation_id in tool._shells._shells
+    finally:
+        await tool.close()

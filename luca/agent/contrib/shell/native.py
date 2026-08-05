@@ -15,6 +15,7 @@ of "replace this string in that file" is how the two would drift.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -30,6 +31,7 @@ from luca.agent.contrib.resource_permissions import (
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
+    ConversationStatus,
     ExecutionResult,
     TextContent,
     ToolKind,
@@ -37,6 +39,7 @@ from luca.agent.core import (
 
 from .session_shell import PersistentShell, ShellResult
 from .tools import (
+    _BOM_BYTES,
     ApplyPatchTool,
     EditTool,
     FileReadTracker,
@@ -44,6 +47,8 @@ from .tools import (
     ShellTool,
     ShellToolError,
     WriteTool,
+    _file_lock,
+    _unified_diff,
 )
 
 # Anthropic keys the editor's version to the model generation: Claude 4 and
@@ -52,7 +57,15 @@ from .tools import (
 TEXT_EDITOR_TYPE_CURRENT = "text_editor_20250728"
 TEXT_EDITOR_TYPE_LEGACY = "text_editor_20250124"
 
+# The name is versioned WITH the type: Anthropic pairs text_editor_20250728
+# with str_replace_based_edit_tool and text_editor_20250124 with the older
+# str_replace_editor, and changing one without the other is a 400.
 TEXT_EDITOR_NAME = "str_replace_based_edit_tool"
+TEXT_EDITOR_NAME_LEGACY = "str_replace_editor"
+TEXT_EDITOR_NAMES = {
+    TEXT_EDITOR_TYPE_CURRENT: TEXT_EDITOR_NAME,
+    TEXT_EDITOR_TYPE_LEGACY: TEXT_EDITOR_NAME_LEGACY,
+}
 
 
 class NativeTextEditorTool(ShellTool):
@@ -91,9 +104,11 @@ class NativeTextEditorTool(ShellTool):
         provider_type: str = TEXT_EDITOR_TYPE_CURRENT,
     ) -> None:
         super().__init__(workdir)
-        # An INSTANCE attribute shadowing the ClassVar: the version is keyed to
-        # the model, so two sessions in one process can want different ones.
+        # INSTANCE attributes shadowing the ClassVars: the version is keyed to
+        # the model, so two sessions in one process can want different ones,
+        # and the name moves with it.
         self.provider_type = provider_type
+        self.name = TEXT_EDITOR_NAMES[provider_type]
         self.tracker = tracker or FileReadTracker()
         self.read = ReadTool(workdir, self.tracker)
         self.edit = EditTool(workdir, self.tracker)
@@ -161,12 +176,13 @@ class NativeTextEditorTool(ShellTool):
             translated["offset"] = start
             if end != -1:
                 translated["limit"] = max(end - start + 1, 1)
-        return await self.read.execute(
+        result = await self.read.execute(
             self.read.Args.model_validate(translated).model_dump(),
             session,
             conversation_id,
             cancellation_token=token,
         )
+        return _retarget_paging_hint(result)
 
     async def _create(self, args, session, conversation_id, token) -> ExecutionResult:
         if args.get("file_text") is None:
@@ -197,9 +213,15 @@ class NativeTextEditorTool(ShellTool):
     async def _insert(self, args, session, conversation_id, token) -> ExecutionResult:
         """Insert after a 1-based line number; 0 means the top of the file.
 
-        There is no luca tool for this, so the splice happens here and the
-        WRITE goes through `write` — which is what re-checks the read-first
-        guard, takes the file lock, preserves the BOM and records the read."""
+        No luca tool inserts, so this is the one command that owns its own
+        read-modify-write. It mirrors `EditTool` byte for byte rather than
+        going through `write`, because `write` takes CONTENT and the round
+        trip to text is where a file's identity gets lost: `read_text` folds
+        CRLF to LF, plain `utf-8` leaves the BOM inside the first line, and
+        `splitlines` breaks on form feeds and Unicode separators that `read`
+        never counted as lines. The whole thing sits under the same per-path
+        lock every other mutation takes, so a concurrent `edit` cannot be
+        overwritten by a snapshot taken before it landed."""
         line = args.get("insert_line")
         if line is None:
             raise ShellToolError("`insert` requires insert_line.")
@@ -210,27 +232,159 @@ class NativeTextEditorTool(ShellTool):
             raise ShellToolError(f"File not found: {path}")
         if not self.tracker.was_read(conversation_id, path):
             raise ShellToolError(f"File has not been read yet: view {path} before inserting into it.")
-        lines = self._read_lines(path)
+        async with _file_lock(path):
+            result = await asyncio.to_thread(self._splice, path, line, args["new_str"])
+        self.tracker.record(conversation_id, path)
+        return result
+
+    def _splice(self, path: Path, line: int, inserted: str) -> ExecutionResult:
+        raw = path.read_bytes()
+        bom = raw.startswith(_BOM_BYTES)
+        if bom:
+            raw = raw[len(_BOM_BYTES) :]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ShellToolError(f"File is not valid UTF-8: {path}") from error
+        crlf = "\r\n" in text
+        working = text.replace("\r\n", "\n")
+        lines = _split_lines(working)
         if not 0 <= line <= len(lines):
             raise ShellToolError(f"insert_line {line} is out of range for {path} ({len(lines)} lines).")
-        inserted = args["new_str"]
+        if line == len(lines) and lines and not lines[-1].endswith("\n"):
+            # Appending after a file that ended without a newline; without this
+            # the last line and the new one run together on one line.
+            lines[-1] += "\n"
+        inserted = inserted.replace("\r\n", "\n")
         if not inserted.endswith("\n"):
             inserted += "\n"
         lines[line:line] = [inserted]
-        return await self.write.execute(
-            {"file_path": args["path"], "content": "".join(lines)},
-            session,
-            conversation_id,
-            cancellation_token=token,
+        updated = "".join(lines)
+        diff = _unified_diff(working, updated, str(path), str(path))
+        data = (updated.replace("\n", "\r\n") if crlf else updated).encode("utf-8")
+        try:
+            path.write_bytes(_BOM_BYTES + data if bom else data)
+        except OSError as error:
+            raise ShellToolError(f"Failed to write file: {error}") from error
+        return ExecutionResult(
+            content=[TextContent(text=f"File updated successfully at: {path}")],
+            metadata={"diff": diff, "created": False, "existed": True},
         )
 
-    def _read_lines(self, path: Path) -> list[str]:
-        try:
-            return path.read_text(encoding="utf-8").splitlines(keepends=True)
-        except UnicodeDecodeError as error:
-            raise ShellToolError(f"File is not valid UTF-8: {path}") from error
-        except OSError as error:
-            raise ShellToolError(f"Failed to read file: {error}") from error
+
+_PAGING_HINT = re.compile(r"Use offset=(\d+) to continue\.")
+
+
+def _retarget_paging_hint(result: ExecutionResult) -> ExecutionResult:
+    """`read` ends a truncated page with its own paging vocabulary, and the
+    native editor's schema forbids `offset` outright.
+
+    Left alone, every long file costs a round trip: the model is told to send
+    a parameter that fails validation, and the result is not flagged as an
+    error so it has no signal the advice was wrong."""
+    rewritten = []
+    for block in result.content:
+        if isinstance(block, TextContent) and "Use offset=" in block.text:
+            rewritten.append(
+                TextContent(
+                    text=_PAGING_HINT.sub(
+                        lambda match: f"Use view_range=[{match.group(1)}, -1] to continue.",
+                        block.text,
+                    ),
+                ),
+            )
+        else:
+            rewritten.append(block)
+    return result.model_copy(update={"content": rewritten})
+
+
+def _join_streams(result: ShellResult) -> str:
+    parts = [text for text in (result.stdout, result.stderr) if text]
+    return "\n".join(parts) if parts else "(no output)"
+
+
+def _outcome_note(outcome: str, timeout_ms: int | None) -> str:
+    """What to tell the model about a command that did not simply finish.
+
+    A cancel and a timeout both take the session down with them — the command
+    runs IN the shell, so there is nothing to kill that leaves it standing —
+    and saying so is the point: silently resetting a `cd` is how the NEXT
+    command lands in a directory the model did not choose."""
+    if outcome == "timed_out":
+        deadline = f" after {timeout_ms}ms" if timeout_ms else ""
+        return f"Command timed out{deadline}; the shell session was reset, so the working directory and environment are back to their defaults."
+    if outcome == "cancelled":
+        return "Command cancelled; the shell session was reset, so the working directory and environment are back to their defaults."
+    if outcome == "died":
+        return "The shell session ended; the next command starts a new one."
+    return ""
+
+
+class _ShellPool:
+    """One `PersistentShell` per conversation.
+
+    Per conversation rather than per tool because a tool instance is shared by
+    the main agent and every subagent, and one session would mean one
+    conversation's `cd` relocating another's next command. Released when a
+    conversation finishes, so a run that spawns forty subagents does not end
+    up holding forty-one idle shells."""
+
+    def __init__(self, workdir: str | os.PathLike[str], shell: str | None) -> None:
+        self._workdir = workdir
+        self._shell = shell
+        self._shells: dict[str, PersistentShell] = {}
+
+    def get(self, conversation_id: str) -> PersistentShell:
+        if conversation_id not in self._shells:
+            self._shells[conversation_id] = PersistentShell(self._workdir, self._shell)
+        return self._shells[conversation_id]
+
+    async def release(self, conversation_id: str) -> None:
+        session_shell = self._shells.pop(conversation_id, None)
+        if session_shell is not None:
+            await session_shell.close()
+
+    async def prune(self, session: AgentSession, keep: str) -> None:
+        """Close the shells of finished SUBAGENT conversations.
+
+        A subagent conversation is spawned, run and left; nothing resumes one,
+        so once it goes idle its shell is a process nobody will ever write to
+        again. The main conversation is exempt because it goes idle between
+        every turn, and `keep` covers the call in flight."""
+        for conversation_id in list(self._shells):
+            if conversation_id == keep:
+                continue
+            conversation = session.conversations.get(conversation_id)
+            if conversation is None or conversation.depth == 0:
+                continue
+            if session.get_conversation_status(conversation_id).status is ConversationStatus.IDLE:
+                await self.release(conversation_id)
+
+    async def close(self) -> None:
+        for session_shell in list(self._shells.values()):
+            await session_shell.close()
+        self._shells.clear()
+
+    def __len__(self) -> int:
+        return len(self._shells)
+
+
+def _split_lines(text: str) -> list[str]:
+    """Lines with their endings kept, split on "\\n" and nothing else.
+
+    `str.splitlines` also breaks on \\f, \\v, \\x1c-\\x1e, \\x85, U+2028 and
+    U+2029. `ReadTool` numbers by iterating the file object, which breaks on
+    "\\n" only, so a form feed anywhere above the target (Emacs page breaks in
+    Python and Lisp sources) would put the two counts out of step and land the
+    insert on the wrong line."""
+    parts = text.split("\n")
+    final_newline = parts[-1] == ""
+    if final_newline:
+        parts.pop()
+    lines = [part + "\n" for part in parts]
+    if lines and not final_newline:
+        lines[-1] = lines[-1].removesuffix("\n")
+    return lines
 
 
 # ── which native tools a session may use ─────────────────────────────────────
@@ -340,7 +494,11 @@ class NativeBashTool(ShellTool):
     )
     provider_type = BASH_TYPE
     tool_kind = ToolKind.EXECUTE
-    timeout_in_ms = BASH_DEFAULT_TIMEOUT_MS
+    # No `timeout_in_ms`. The tool owns its own deadline, exactly as luca's
+    # `bash` does: an outer deadline equal to the inner one always fires first
+    # (it starts before the spawn), so the model would get a bare
+    # `[tool execution timed_out]` and the rendered message below would be
+    # unreachable.
 
     class Args(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -352,22 +510,23 @@ class NativeBashTool(ShellTool):
         self,
         workdir: str | os.PathLike[str] | None = None,
         shell: str | None = None,
+        output_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         super().__init__(workdir)
         self.shell = shell
-        self._shells: dict[str, PersistentShell] = {}
+        self.output_dir = str(output_dir) if output_dir is not None else None
+        self._shells = _ShellPool(self.workdir, self.shell)
 
     def shell_for(self, conversation_id: str) -> PersistentShell:
-        if conversation_id not in self._shells:
-            self._shells[conversation_id] = PersistentShell(self.workdir, self.shell)
-        return self._shells[conversation_id]
+        return self._shells.get(conversation_id)
+
+    async def release(self, conversation_id: str) -> None:
+        await self._shells.release(conversation_id)
 
     async def close(self) -> None:
         """Every session this tool opened. The plugin calls it when the run
         ends; a shell left behind is a process the user never sees."""
-        for session_shell in list(self._shells.values()):
-            await session_shell.close()
-        self._shells.clear()
+        await self._shells.close()
 
     def build_permission_requests(
         self,
@@ -412,35 +571,32 @@ class NativeBashTool(ShellTool):
         command = args.get("command")
         if not command or not command.strip():
             raise ShellToolError("`bash` requires a command, or restart: true.")
+        await self._shells.prune(session, conversation_id)
         result = await self.shell_for(conversation_id).run(
             command,
             timeout_ms=BASH_DEFAULT_TIMEOUT_MS,
+            cancellation_token=cancellation_token,
         )
         return self._render(result)
 
     def _render(self, result: ShellResult) -> ExecutionResult:
-        if result.outcome == "timed_out":
-            return ExecutionResult(
-                content=[
-                    TextContent(text=f"Command timed out after {BASH_DEFAULT_TIMEOUT_MS}ms; the shell was restarted.")
-                ],
-                is_error=True,
-                metadata={"outcome": result.outcome},
-            )
-        parts = [text for text in (result.stdout, result.stderr) if text]
-        body = "\n".join(parts) if parts else "(no output)"
-        if result.outcome == "died":
-            return ExecutionResult(
-                content=[TextContent(text=f"{body}\n\nThe shell session ended; the next command starts a new one.")],
-                is_error=True,
-                metadata={"outcome": result.outcome},
-            )
-        if result.exit_code:
+        body, truncated, output_path = self._truncate(_join_streams(result))
+        note = _outcome_note(result.outcome, BASH_DEFAULT_TIMEOUT_MS)
+        if note:
+            body = f"{body}\n\n{note}" if body != "(no output)" else note
+        elif result.exit_code:
             body = f"{body}\n\nExited with code {result.exit_code}."
         return ExecutionResult(
             content=[TextContent(text=body)],
-            is_error=bool(result.exit_code),
-            metadata={"exit_code": result.exit_code, "outcome": result.outcome},
+            is_error=result.outcome != "completed" or bool(result.exit_code),
+            # `exit`, not `exit_code`: it is the key luca's own `bash` writes
+            # and the key the TUI renders the compact result row from.
+            metadata={
+                "exit": result.exit_code,
+                "outcome": result.outcome,
+                "truncated": truncated,
+                "output_path": output_path,
+            },
         )
 
 
@@ -566,20 +722,21 @@ class NativeShellTool(ShellTool):
         self,
         workdir: str | os.PathLike[str] | None = None,
         shell: str | None = None,
+        output_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         super().__init__(workdir)
         self.shell = shell
-        self._shells: dict[str, PersistentShell] = {}
+        self.output_dir = str(output_dir) if output_dir is not None else None
+        self._shells = _ShellPool(self.workdir, self.shell)
 
     def shell_for(self, conversation_id: str) -> PersistentShell:
-        if conversation_id not in self._shells:
-            self._shells[conversation_id] = PersistentShell(self.workdir, self.shell)
-        return self._shells[conversation_id]
+        return self._shells.get(conversation_id)
+
+    async def release(self, conversation_id: str) -> None:
+        await self._shells.release(conversation_id)
 
     async def close(self) -> None:
-        for session_shell in list(self._shells.values()):
-            await session_shell.close()
-        self._shells.clear()
+        await self._shells.close()
 
     def build_permission_requests(
         self,
@@ -624,28 +781,45 @@ class NativeShellTool(ShellTool):
         if not commands:
             raise ShellToolError("`shell` requires at least one command.")
         timeout_ms = args.get("timeout_ms") or BASH_DEFAULT_TIMEOUT_MS
+        await self._shells.prune(session, conversation_id)
         session_shell = self.shell_for(conversation_id)
         blocks: list[str] = []
         failed = False
+        last: ShellResult | None = None
         for command in commands:
-            result = await session_shell.run(command, timeout_ms=timeout_ms)
+            result = await session_shell.run(
+                command,
+                timeout_ms=timeout_ms,
+                cancellation_token=cancellation_token,
+            )
+            last = result
             blocks.append(self._render_one(command, result))
             if result.outcome != "completed" or result.exit_code:
                 # Stop at the first failure: the provider runs them in order,
                 # and a later command usually assumes the earlier one worked.
                 failed = True
                 break
+        # Capped over the WHOLE call, not per command: the model asked for a
+        # bound on what comes back, and three uncapped commands are as much
+        # context as one.
+        body, truncated, output_path = self._truncate("\n\n".join(blocks), args.get("max_output_length"))
         return ExecutionResult(
-            content=[TextContent(text="\n\n".join(blocks))],
+            content=[TextContent(text=body)],
             is_error=failed,
+            metadata={
+                "exit": last.exit_code if last else None,
+                "outcome": last.outcome if last else None,
+                "truncated": truncated,
+                "output_path": output_path,
+            },
         )
 
     def _render_one(self, command: str, result: ShellResult) -> str:
-        if result.outcome == "timed_out":
-            return f"$ {command}\n(timed out; the shell was restarted)"
-        if result.outcome == "died":
-            return f"$ {command}\n(the shell session ended)"
-        body = "\n".join(text for text in (result.stdout, result.stderr) if text) or "(no output)"
+        note = _outcome_note(result.outcome, None)
+        if note and result.outcome != "completed":
+            body = _join_streams(result)
+            return f"$ {command}\n{body}\n({note})" if body != "(no output)" else f"$ {command}\n({note})"
+        body = _join_streams(result)
         if result.exit_code:
             body = f"{body}\n(exit {result.exit_code})"
         return f"$ {command}\n{body}"

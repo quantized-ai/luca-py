@@ -49,6 +49,30 @@ class BaseTransport:
         self._owned_aclient = async_http_client is None
         self._aclient: httpx.AsyncClient | None = async_http_client
 
+    # --- provider-defined tools ---
+
+    def _reject_provider_tools(self, tools: list) -> None:
+        """Refuse a tool this transport cannot express, before the request.
+
+        Refusing is the DEFAULT and understanding a `provider_type` is the
+        opt-in: a transport that knows some types calls this for the rest, and
+        one that knows none calls it for everything. The other way round, a new
+        transport silently ships the tool as an ordinary function — advertising
+        luca's internal validation schema as the contract, under a description
+        that says it is never sent — and the model is handed a tool the
+        provider never defined. Failing here names the mistake; a 400 from the
+        API would only name the wire field."""
+        unknown = sorted({t.provider_type for t in tools if getattr(t, "provider_type", None) is not None})
+        if not unknown:
+            return
+        from ..exceptions import UnsupportedParameterError
+
+        raise UnsupportedParameterError(
+            f"{type(self).__name__} does not serve provider-defined tools; "
+            f"cannot send the type(s) {', '.join(repr(u) for u in unknown)}",
+            provider=self._provider,
+        )
+
     # --- auth + headers (override for non-Bearer schemes) ---
 
     def _headers(self) -> dict[str, str]:

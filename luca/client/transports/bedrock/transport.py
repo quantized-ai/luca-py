@@ -320,6 +320,9 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return {"toolResult": result}
 
     def _project_tool_config(self, request: ChatCompletionRequest) -> dict:
+        # Bedrock serves Claude models but over Converse, which takes a
+        # `toolSpec` and has no equivalent of Anthropic's client tools.
+        self._reject_provider_tools(request.tools)
         tools = [
             {
                 "toolSpec": {

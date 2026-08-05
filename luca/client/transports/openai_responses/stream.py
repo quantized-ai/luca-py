@@ -31,6 +31,8 @@ from ...types.streaming import (
 
 # Synthetic content_index slots, so reasoning and function-call items share the
 # one allocator with real content parts without colliding with content_index 0.
+# A provider call takes the function-call slot: one output item is one call
+# either way, and the two can never share an output_index.
 _REASONING_SLOT = -1
 _FUNCTION_CALL_SLOT = -2
 
@@ -47,13 +49,17 @@ class _ResponsesParserState:
     Responses API streams its output items in order: an index is allocated the
     first time an item or content part is seen and never revisited."""
 
-    def __init__(self) -> None:
+    def __init__(self, provider_calls: dict[str, tuple[str, str]] | None = None) -> None:
         self.next_content_index: int = 0
         # (output_index, content_index | slot) -> our content index
         self.content_index: dict[tuple[int, int], int] = {}
         # Blocks opened and not yet closed, so the terminal can close them.
         self.open_indices: set[int] = set()
         self.finished: bool = False
+        # item type -> (tool name, provider type), for the provider tools this
+        # request offered. A provider call item carries no tool name, so the
+        # only thing that resolves one is what was sent.
+        self.provider_calls: dict[str, tuple[str, str]] = provider_calls or {}
 
     def allocate(self, key: tuple[int, int]) -> int:
         index = self.next_content_index
@@ -201,6 +207,24 @@ def _item_added(state: _ResponsesParserState, event: dict) -> Iterator[RawStream
             tool_id=call_id,
             tool_name=name,
         )
+    elif item_type in state.provider_calls:
+        # `apply_patch_call` / `shell_call`. The item opens with a call_id and
+        # nothing else; its arguments only exist on output_item.done, so the
+        # block opens here and fills there.
+        call_id = item.get("call_id")
+        if call_id is None:
+            raise StreamError(
+                f"OpenAI Responses stream opened a {item_type} item without a call_id (output_index={output_index})",
+            )
+        name, provider_type = state.provider_calls[item_type]
+        index = state.allocate((output_index, _FUNCTION_CALL_SLOT))
+        yield RawBlockStart(
+            index=index,
+            block_type="tool_call",
+            tool_id=call_id,
+            tool_name=name,
+            provider_type=provider_type,
+        )
     # A `message` item's blocks open on content_part.added, one per part.
 
 
@@ -224,6 +248,17 @@ def _item_done(state: _ResponsesParserState, event: dict) -> Iterator[RawStreamE
     elif item_type == "function_call":
         index = state.resolve((output_index, _FUNCTION_CALL_SLOT))
         if index is not None and state.close(index):
+            yield RawBlockStop(index=index)
+    elif item_type in state.provider_calls:
+        index = state.resolve((output_index, _FUNCTION_CALL_SLOT))
+        if index is None:
+            return
+        # There is no arguments-delta event for these: the payload arrives
+        # whole, once, on the done event. One delta carries it so the
+        # accumulator parses it exactly as it parses a function call's.
+        payload = item.get("operation") if item_type == "apply_patch_call" else item.get("action")
+        yield RawToolArgumentsDelta(index=index, arguments_delta=json.dumps(payload or {}))
+        if state.close(index):
             yield RawBlockStop(index=index)
     # A `message` item's parts already closed on content_part.done.
 
@@ -264,7 +299,7 @@ class OpenAIResponsesStream(ChatCompletionStream):
         )
 
     def parse_chunks(self) -> Iterator[RawStreamEvent]:
-        state = _ResponsesParserState()
+        state = _ResponsesParserState(self._transport.native_call_items(self._request))
         for line in self._http_response.iter_lines():
             data = _parse_sse_line(line)
             if data is None:
@@ -292,7 +327,7 @@ class OpenAIResponsesAsyncStream(AsyncChatCompletionStream):
         )
 
     async def parse_chunks(self) -> AsyncIterator[RawStreamEvent]:
-        state = _ResponsesParserState()
+        state = _ResponsesParserState(self._transport.native_call_items(self._request))
         async for line in self._http_response.aiter_lines():
             data = _parse_sse_line(line)
             if data is None:

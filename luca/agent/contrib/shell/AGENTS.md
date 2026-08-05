@@ -29,11 +29,15 @@ luca/agent/contrib/shell/
 ├── plugin.py     # ShellAccessPlugin: workspace/additional dirs, shared tracker,
 │                 #   seeded PermissionStrategy, registry + system-prompt hooks
 ├── replace.py    # edit's 9 replacement-candidate strategies + the replace() driver (pure, no IO)
-└── patch.py      # apply_patch's parser + hunk applier (pure, no IO — the tool owns all filesystem access)
+├── patch.py      # apply_patch's parser + hunk applier (pure, no IO — the tool owns all filesystem access)
+├── native.py     # the provider-defined tools + which route gets which
+└── session_shell.py  # PersistentShell: one long-lived shell, sentinel protocol
 
 tests/agent/contrib/shell/
 ├── conftest.py           # `run` / `perm` fixtures: validate args through Args like the registry would
 ├── test_plugin.py        # ShellAccessPlugin wiring, seeded rules, decide/pending flows
+├── test_native.py        # the native tools, their permissions, and the route table
+├── test_session_shell.py # PersistentShell against real shell processes
 └── tools/test_<name>.py  # one file per tool, one section per behavior scenario
 ```
 
@@ -148,20 +152,46 @@ approval, the read-first guard, the recorded execution and replay are unchanged.
 reimplement anything: each command translates the provider's arguments into
 luca's and delegates to `read` / `edit` / `write`, including for
 `build_permission_requests`, so a native call is gated by exactly the rules a
-plain call would produce. Only `insert` has no counterpart, and even that
-splices and then writes through `write` so the guard, the lock and the BOM
-handling stay in one place.
+plain call would produce. Only `insert` has no counterpart, and it is the one
+command that owns its own read-modify-write: it mirrors `EditTool` byte for
+byte (read bytes, strip the BOM, detect CRLF, work in LF, restore on the way
+out) under the same per-path lock, because routing through `write` meant a
+round trip to text, and that is where a file's CRLF endings, its BOM and its
+line NUMBERING were being lost. Split on `\n` only — `str.splitlines` breaks
+on form feeds and Unicode separators that `read` never counted as lines, so
+the model's line numbers and the splice disagreed.
 
 `NativeBashTool` is Anthropic's `bash`, and it is a different tool rather than a
 rename: the provider specifies ONE shell session whose working directory,
 environment and background processes survive between calls, with a `restart`
 that starts clean. luca's own `bash` is a fresh subprocess per call.
 `session_shell.py` holds the session — a long-lived shell driven over its stdin,
-each command followed by a per-call random marker carrying `$?`. One shell PER
-CONVERSATION, because a tool instance is shared by the main agent and every
-subagent and a single session would mean one conversation's `cd` relocating
-another's next command. `ShellAccessPlugin.close()` releases them; the TUI calls
-it on quit and on every session swap, or a long run accumulates idle shells.
+each command written BETWEEN a per-call random start marker and an end marker
+carrying `$?`. Both markers matter. The start one exists because a backgrounded
+job keeps the shell's stdout after the foreground command returns, so what it
+writes between calls is sitting in the pipe when the next command runs and gets
+read as that command's output, exit code and all; everything before the start
+marker is dropped. Reads take CHUNKS, never lines: `readline()` is bounded by
+the stream limit and raises on the first line past 64 KiB, which one `cat` of a
+bundled asset produces, and that exception used to escape `run()` and strand
+the sibling reader on the pipe for the life of the session. The shell is
+`/bin/bash`, never `$SHELL` — the wrapper is Bourne-specific, and under fish or
+tcsh no marker is ever printed and every command sits until its timeout.
+
+A timeout or a user cancel takes the session down with it: the command runs IN
+the shell, so there is nothing to signal that leaves the shell standing. Both
+return the partial output and SAY the session was reset, because the silent
+version is what makes the next command land in a directory the model did not
+choose.
+
+One shell PER CONVERSATION, because a tool instance is shared by the main agent
+and every subagent and a single session would mean one conversation's `cd`
+relocating another's next command. A finished subagent's shell is released on
+the next call; `ShellAccessPlugin.close()` releases the rest, and the TUI calls
+it on quit and on every session swap. A handle left over from a CLOSED event
+loop is reaped by hand rather than reused — its pipes belong to that loop, so an
+embedder calling `asyncio.run` once per turn would otherwise get
+`Future attached to a different loop` forever.
 
 The editor REPLACES `read` / `edit` / `write` rather than joining them — two tools for
 one job is a choice the model should not have to make. `glob`, `grep`,
@@ -172,8 +202,20 @@ OpenAI's two are a different shape. `apply_patch` and `shell` do not arrive as
 items and expects `apply_patch_call_output` / `shell_call_output` back, so the
 Responses transport parses them into ordinary `ToolCall`s on the way in and
 rebuilds the matching item on the way out. Above the transport nothing knows.
-The item carries no tool name, so which luca tool a call belongs to comes from
-whichever tool was offered with that provider type on the same request.
+The item carries no tool name, so an INCOMING call is resolved from whichever
+tool was offered with that provider type on the same request. Replaying a
+recorded one does not work that way: `ToolCall.provider_type` records what the
+call arrived as, and the projection reads that. Names are not durable
+identifiers — luca ships its own `apply_patch` too, so a history written before
+native tools existed, or with them turned off, would replay as an
+`apply_patch_call` whose operation has no type, path or diff. The reverse is
+guarded as well: a native call replays as a plain function call when its type
+is not among the tools this request declares.
+
+Streaming is a SEPARATE parser (`stream.py`) and it needs its own handling —
+`_item_added` / `_item_done` — or the item is dropped and the turn ends with no
+content at all. Streaming is the TUI default, so a gap there is the whole
+feature missing while every non-streaming test passes.
 
 `NativeApplyPatchTool` wraps the provider's per-file operation in a
 `*** Begin Patch` envelope and hands it to `ApplyPatchTool` — the hunk syntax is
@@ -187,10 +229,20 @@ container OpenAI provisions, which is a different product and not what luca
 executes.
 
 `native_editor_type` / `native_bash_type` / `native_openai_tool_types` decide,
-and they key on the TRANSPORT, not the model family. Bedrock and OpenRouter both
+and `ShellAccessPlugin` calls them PER REQUEST rather than at construction —
+`/model` changes the route mid-session and nothing rebuilds the composition, so
+a set frozen at build time keeps sending Anthropic's editor to the Responses
+API. They key on the TRANSPORT, not the model family. Bedrock and OpenRouter both
 serve Claude models and neither speaks the Messages API, so a "is this a
 Claude?" check would confidently send a tool the API rejects. The same on the
 other side: groq and deepseek serve GPT-shaped ids over chat completions, where
 `shell` does not exist at all. Anthropic's editor version is keyed to the model
 generation, which is why the type is an instance attribute rather than a
-ClassVar.
+ClassVar — and the NAME moves with it, since `text_editor_20250728` pairs with
+`str_replace_based_edit_tool` and `text_editor_20250124` with the older
+`str_replace_editor`, and changing one without the other is a 400.
+
+Both native shells truncate like luca's `bash` does (2000 lines / 50 KiB, full
+output spilled to a temp file), and `shell` honours the `max_output_length` its
+schema advertises. Uncapped, one `cat` of a build log goes into the request,
+the response and every later save of the session file.

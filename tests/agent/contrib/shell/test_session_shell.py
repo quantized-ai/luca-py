@@ -13,6 +13,7 @@ import os
 import pytest
 
 from luca.agent.contrib.shell.session_shell import PersistentShell
+from luca.agent.core import CancellationToken
 
 
 @pytest.fixture
@@ -208,3 +209,91 @@ async def test_commands_serialize_rather_than_interleave(shell):
     )
 
     assert sorted(r.stdout for r in results) == ["first\n", "second\n", "third\n"]
+
+
+# ── the traps the first version fell into ────────────────────────────────────
+
+
+async def test_a_single_line_over_the_stream_limit_is_captured_not_fatal(shell):
+    """One `cat` of a minified bundle. `readline()` is capped at 64 KiB and
+    raises past it, and that exception used to escape `run()` and leave the
+    other reader attached to the pipe for the life of the session."""
+    result = await run(shell, "python3 -c \"print('y' * 200000)\"", timeout_ms=20_000)
+
+    assert (len(result.stdout), result.exit_code, result.outcome) == (200_001, 0, "completed")
+    assert (await run(shell, "echo alive")).stdout == "alive\n"
+
+
+async def test_a_long_line_on_stderr_is_captured_too(shell):
+    result = await run(shell, "python3 -c \"import sys; sys.stderr.write('z' * 200000)\"", timeout_ms=20_000)
+
+    assert (len(result.stderr), result.exit_code) == (200_000, 0)
+
+
+async def test_output_from_a_background_job_is_not_credited_to_the_next_command(shell):
+    """The marker ends the read; it does not stop a backgrounded writer, which
+    still holds the shell's stdout. Without a START marker its output sits in
+    the pipe and is read as the beginning of the next command's."""
+    await run(shell, "(sleep 0.3; echo STRAGGLER) & echo started")
+    await asyncio.sleep(1.0)
+
+    assert (await run(shell, "echo hello")).stdout == "hello\n"
+
+
+async def test_the_login_shell_is_not_used(monkeypatch, tmp_path):
+    """The wrapper is Bourne-specific: under fish or tcsh no marker is ever
+    printed and every command sits until its timeout."""
+    monkeypatch.setenv("SHELL", "/bin/tcsh")
+    session = PersistentShell(tmp_path)
+
+    assert session.shell in ("/bin/bash", "/bin/sh")
+    await session.close()
+
+
+async def test_a_shell_binary_that_does_not_exist_is_reported(tmp_path):
+    session = PersistentShell(tmp_path, shell=str(tmp_path / "no-such-shell"))
+
+    result = await run(session, "echo hi")
+
+    assert (result.exit_code, result.outcome) == (None, "died")
+    assert "could not start" in result.stderr
+
+
+async def test_a_cancelled_command_returns_what_it_printed(shell):
+    token = CancellationToken()
+    started = asyncio.get_running_loop().call_later(0.6, token.cancel)
+
+    result = await shell.run("echo early; sleep 30", timeout_ms=20_000, cancellation_token=token)
+    started.cancel()
+
+    assert (result.stdout, result.exit_code, result.outcome) == ("early\n", None, "cancelled")
+
+
+async def test_a_cancelled_command_leaves_a_session_the_next_command_can_use(shell):
+    token = CancellationToken()
+    asyncio.get_running_loop().call_later(0.4, token.cancel)
+
+    await shell.run("sleep 30", timeout_ms=20_000, cancellation_token=token)
+
+    assert (await run(shell, "echo alive")).stdout == "alive\n"
+
+
+async def test_a_timed_out_command_returns_what_it_printed(shell):
+    result = await run(shell, "echo partial; sleep 30", timeout_ms=800)
+
+    assert (result.stdout, result.outcome) == ("partial\n", "timed_out")
+
+
+def test_a_shell_reused_across_event_loops_starts_a_new_process(tmp_path):
+    """An embedder that calls `asyncio.run` once per turn. The cached process
+    still reports `returncode is None`, but its pipes belong to the closed
+    loop, so reusing the handle raised `Future attached to a different loop`
+    on every later command."""
+    session = PersistentShell(tmp_path)
+
+    first = asyncio.run(session.run("echo one", timeout_ms=10_000))
+    second = asyncio.run(session.run("echo two", timeout_ms=10_000))
+    asyncio.run(session.close())
+
+    assert (first.stdout, second.stdout) == ("one\n", "two\n")
+    assert (first.outcome, second.outcome) == ("completed", "completed")

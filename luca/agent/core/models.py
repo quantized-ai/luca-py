@@ -104,6 +104,11 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict = Field(default_factory=dict)
+    # The provider tool type this call arrived as, when it was not an ordinary
+    # function call. Durable because replay depends on it: a provider whose
+    # call rides its own wire item needs the same item back, and the name
+    # alone cannot say which tool a recorded call belonged to.
+    provider_type: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

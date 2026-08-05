@@ -225,6 +225,9 @@ class RawBlockStart:
     # arrives when the item opens (OpenAI Responses: `rs_…`) — before any
     # delta, so RawThinkingDelta is too late to carry it.
     item_id: str | None = None
+    # Set when a tool_call block opened as a provider-defined tool rather than
+    # a function call, so the accumulated ToolCall records which it was.
+    provider_type: str | None = None
 
 
 @dataclass
@@ -594,6 +597,7 @@ class _ChatCompletionAccumulator:
                         arguments={},
                         partial_arguments="",
                         complete=False,
+                        provider_type=raw.provider_type,
                     )
                 )
                 self._open_block_indices.add(raw.index)

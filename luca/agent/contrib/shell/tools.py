@@ -178,6 +178,10 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
 
     namespace = "contrib.shell"
 
+    # Where a truncated command's full output is spilled. None means the
+    # system temp directory; the tools that never truncate ignore it.
+    output_dir: str | None = None
+
     def __init__(self, workdir: str | os.PathLike[str] | None = None) -> None:
         self.workdir = Path(os.path.normpath(workdir)) if workdir is not None else Path.cwd()
 
@@ -186,6 +190,35 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         if not candidate.is_absolute():
             candidate = self.workdir / candidate
         return Path(os.path.normpath(candidate))
+
+    def _truncate(self, output: str, max_bytes: int | None = None) -> tuple[str, bool, str | None]:
+        """A tail preview plus a spill file, once the output is too big to hand
+        a model. Nothing is lost — `output_path` names the whole thing.
+
+        On the base rather than on `bash` because the provider-native shells
+        replace `bash` and inherit its job: one `cat` of a build log otherwise
+        goes into the request, the response and every later save of the
+        session file. `max_bytes` is the caller's cap when the provider's
+        schema lets the model ask for one."""
+        limit = BASH_MAX_OUTPUT_BYTES if max_bytes is None else max_bytes
+        lines = output.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        if len(lines) <= BASH_MAX_OUTPUT_LINES and len(output.encode("utf-8")) <= limit:
+            return output, False, None
+        handle, output_path = tempfile.mkstemp(
+            prefix="bash_output_",
+            suffix=".txt",
+            dir=self.output_dir,
+        )
+        with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as stream:
+            stream.write(output)
+        preview = "\n".join(lines[-BASH_MAX_OUTPUT_LINES:])
+        data = preview.encode("utf-8")
+        if len(data) > limit:
+            preview = data[-limit:].decode("utf-8", errors="replace")
+        text = f"...output truncated...\n\nFull output saved to: {output_path}\n\n{preview}"
+        return text, True, output_path
 
     def _access_scope(self, path: Path) -> Path:
         """The directory a target path needs access to: an existing
@@ -1527,23 +1560,3 @@ class BashTool(ShellTool):
             },
             is_error=outcome != "completed" or exit_code != 0,
         )
-
-    def _truncate(self, output: str) -> tuple[str, bool, str | None]:
-        lines = output.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()
-        if len(lines) <= BASH_MAX_OUTPUT_LINES and len(output.encode("utf-8")) <= BASH_MAX_OUTPUT_BYTES:
-            return output, False, None
-        handle, output_path = tempfile.mkstemp(
-            prefix="bash_output_",
-            suffix=".txt",
-            dir=self.output_dir,
-        )
-        with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as stream:
-            stream.write(output)
-        preview = "\n".join(lines[-BASH_MAX_OUTPUT_LINES:])
-        data = preview.encode("utf-8")
-        if len(data) > BASH_MAX_OUTPUT_BYTES:
-            preview = data[-BASH_MAX_OUTPUT_BYTES:].decode("utf-8", errors="replace")
-        text = f"...output truncated...\n\nFull output saved to: {output_path}\n\n{preview}"
-        return text, True, output_path

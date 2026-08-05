@@ -295,3 +295,21 @@ def test_response_format_nests_a_strictified_schema_under_json_schema(openai_tra
             "strict": True,
         },
     }
+
+
+def test_a_provider_defined_tool_is_refused_rather_than_sent_as_a_function(openai_transport_factory):
+    # chat completions has no provider-defined tools; shipping one anyway would
+    # advertise luca's internal validation schema as the contract
+    from luca.client.exceptions import UnsupportedParameterError
+    from luca.client.types.tools import Tool
+
+    transport = openai_transport_factory()
+    request = ChatCompletionRequest(
+        model="gpt-4o",
+        provider="openai",
+        messages=[UserMessage(content="hi")],
+        tools=[Tool(name="bash", description="Run.", parameters={}, provider_type="bash_20250124")],
+    )
+
+    with pytest.raises(UnsupportedParameterError, match="bash_20250124"):
+        transport._build_chat_completion_payload(request)

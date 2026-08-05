@@ -47,6 +47,9 @@ from .native import (
     NativeBashTool,
     NativeShellTool,
     NativeTextEditorTool,
+    native_bash_type,
+    native_editor_type,
+    native_openai_tool_types,
 )
 from .tools import (
     ApplyPatchTool,
@@ -60,6 +63,9 @@ from .tools import (
 )
 
 READ_TIER_PERMISSIONS = ("access_directory", "read", "glob", "grep")
+
+# editor type, bash type, OpenAI types — luca's own tools everywhere.
+_NO_NATIVE: tuple = (None, None, ())
 
 SHELL_SYSTEM_PROMPT_TEMPLATE = """
 ### Shell access
@@ -80,9 +86,7 @@ class ShellAccessPlugin:
         additional_directories: list[str | os.PathLike[str]] | None = None,
         mode: PermissionMode | str = PermissionMode.ASK,
         extra_rules: list | None = None,
-        native_editor_type: str | None = None,
-        native_bash_type: str | None = None,
-        native_openai_types: tuple[str, ...] = (),
+        native_tools: bool = False,
     ) -> None:
         self.workspace = _absolute(workspace)
         self.additional_directories = [_absolute(directory) for directory in additional_directories or []]
@@ -94,6 +98,45 @@ class ShellAccessPlugin:
             mode=self.mode,
             rules=[*self._default_rules(), *(extra_rules or [])],
         )
+        self.native_tools = native_tools
+        self.tools: list[Tool] = []
+        self._native_key: tuple | None = None
+        self._install(_NO_NATIVE)
+
+    # ── which tools exist ────────────────────────────────────────────────────
+
+    def _native_key_for(self, session: AgentSession | None) -> tuple:
+        """The native tool types this session's model routes to.
+
+        Resolved from the SESSION rather than fixed at construction. Which
+        tools exist is a function of the route, and `/model` changes the route
+        without rebuilding anything — leaving an Anthropic `text_editor` on a
+        request bound for the Responses API, which refuses it before the HTTP
+        call and keeps refusing it on every retry."""
+        if not self.native_tools or session is None:
+            return _NO_NATIVE
+        llm = session.session_config.llm_config
+        return (
+            native_editor_type(llm.provider, llm.model),
+            native_bash_type(llm.provider, llm.model),
+            native_openai_tool_types(llm.provider, llm.model),
+        )
+
+    async def sync_tools(self, session: AgentSession) -> list[Tool]:
+        """The tool list for this session's model, rebuilt if the route moved.
+
+        Awaited because the outgoing set may be holding shells open, and a
+        swap that leaks one is the same bug as a session swap that leaks
+        one."""
+        key = self._native_key_for(session)
+        if key != self._native_key:
+            await self.close()
+            self._install(key)
+        return self.tools
+
+    def _install(self, key: tuple) -> None:
+        editor_type, bash_type, openai_types = key
+        self._native_key = key
         # The provider's editor REPLACES read/edit/write rather than joining
         # them: it covers the same ground, and offering both asks the model to
         # choose between two tools that do one job. `glob`, `grep`,
@@ -104,30 +147,30 @@ class ShellAccessPlugin:
                 EditTool(workdir=self.workspace, tracker=self.tracker),
                 WriteTool(workdir=self.workspace, tracker=self.tracker),
             ]
-            if native_editor_type is None
+            if editor_type is None
             else [
                 NativeTextEditorTool(
                     self.workspace,
                     self.tracker,
-                    provider_type=native_editor_type,
+                    provider_type=editor_type,
                 )
             ]
         )
         patch_tool: Tool = (
             NativeApplyPatchTool(workdir=self.workspace)
-            if APPLY_PATCH_TYPE in native_openai_types
+            if APPLY_PATCH_TYPE in openai_types
             else ApplyPatchTool(workdir=self.workspace)
         )
         # Anthropic's `bash` and OpenAI's `shell` both keep ONE shell alive
         # across calls; luca's `bash` spawns a fresh subprocess each time. Same
         # job, different contract, so each is a swap rather than a rename.
-        if native_bash_type is not None:
+        if bash_type is not None:
             run_tool: Tool = NativeBashTool(workdir=self.workspace)
-        elif SHELL_TYPE in native_openai_types:
+        elif SHELL_TYPE in openai_types:
             run_tool = NativeShellTool(workdir=self.workspace)
         else:
             run_tool = BashTool(workdir=self.workspace)
-        self.tools: list[Tool] = [
+        self.tools = [
             *file_tools[:1],
             GlobTool(workdir=self.workspace),
             GrepTool(workdir=self.workspace),
@@ -150,10 +193,7 @@ class ShellAccessPlugin:
                 await closer()
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
-        return SimpleToolRegistry(
-            tools=list(self.tools),
-            permission_policy=self.permission_strategy,
-        )
+        return _ModelAwareRegistry(self, self.permission_strategy)
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list[str]:
         additional = ""
@@ -189,3 +229,31 @@ def _absolute(path: str | os.PathLike[str]) -> Path:
     """Cwd-anchored normpath — absolute, no symlink resolution, matching
     `ShellTool._resolve`'s convention so rules and emitted pairs agree."""
     return Path(os.path.normpath(os.path.join(os.getcwd(), path)))
+
+
+class _ModelAwareRegistry(SimpleToolRegistry):
+    """The shell tool set, re-resolved from the session on every call.
+
+    `get_tool_registry` runs ONCE, at runner construction, so a registry that
+    froze its list there would still be handing out Anthropic's editor after
+    `/model` moved the session to a GPT. The runner asks a registry for its
+    tools fresh on every LLM call, with the live session, which is the only
+    place the current model is known."""
+
+    def __init__(self, plugin: ShellAccessPlugin, permission_policy) -> None:
+        super().__init__(tools=list(plugin.tools), permission_policy=permission_policy)
+        self._plugin = plugin
+
+    async def _sync(self, session: AgentSession) -> None:
+        tools = await self._plugin.sync_tools(session)
+        if tools is not self.tools:
+            self.tools = list(tools)
+            self.tools_by_name = {tool.name: tool for tool in self.tools}
+
+    async def get_tools(self, session, conversation_id):
+        await self._sync(session)
+        return await super().get_tools(session, conversation_id)
+
+    async def create_execution(self, session, conversation_id, call):
+        await self._sync(session)
+        return await super().create_execution(session, conversation_id, call)

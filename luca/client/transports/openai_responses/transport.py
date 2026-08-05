@@ -173,14 +173,15 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         # result has to go back in the item type its call arrived in, and a
         # `function_call_output` answering an `apply_patch_call` is rejected.
         native: dict[str, str] = {}
-        names = self._native_tool_names(request)
+        offered = self._offered_provider_types(request)
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
                 for block in msg.content:
-                    if isinstance(block, ToolCall) and block.name in names:
-                        native[block.id] = names[block.name]
+                    provider_type = self._replay_provider_type(block, offered)
+                    if provider_type is not None:
+                        native[block.id] = provider_type
                 out.extend(self._project_assistant_message(msg, request))
             elif isinstance(msg, ToolMessage):
                 out.append(self._project_tool_message(msg, native))
@@ -244,7 +245,7 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                     }
                 )
             elif isinstance(block, ToolCall):
-                provider_type = self._native_tool_names(request).get(block.name)
+                provider_type = self._replay_provider_type(block, self._offered_provider_types(request))
                 if provider_type is not None:
                     items.append(self._project_provider_call(block, provider_type))
                     continue
@@ -395,6 +396,38 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         remembered, so the transport stays stateless."""
         return {t.name: t.provider_type for t in (request.tools or []) if t.provider_type is not None}
 
+    def native_call_items(self, request: ChatCompletionRequest) -> dict[str, tuple[str, str]]:
+        """Response item type → (tool name, provider type), for this request.
+
+        What the streaming parser needs: an `apply_patch_call` frame says
+        which CALL it is but never which tool, so the offered tools are the
+        only thing that resolves it. Public because the stream reads it."""
+        return {
+            self.PROVIDER_CALL_ITEMS[provider_type]: (name, provider_type)
+            for name, provider_type in self._native_tool_names(request).items()
+            if provider_type in self.PROVIDER_CALL_ITEMS
+        }
+
+    def _offered_provider_types(self, request: ChatCompletionRequest) -> set[str]:
+        return {t.provider_type for t in (request.tools or []) if t.provider_type is not None}
+
+    def _replay_provider_type(self, block: Any, offered: set[str]) -> str | None:
+        """The provider item a RECORDED call has to replay as, or None for an
+        ordinary function call.
+
+        Read off the call itself, never re-derived from its name. A name says
+        nothing durable — luca ships its own `apply_patch`, so a history
+        written before native tools existed, or with them turned off, holds
+        calls that must still go back as `function_call` even though a tool
+        with that name is native today.
+
+        The `offered` check covers the other direction: a native call resumed
+        with native tools off would otherwise ask for an item type this
+        request never declared."""
+        if not isinstance(block, ToolCall) or block.provider_type is None:
+            return None
+        return block.provider_type if block.provider_type in offered else None
+
     def _project_tool_choice(self, choice: Any) -> Any:
         if isinstance(choice, str):
             return choice
@@ -496,6 +529,7 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                 name=name,
                 arguments=dict(payload or {}),
                 complete=True,
+                provider_type=provider_type,
             )
         return None
 

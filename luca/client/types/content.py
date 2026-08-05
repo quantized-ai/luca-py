@@ -71,6 +71,11 @@ class ToolCall(BaseModel):
     partial_arguments: str = ""
     complete: bool = True
     thought_signature: str | None = None
+    # Set when the call arrived as a provider-defined tool rather than a
+    # function call. The wire item carries no tool name, so replaying one
+    # correctly means remembering what it was, not re-deriving it from
+    # whichever tool holds the name on a later request.
+    provider_type: str | None = None
 
     def parse_arguments(self, schema: Any) -> Any:
         """Validate self.arguments against `schema`. Returns a typed object.

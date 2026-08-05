@@ -413,3 +413,23 @@ def test_a_signature_minted_by_another_pair_is_dropped(bedrock_transport_factory
     assert payload["messages"] == [
         {"role": "assistant", "content": [{"text": "the answer"}]},
     ]
+
+
+def test_a_provider_defined_tool_is_refused(bedrock_transport_factory):
+    # bedrock serves Claude over Converse, which has no client tools
+    transport = bedrock_transport_factory()
+
+    with pytest.raises(UnsupportedParameterError, match="text_editor_20250728"):
+        _build(
+            transport,
+            model="anthropic.claude-sonnet-4-5-20250929-v1:0",
+            messages=[UserMessage(content="hi")],
+            tools=[
+                Tool(
+                    name="str_replace_based_edit_tool",
+                    description="Edit.",
+                    parameters={},
+                    provider_type="text_editor_20250728",
+                )
+            ],
+        )

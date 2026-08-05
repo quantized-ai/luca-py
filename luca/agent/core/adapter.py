@@ -39,7 +39,12 @@ def message_to_parts(
             parts.append(TextContent(text=block.text))
         elif block.type == "tool_call":
             parts.append(
-                ToolCall(id=block.id, name=block.name, arguments=block.arguments),
+                ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    arguments=block.arguments,
+                    provider_type=block.provider_type,
+                ),
             )
     return parts
 

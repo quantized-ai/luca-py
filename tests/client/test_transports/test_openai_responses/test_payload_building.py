@@ -481,6 +481,7 @@ def test_an_apply_patch_call_is_parsed_as_an_ordinary_tool_call(responses_transp
             name="apply_patch",
             arguments={"type": "update_file", "path": "lib/fib.py", "diff": "@@\n-a\n+b"},
             complete=True,
+            provider_type="apply_patch",
         )
     ]
 
@@ -506,7 +507,13 @@ def test_a_shell_call_is_parsed_as_an_ordinary_tool_call(responses_transport_fac
     )
 
     assert message.content == [
-        ToolCall(id="call_2", name="shell", arguments={"commands": ["ls -l"], "timeout_ms": 120000}, complete=True)
+        ToolCall(
+            id="call_2",
+            name="shell",
+            arguments={"commands": ["ls -l"], "timeout_ms": 120000},
+            complete=True,
+            provider_type="shell",
+        )
     ]
 
 
@@ -534,7 +541,14 @@ def test_an_apply_patch_result_goes_back_as_a_verdict(responses_transport_factor
         messages=[
             UserMessage(content="fix it"),
             AssistantMessage(
-                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                content=[
+                    ToolCall(
+                        id="call_1",
+                        name="apply_patch",
+                        arguments={"type": "delete_file", "path": "a.py"},
+                        provider_type="apply_patch",
+                    )
+                ],
                 finish_reason="tool_use",
                 provider="openai",
                 model="gpt-5.4",
@@ -558,7 +572,14 @@ def test_a_failed_patch_reports_failed(responses_transport_factory):
         messages=[
             UserMessage(content="fix it"),
             AssistantMessage(
-                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                content=[
+                    ToolCall(
+                        id="call_1",
+                        name="apply_patch",
+                        arguments={"type": "delete_file", "path": "a.py"},
+                        provider_type="apply_patch",
+                    )
+                ],
                 finish_reason="tool_use",
                 provider="openai",
                 model="gpt-5.4",
@@ -577,7 +598,14 @@ def test_a_shell_result_goes_back_in_the_shell_shape(responses_transport_factory
         messages=[
             UserMessage(content="list"),
             AssistantMessage(
-                content=[ToolCall(id="call_2", name="shell", arguments={"commands": ["ls"]})],
+                content=[
+                    ToolCall(
+                        id="call_2",
+                        name="shell",
+                        arguments={"commands": ["ls"]},
+                        provider_type="shell",
+                    )
+                ],
                 finish_reason="tool_use",
                 provider="openai",
                 model="gpt-5.4",
@@ -601,7 +629,14 @@ def test_a_replayed_native_call_keeps_its_item_type(responses_transport_factory)
         messages=[
             UserMessage(content="fix it"),
             AssistantMessage(
-                content=[ToolCall(id="call_1", name="apply_patch", arguments={"type": "delete_file", "path": "a.py"})],
+                content=[
+                    ToolCall(
+                        id="call_1",
+                        name="apply_patch",
+                        arguments={"type": "delete_file", "path": "a.py"},
+                        provider_type="apply_patch",
+                    )
+                ],
                 finish_reason="tool_use",
                 provider="openai",
                 model="gpt-5.4",
@@ -614,6 +649,76 @@ def test_a_replayed_native_call_keeps_its_item_type(responses_transport_factory)
         "call_id": "call_1",
         "operation": {"type": "delete_file", "path": "a.py"},
     }
+
+
+def test_a_call_recorded_before_native_tools_replays_as_a_function_call(responses_transport_factory):
+    # luca ships its own `apply_patch`, so a history written with native tools
+    # off holds calls that share the name and take completely different
+    # arguments. Deriving the item type from the name would rebuild this one as
+    # an apply_patch_call whose operation has no type, path or diff.
+    payload = _request(
+        responses_transport_factory(),
+        tools=[PATCH_TOOL],
+        messages=[
+            UserMessage(content="fix it"),
+            AssistantMessage(
+                content=[ToolCall(id="call_1", name="apply_patch", arguments={"patch_text": "*** Begin Patch"})],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+            ToolMessage(tool_call_id="call_1", content="Success."),
+        ],
+    )
+
+    assert payload["input"][1:] == [
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "apply_patch",
+            "arguments": '{"patch_text": "*** Begin Patch"}',
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "Success."},
+    ]
+
+
+def test_a_native_call_replays_as_a_function_call_when_the_tool_is_no_longer_offered(
+    responses_transport_factory,
+):
+    # resumed with {"tools": {"native": false}}: asking for an item type this
+    # request never declared is worse than replaying it as what it now is
+    ordinary = Tool(name="apply_patch", description="Patch.", parameters={"type": "object", "properties": {}})
+    payload = _request(
+        responses_transport_factory(),
+        tools=[ordinary],
+        messages=[
+            UserMessage(content="fix it"),
+            AssistantMessage(
+                content=[
+                    ToolCall(
+                        id="call_1",
+                        name="apply_patch",
+                        arguments={"type": "delete_file", "path": "a.py"},
+                        provider_type="apply_patch",
+                    )
+                ],
+                finish_reason="tool_use",
+                provider="openai",
+                model="gpt-5.4",
+            ),
+            ToolMessage(tool_call_id="call_1", content="Success."),
+        ],
+    )
+
+    assert payload["input"][1:] == [
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "apply_patch",
+            "arguments": '{"type": "delete_file", "path": "a.py"}',
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "Success."},
+    ]
 
 
 def test_an_ordinary_tool_is_untouched_alongside_a_native_one(responses_transport_factory):

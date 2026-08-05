@@ -233,3 +233,20 @@ async def test_the_native_editor_reaches_the_wire_without_a_schema(tmp_path):
 
     editor = next(t for t in await _wire_tools(runner) if t.name == "str_replace_based_edit_tool")
     assert editor.provider_type == "text_editor_20250728"
+
+
+async def test_switching_model_mid_session_rebuilds_the_wire_tools(tmp_path):
+    """`/model` reassigns the session's llm_config and nothing rebuilds the
+    runner. With the tool set frozen at composition, the next request carries
+    Anthropic's editor to the Responses transport, which refuses it before the
+    HTTP call — on that turn and on every retry after it."""
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="claude-opus-5", provider="anthropic")
+    runner, _ = build_runner(session, workspace=tmp_path)
+    assert "str_replace_based_edit_tool" in {tool.name for tool in await _wire_tools(runner)}
+
+    session.session_config.llm_config = LLMConfig(model="gpt-5.4", provider="openai")
+
+    tools = await _wire_tools(runner)
+    assert {tool.name for tool in tools if tool.provider_type} == {"apply_patch", "shell"}
+    assert "str_replace_based_edit_tool" not in {tool.name for tool in tools}

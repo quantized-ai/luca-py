@@ -22,6 +22,7 @@ from luca.agent.core import (
     ToolCall,
     ToolExecution,
 )
+from luca.agent.core.runner import AgentSessionRunner
 from tests.agent.scenarios import (
     conversation,
     main_conversation,
@@ -286,26 +287,92 @@ async def test_yolo_mode_allows_everything(tmp_path, session):
 # ── the provider's editor replacing luca's ───────────────────────────────────
 
 
-def test_a_native_editor_replaces_read_edit_and_write(tmp_path):
-    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
-
-    names = [tool.name for tool in plugin.tools]
-
-    assert names == ["str_replace_based_edit_tool", "glob", "grep", "apply_patch", "bash"]
+def _session(provider: str, model: str) -> AgentSession:
+    return AgentSessionRunner.new_session(LLMConfig(model=model, provider=provider))
 
 
-def test_the_tools_with_no_native_equivalent_are_untouched(tmp_path):
-    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
+async def test_a_native_editor_replaces_read_edit_and_write(tmp_path):
+    plugin = ShellAccessPlugin(tmp_path, native_tools=True)
 
-    names = {tool.name for tool in plugin.tools}
+    tools = await plugin.sync_tools(_session("anthropic", "claude-opus-5"))
 
-    assert {"glob", "grep", "apply_patch", "bash"} <= names
+    assert [tool.name for tool in tools] == [
+        "str_replace_based_edit_tool",
+        "glob",
+        "grep",
+        "apply_patch",
+        "bash",
+    ]
+    await plugin.close()
 
 
-def test_the_native_editor_shares_the_plugins_one_tracker(tmp_path):
+async def test_luca_keeps_its_own_tools_when_native_is_off(tmp_path):
+    plugin = ShellAccessPlugin(tmp_path, native_tools=False)
+
+    tools = await plugin.sync_tools(_session("anthropic", "claude-opus-5"))
+
+    assert [tool.name for tool in tools] == [
+        "read",
+        "glob",
+        "grep",
+        "edit",
+        "write",
+        "apply_patch",
+        "bash",
+    ]
+
+
+async def test_the_native_editor_shares_the_plugins_one_tracker(tmp_path):
     # the read-first guard only holds while every file tool sees the same state
-    plugin = ShellAccessPlugin(tmp_path, native_editor_type="text_editor_20250728")
+    plugin = ShellAccessPlugin(tmp_path, native_tools=True)
 
-    editor = plugin.tools[0]
+    tools = await plugin.sync_tools(_session("anthropic", "claude-opus-5"))
 
-    assert editor.tracker is plugin.tracker
+    assert tools[0].tracker is plugin.tracker
+    await plugin.close()
+
+
+async def test_switching_the_model_across_providers_rebuilds_the_tool_set(tmp_path):
+    """`/model` changes the route, and the tools are a function of the route.
+    Frozen at construction, an Anthropic editor rides along to a transport
+    that refuses it before the HTTP call — on that turn and every retry."""
+    plugin = ShellAccessPlugin(tmp_path, native_tools=True)
+    registry = plugin.get_tool_registry(_session("anthropic", "claude-opus-5"))
+    anthropic_session = _session("anthropic", "claude-opus-5")
+    openai_session = _session("openai", "gpt-5.4")
+
+    first = await registry.get_tools(anthropic_session, anthropic_session.main_conversation_id)
+    second = await registry.get_tools(openai_session, openai_session.main_conversation_id)
+    third = await registry.get_tools(anthropic_session, anthropic_session.main_conversation_id)
+
+    assert [spec.provider_type for spec in first] == [
+        "text_editor_20250728",
+        None,
+        None,
+        None,
+        "bash_20250124",
+    ]
+    assert [spec.provider_type for spec in second] == [None, None, None, None, None, "apply_patch", "shell"]
+    assert [spec.provider_type for spec in third] == [
+        "text_editor_20250728",
+        None,
+        None,
+        None,
+        "bash_20250124",
+    ]
+    await plugin.close()
+
+
+async def test_a_model_switch_within_one_provider_keeps_the_tool_set(tmp_path):
+    # nothing to rebuild, and rebuilding would drop the live shell for nothing
+    plugin = ShellAccessPlugin(tmp_path, native_tools=True)
+    session = _session("anthropic", "claude-opus-5")
+
+    first = await plugin.sync_tools(session)
+    session.session_config.llm_config = session.session_config.llm_config.model_copy(
+        update={"model": "claude-sonnet-5"}
+    )
+    second = await plugin.sync_tools(session)
+
+    assert first is second
+    await plugin.close()
