@@ -4,6 +4,7 @@ decide/pending flows they produce — no runner, no session. Executions are
 built from each tool's real `build_permission_requests` output, serialized
 exactly as `SimpleToolRegistry` would store it."""
 
+import asyncio
 from pathlib import Path
 
 from luca.agent.contrib.resource_permissions import (
@@ -432,4 +433,37 @@ async def test_an_overridden_selection_survives_a_model_switch(tmp_path):
     specs = await registry.get_tools(openai_session, openai_session.main_conversation_id)
 
     assert [spec.provider_type for spec in specs] == ["text_editor_20250728", None, None, None, None]
+    await plugin.close()
+
+
+class _CountingPlugin(ShellAccessPlugin):
+    installs = 0
+
+    def install_tools(self, key):
+        super().install_tools(key)
+        type(self).installs += 1
+
+    async def close(self):
+        # A close with no shells open never reaches the event loop, so without
+        # this the five callers below run start to finish one after another and
+        # the test passes with or without the lock. In production the yield is
+        # real: closing a live shell awaits the process.
+        await asyncio.sleep(0)
+        await super().close()
+
+
+async def test_concurrent_syncs_swap_the_tool_set_once(tmp_path):
+    """The runner births every tool call in a message concurrently, so several
+    dispatches reach `sync_tools` at the same time. `close()` awaits, so an
+    unlocked check-and-swap lets two callers both see the stale key, both
+    release every shell, and both rebuild — leaving the registry holding a list
+    whose shells nothing will ever close."""
+    _CountingPlugin.installs = 0
+    plugin = _CountingPlugin(tmp_path, native_tools=True)
+    session = _session("anthropic", "claude-opus-5")
+
+    results = await asyncio.gather(*(plugin.sync_tools(session) for _ in range(5)))
+
+    assert _CountingPlugin.installs == 2  # the constructor's, plus one swap
+    assert all(tools is plugin.tools for tools in results)
     await plugin.close()

@@ -27,6 +27,7 @@ the strategy with its own registries.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -101,6 +102,7 @@ class ShellAccessPlugin:
         self.native_tools = native_tools
         self.tools: list[Tool] = []
         self._native_key: tuple | None = None
+        self._swap_lock = asyncio.Lock()
         self.install_tools(_NO_NATIVE)
 
     # ── which tools exist ────────────────────────────────────────────────────
@@ -131,12 +133,22 @@ class ShellAccessPlugin:
         """The tool list for this session's model, rebuilt if the route moved.
 
         Awaited because the outgoing set may be holding shells open, and a
-        swap that leaks one is the same bug as a session swap that leaks
-        one."""
-        key = self.native_key_for(session)
-        if key != self._native_key:
-            await self.close()
-            self.install_tools(key)
+        swap that leaks one is the same bug as a session swap that leaks one.
+
+        Locked, and double-checked inside the lock, because the swap is not
+        atomic: `close()` awaits, and the runner births every tool call in a
+        message CONCURRENTLY, so two callers could both see a stale key, both
+        release every shell, and both rebuild. The loser's list is the one the
+        registry already copied, so its shells would never be closed by
+        anything. The fast path stays lock-free — the key matches on all but
+        the first call after a model change."""
+        if self.native_key_for(session) == self._native_key:
+            return self.tools
+        async with self._swap_lock:
+            key = self.native_key_for(session)
+            if key != self._native_key:
+                await self.close()
+                self.install_tools(key)
         return self.tools
 
     def install_tools(self, key: tuple) -> None:

@@ -567,7 +567,7 @@ def test_an_unknown_provider_tool_type_is_refused_before_the_request(anthropic_t
     # a 400 from the API would name the wire field, not the mistake
     transport = anthropic_transport_factory()
 
-    with pytest.raises(UnsupportedParameterError, match="does not accept the provider tool type"):
+    with pytest.raises(UnsupportedParameterError, match="does not accept the provider tool type") as raised:
         transport._build_chat_completion_payload(
             ChatCompletionRequest(
                 model="claude-test",
@@ -583,3 +583,7 @@ def test_an_unknown_provider_tool_type_is_refused_before_the_request(anthropic_t
                 ],
             )
         )
+
+    # every ClientError carries the host it came from; asserting only the
+    # message let this one path drop it
+    assert raised.value.provider == "anthropic"

@@ -359,7 +359,8 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if tool.provider_type not in self.PROVIDER_TOOL_TYPES:
             raise UnsupportedParameterError(
                 f"anthropic does not accept the provider tool type {tool.provider_type!r} "
-                f"(tool {tool.name!r}); known types: {', '.join(sorted(self.PROVIDER_TOOL_TYPES))}"
+                f"(tool {tool.name!r}); known types: {', '.join(sorted(self.PROVIDER_TOOL_TYPES))}",
+                provider=self._provider,
             )
         return {"type": tool.provider_type, "name": tool.name}
 
