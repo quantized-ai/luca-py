@@ -8,9 +8,11 @@ does each command reach the tool that already implements it. Real files under
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from luca.agent.contrib.shell.native import (
     BASH_NAME,
@@ -148,6 +150,52 @@ async def test_insert_places_text_after_the_given_line(editor, sample):
 
     assert not result.is_error
     assert sample.read_text() == "one\nINSERTED\ntwo\nthree\n"
+
+
+@pytest.mark.parametrize(
+    ("window", "message"),
+    [
+        ([], "exactly [start, end]"),
+        ([2], "exactly [start, end]"),
+        ([1, 2, 3], "exactly [start, end]"),
+        ([0, 5], "start must be 1 or greater"),
+        ([-4, -1], "start must be 1 or greater"),
+        ([5, 2], "end must be -1, or at least the start"),
+    ],
+    ids=["empty", "one-entry", "three-entries", "zero-start", "negative-start", "end-before-start"],
+)
+def test_a_malformed_view_range_is_refused_naming_view_range(window, message):
+    """luca does not own this schema, so these values WILL arrive. Short lists
+    used to die on `window[1]` with a bare IndexError, a start below 1 failed
+    against `ReadTool`'s `offset` — a field the native schema cannot send —
+    and `[5, 2]` was the worst of the three: it silently returned one line and
+    told the model it had shown lines 5-5."""
+    with pytest.raises(ValidationError, match=re.escape(message)) as raised:
+        NativeTextEditorTool.Args.model_validate(
+            {"command": "view", "path": "/tmp/f.py", "view_range": window},
+        )
+
+    assert raised.value.errors()[0]["loc"] == ("view_range",)
+
+
+async def test_a_valid_view_range_reads_exactly_that_window(editor, tmp_path):
+    path = tmp_path / "ten.txt"
+    path.write_text("".join(f"line {n}\n" for n in range(1, 11)))
+
+    result = await run(editor, command="view", path=str(path), view_range=[3, 5])
+
+    assert "3: line 3\n4: line 4\n5: line 5" in result.content[0].text
+    assert "line 6" not in result.content[0].text
+
+
+async def test_a_view_range_ending_in_minus_one_runs_to_the_end(editor, tmp_path):
+    path = tmp_path / "ten.txt"
+    path.write_text("".join(f"line {n}\n" for n in range(1, 11)))
+
+    result = await run(editor, command="view", path=str(path), view_range=[8, -1])
+
+    assert "8: line 8\n9: line 9\n10: line 10" in result.content[0].text
+    assert "line 7" not in result.content[0].text
 
 
 async def test_insert_takes_the_providers_insert_text_field(editor, sample):

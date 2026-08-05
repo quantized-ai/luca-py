@@ -247,6 +247,13 @@ output spilled to a temp file), and `shell` honours the `max_output_length` its
 schema advertises. Uncapped, one `cat` of a build log goes into the request,
 the response and every later save of the session file.
 
+`view_range` is validated on `Args` rather than in `_view`, and that placement
+is the point: luca does not own this schema, so malformed values arrive and
+the message has to name a field the model can resend. A short list used to die
+on `window[1]`, a start below 1 failed against `ReadTool`'s own `offset` (a
+field the native schema cannot send), and `[5, 2]` was worse than either — it
+returned one line and told the model it had shown lines 5 to 5.
+
 `ShellAccessPlugin.native_key_for` and `.install_tools` are the OVERRIDE
 POINTS, and they are public for that reason: the first decides which provider
 tools a route gets, the second composes the list. A developer with a host luca

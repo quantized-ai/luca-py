@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from luca.agent.contrib.resource_permissions import (
     AnswerOption,
@@ -96,6 +96,32 @@ class NativeTextEditorTool(ShellTool):
         new_str: str | None = Field(default=None, description="Replacement text, for `str_replace`")
         old_str: str | None = Field(default=None, description="Text to replace, for `str_replace`")
         view_range: list[int] | None = Field(default=None, description="[start, end] lines, for `view`")
+
+        @field_validator("view_range")
+        @classmethod
+        def check_view_range(cls, value: list[int] | None) -> list[int] | None:
+            """A malformed range is an ARGUMENT error, refused here.
+
+            luca does not own this schema. Anthropic advertises `view_range`,
+            the model was trained on it, and there is no way to tighten what
+            reaches us — so bad values will arrive and this is the one input
+            path where well-formed arguments cannot be assumed.
+
+            Checked on the way in rather than inside `_view` for the sake of
+            the message. A short list used to die on `window[1]` with a bare
+            IndexError, and a start below 1 used to fail against `ReadTool`'s
+            own `offset`, telling the model to fix a field the native schema
+            has no way to send. Both now come back naming `view_range`."""
+            if value is None:
+                return value
+            if len(value) != 2:
+                raise ValueError("view_range must be exactly [start, end]")
+            start, end = value
+            if start < 1:
+                raise ValueError("view_range start must be 1 or greater")
+            if end != -1 and end < start:
+                raise ValueError("view_range end must be -1, or at least the start")
+            return value
 
     def __init__(
         self,
@@ -173,10 +199,12 @@ class NativeTextEditorTool(ShellTool):
         translated: dict = {"file_path": args["path"]}
         window = args.get("view_range")
         if window:
-            start, end = window[0], window[1]
+            # Args guarantees two entries, a start of 1 or more, and an end
+            # that is either -1 or not before the start.
+            start, end = window
             translated["offset"] = start
             if end != -1:
-                translated["limit"] = max(end - start + 1, 1)
+                translated["limit"] = end - start + 1
         result = await self.read.execute(
             self.read.Args.model_validate(translated).model_dump(),
             session,
