@@ -1361,7 +1361,7 @@ async def test_the_policy_deadline_degrades_for_a_policy_source_compaction():
 
 async def test_middleware_raising_during_preparation_leaves_the_path_unchanged():
     class RefusesTheSummary:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, CompactionEntry) and entry.parts:
                 raise RuntimeError("no summaries here")
             return entry
@@ -1386,7 +1386,7 @@ async def test_middleware_raising_during_preparation_leaves_the_path_unchanged()
 
 async def test_middleware_raising_while_closing_a_failed_bracket_leaves_it_open():
     class RefusesTheClose:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, CompactionEntry) and entry.ended_at is not None:
                 raise RuntimeError("no closing here")
             return entry
@@ -2350,7 +2350,7 @@ async def test_the_context_tokens_are_recalculated_when_the_parts_land():
 
 async def test_middleware_has_the_final_say_on_the_summarys_context_tokens():
     class Overrides:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, CompactionEntry):
                 entry.context_tokens = 99
             return entry

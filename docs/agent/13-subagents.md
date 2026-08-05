@@ -371,10 +371,11 @@ scratchpad and todo list, and the shell plugin's read-before-write tracker.
 | Deliberately shared state locks the **mutation**, never the I/O | locking the I/O serializes the parallelism you asked for |
 | Process-global resources are scoped per conversation, not mutexed | a chdir or an env var set by one subagent is seen by all of them |
 
-> ⚠️ **Middleware is conversation-blind.** No hook receives a
-> `conversation_id`, so an application middleware written for a single
-> conversation gets wrong behavior — silently — once subagents are on
-> ([07](07-middleware.md) §5).
+> **Middleware is conversation-aware.** Every hook receives
+> `(session, conversation_id)` ([07](07-middleware.md) §5), so one instance
+> safely serves the whole tree — route a subagent to a cheaper model, withhold
+> tools by depth, attribute cost per conversation. The same keying rules above
+> apply to a middleware's own state: it is shared exactly like the registry.
 
 ## 10. Bringing your own spawn tool
 

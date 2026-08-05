@@ -427,7 +427,7 @@ class CancelOnInterrupted:
     def __init__(self) -> None:
         self.cancel = None  # wired by the test to runner.cancel
 
-    def after_tool_execution(self, execution, exception=None):
+    def after_tool_execution(self, session, conversation_id, execution, exception=None):
         if execution.status is ExecutionStatus.INTERRUPTED:
             self.cancel()
         return execution

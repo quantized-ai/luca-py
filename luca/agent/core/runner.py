@@ -1241,6 +1241,7 @@ class AgentSessionRunner:
                 )
         parts = self._run_middlewares(
             "before_post_message",
+            target,
             _normalize_post_parts(content),
         )
         message = self._append(
@@ -1913,46 +1914,60 @@ class AgentSessionRunner:
     def _run_middlewares(
         self,
         method_name: str,
+        conversation_id: str,
         value,
         *ctx_args,
         unpack_values: bool = False,
         **ctx_kwargs,
     ):
         """Thread `value` through each middleware's `method_name` hook in order.
+
+        Every hook is called `(session, conversation_id, value, *ctx)`. The
+        session comes off `self` — it is the LIVE object the runner and ledger
+        write through, so no call site passes it. `conversation_id` is the
+        scope of the OPERATION that invoked the hook, which is what makes one
+        middleware instance safe to share across the main conversation and its
+        subagents; it does not assert that `value` belongs exclusively to that
+        conversation.
+
         Context args/kwargs are forwarded unchanged to every call. With
         `unpack_values=True`, `value` is a tuple unpacked as positional args
         (used for `before_llm_call` which takes and returns a pair)."""
         for mw in self.middleware:
             if not hasattr(mw, method_name):
                 continue
+            scope = (self.session, conversation_id)
             if unpack_values:
-                value = getattr(mw, method_name)(*value, *ctx_args, **ctx_kwargs)
+                value = getattr(mw, method_name)(*scope, *value, *ctx_args, **ctx_kwargs)
             else:
-                value = getattr(mw, method_name)(value, *ctx_args, **ctx_kwargs)
+                value = getattr(mw, method_name)(*scope, value, *ctx_args, **ctx_kwargs)
         return value
 
-    def _complete_entry(self, entry: AnyEntry) -> AnyEntry:
+    def _complete_entry(self, conversation_id: str, entry: AnyEntry) -> AnyEntry:
         """The fallible half of preparing any entry: calculate its
         `context_tokens` (context calculation is part of preparing a complete
         entry — it runs BEFORE middleware, and never again after), then thread
-        it through `before_entry_written`."""
+        it through `before_entry_written` under the conversation whose
+        operation caused the write."""
         entry.context_tokens = self.context_manager.calculate_context(
             self.session,
             entry,
         )
-        return self._run_middlewares("before_entry_written", entry)
+        return self._run_middlewares("before_entry_written", conversation_id, entry)
 
     def _append(self, conversation_id: str, build_fn) -> AnyEntry:
         """Append one entry: build it, complete it, commit it to the ledger."""
         return self.ledger.append(
             conversation_id,
             lambda entry_id, parent_id, ts: self._complete_entry(
+                conversation_id,
                 build_fn(entry_id, parent_id, ts),
             ),
         )
 
     def _complete_uncommitted(
         self,
+        conversation_id: str,
         build_fn,
         parent_id: str | None,
         ts: int,
@@ -1963,9 +1978,18 @@ class AgentSessionRunner:
         the same hooks; the caller supplies the parent, because the new
         conversation's leaf is not the active path's.
 
+        `conversation_id` is therefore the OUTGOING conversation — the one
+        being compacted, whose drive caused the write. The destination's id is
+        minted inside `ledger.transition_conversation` and does not exist yet,
+        and the hook's contract is the operation's scope rather than the
+        entry's eventual home.
+
         (Named for what it does rather than `_prepare`, so `prepare` in this
         file means the tool-lifecycle phase and nothing else.)"""
-        return self._complete_entry(build_fn(self.generate_id(), parent_id, ts))
+        return self._complete_entry(
+            conversation_id,
+            build_fn(self.generate_id(), parent_id, ts),
+        )
 
     def recalculate_context_tokens(self) -> None:
         """Re-derive `context_tokens` for EVERY entry in `session.entries`,
@@ -1979,9 +2003,16 @@ class AgentSessionRunner:
         Every entry, not just the active path: the count is intrinsic to an
         entry and shared by every conversation that references it, so
         refreshing only the active path would leave archived conversations on
-        the old basis. Through the middleware door, because middleware has the
-        final say on context and nothing is recomputed behind it. It sets no
-        other field.
+        the old basis. It sets no other field.
+
+        NO MIDDLEWARE RUNS HERE. `before_entry_written` is scoped to the
+        conversation whose operation caused a write, and this method rewrites
+        every entry across every conversation at once — there is no single id
+        that honestly describes the operation, and inventing one (or admitting
+        `None` into a contract built on concrete ids) costs more than the hook
+        is worth. This is an operational refresh of a derived estimate, not a
+        write with a scope; `ledger.refresh_entry` is the matching door, and
+        it takes no conversation for the same reason.
 
         NOTHING IN THE FRAMEWORK CALLS THIS. There is no constructor keyword,
         no CLI flag, and no automatic invocation on a model switch (which
@@ -1990,8 +2021,11 @@ class AgentSessionRunner:
         no model choice affects; this exists for the application that swaps in
         a real tokenizer, and that application calls it."""
         for entry_id in list(self.session.entries):
-            entry = self.session.entries[entry_id]
-            refreshed = self._complete_entry(entry.model_copy())
+            refreshed = self.session.entries[entry_id].model_copy()
+            refreshed.context_tokens = self.context_manager.calculate_context(
+                self.session,
+                refreshed,
+            )
             self.ledger.refresh_entry(refreshed)
 
     def _persist_entry(
@@ -2009,7 +2043,9 @@ class AgentSessionRunner:
         must keep the final say on it."""
         updated = entry.model_copy(update=changes)
         updated = (
-            self._complete_entry(updated) if recalculate else self._run_middlewares("before_entry_written", updated)
+            self._complete_entry(conversation_id, updated)
+            if recalculate
+            else self._run_middlewares("before_entry_written", conversation_id, updated)
         )
         return self.ledger.put_entry(conversation_id, updated)
 
@@ -2106,24 +2142,12 @@ class AgentSessionRunner:
         )
         execution = self._run_middlewares(
             "after_tool_execution",
+            conversation_id,
             execution,
             exception,
         )
         execution = self._persist_execution(conversation_id, execution, recalculate=False)
         return execution, self._tool_executed_event(conversation_id, execution)
-
-    def _finalize_undispatched(
-        self,
-        conversation_id: str,
-        execution: ToolExecution,
-        exception: Exception | None = None,
-    ) -> tuple[ToolExecution, ToolExecuted]:
-        """Outcome pipeline for a call whose body will never run — terminal
-        at birth, REJECTED, or CANCELLED before dispatch. These calls still
-        pass through `before_tool_execution` (which sees the terminal status
-        already set) before the shared outcome tail."""
-        execution = self._run_middlewares("before_tool_execution", execution)
-        return self._finalize_outcome(conversation_id, execution, exception)
 
     def _recover_orphans(self, conversation_id: str) -> list[AgentEvent]:
         """A persisted RUNNING execution without its live runtime task is an
@@ -2146,11 +2170,15 @@ class AgentSessionRunner:
 
     # ── per-call build methods ───────────────────────────────────────────────
 
-    def build_model_string(self, llm_cfg: LLMConfig) -> str:
+    def build_model_string(self, conversation_id: str, llm_cfg: LLMConfig) -> str:
         """Build the model identifier for the LLM client, threading it through
-        any `build_model_string` middleware. Called per LLM invocation."""
+        any `build_model_string` middleware. Called per LLM invocation.
+
+        Conversation-scoped so a middleware can route per conversation — a
+        cheap model for subagents, the configured one for the main
+        conversation."""
         model_string = f"{llm_cfg.provider}:{llm_cfg.model}"
-        return self._run_middlewares("build_model_string", model_string, llm_cfg)
+        return self._run_middlewares("build_model_string", conversation_id, model_string, llm_cfg)
 
     def effective_llm_config(self, llm_cfg: LLMConfig, model_string: str) -> LLMConfig:
         """The config a call actually ran under, which is NOT always the
@@ -2190,21 +2218,28 @@ class AgentSessionRunner:
         self,
         conversation_id: str,
         specs: list[ToolSpec],
-    ) -> list[LucaTool]:
-        """The specs projected onto the WIRE: private ones dropped, the rest
-        converted by the adapter, the list threaded through any
-        `build_tool_list` middleware. Called per LLM invocation.
+    ) -> list[ToolSpec]:
+        """The MODEL-VISIBLE catalog: private specs dropped, the rest threaded
+        through any `build_tool_list` middleware. Called per LLM invocation.
 
-        This is the ONE place `is_private` is enforced on the way out. The hook
-        still receives the post-adapter wire list, unchanged — a middleware
-        never sees a private tool, which is the point.
+        This is the ONE place `is_private` is enforced on the way out, and the
+        filter stays AHEAD of the hook — a middleware never sees a private
+        tool, which is the point. (A middleware that mints a spec with
+        `is_private=True` therefore puts it on the wire: the filter has already
+        run. That is the trust model working, not a gap to close.)
+
+        Returns `ToolSpec`s, not wire tools. The spec is the core's own tool
+        type and the one the registry answers with; the wire `luca.client.Tool`
+        drops `tool_kind`, `namespace`, `is_private`, `output_schema` and
+        `metadata`, so a middleware handed the adapted list could not filter on
+        any of them. `_collect_tools` adapts what this returns.
 
         Synchronous: the awaiting moved to `resolve_tool_specs`. The drive
         races the pair together rather than either alone, so a subclass
         overriding either is covered for free and the cancellation token never
         has to appear in these public signatures."""
-        tool_list = [adapter.tool_spec_to_luca_tool(spec) for spec in specs if not spec.is_private]
-        return self._run_middlewares("build_tool_list", tool_list)
+        visible = [spec for spec in specs if not spec.is_private]
+        return self._run_middlewares("build_tool_list", conversation_id, visible)
 
     def _spawn_gate_open(self, conversation_id: str, *, exclude: str | None = None) -> bool:
         """May THIS conversation spawn subagents?
@@ -2257,10 +2292,16 @@ class AgentSessionRunner:
     ) -> tuple[list[ToolSpec], list[LucaTool]]:
         """Both lists, resolved once. The result stays a LOCAL in the drive and
         is never stashed on `self`: per-call state on a runner driving several
-        conversations belongs to whichever one wrote it last."""
+        conversations belongs to whichever one wrote it last.
+
+        The gate runs on the REGISTRY's answer, before the middleware hook: it
+        checks a registry-contract violation, not an application one.
+        Adaptation to client tool DTOs happens here, after the hook, so the
+        middleware contract stays in the core's own vocabulary."""
         specs = await self.resolve_tool_specs(conversation_id)
         self._verify_gate(conversation_id, specs)
-        return specs, self.build_tool_list(conversation_id, specs)
+        visible = self.build_tool_list(conversation_id, specs)
+        return specs, [adapter.tool_spec_to_luca_tool(spec) for spec in visible]
 
     def build_messages(self, conversation_id: str) -> list:
         """Project the driven conversation's path to canonical client messages
@@ -2295,6 +2336,7 @@ class AgentSessionRunner:
         system_message = self.build_system_message(conversation_id)
         return self._run_middlewares(
             "before_llm_call",
+            conversation_id,
             (messages, system_message),
             unpack_values=True,
         )
@@ -2605,6 +2647,7 @@ class AgentSessionRunner:
         compacted = [node for node in snapshot.nodes[:bracket] if node not in carried]
 
         final = self._complete_entry(
+            conversation_id,
             entry.model_copy(
                 update={
                     "parts": plan.entry.parts,
@@ -2613,7 +2656,7 @@ class AgentSessionRunner:
                     "compacted_nodes": compacted,
                     "ended_at": ts,
                 },
-            )
+            ),
         )
         nodes: list[str] = []
         created: list[AnyEntry] = []
@@ -2623,6 +2666,7 @@ class AgentSessionRunner:
                 parent = node
             else:
                 built = self._complete_uncommitted(
+                    conversation_id,
                     lambda entry_id, parent_id, stamp, template=node: template.model_copy(
                         update={
                             "id": entry_id,
@@ -2637,6 +2681,7 @@ class AgentSessionRunner:
                 parent = built.id
             nodes.append(parent)
         closing = self._complete_uncommitted(
+            conversation_id,
             lambda entry_id, parent_id, stamp: TurnFinish(
                 id=entry_id,
                 parent_id=parent_id,
@@ -2806,7 +2851,7 @@ class AgentSessionRunner:
                     if decision.decision == ApprovalOption.PENDING:
                         self._publish_approval(conversation_id, persisted)
                     if denied:
-                        _, event = self._finalize_undispatched(conversation_id, persisted)
+                        _, event = self._finalize_outcome(conversation_id, persisted)
                         denial_events.append(event)
                 for event in denial_events:
                     yield event
@@ -3001,7 +3046,7 @@ class AgentSessionRunner:
             # and only here, because the model call runs only after every
             # execution is terminal.
             llm_cfg = self.session.session_config.llm_config
-            model_string = self.build_model_string(llm_cfg)
+            model_string = self.build_model_string(conversation_id, llm_cfg)
             # Recorded instead of `llm_cfg`, so provenance names the model
             # that actually produced the turn.
             effective_cfg = self.effective_llm_config(llm_cfg, model_string)
@@ -3155,7 +3200,7 @@ class AgentSessionRunner:
             # Run after_llm_response middleware before recording: the message
             # is fully assembled (streaming or non-streaming) so all content
             # blocks are present.
-            message = self._run_middlewares("after_llm_response", message)
+            message = self._run_middlewares("after_llm_response", conversation_id, message)
 
             # Record the assistant message, receive its executions, and (for a
             # final answer) close the bracket ATOMICALLY — and atomically means
@@ -3544,18 +3589,27 @@ class AgentSessionRunner:
         Two rules do not apply to a call the runtime minted. The private-name
         refusal is about a MODEL naming a tool it was never shown, and the
         doom-loop check is a heuristic about model behavior; neither means
-        anything here. Everything else is identical to a model's call."""
+        anything here. Everything else is identical to a model's call — the
+        creation middleware pair included, which is why `after_tool_creation`
+        runs inside the build below rather than being skipped as a
+        model-behavior concern. `_birth_draft` already fired its partner, and
+        the two must stay paired on every creation path."""
         draft, exception = await self._birth_draft(conversation_id, call, set(), token)
         execution = self._append(
             conversation_id,
-            lambda entry_id, parent_id, ts: draft.model_copy(
-                update={
-                    "id": entry_id,
-                    "parent_id": parent_id,
-                    "created_at": ts,
-                    "conversation_id": conversation_id,
-                    "ended_at": (ts if draft.status != ExecutionStatus.PENDING else None),
-                },
+            lambda entry_id, parent_id, ts: self._run_middlewares(
+                "after_tool_creation",
+                conversation_id,
+                draft.model_copy(
+                    update={
+                        "id": entry_id,
+                        "parent_id": parent_id,
+                        "created_at": ts,
+                        "conversation_id": conversation_id,
+                        "ended_at": (ts if draft.status != ExecutionStatus.PENDING else None),
+                    },
+                ),
+                exception,
             ),
         )
         yield ToolCallReceived(
@@ -3564,7 +3618,7 @@ class AgentSessionRunner:
             execution=execution.model_copy(deep=True),
         )
         if execution.status != ExecutionStatus.PENDING:  # terminal at birth
-            _, event = self._finalize_undispatched(conversation_id, execution, exception)
+            _, event = self._finalize_outcome(conversation_id, execution, exception)
             yield event
             return
         pair = await self._decide_one(conversation_id, execution, token)
@@ -3581,7 +3635,7 @@ class AgentSessionRunner:
             changes["ended_at"] = self.now_ms()
         persisted = self._persist_execution(conversation_id, modified, **changes)
         if denied:
-            _, event = self._finalize_undispatched(conversation_id, persisted)
+            _, event = self._finalize_outcome(conversation_id, persisted)
             yield event
             return
         if decision.decision == ApprovalOption.PENDING:
@@ -3786,7 +3840,7 @@ class AgentSessionRunner:
                     "ended_at": ts,
                 },
             )
-            _, event = self._finalize_undispatched(conversation_id, stamped)
+            _, event = self._finalize_outcome(conversation_id, stamped)
             events.append(event)
         self._close_turn(conversation_id, cancel_entry.outcome, cancel_entry.error)
         return events
@@ -3958,12 +4012,26 @@ class AgentSessionRunner:
                 changes |= {"status": ExecutionStatus.REFUSED, "error": refusal}
             if changes["status"] != ExecutionStatus.PENDING:  # terminal birth
                 changes["ended_at"] = self.now_ms()
+            # `after_tool_creation` sees the EFFECTIVE birth state — the
+            # registry's draft folded into the entry, with every runner-owned
+            # birth fact already applied — and its return value is what gets
+            # persisted, so the lifecycle branch chosen below reads the
+            # post-hook status. A middleware may terminalize a PENDING birth
+            # (straight to the outcome tail, never reaching `decide`) or
+            # revive a terminal one.
+            effective = execution.model_copy(update=changes)
+            effective = self._run_middlewares(
+                "after_tool_creation",
+                conversation_id,
+                effective,
+                exception,
+            )
             # `_persist_entry`, NOT `_persist_execution`: birth completes an
             # entry's creation rather than mutating it afterwards, so it leaves
             # `updated_at` alone. A born execution is durably identical to the
             # one a single append used to produce, and `updated_at` keeps
             # meaning "changed after it was created".
-            born = self._persist_entry(conversation_id, execution, **changes)
+            born = self._persist_entry(conversation_id, effective)
             events.append(
                 ToolCallReceived(
                     conversation_id=conversation_id,
@@ -3972,7 +4040,7 @@ class AgentSessionRunner:
                 )
             )
             if born.status != ExecutionStatus.PENDING:
-                _, event = self._finalize_undispatched(conversation_id, born, exception)
+                _, event = self._finalize_outcome(conversation_id, born, exception)
                 events.append(event)
         return events
 
@@ -4037,6 +4105,12 @@ class AgentSessionRunner:
             name=tc.name,
             arguments=copy.deepcopy(tc.arguments),
         )
+        # `before_tool_creation` runs on the deep COPY, ahead of the private
+        # check: a middleware that renames a call must be checked against the
+        # effective name, or "private" would be bypassable by rewriting into
+        # one. The returned call is what the registry sees and what the
+        # execution carries.
+        raw = self._run_middlewares("before_tool_creation", conversation_id, raw)
         # A PRIVATE tool was never offered, but a model can still emit a name it
         # was never given. Refuse it exactly as if it did not exist —
         # deliberately indistinguishable from the toolless case, because from
@@ -4044,8 +4118,8 @@ class AgentSessionRunner:
         # "private" would be advisory and any model that guesses the name gets
         # to call it. (A runtime-originated invocation does not come through
         # here at all.)
-        if self.tool_registry is None or tc.name in private_names:
-            exc: Exception = ToolNotFound(f"Unknown tool: {tc.name!r}.")
+        if self.tool_registry is None or raw.name in private_names:
+            exc: Exception = ToolNotFound(f"Unknown tool: {raw.name!r}.")
             draft = ToolExecution(
                 tool_call_id=raw.id,
                 raw_tool_call=raw,
@@ -4122,7 +4196,7 @@ class AgentSessionRunner:
         and persisted (its changes are not restricted to the decide call).
         A toolless runner allows — the prepare step then produces the honest
         NOT_FOUND terminal rather than recording a false REJECTED."""
-        modified = self._run_middlewares("before_permission_check", execution)
+        modified = self._run_middlewares("before_permission_check", conversation_id, execution)
         if self.tool_registry is None:
             decision = ApprovalDecision(
                 decision=ApprovalOption.ALLOW,
@@ -4137,6 +4211,7 @@ class AgentSessionRunner:
             )
         return modified, self._run_middlewares(
             "after_permission_decision",
+            conversation_id,
             decision,
             modified,
         )
@@ -4189,13 +4264,13 @@ class AgentSessionRunner:
            `ToolExecutionStarted` is emitted, and the callable is invoked
            under the cancellation race and the deadline.
 
-        Every path from step 3 on finalizes through `_finalize_outcome`, NEVER
-        `_finalize_undispatched`: `before_tool_execution` has already fired for
-        this call and the undispatched pipeline would fire it a second time.
-        The hook is the boundary — an execution whose hook has not fired
-        belongs to the loop-top wind-down, one whose hook has fired belongs
-        here."""
-        execution = self._run_middlewares("before_tool_execution", execution)
+        This is the ONLY `before_tool_execution` call site. The hook means "a
+        dispatch attempt is starting" and nothing else: a call that is terminal
+        at birth, rejected, refused, cancelled before dispatch, or recovered
+        from an orphaned RUNNING never reaches here and never fires it. Every
+        such outcome still runs `after_tool_execution`, which is the universal
+        terminal transformation point."""
+        execution = self._run_middlewares("before_tool_execution", conversation_id, execution)
 
         prepare_task = asyncio.ensure_future(self._prepare_tool(conversation_id, execution))
         try:

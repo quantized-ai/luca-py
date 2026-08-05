@@ -739,7 +739,7 @@ class ThirdBracketBomb(AgentMiddlewareMixin):
     def __init__(self) -> None:
         self.turn_starts = 0
 
-    def before_entry_written(self, entry):
+    def before_entry_written(self, session, conversation_id, entry):
         if isinstance(entry, TurnStart):
             self.turn_starts += 1
             if self.turn_starts == 3:

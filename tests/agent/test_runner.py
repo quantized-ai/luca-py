@@ -318,10 +318,12 @@ async def test_run_passes_projected_tools_to_client():
     ]
 
 
-async def test_resolve_tool_specs_then_build_tool_list_projects_every_spec():
+async def test_resolve_tool_specs_then_build_tool_list_offers_every_spec():
     # the two halves of the per-call tool step: `resolve_tool_specs` is the
-    # async one (`get_tools` may need I/O), `build_tool_list` is the pure
-    # projection onto the wire type
+    # async one (`get_tools` may need I/O), `build_tool_list` is the pure,
+    # middleware-bearing narrowing to what the model may see. Both speak
+    # `ToolSpec`; the adapter converts to the wire type afterwards, inside
+    # `_collect_tools`.
     session = make_session(
         id="s_build_tools",
         conversations={"c1": conversation("c1", [], created_at=900, updated_at=900)},
@@ -335,21 +337,10 @@ async def test_resolve_tool_specs_then_build_tool_list_projects_every_spec():
     )
 
     specs = await runner.resolve_tool_specs(runner.main_conversation_id)
-    tools = runner.build_tool_list(runner.main_conversation_id, specs)
+    visible = runner.build_tool_list(runner.main_conversation_id, specs)
 
-    assert [spec.name for spec in specs] == ["add", "multiply"]
-    assert tools == [
-        LucaTool(
-            name="add",
-            description="Add two numbers.",
-            parameters=ADD_SPEC.input_schema,
-        ),
-        LucaTool(
-            name="multiply",
-            description="Multiply two numbers.",
-            parameters=MULTIPLY_SPEC.input_schema,
-        ),
-    ]
+    assert specs == [ADD_SPEC, MULTIPLY_SPEC]
+    assert visible == [ADD_SPEC, MULTIPLY_SPEC]
 
 
 async def test_the_tool_step_of_a_toolless_runner_is_empty():

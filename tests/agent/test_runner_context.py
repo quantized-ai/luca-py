@@ -18,7 +18,10 @@ Declarative scenarios locking the contact points:
   replacement on the next LLM call;
 - `recalculate_context_tokens()` is the only way back from a stale basis: it
   re-derives every stored count, and nothing else in the framework — the
-  constructor included — ever touches one.
+  constructor included — ever touches one. It runs NO middleware: it spans
+  every conversation at once, so no `conversation_id` would honestly scope a
+  `before_entry_written` call (that case lives in
+  `test_runner_middleware.py`).
 """
 
 from typing import ClassVar
@@ -114,7 +117,7 @@ class ContextOverridingMiddleware:
     """`before_entry_written` middleware has the final say on context —
     whatever it returns is persisted, never recalculated."""
 
-    def before_entry_written(self, entry):
+    def before_entry_written(self, session, conversation_id, entry):
         entry.context_tokens = 7
         return entry
 

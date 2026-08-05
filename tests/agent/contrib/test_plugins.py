@@ -121,7 +121,7 @@ class RemoteToolRegistry(ToolRegistry):
 
 
 class RecordingMiddleware:
-    def before_post_message(self, parts: list) -> list:
+    def before_post_message(self, session, conversation_id, parts: list) -> list:
         return parts
 
 

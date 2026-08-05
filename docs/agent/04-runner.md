@@ -234,7 +234,7 @@ conversation being answered for**, none receiving the cancellation token.
 
 | Call | When | What the runner does with it |
 |---|---|---|
-| `get_tools(session, conversation_id)` | per LLM call, through the runner's `async resolve_tool_specs()` | drops private specs (§[03](03-tools.md)), converts the rest to the wire list, then runs the (still synchronous) `build_tool_list` middleware over that list ([07](07-middleware.md)) |
+| `get_tools(session, conversation_id)` | per LLM call, through the runner's `async resolve_tool_specs()` | drops private specs (§[03](03-tools.md)), runs the (synchronous) `build_tool_list` middleware over the remaining `ToolSpec`s, then converts what it returns to the wire list ([07](07-middleware.md)) |
 | `create_execution(session, conversation_id, call)` | once per tool call in the assistant response | stamps identity (including `conversation_id`), appends, emits `ToolCallReceived` |
 | `decide(session, conversation_id, execution)` | for every undecided execution | applies the decision; a `DENY` is `REJECTED` on the spot |
 | `prepare(session, conversation_id, execution)` | once per dispatch attempt of an ALLOWED call | invokes the callable it returns |

@@ -102,10 +102,11 @@ execution only its outcome (result content, else the structured error
 message; `0` while nonterminal); a compaction its summary; a pruned entry its
 replacement content; markers own nothing.
 
-> ⚠️ **Middleware has the final say.** Context is calculated *before*
-> `before_entry_written` / `after_tool_execution`; whatever middleware returns
-> is persisted. The framework never recalculates, validates, or repairs
-> `context_tokens` afterwards.
+> ⚠️ **Middleware has the final say on every write.** Context is calculated
+> *before* `before_entry_written` / `after_tool_execution`; whatever middleware
+> returns is persisted. The framework never recalculates, validates, or repairs
+> `context_tokens` afterwards. The one door that is not a write —
+> `recalculate_context_tokens()` — runs no middleware at all (§4).
 
 ## 3. Improving it: estimation and truncation
 
@@ -131,7 +132,7 @@ class TiktokenContext(ContextManager):
 stale the moment the session switches models.
 `AgentSessionRunner.recalculate_context_tokens()` re-derives every entry in
 `session.entries` — not just the active path, since the count is intrinsic and
-shared by every conversation — each one through `before_entry_written`:
+shared by every conversation:
 
 ```python
 session.session_config.llm_config = LLMConfig(model="openai/gpt-4o-mini", provider="openrouter")
@@ -141,6 +142,11 @@ runner.recalculate_context_tokens()
 > ⚠️ **Nothing in the framework calls it.** No constructor keyword, no CLI
 > flag, no automatic invocation on a model switch. It exists for the
 > application that swapped in a real tokenizer, and that application calls it.
+
+> **It runs no middleware.** `before_entry_written` is scoped to the
+> conversation whose operation caused a write, and this rewrites every entry
+> across every conversation at once — no single id would be honest. It is an
+> operational refresh of a derived estimate, not a write ([07](07-middleware.md)).
 
 Images are counted by a separate method, so a text tokenizer and an image
 formula are independent overrides:

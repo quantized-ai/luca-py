@@ -1,6 +1,6 @@
 # Middleware
 
-Middleware lets you intercept and modify the runner's pipeline at **10** points —
+Middleware lets you intercept and modify the runner's pipeline at **12** points —
 without subclassing the runner or touching the session model. Pass a list of
 plain objects; each hook they implement is called, in list order.
 
@@ -26,10 +26,19 @@ modified. Return it unchanged to observe without altering.
 
 ```python
 class CostTracker:                       # plain class — no base
-    def after_llm_response(self, message):
-        record_usage(message.usage)
+    def after_llm_response(self, session, conversation_id, message):
+        record_usage(conversation_id, message.usage)
         return message
 ```
+
+Every hook starts with `(session, conversation_id)`. `session` is the **live**
+`AgentSession` the runner writes through; `conversation_id` is the conversation
+whose operation invoked the hook — the main one, or a subagent
+([13](13-subagents.md)). One middleware instance serves the whole tree, so that
+id is how a hook keeps per-conversation state, routes a subagent to a cheaper
+model, or attributes cost. It is the same prefix
+[`ToolRegistry`](03-tools.md), `ContextManager.compact` and system-prompt
+callables already take.
 
 There's a mixin you can extend for your middlewares in
 `luca.agent.core.middleware.AgentMiddlewareMixin`. Every hook on it is an
@@ -38,26 +47,58 @@ don't override have no effect:
 
 ```python
 class AgentMiddlewareMixin:
-    def build_model_string(self, model_string: str, llm_cfg: LLMConfig) -> str:
+    def build_model_string(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        model_string: str,
+        llm_cfg: LLMConfig,
+    ) -> str:
         """Build the model identifier sent to the client.
         Override to route to a different model, add prefixes/suffixes,
-        or implement per-turn model selection."""
+        or implement per-conversation model selection — a cheap model for
+        subagents, the configured one for the main conversation."""
         return model_string
 
-    def build_tool_list(self, tools: list) -> list:
-        """Filter or modify the wire tool list sent to the LLM on every call.
+    def build_tool_list(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        tools: list[ToolSpec],
+    ) -> list[ToolSpec]:
+        """Filter or modify the model-visible tool catalog on every call.
         Called per LLM invocation (not once at construction), so the result can
-        vary by turn, session state, or any runtime condition."""
+        vary by turn, conversation, session state, or any runtime condition.
+
+        Receives `ToolSpec`s — the core's own tool type — AFTER private specs
+        have been dropped and BEFORE the adapter converts them to client tool
+        DTOs. A spec carries `tool_kind`, `namespace`, `is_private`,
+        `output_schema` and `metadata`, none of which survive onto the wire, so
+        this is the list a policy can actually filter on."""
         return tools
 
-    def before_post_message(self, parts: list[ContentPart]) -> list[ContentPart]:
+    def before_post_message(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        parts: list[ContentPart],
+    ) -> list[ContentPart]:
         """Before a user message is appended to the session. Return the
         (possibly modified) content parts — sanitise, enrich, log. The whole
         ordered list is visible, text and images alike, so a hook can rewrite,
-        drop, reorder or add parts."""
+        drop, reorder or add parts.
+
+        `conversation_id` is the RESOLVED target — the explicit
+        `post_message(conversation_id=...)` argument, or the main conversation
+        when it was omitted. Never None."""
         return parts
 
-    def before_entry_written(self, entry: AnyEntry) -> AnyEntry:
+    def before_entry_written(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        entry: AnyEntry,
+    ) -> AnyEntry:
         """Before any entry persistence — appends (UserMessage,
         AssistantMessage, ToolExecution, TurnStart, TurnFinish,
         CancelRequested, CompactionEntry, ChildConversation) AND every update
@@ -67,13 +108,22 @@ class AgentMiddlewareMixin:
         the commit point), and a `ChildConversation` (its `execution_result`
         and `result_execution_id` landing together once the subagent finishes
         — so this hook fires a second time for that entry). Return the
-        (possibly modified)
-        entry — add metadata, stamp external ids, mutate fields before
-        persistence."""
+        (possibly modified) entry — add metadata, stamp external ids, mutate
+        fields before persistence.
+
+        `conversation_id` is the conversation whose operation caused the
+        write, not a claim of ownership. Two scopes worth knowing: a COMPACTION
+        transition writes its plan's new entries under the OUTGOING
+        conversation (the destination's id does not exist yet), and
+        `recalculate_context_tokens()` runs this hook NOT AT ALL — it rewrites
+        every entry across every conversation, so no single id would be
+        honest."""
         return entry
 
     def before_llm_call(
         self,
+        session: AgentSession,
+        conversation_id: str,
         messages: list[Message],
         system_message: str | None,
     ) -> tuple[list[Message], str | None]:
@@ -86,15 +136,64 @@ class AgentMiddlewareMixin:
 
     def after_llm_response(
         self,
+        session: AgentSession,
+        conversation_id: str,
         message: ClientAssistantMessage,
     ) -> ClientAssistantMessage:
         """After the LLM responds, before the AssistantMessage is recorded.
         Fires on every round — both tool-call rounds and final answers. Return
-        the (possibly modified) message — redact, enrich, track token usage."""
+        the (possibly modified) message — redact, enrich, track token usage.
+
+        Exactly once per COMPLETE response, streaming or not: a stream is
+        assembled to its terminal message first and this runs on that. It is
+        not a per-delta hook, and an errored, cancelled or incomplete stream
+        does not invoke it at all. Deltas already emitted are never revised, so
+        a transformation here changes the durable response and everything
+        downstream of it while the rendered stream stands as it was."""
         return message
+
+    def before_tool_creation(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        call: ToolCall,
+    ) -> ToolCall:
+        """Before `ToolRegistry.create_execution()` — the start of one tool
+        call's creation attempt. Return the (possibly modified) call: it is
+        what the registry sees and what the resulting execution carries. Change
+        the name, the arguments, the id, or the whole object.
+
+        This is about creating a call-scoped `ToolExecution`, not about the
+        model-visible catalog (that is `build_tool_list`). It runs per CREATION
+        ATTEMPT: a birth retried from durable RECEIVED state after a crash
+        fires it again for the same tool-call id."""
+        return call
+
+    def after_tool_creation(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        execution: ToolExecution,
+        exception: Exception | None = None,
+    ) -> ToolExecution:
+        """After the creation phase has produced a complete pre-persistence
+        execution — the registry's birth draft folded into the RECEIVED entry
+        with every runner-owned birth fact applied — and before it is committed
+        as the birth state. Return the (possibly modified) execution; the
+        lifecycle branch taken next is derived from what you return, so
+        terminalizing a PENDING birth here sends it straight to the outcome
+        tail without ever reaching `decide()`.
+
+        Also runs for framework-synthesized drafts: no registry configured, a
+        raising `create_execution`, a cancellation losing the birth race, and a
+        spawn-budget refusal. `exception` is the live exception behind a
+        synthesized failure, None otherwise."""
+        return execution
 
     def before_permission_check(
         self,
+        session: AgentSession,
+        conversation_id: str,
         execution: ToolExecution,
     ) -> ToolExecution:
         """Before the registry's decide() is asked about an execution.
@@ -105,29 +204,35 @@ class AgentMiddlewareMixin:
 
     def after_permission_decision(
         self,
+        session: AgentSession,
+        conversation_id: str,
         decision: ApprovalDecision,
         execution: ToolExecution,
     ) -> ApprovalDecision:
         """After the registry's decide() returns, before the decision is
         recorded. Return the (possibly modified) decision — override DENY →
         ALLOW for trusted callers, log all decisions, escalate to a second
-        reviewer."""
+        reviewer. `execution` is read-only context, passed unchanged down the
+        chain."""
         return decision
 
     def before_tool_execution(
         self,
+        session: AgentSession,
+        conversation_id: str,
         execution: ToolExecution,
     ) -> ToolExecution:
-        """When the runtime is about to handle an execution's outcome. An
-        allowed call receives it before dispatch, still PENDING — change
-        `raw_tool_call` here to alter the effective call, which is what the
-        registry's `prepare()` then resolves and validates from (the hook
-        deliberately runs AHEAD of it). A terminal-at-birth call arrives with
-        NOT_FOUND / INVALID / FAILED already set, a budget-refused call with
-        REFUSED, a denied call with REJECTED,
-        a call cancelled before dispatch with CANCELLED. Not invoked again
-        when a RUNNING call later reaches its terminal status. Return the
-        (possibly modified) execution.
+        """The start of an actual DISPATCH ATTEMPT, for an execution selected
+        for dispatch after creation and approval. Change `raw_tool_call` here
+        to alter the effective call, which is what the registry's `prepare()`
+        then resolves and validates from (the hook deliberately runs AHEAD of
+        it). Return the (possibly modified) execution.
+
+        It does NOT run for an outcome that never dispatches: terminal at birth
+        (NOT_FOUND / INVALID / FAILED), REFUSED, REJECTED, cancelled before
+        dispatch, or an orphaned RUNNING recovered to INTERRUPTED. Every one of
+        those still runs `after_tool_execution`. The attempt covers preparation
+        as well as the body, so a `prepare()` failure is part of it.
 
         EXACTLY ONCE PER DISPATCH ATTEMPT — not once per call for all time. A
         crash during `prepare()` writes nothing, so the execution is still
@@ -139,16 +244,24 @@ class AgentMiddlewareMixin:
 
     def after_tool_execution(
         self,
+        session: AgentSession,
+        conversation_id: str,
         execution: ToolExecution,
         exception: Exception | None = None,
     ) -> ToolExecution:
         """Runs for EVERY execution outcome, with the fully formed execution
-        (status, result or error, lifecycle timestamps). `exception` is the
-        live exception behind a failure in the current process (the same one
-        given to the runner's error converter); it is None for outcomes
-        without one and when no live exception survives (crash recovery).
-        Runs before the final persistence: the return value passes through
-        `before_entry_written` and is stored."""
+        (status, result or error, lifecycle timestamps) — dispatched or not.
+        Successes, tool-reported errors, creation failures, preparation
+        failures, rejection, refusal, cancellation, timeouts, interruption and
+        orphan recovery all land here; it is the universal tool-outcome
+        transformation point, which is why it is deliberately not symmetric
+        with the dispatch-only `before_tool_execution`.
+
+        `exception` is the live exception behind a failure in the current
+        process (the same one given to the runner's error converter); it is
+        None for outcomes without one and when no live exception survives
+        (crash recovery). Runs before the final persistence: the return value
+        passes through `before_entry_written` and is stored."""
         return execution
 ```
 
@@ -159,25 +272,31 @@ class AgentMiddlewareMixin:
 
 ## 2. The pipeline — where each hook fires
 
+Every signature below is shown *after* the `(session, conversation_id)` prefix.
+
 | Stage | Hook | Signature → returns |
 |---|---|---|
 | User posts | `before_post_message` | `(parts: list[ContentPart])` → `list[ContentPart]` |
 | **Any** entry persistence | `before_entry_written` | `(entry: AnyEntry)` → `AnyEntry` |
 | Per model call | `build_model_string` | `(model_string: str, llm_cfg: LLMConfig)` → `str` |
-| Per model call | `build_tool_list` | `(tools: list[client Tool])` → `list` |
+| Per model call | `build_tool_list` | `(tools: list[ToolSpec])` → `list[ToolSpec]` |
 | Per model call | `before_llm_call` | `(messages, system_message)` → `(messages, system_message)` |
-| Model responded | `after_llm_response` | `(message)` → `message` |
+| Model responded (complete) | `after_llm_response` | `(message)` → `message` |
+| Per creation attempt | `before_tool_creation` | `(call: ToolCall)` → `ToolCall` |
+| Per creation attempt | `after_tool_creation` | `(execution, exception=None)` → `ToolExecution` |
 | Per undecided call | `before_permission_check` | `(execution: ToolExecution)` → `ToolExecution` |
 | Per decision | `after_permission_decision` | `(decision, execution)` → `decision` |
-| Per dispatch attempt / non-dispatch outcome | `before_tool_execution` | `(execution: ToolExecution)` → `ToolExecution` |
+| Per **dispatch attempt** | `before_tool_execution` | `(execution: ToolExecution)` → `ToolExecution` |
 | Per execution outcome (exit) | `after_tool_execution` | `(execution, exception=None)` → `ToolExecution` |
 
-> `message` in `before_llm_call` / `after_llm_response` is the **client**
-> `AssistantMessage` / `Message` (wire types from `luca.client`), not the agent
-> `AssistantMessage` *entry* — the entry is built afterward and passes through
-> `before_entry_written`. Likewise `tools` in `build_tool_list` is the
-> post-adapter **wire** list (`luca.client.types.Tool`), never the registry's
-> [`ToolSpec`](03-tools.md)s.
+> **What each boundary carries.** `message` in `before_llm_call` /
+> `after_llm_response` is the **client** `Message` / `AssistantMessage` (wire
+> types from `luca.client`), not the agent `AssistantMessage` *entry* — the
+> entry is built afterward and passes through `before_entry_written`. `tools` in
+> `build_tool_list`, by contrast, is the registry's own
+> [`ToolSpec`](03-tools.md) list: the adapter converts it to wire tools *after*
+> the hook, so a policy can filter on `tool_kind`, `namespace`, `metadata` and
+> `output_schema`, none of which survive the conversion.
 
 > ⚠️ **Only `before_tool_execution` is exactly-once and paired.** It fires once
 > per dispatch attempt, and its returned execution is what the dispatch uses.
@@ -185,6 +304,11 @@ class AgentMiddlewareMixin:
 > `before_permission_check`, whose returned execution is discarded when a
 > cancellation lands mid-`decide()` (the call stays PENDING for the wind-down,
 > and `after_permission_decision` never fires).
+
+> **`recalculate_context_tokens()` runs no middleware.** It re-derives
+> `context_tokens` for every entry across every conversation, so no single
+> `conversation_id` would honestly scope it. It is an operational refresh of a
+> derived estimate, not a write ([11](11-context-and-usage.md)).
 
 > ⚠️ **The four per-call hooks do NOT fire for a compaction's own LLM request.**
 > `build_model_string`, `build_tool_list`, `before_llm_call` and
@@ -197,13 +321,16 @@ class AgentMiddlewareMixin:
 
 ## 3. The three big levers
 
-**Route the model per turn** — `build_model_string` runs on every call, so you
-can switch model/provider by runtime condition:
+**Route the model per call** — `build_model_string` runs on every call and knows
+which conversation it is for, so you can switch model/provider by runtime
+condition *or* by conversation:
 
 ```python
-class ModelRouter:
-    def build_model_string(self, model_string, llm_cfg):
-        return "openrouter:anthropic/claude-opus-4-8" if self.hard_task else model_string
+class CheapSubagents:
+    def build_model_string(self, session, conversation_id, model_string, llm_cfg):
+        if session.conversations[conversation_id].depth > 0:   # a subagent
+            return "openrouter:anthropic/claude-haiku-4-5"
+        return model_string
 ```
 
 **Last-mile request changes** — `before_llm_call` sees the projected message
@@ -213,36 +340,64 @@ the [`ConversationProjector`](10-projection.md) instead.)
 
 ```python
 class Reminder:
-    def before_llm_call(self, messages, system_message):
+    def before_llm_call(self, session, conversation_id, messages, system_message):
         return messages, (system_message or "") + "\nAnswer in Spanish."
 ```
 
 **Filter tools per call** — `build_tool_list` runs per call, so tool exposure can
-vary by user or state. The hook is synchronous and sees the converted wire
-objects (`luca.client.types.Tool`: `name`, `description`, `parameters`); the
-runner's own `build_tool_list()` is `async` because the registry's `get_tools`
-is, and the hook runs after that await:
+vary by user, conversation or state. The hook is synchronous and sees
+[`ToolSpec`](03-tools.md)s with the private ones already dropped; the runner's
+`resolve_tool_specs()` is the `async` half, and the adapter converts what you
+return into wire tools afterwards:
 
 ```python
-class ScopeTools:
-    def __init__(self, allowed): self.allowed = allowed
-    def build_tool_list(self, tools):
-        return [t for t in tools if t.name in self.allowed]
+class ReadOnlySubagents:
+    def build_tool_list(self, session, conversation_id, tools):
+        if session.conversations[conversation_id].depth == 0:
+            return tools
+        return [spec for spec in tools if spec.tool_kind is ToolKind.READ]
 ```
 
-## 4. The tool pair — the whole execution, every outcome
+## 4. The tool lifecycle — four hooks, four different questions
 
-Both tool hooks work on the durable `ToolExecution` itself.
+All four work on the durable `ToolExecution` (or the `ToolCall` behind it).
 
-`before_tool_execution(execution)` fires when the runtime is about to handle an
-execution's outcome: an **allowed** call arrives still `PENDING`, and the
-returned execution's `raw_tool_call` is the **effective call** — the hook runs
-*ahead* of the registry's `prepare()`, which resolves the tool and validates the
-arguments from it:
+**Creation.** `before_tool_creation(call)` runs immediately before
+`ToolRegistry.create_execution()`; the returned call is what the registry sees
+and what the execution carries. `after_tool_creation(execution, exception=None)`
+runs on the finished birth state, before it is committed — and what you return
+decides the next lifecycle step, so terminalizing a `PENDING` birth here sends
+the call straight to the outcome tail without ever reaching `decide()`:
+
+```python
+class NoWritesForSubagents:
+    def after_tool_creation(self, session, conversation_id, execution, exception=None):
+        if session.conversations[conversation_id].depth == 0:
+            return execution
+        if execution.tool_spec is None or execution.tool_spec.tool_kind is not ToolKind.WRITE:
+            return execution
+        return execution.model_copy(update={
+            "status": ExecutionStatus.REFUSED,
+            "error": ToolExecutionError(
+                error_type="PolicyRefusal",
+                error_message="Subagents may not write.",
+            ),
+        })
+```
+
+`after_tool_creation` also fires for framework-synthesized drafts — no registry
+configured, a raising `create_execution`, a cancellation losing the birth race,
+a spawn-budget refusal — with the live exception where one exists.
+
+**Dispatch.** `before_tool_execution(execution)` means *a dispatch attempt is
+starting*, and nothing else. The call arrives still `PENDING`, and the returned
+execution's `raw_tool_call` is the **effective call** — the hook runs *ahead* of
+the registry's `prepare()`, which resolves the tool and validates the arguments
+from it:
 
 ```python
 class Args10x:
-    def before_tool_execution(self, execution):
+    def before_tool_execution(self, session, conversation_id, execution):
         args = execution.raw_tool_call.arguments
         return execution.model_copy(update={
             "raw_tool_call": execution.raw_tool_call.model_copy(
@@ -251,61 +406,72 @@ class Args10x:
         })
 ```
 
-A call that never dispatches also passes through — with `NOT_FOUND` / `INVALID`
-/ `FAILED` (terminal at birth), `REFUSED` (a runtime limit, [13](13-subagents.md)),
-`REJECTED` (denied), or `CANCELLED` already set.
+> ⚠️ **It does not fire for a call that never dispatches.** Terminal at birth
+> (`NOT_FOUND` / `INVALID` / `FAILED`), `REFUSED`, `REJECTED`, cancelled before
+> dispatch, or an orphaned `RUNNING` recovered to `INTERRUPTED` — none of them
+> reach it. Use `after_tool_creation` to intervene at birth and
+> `after_tool_execution` to see every ending.
 
 > ⚠️ **Once per dispatch attempt, not once per call forever.** A crash during
 > `prepare()` persists nothing, so the call is still `PENDING` and the next
 > drive fires the hook again — over the *original* `raw_tool_call`, since the
 > lost attempt's rewrite went with it.
 
-`after_tool_execution(execution, exception=None)` observes **every** outcome —
-`COMPLETED`, `FAILED` (with the live exception behind a `prepare()` or body
-raise; registry-authored terminal births carry none), `NOT_FOUND`, `INVALID`,
-`REJECTED`, `REFUSED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT` — and its return
-value is
-what gets persisted:
+**Outcome.** `after_tool_execution(execution, exception=None)` observes **every**
+outcome — `COMPLETED`, `FAILED` (with the live exception behind a `prepare()` or
+body raise; registry-authored terminal births carry none), `NOT_FOUND`,
+`INVALID`, `REJECTED`, `REFUSED`, `CANCELLED`, `INTERRUPTED`, `TIMED_OUT` —
+dispatched or not, and its return value is what gets persisted:
 
 ```python
 class RedactResults:
-    def after_tool_execution(self, execution, exception=None):
+    def after_tool_execution(self, session, conversation_id, execution, exception=None):
         if execution.result is None:
             return execution
         return execution.model_copy(update={"result": redact(execution.result)})
 ```
 
+The asymmetry between the two is deliberate: the *before* hook describes
+dispatch, the *after* hook is the universal outcome point.
+
 > ⚠️ **Trusted, not validated.** The runner persists whatever your hooks
 > return — statuses, results, errors, timestamps included. It performs no
 > defensive repair; unusual authored state is yours to own.
 
-## 5. Middleware is conversation-blind
+## 5. One instance, many conversations
 
-No hook receives a `conversation_id`. With subagents running
-([13](13-subagents.md)) that means a hook cannot tell which conversation it is
-firing for, and hooks from several conversations interleave on one event loop.
+A middleware instance is shared by the runner and serves the main conversation
+**and** every subagent ([13](13-subagents.md)), concurrently. The
+`conversation_id` on every hook is what makes that safe — it is the scope of the
+*operation*, not a claim that the value belongs only to that conversation (an
+entry can be referenced by more than one).
 
-| What that costs you | What to do |
+| Concern | The rule |
 |---|---|
-| `before_entry_written` cannot attribute an entry to a conversation | a `ToolExecution` carries `execution.conversation_id`; nothing else does |
-| the per-LLM-call hooks fire once per call in EVERY conversation | a turn-count router or a trailing reminder written for "the turn" now also rewrites a subagent's request |
-| hook instances are shared | keep no per-call state on `self`; a field written in `before_llm_call` and read in `after_llm_response` is a race |
+| per-conversation state | key it by `conversation_id` — no lock needed, dispatch within one conversation is sequential |
+| deliberately shared state | lock the mutation, never the I/O |
+| per-*call* state on `self` | don't — a field written in `before_llm_call` and read in `after_llm_response` is a race across conversations |
+| attributing an entry | use the supplied `conversation_id`; a `ToolExecution` also carries `execution.conversation_id`, the conversation it was BORN in |
 
-> ⚠️ **No error tells you.** Nothing in `luca/` implements a middleware hook, so
-> this is a missing capability rather than a broken one — but an application
-> that shipped a hook assuming one conversation gets wrong behavior silently
-> once subagents are switched on.
+Two scopes are worth knowing because they are not what you might guess:
+
+- A **compaction** writes its plan's new entries under the **outgoing**
+  conversation — the destination's id does not exist yet ([12](12-compaction.md)).
+- `recalculate_context_tokens()` runs **no** middleware at all.
 
 ## 6. Ordering
 
 Every hook runs through the whole list in order; `middleware[n]`'s output is
 `middleware[n+1]`'s input. There is **no** reverse ordering, even for
-before/after pairs — `middleware[0]` always runs first.
+before/after pairs — `middleware[0]` always runs first. Context arguments (the
+`llm_cfg`, the `execution` beside a decision, a live `exception`) are passed
+**unchanged** to every middleware in the chain.
 
 ```python
 class AddSuffix:
     def __init__(self, s): self.s = s
-    def build_model_string(self, model_string, llm_cfg): return model_string + self.s
+    def build_model_string(self, session, conversation_id, model_string, llm_cfg):
+        return model_string + self.s
 
 middleware=[AddSuffix("-preview"), AddSuffix("-2025")]
 # model string sent to the client: "openrouter:openai/gpt-4o-mini-preview-2025"
@@ -315,9 +481,11 @@ middleware=[AddSuffix("-preview"), AddSuffix("-2025")]
 
 The per-call hooks are driven by public runner methods you can also call in
 tests or subclasses. Each names the conversation it builds for:
-`build_model_string(llm_cfg)`, `await resolve_tool_specs(conversation_id)` then
-`build_tool_list(conversation_id, specs)` (the split is what lets the private
-filter and the wire conversion happen in one place),
+`build_model_string(conversation_id, llm_cfg)`,
+`await resolve_tool_specs(conversation_id)` then
+`build_tool_list(conversation_id, specs)` (the split is what lets `get_tools`
+be async while the hook stays synchronous; the private filter lives in the
+second, and the adapter converts what it returns),
 `build_messages(conversation_id)` *(no hook — delegates to the projector)*,
 `build_system_message(conversation_id)` *(no hook — assembler only)*, and
 `prepare_llm_call(conversation_id)` (runs `before_llm_call` after the builders).

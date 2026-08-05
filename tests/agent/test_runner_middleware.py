@@ -19,19 +19,27 @@ and its return value is what gets persisted.
 
 Two hooks are pinned to the shape of the value they receive, because in both
 cases a plausible-looking alternative exists one layer away:
-`build_tool_list` runs on the converted WIRE list (`luca.client.types.Tool`),
-never on the registry's `ToolSpec`s; `before_entry_written` may replace a
-`ToolExecution`'s `tool_spec`, and the id stamped on the way to the store is
-re-derived from what the hook returned. `before_entry_written` also covers
-every entry `recalculate_context_tokens()` refreshes — the one door an
-application drives itself.
+`build_tool_list` runs on the registry's `ToolSpec`s, never on the converted
+wire list (`luca.client.types.Tool`), and never sees a private spec;
+`before_entry_written` may replace a `ToolExecution`'s `tool_spec`, and the id
+stamped on the way to the store is re-derived from what the hook returned.
+`recalculate_context_tokens()` is the one write-shaped door that runs NO
+middleware at all — it rewrites every entry across every conversation, so no
+single conversation id would be honest.
+
+Every hook receives `(session, conversation_id, …)`. The session is the live
+runner-held object and the id is the conversation whose operation invoked the
+hook, which is what makes one instance safe across a subagent tree.
 
 Each test follows the declarative shape: known session + scripted faux
 responses + middleware doubles → one action → assert the downstream effect.
 """
 
+import pytest
+
 from luca.agent.core import AgentMiddlewareMixin
 from luca.agent.core.compaction import CompactionPlan
+from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.events import ToolExecuted
 from luca.agent.core.models import (
     ApprovalDecision,
@@ -55,9 +63,11 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
+from luca.client.exceptions import ClientError
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
+    faux_error,
     faux_text,
     faux_tool_call,
 )
@@ -72,6 +82,7 @@ from tests.agent.scenarios import (
     FakeContextManager,
     FakeToolRegistry,
     MultiplyTool,
+    PrivateTool,
     RaisingTool,
     conversation,
     main_conversation,
@@ -80,6 +91,15 @@ from tests.agent.scenarios import (
 
 ALLOW_1000 = ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)
 DENY_1000 = ApprovalDecision(decision=ApprovalOption.DENY, created_at=1000)
+
+
+class ConstantContext(ContextManager):
+    """Every entry counts 7, so a whole-store refresh asserts as a literal."""
+
+    def calculate_context(self, session, entry) -> int:
+        return 7
+
+
 # The same tool, re-specced by a middleware on its way to the store: a new
 # `spec_id()`, and therefore a new `tool_spec_id` on the execution.
 NAMESPACED_ADD_SPEC = ADD_SPEC.model_copy(update={"namespace": "billing"})
@@ -90,7 +110,7 @@ NAMESPACED_ADD_SPEC = ADD_SPEC.model_copy(update={"namespace": "billing"})
 
 async def test_middleware_build_model_string_return_used_for_llm_call():
     class ModelStringMiddleware:
-        def build_model_string(self, model_string: str, model_cfg) -> str:
+        def build_model_string(self, session, conversation_id, model_string: str, model_cfg) -> str:
             return "faux:override-model"  # client strips the provider prefix
 
     faux = FauxProvider()
@@ -124,16 +144,16 @@ async def test_middleware_build_model_string_return_used_for_llm_call():
 # ── build_tool_list ────────────────────────────────────────────────────────────
 
 
-async def test_middleware_build_tool_list_sees_wire_tools_and_its_return_is_sent():
-    # The hook runs AFTER the adapter, on the converted WIRE list — a
-    # `luca.client.types.Tool` per registry `ToolSpec`, with `input_schema`
-    # mapped straight onto `parameters` — and the list it returns is exactly
-    # what the request carries.
+async def test_middleware_build_tool_list_sees_tool_specs_and_its_return_is_sent():
+    # The hook runs BEFORE the adapter, on the registry's own `ToolSpec`s —
+    # the core's tool type, carrying `tool_kind` / `namespace` /
+    # `output_schema` / `metadata` that the wire tool drops — and the list it
+    # returns is what the adapter converts into the request's tools.
     class FirstToolOnlyMiddleware:
         def __init__(self) -> None:
             self.seen: list = []
 
-        def build_tool_list(self, tools: list) -> list:
+        def build_tool_list(self, session, conversation_id, tools: list) -> list:
             self.seen = tools
             return tools[:1]
 
@@ -163,18 +183,7 @@ async def test_middleware_build_tool_list_sees_wire_tools_and_its_return_is_sent
     async with runner.run() as run:
         _ = [event async for event in run]
 
-    assert middleware.seen == [
-        LucaTool(
-            name="add",
-            description="Add two numbers.",
-            parameters=ADD_SPEC.input_schema,
-        ),
-        LucaTool(
-            name="multiply",
-            description="Multiply two numbers.",
-            parameters=MULTIPLY_SPEC.input_schema,
-        ),
-    ]
+    assert middleware.seen == [ADD_SPEC, MULTIPLY_SPEC]
     assert faux.requests[0].tools == [
         LucaTool(
             name="add",
@@ -191,6 +200,8 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
     class SystemOverrideMiddleware:
         def before_llm_call(
             self,
+            session,
+            conversation_id,
             messages: list,
             system_message,
         ) -> tuple[list, str | None]:
@@ -228,7 +239,7 @@ async def test_middleware_before_llm_call_return_used_for_llm_call():
 
 async def test_middleware_after_llm_response_return_stored_in_session():
     class ResponseMiddleware:
-        def after_llm_response(self, message):
+        def after_llm_response(self, session, conversation_id, message):
             return message.model_copy(update={"content": [TextBlock(text="MODIFIED")]})
 
     faux = FauxProvider()
@@ -273,7 +284,7 @@ async def test_middleware_after_llm_response_return_stored_in_session():
 
 async def test_middleware_before_post_message_return_stored_in_entry():
     class UpperCaseMiddleware:
-        def before_post_message(self, parts: list) -> list:
+        def before_post_message(self, session, conversation_id, parts: list) -> list:
             return [TextContent(text=p.text.upper()) for p in parts]
 
     session = make_session(
@@ -299,7 +310,7 @@ async def test_before_post_message_sees_every_part_including_images():
         def __init__(self) -> None:
             self.seen: list[str] = []
 
-        def before_post_message(self, parts: list) -> list:
+        def before_post_message(self, session, conversation_id, parts: list) -> list:
             self.seen = [part.type for part in parts]
             return parts
 
@@ -325,7 +336,7 @@ async def test_before_post_message_sees_every_part_including_images():
 
 async def test_before_post_message_can_drop_a_part():
     class TextOnlyMiddleware:
-        def before_post_message(self, parts: list) -> list:
+        def before_post_message(self, session, conversation_id, parts: list) -> list:
             return [p for p in parts if isinstance(p, TextContent)]
 
     session = make_session(
@@ -349,7 +360,7 @@ async def test_before_post_message_can_drop_a_part():
 
 async def test_before_post_message_can_add_a_part():
     class ReminderMiddleware:
-        def before_post_message(self, parts: list) -> list:
+        def before_post_message(self, session, conversation_id, parts: list) -> list:
             return [*parts, TextContent(text="be concise")]
 
     session = make_session(
@@ -379,7 +390,7 @@ async def test_before_post_message_can_add_a_part():
 
 async def test_middleware_before_entry_written_return_stored_in_session():
     class MarkTurnFinishMiddleware:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, TurnFinish):
                 return entry.model_copy(update={"error": "mw_mark"})
             return entry
@@ -431,7 +442,7 @@ async def test_middleware_before_entry_written_sees_every_execution_persistence(
         def __init__(self) -> None:
             self.seen: list[ExecutionStatus] = []
 
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, ToolExecution):
                 self.seen.append(entry.status)
             return entry
@@ -481,7 +492,7 @@ async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_
     # what it returned — and the version filed at birth stays in the store,
     # still resolvable by anything that points at it.
     class NamespaceStamper:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, ToolExecution) and entry.status == ExecutionStatus.COMPLETED:
                 return entry.model_copy(update={"tool_spec": NAMESPACED_ADD_SPEC})
             return entry
@@ -538,17 +549,24 @@ async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_
     }
 
 
-async def test_recalculate_context_tokens_re_derives_every_entry_through_the_hook():
-    # The application-called refresh goes through the middleware door too, so
-    # a hook that owns context keeps the final say over every stored count —
-    # including the archived conversation's entries and the pruned referent
-    # that sits on no path at all.
-    class ContextOwner:
-        def before_entry_written(self, entry):
-            return entry.model_copy(update={"context_tokens": 7})
+async def test_recalculate_context_tokens_re_derives_every_entry_and_runs_no_middleware():
+    # The application-called refresh rewrites EVERY entry across EVERY
+    # conversation at once — the archived conversation's entries and the
+    # pruned referent that sits on no path included — so there is no single
+    # conversation id that honestly scopes it. It is an operational refresh of
+    # a derived estimate, not a write with a scope, so `before_entry_written`
+    # does not fire: a middleware that raises on every entry cannot break it.
+    class Bomb:
+        def before_entry_written(self, session, conversation_id, entry):
+            raise AssertionError("recalculate_context_tokens must run no middleware")
 
     session = RICH_IDLE_SESSION.model_copy(deep=True)
-    runner = DeterministicRunner(session, middleware=[ContextOwner()], now=1000)
+    runner = DeterministicRunner(
+        session,
+        context_manager=ConstantContext(),
+        middleware=[Bomb()],
+        now=1000,
+    )
 
     runner.recalculate_context_tokens()
 
@@ -582,7 +600,7 @@ async def test_recalculate_context_tokens_re_derives_every_entry_through_the_hoo
 
 async def test_middleware_before_permission_check_modified_execution_is_seen_and_persisted():
     class EnrichContextMiddleware:
-        def before_permission_check(self, execution: ToolExecution) -> ToolExecution:
+        def before_permission_check(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
             return execution.model_copy(
                 update={
                     "extras": {**execution.extras, "mw_enriched": True},
@@ -664,6 +682,8 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
     class OverrideDecisionMiddleware:
         def after_permission_decision(
             self,
+            session,
+            conversation_id,
             decision: ApprovalDecision,
             execution: ToolExecution,
         ) -> ApprovalDecision:
@@ -727,7 +747,7 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
     # The returned execution's raw_tool_call IS the effective call: the runner
     # re-validates and runs it, and the persisted record shows it.
     class Args10xMiddleware:
-        def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+        def before_tool_execution(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
             arguments = execution.raw_tool_call.arguments
             return execution.model_copy(
                 update={
@@ -799,7 +819,7 @@ async def test_middleware_before_tool_execution_effective_call_is_what_prepare_r
     # `details["phase"] == "prepare"`, `started_at` unset (`dispatched` False)
     # and nothing ever resolved.
     class RerouteMiddleware:
-        def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+        def before_tool_execution(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
             return execution.model_copy(
                 update={
                     "raw_tool_call": execution.raw_tool_call.model_copy(
@@ -862,16 +882,30 @@ async def test_middleware_before_tool_execution_effective_call_is_what_prepare_r
     assert registry.prepared == []
 
 
-async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls():
-    # A preflight-terminal call (unknown tool) and a denied call both pass
-    # through the hook with their status already set; a dispatched call
-    # arrives PENDING and is NOT re-visited at its terminal transition.
+async def test_before_tool_execution_is_dispatch_only_while_after_sees_every_outcome():
+    # `before_tool_execution` means "a dispatch attempt is starting" and
+    # nothing else: a call terminal at birth (unknown tool) and a call denied
+    # at decision time never dispatch, so neither reaches it — only the
+    # allowed one does, PENDING, and it is not re-visited at its terminal
+    # transition. `after_tool_execution` is the universal terminal tail and
+    # sees all three.
     class StatusRecorder:
         def __init__(self) -> None:
             self.seen: list[tuple[str, ExecutionStatus]] = []
+            self.outcomes: list[tuple[str, ExecutionStatus]] = []
 
-        def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+        def before_tool_execution(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
             self.seen.append((execution.tool_call_id, execution.status))
+            return execution
+
+        def after_tool_execution(
+            self,
+            session,
+            conversation_id,
+            execution: ToolExecution,
+            exception: Exception | None = None,
+        ) -> ToolExecution:
+            self.outcomes.append((execution.tool_call_id, execution.status))
             return execution
 
     recorder = StatusRecorder()
@@ -913,9 +947,12 @@ async def test_middleware_before_tool_execution_sees_terminal_and_rejected_calls
         _ = [event async for event in run]
 
     assert recorder.seen == [
+        ("tc2", ExecutionStatus.PENDING),  # allowed, about to dispatch — the only one
+    ]
+    assert recorder.outcomes == [
         ("tc1", ExecutionStatus.NOT_FOUND),  # terminal at birth
         ("tc3", ExecutionStatus.REJECTED),  # denied at decision time
-        ("tc2", ExecutionStatus.PENDING),  # allowed, about to dispatch
+        ("tc2", ExecutionStatus.COMPLETED),  # dispatched and returned
     ]
 
 
@@ -926,6 +963,8 @@ async def test_middleware_after_tool_execution_return_persisted():
     class ResultTransformMiddleware:
         def after_tool_execution(
             self,
+            session,
+            conversation_id,
             execution: ToolExecution,
             exception: Exception | None = None,
         ) -> ToolExecution:
@@ -1009,6 +1048,8 @@ async def test_middleware_after_tool_execution_observes_every_outcome():
 
         def after_tool_execution(
             self,
+            session,
+            conversation_id,
             execution: ToolExecution,
             exception: Exception | None = None,
         ) -> ToolExecution:
@@ -1077,11 +1118,11 @@ async def test_middlewares_applied_in_order_second_receives_first_output():
     (covered by the single-middleware tests above)."""
 
     class AppendV1Middleware:
-        def build_model_string(self, model_string: str, model_cfg) -> str:
+        def build_model_string(self, session, conversation_id, model_string: str, model_cfg) -> str:
             return model_string + "-v1"
 
     class AppendV2Middleware:
-        def build_model_string(self, model_string: str, model_cfg) -> str:
+        def build_model_string(self, session, conversation_id, model_string: str, model_cfg) -> str:
             return model_string + "-v2"
 
     faux = FauxProvider()
@@ -1120,7 +1161,7 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
         def __init__(self, suffix: str) -> None:
             self.suffix = suffix
 
-        def before_llm_call(self, messages, system_message):
+        def before_llm_call(self, session, conversation_id, messages, system_message):
             return messages, (system_message or "") + self.suffix
 
     faux = FauxProvider()
@@ -1157,24 +1198,57 @@ async def test_middlewares_applied_in_order_for_before_llm_call():
 def test_mixin_every_hook_returns_its_input():
     mixin = AgentMiddlewareMixin()
     entry = UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])
+    session = object()
+    cid = "c1"
     message = object()
+    call = object()
     execution = object()
     decision = object()
 
-    assert mixin.build_model_string("openrouter:openai/gpt-4o-mini", MODEL) == "openrouter:openai/gpt-4o-mini"
-    assert mixin.build_tool_list(["t1", "t2"]) == ["t1", "t2"]
-    assert mixin.before_post_message([TextContent(text="hello")]) == [
+    assert mixin.build_model_string(session, cid, "openrouter:openai/gpt-4o-mini", MODEL) == (
+        "openrouter:openai/gpt-4o-mini"
+    )
+    assert mixin.build_tool_list(session, cid, [ADD_SPEC, MULTIPLY_SPEC]) == [ADD_SPEC, MULTIPLY_SPEC]
+    assert mixin.before_post_message(session, cid, [TextContent(text="hello")]) == [
         TextContent(text="hello"),
     ]
-    assert mixin.before_entry_written(entry) is entry
-    assert mixin.before_llm_call(["m1"], "sys") == (["m1"], "sys")
-    assert mixin.before_llm_call(["m1"], None) == (["m1"], None)
-    assert mixin.after_llm_response(message) is message
-    assert mixin.before_permission_check(execution) is execution
-    assert mixin.after_permission_decision(decision, execution) is decision
-    assert mixin.before_tool_execution(execution) is execution
-    assert mixin.after_tool_execution(execution) is execution
-    assert mixin.after_tool_execution(execution, ValueError("x")) is execution
+    assert mixin.before_entry_written(session, cid, entry) is entry
+    assert mixin.before_llm_call(session, cid, ["m1"], "sys") == (["m1"], "sys")
+    assert mixin.before_llm_call(session, cid, ["m1"], None) == (["m1"], None)
+    assert mixin.after_llm_response(session, cid, message) is message
+    assert mixin.before_tool_creation(session, cid, call) is call
+    assert mixin.after_tool_creation(session, cid, execution) is execution
+    assert mixin.after_tool_creation(session, cid, execution, ValueError("x")) is execution
+    assert mixin.before_permission_check(session, cid, execution) is execution
+    assert mixin.after_permission_decision(session, cid, decision, execution) is decision
+    assert mixin.before_tool_execution(session, cid, execution) is execution
+    assert mixin.after_tool_execution(session, cid, execution) is execution
+    assert mixin.after_tool_execution(session, cid, execution, ValueError("x")) is execution
+
+
+def test_mixin_exposes_exactly_the_twelve_hooks_with_the_scope_prefix():
+    import inspect
+
+    hooks = {
+        name: list(inspect.signature(fn).parameters)[:3]
+        for name, fn in inspect.getmembers(AgentMiddlewareMixin, inspect.isfunction)
+        if not name.startswith("_")
+    }
+
+    assert hooks == {
+        "after_llm_response": ["self", "session", "conversation_id"],
+        "after_permission_decision": ["self", "session", "conversation_id"],
+        "after_tool_creation": ["self", "session", "conversation_id"],
+        "after_tool_execution": ["self", "session", "conversation_id"],
+        "before_entry_written": ["self", "session", "conversation_id"],
+        "before_llm_call": ["self", "session", "conversation_id"],
+        "before_permission_check": ["self", "session", "conversation_id"],
+        "before_post_message": ["self", "session", "conversation_id"],
+        "before_tool_creation": ["self", "session", "conversation_id"],
+        "before_tool_execution": ["self", "session", "conversation_id"],
+        "build_model_string": ["self", "session", "conversation_id"],
+        "build_tool_list": ["self", "session", "conversation_id"],
+    }
 
 
 def test_mixin_has_no_build_messages_hook():
@@ -1185,7 +1259,7 @@ def test_mixin_has_no_build_messages_hook():
 
 async def test_mixin_subclass_partial_override_does_not_clobber_post_message():
     class OnlyResponse(AgentMiddlewareMixin):  # subclass, override one hook
-        def after_llm_response(self, message):
+        def after_llm_response(self, session, conversation_id, message):
             return message
 
     session = make_session(
@@ -1209,7 +1283,7 @@ async def test_mixin_subclass_partial_override_does_not_clobber_post_message():
 
 async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_turn_through():
     class OnlyModelSuffix(AgentMiddlewareMixin):
-        def build_model_string(self, model_string: str, llm_cfg) -> str:
+        def build_model_string(self, session, conversation_id, model_string: str, llm_cfg) -> str:
             return model_string + "-routed"
 
     faux = FauxProvider()
@@ -1286,7 +1360,7 @@ async def test_before_entry_written_sees_every_entry_a_compaction_writes():
         def __init__(self) -> None:
             self.seen: list[tuple] = []
 
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             self.seen.append((entry.type, entry.id))
             return entry
 
@@ -1322,19 +1396,19 @@ async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def before_llm_call(self, messages, system_message):
+        def before_llm_call(self, session, conversation_id, messages, system_message):
             self.calls.append("before_llm_call")
             return messages, system_message
 
-        def after_llm_response(self, message):
+        def after_llm_response(self, session, conversation_id, message):
             self.calls.append("after_llm_response")
             return message
 
-        def build_model_string(self, model_string, llm_cfg):
+        def build_model_string(self, session, conversation_id, model_string, llm_cfg):
             self.calls.append("build_model_string")
             return model_string
 
-        def build_tool_list(self, tools):
+        def build_tool_list(self, session, conversation_id, tools):
             self.calls.append("build_tool_list")
             return tools
 
@@ -1373,7 +1447,7 @@ async def test_the_turn_hooks_are_not_invoked_for_the_summarization_call():
 
 async def test_before_entry_written_may_redact_the_summary_before_it_persists():
     class Redactor:
-        def before_entry_written(self, entry):
+        def before_entry_written(self, session, conversation_id, entry):
             if isinstance(entry, CompactionEntry) and entry.parts:
                 return entry.model_copy(
                     update={"parts": [TextContent(text="[redacted]")]},
@@ -1419,7 +1493,7 @@ async def test_a_routed_turn_records_the_model_it_actually_ran_on():
     # recording the session config for a routed turn breaks reasoning replay
     # in both directions.
     class RouteElsewhere(AgentMiddlewareMixin):
-        def build_model_string(self, model_string: str, llm_cfg) -> str:
+        def build_model_string(self, session, conversation_id, model_string: str, llm_cfg) -> str:
             return "openai:gpt-5.4-codex"
 
     faux = FauxProvider()
@@ -1443,3 +1517,397 @@ async def test_a_routed_turn_records_the_model_it_actually_ran_on():
         _ = [event async for event in run]
 
     assert runner.session.entries["a1"].llm_config == LLMConfig(provider="openai", model="gpt-5.4-codex")
+
+
+# ── the scope prefix ──────────────────────────────────────────────────────────
+
+
+async def test_every_hook_receives_the_live_session_and_the_driven_conversation():
+    # The session is the runner's own object, not a copy — a hook may read
+    # state written moments earlier in the same drive. The id is the
+    # conversation being driven; the single-conversation case is where a
+    # regression would hide, because "the main one" and "the right one" agree.
+    class ScopeRecorder(AgentMiddlewareMixin):
+        def __init__(self) -> None:
+            self.scopes: list[tuple[str, int, str]] = []
+
+        def build_model_string(self, session, conversation_id, model_string, llm_cfg):
+            self.scopes.append(("build_model_string", id(session), conversation_id))
+            return model_string
+
+        def before_entry_written(self, session, conversation_id, entry):
+            self.scopes.append(("before_entry_written", id(session), conversation_id))
+            return entry
+
+        def before_post_message(self, session, conversation_id, parts):
+            self.scopes.append(("before_post_message", id(session), conversation_id))
+            return parts
+
+    recorder = ScopeRecorder()
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("ok")], finish_reason="stop")])
+    session = make_session(
+        id="s_mw_scope",
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["u1", "ts", "a1", "tf"],
+        now=1000,
+        middleware=[recorder],
+    )
+
+    runner.post_message("hi")
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    assert recorder.scopes == [
+        ("before_post_message", id(runner.session), "c1"),
+        ("before_entry_written", id(runner.session), "c1"),  # the user message
+        ("before_entry_written", id(runner.session), "c1"),  # TurnStart
+        ("build_model_string", id(runner.session), "c1"),
+        ("before_entry_written", id(runner.session), "c1"),  # the assistant message
+        ("before_entry_written", id(runner.session), "c1"),  # TurnFinish
+    ]
+
+
+async def test_chained_after_hooks_all_receive_the_same_live_exception():
+    # `exception` is CONTEXT, not a transformed value: it passes unchanged to
+    # every middleware in the chain, and it is the identical object the
+    # runner's error converter saw.
+    seen: list[tuple[str, int]] = []
+
+    class First:
+        def after_tool_execution(self, session, conversation_id, execution, exception=None):
+            seen.append(("first", id(exception)))
+            return execution.model_copy(update={"extras": {"chain": ["first"]}})
+
+    class Second:
+        def after_tool_execution(self, session, conversation_id, execution, exception=None):
+            seen.append(("second", id(exception)))
+            return execution.model_copy(
+                update={"extras": {"chain": [*execution.extras["chain"], "second"]}},
+            )
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("boom", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_exc_chain",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([RaisingTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[First(), Second()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    # one exception object, seen by both, in declared order
+    assert [name for name, _ in seen] == ["first", "second"]
+    assert len({exc_id for _, exc_id in seen}) == 1
+    # and the value chained through them both
+    assert runner.session.entries["te1"].extras == {"chain": ["first", "second"]}
+    assert runner.session.entries["te1"].status == ExecutionStatus.FAILED
+
+
+# ── before_tool_creation ──────────────────────────────────────────────────────
+
+
+async def test_before_tool_creation_rewrites_the_call_the_registry_sees():
+    class RerouteToMultiply:
+        def before_tool_creation(self, session, conversation_id, call: ToolCall) -> ToolCall:
+            return call.model_copy(update={"name": "multiply"})
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 3, "b": 4}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_btc",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    registry = FakeToolRegistry([AddTool(), MultiplyTool()])
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[RerouteToMultiply()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    execution = runner.session.entries["te1"]
+    # the birth resolved the REWRITTEN tool, and the effective call is durable
+    assert execution.raw_tool_call == ToolCall(id="tc1", name="multiply", arguments={"a": 3, "b": 4})
+    assert execution.tool_spec == MULTIPLY_SPEC
+    assert registry.prepared == ["multiply"]
+    assert execution.result.content == [TextContent(text="12")]
+
+
+async def test_before_tool_creation_cannot_reach_a_private_tool_by_renaming():
+    # The private check reads the EFFECTIVE name, so rewriting into a private
+    # tool records NOT_FOUND exactly as a model guessing the name would —
+    # otherwise "private" would be bypassable from middleware by accident.
+    class RenameToSecret:
+        def before_tool_creation(self, session, conversation_id, call: ToolCall) -> ToolCall:
+            return call.model_copy(update={"name": "secret"})
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_btc_private",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool(), PrivateTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[RenameToSecret()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    execution = runner.session.entries["te1"]
+    assert execution.status == ExecutionStatus.NOT_FOUND
+    assert execution.error.error_message == "Unknown tool: 'secret'."
+
+
+# ── after_tool_creation ───────────────────────────────────────────────────────
+
+
+async def test_after_tool_creation_sees_the_effective_birth_state():
+    class BirthRecorder:
+        def __init__(self) -> None:
+            self.seen: list[tuple[str, ExecutionStatus, str | None]] = []
+
+        def after_tool_creation(self, session, conversation_id, execution, exception=None):
+            self.seen.append(
+                (
+                    execution.tool_call_id,
+                    execution.status,
+                    type(exception).__name__ if exception is not None else None,
+                )
+            )
+            return execution
+
+    recorder = BirthRecorder()
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    faux_tool_call("add", {"a": 1, "b": 2}, id="tc1"),
+                    faux_tool_call("nope", {}, id="tc2"),
+                    faux_tool_call("secret", {"a": 1, "b": 2}, id="tc3"),
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_atc",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool(), PrivateTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "te2", "te3", "a2", "tf"],
+        now=1000,
+        middleware=[recorder],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    # A healthy birth arrives PENDING. A terminal birth the REGISTRY authored
+    # carries no live exception — the registry wrote the error itself. Only a
+    # FRAMEWORK-synthesized draft (here: a model naming a private tool) hands
+    # the hook the exception that produced it.
+    assert recorder.seen == [
+        ("tc1", ExecutionStatus.PENDING, None),
+        ("tc2", ExecutionStatus.NOT_FOUND, None),
+        ("tc3", ExecutionStatus.NOT_FOUND, "ToolNotFound"),
+    ]
+
+
+async def test_after_tool_creation_can_terminalize_a_birth_before_it_reaches_decide():
+    # The returned execution decides the next lifecycle step: a middleware
+    # that refuses a call at birth sends it straight to the outcome tail, so
+    # the registry is never asked to decide and the body never runs.
+    class RefuseAdd:
+        def after_tool_creation(self, session, conversation_id, execution, exception=None):
+            if execution.raw_tool_call.name != "add":
+                return execution
+            return execution.model_copy(
+                update={
+                    "status": ExecutionStatus.REFUSED,
+                    "ended_at": 1000,
+                    "error": ToolExecutionError(
+                        error_type="PolicyRefusal",
+                        error_message="add is disabled this turn.",
+                    ),
+                }
+            )
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_mw_atc_refuse",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="go")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    registry = FakeToolRegistry([AddTool()])
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[RefuseAdd()],
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    execution = runner.session.entries["te1"]
+    assert execution.status == ExecutionStatus.REFUSED
+    assert execution.approval_status is None  # decide() was never reached
+    assert registry.seen == []  # …and the registry was never asked
+    assert registry.prepared == []  # …and the body never ran
+
+
+# ── after_llm_response invocation count ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_after_llm_response_fires_exactly_once_per_complete_response(streaming):
+    # Streaming and non-streaming converge on ONE call site: the stream is
+    # assembled to its terminal message first, and the hook runs on that.
+    class Counter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def after_llm_response(self, session, conversation_id, message):
+            self.calls += 1
+            return message
+
+    counter = Counter()
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("ok")], finish_reason="stop")])
+    session = make_session(
+        id="s_mw_alr_once",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "tf"],
+        now=1000,
+        middleware=[counter],
+    )
+
+    async with runner.run(streaming=streaming) as run:
+        _ = [event async for event in run]
+
+    assert counter.calls == 1
+    assert runner.session.entries["a1"].parts == [TextContent(text="ok")]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_after_llm_response_does_not_fire_for_an_incomplete_response(streaming):
+    # No complete assistant message exists, so there is nothing to transform.
+    class Counter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def after_llm_response(self, session, conversation_id, message):
+            self.calls += 1
+            return message
+
+    counter = Counter()
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([], error=faux_error("provider 500"))])
+    session = make_session(
+        id="s_mw_alr_none",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "tf"],
+        now=1000,
+        middleware=[counter],
+    )
+
+    with pytest.raises(ClientError):  # the provider failure is re-raised (StreamError when streaming)
+        async with runner.run(streaming=streaming) as run:
+            _ = [event async for event in run]
+
+    assert counter.calls == 0
+    assert main_conversation(runner.session).nodes[-1] == "tf"  # the turn closed ERRORED

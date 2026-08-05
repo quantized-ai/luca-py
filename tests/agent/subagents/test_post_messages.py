@@ -88,7 +88,7 @@ class PostOnCall:
         self.call_number = call_number
         self.text = text
 
-    def after_llm_response(self, message):
+    def after_llm_response(self, session, conversation_id, message):
         self.calls += 1
         if self.calls == self.call_number:
             self.post(self.text)

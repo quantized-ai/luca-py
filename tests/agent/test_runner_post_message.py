@@ -270,7 +270,7 @@ class PostDuringResponse:
         self.calls = 0
         self.texts_by_call = texts_by_call
 
-    def after_llm_response(self, message):
+    def after_llm_response(self, session, conversation_id, message):
         self.calls += 1
         for text in self.texts_by_call.get(self.calls, []):
             self.post(text)
@@ -286,7 +286,7 @@ class PostThenCancelDuringResponse:
         self.cancel = None
         self.calls = 0
 
-    def after_llm_response(self, message):
+    def after_llm_response(self, session, conversation_id, message):
         self.calls += 1
         if self.calls == 1:
             self.post("wait!")

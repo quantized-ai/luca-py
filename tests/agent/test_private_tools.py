@@ -95,12 +95,40 @@ async def test_the_runtime_sees_a_private_tool_and_the_model_does_not():
     )
 
     specs = await runner.resolve_tool_specs("c1")
-    wire = runner.build_tool_list("c1", specs)
+    visible = runner.build_tool_list("c1", specs)
 
     # the RUNTIME's view holds both — that is how `secret` ever dispatches
     assert [spec.name for spec in specs] == ["add", "secret"]
     # the MODEL's view holds only the public one
-    assert [tool.name for tool in wire] == ["add"]
+    assert [spec.name for spec in visible] == ["add"]
+
+
+async def test_build_tool_list_middleware_never_sees_a_private_spec():
+    # The private filter runs AHEAD of the hook, so a middleware cannot
+    # observe, keep, or accidentally re-advertise a runtime-only tool. That
+    # ordering is the whole reason `is_private` is a guarantee rather than a
+    # convention.
+    class SpecRecorder:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def build_tool_list(self, session, conversation_id, tools):
+            self.seen = [spec.name for spec in tools]
+            return tools
+
+    recorder = SpecRecorder()
+    session = empty_session("s_private_middleware")
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool(), PrivateTool()]),
+        now=1000,
+        middleware=[recorder],
+    )
+
+    specs = await runner.resolve_tool_specs("c1")
+    runner.build_tool_list("c1", specs)
+
+    assert recorder.seen == ["add"]
 
 
 async def test_a_private_tool_is_absent_from_the_request_the_model_receives():

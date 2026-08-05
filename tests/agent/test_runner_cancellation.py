@@ -351,20 +351,32 @@ class HookRecorder:
     def __init__(self, trace: list | None = None) -> None:
         self.trace = trace if trace is not None else []
 
-    def before_permission_check(self, execution: ToolExecution) -> ToolExecution:
+    def before_permission_check(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
         self.trace.append(("before_permission_check", execution.id))
         return execution
 
     def after_permission_decision(
         self,
+        session,
+        conversation_id,
         decision: ApprovalDecision,
         execution: ToolExecution,
     ) -> ApprovalDecision:
         self.trace.append(("after_permission_decision", execution.id))
         return decision
 
-    def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+    def before_tool_execution(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
         self.trace.append(("before_tool_execution", execution.id))
+        return execution
+
+    def after_tool_execution(
+        self,
+        session,
+        conversation_id,
+        execution: ToolExecution,
+        exception: Exception | None = None,
+    ) -> ToolExecution:
+        self.trace.append(("after_tool_execution", execution.id))
         return execution
 
 
@@ -1311,10 +1323,12 @@ async def test_cancel_during_decide_records_no_decision_and_closes_cancelled():
         outcome=TurnOutcome.CANCELLED,
         pending_approvals=[],
     )
-    # no decision was applied, and `after_permission_decision` never fired
+    # no decision was applied, and `after_permission_decision` never fired.
+    # The call was never selected for dispatch either, so it winds down
+    # through the terminal tail alone.
     assert recorder.trace == [
         ("before_permission_check", "te1"),
-        ("before_tool_execution", "te1"),
+        ("after_tool_execution", "te1"),
     ]
     assert runner.session.entries["te1"] == ToolExecution(
         id="te1",
@@ -1562,10 +1576,15 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
         pending_approvals=[],
     )
     assert registry.prepared == []  # neither call ever resolved
-    # exactly once per execution, whichever pipeline terminalized it
+    # The two pipelines differ in the DISPATCH hook and agree on the terminal
+    # one: te1 was selected for dispatch (its `prepare` parked, so the hook had
+    # already fired) and is cancelled in place; te2 was never selected, so it
+    # belongs to the wind-down and `before_tool_execution` never fires for it.
+    # Both still reach the universal terminal tail exactly once.
     assert recorder.trace == [
         ("before_tool_execution", "te1"),
-        ("before_tool_execution", "te2"),
+        ("after_tool_execution", "te1"),
+        ("after_tool_execution", "te2"),
     ]
     # identical durable shape — the in-place cancellation and the wind-down
     # produce the same record
@@ -1667,7 +1686,7 @@ async def test_a_resource_held_inside_create_execution_is_released_before_the_wi
     assert trace == [
         ("acquired", None),
         ("released", None),
-        ("before_tool_execution", "te1"),
+        ("after_tool_execution", "te1"),
     ]
     assert runner.session.entries["te1"].status == ExecutionStatus.CANCELLED
     assert runner.idle()
@@ -1690,7 +1709,7 @@ async def test_a_pending_cancellation_fires_no_before_permission_check():
         events = [event async for event in run]
 
     assert registry.seen == []
-    assert recorder.trace == [("before_tool_execution", "te1")]
+    assert recorder.trace == [("after_tool_execution", "te1")]
     cancelled = ToolExecution(
         id="te1",
         conversation_id="c1",

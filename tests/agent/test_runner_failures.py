@@ -365,12 +365,14 @@ class ToolHookRecorder:
         self.before: list[tuple[str, ExecutionStatus]] = []
         self.after: list[tuple[str, ExecutionStatus, str | None]] = []
 
-    def before_tool_execution(self, execution: ToolExecution) -> ToolExecution:
+    def before_tool_execution(self, session, conversation_id, execution: ToolExecution) -> ToolExecution:
         self.before.append((execution.tool_call_id, execution.status))
         return execution
 
     def after_tool_execution(
         self,
+        session,
+        conversation_id,
         execution: ToolExecution,
         exception: Exception | None,
     ) -> ToolExecution:

@@ -13,6 +13,7 @@ from luca.agent.contrib.tui.wiring import (
     build_runner,
 )
 from luca.agent.core import AgentSessionRunner as _Runner  # noqa: F401
+from luca.agent.core.adapter import tool_spec_to_luca_tool
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import ExecutionResult, LLMConfig, TextContent
 from luca.client.types import Tool as LucaTool
@@ -46,10 +47,12 @@ MULTIPLY_WIRE_TOOL = LucaTool(
 
 
 async def _wire_tools(runner):
-    """What the model is actually shown: resolve the specs, then project them
-    onto the wire (which drops any private tool)."""
+    """What the model is actually shown: resolve the specs, narrow them to the
+    model-visible ones (which drops any private tool), then adapt onto the
+    wire — the same three steps `_collect_tools` takes."""
     specs = await runner.resolve_tool_specs(runner.main_conversation_id)
-    return runner.build_tool_list(runner.main_conversation_id, specs)
+    visible = runner.build_tool_list(runner.main_conversation_id, specs)
+    return [tool_spec_to_luca_tool(spec) for spec in visible]
 
 
 async def test_build_runner_composes_all_tool_families(tmp_path):
