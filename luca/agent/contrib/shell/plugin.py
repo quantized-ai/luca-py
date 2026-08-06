@@ -204,8 +204,8 @@ class ShellAccessPlugin:
     async def close(self) -> None:
         """Release anything the tools hold open.
 
-        Only the native bash tool does: it keeps a shell alive per
-        conversation. A shell dies on its own when the process exits (its stdin
+        Only the native run tools do: Anthropic's `bash` and OpenAI's `shell`
+        each keep a shell alive per conversation. A shell dies on its own when the process exits (its stdin
         closes), but a long-lived TUI rebuilds this plugin on every session
         swap, so without this each `/clear` would leave another idle shell
         behind for the rest of the run."""

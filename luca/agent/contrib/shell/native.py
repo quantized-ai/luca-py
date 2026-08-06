@@ -764,6 +764,7 @@ class NativeShellTool(ShellTool):
         self.shell = shell
         self.output_dir = str(output_dir) if output_dir is not None else None
         self._shells = _ShellPool(self.workdir, self.shell)
+        self._timeout_ms = BASH_DEFAULT_TIMEOUT_MS
 
     def shell_for(self, conversation_id: str) -> PersistentShell:
         return self._shells.get(conversation_id)
@@ -814,6 +815,7 @@ class NativeShellTool(ShellTool):
         if not commands:
             raise ShellToolError("`shell` requires at least one command.")
         timeout_ms = args.get("timeout_ms") or BASH_DEFAULT_TIMEOUT_MS
+        self._timeout_ms = timeout_ms
         await self._shells.prune(session, conversation_id)
         session_shell = self.shell_for(conversation_id)
         blocks: list[str] = []
@@ -848,7 +850,9 @@ class NativeShellTool(ShellTool):
         )
 
     def _render_one(self, command: str, result: ShellResult) -> str:
-        note = _outcome_note(result.outcome, None)
+        # The deadline is the call's own, so the message can name it — the
+        # model chose it and can choose a larger one.
+        note = _outcome_note(result.outcome, self._timeout_ms)
         if note and result.outcome != "completed":
             body = _join_streams(result)
             return f"$ {command}\n{body}\n({note})" if body != "(no output)" else f"$ {command}\n({note})"

@@ -1,9 +1,9 @@
 # Shell access
 
 `luca.agent.contrib.shell` is the filesystem/process tool suite — seven tools
-modeled on Claude Code behavior — plus `ShellAccessPlugin`, which bundles
-them behind one workspace directory with a seeded, resource-aware permission
-strategy (built on
+modeled on Claude Code behavior, some of which a provider may define itself
+(§6) — plus `ShellAccessPlugin`, which bundles them behind one workspace
+directory with a seeded, resource-aware permission strategy (built on
 [`resource_permissions`](../resource_permissions/README.md)).
 
 ## 1. The plugin in 30 seconds
@@ -122,5 +122,62 @@ tracker.was_read("c_child", "/ws/main.py")    # False — this subagent did not
 > a per-path lock around the write itself, so neither sees a half-written file —
 > but "who wins" is still whoever went last. The permission gate is per pair,
 > not per conversation; if a task must not be done twice, do not spawn it twice.
+
+## 6. Provider-defined tools
+
+Anthropic and OpenAI define some of these tools themselves and train the model
+on the schema. When the session's model routes to one of them, the plugin
+installs the provider's version instead of luca's:
+
+| Route | Swapped in | Replaces |
+|---|---|---|
+| `anthropic` + a Claude | `str_replace_based_edit_tool` | `read`, `edit`, `write` |
+| `anthropic` + a Claude | `bash` (one persistent shell) | `bash` |
+| `openai` + a GPT-5.x | `apply_patch` | `apply_patch` |
+| `openai` + a GPT-5.x | `shell` (one persistent shell) | `bash` |
+
+`glob` and `grep` have no provider equivalent and always stay. The editor
+REPLACES the three file tools rather than joining them: offering both asks the
+model to choose between two tools that do one job.
+
+Turn it off per project:
+
+```json
+{"tools": {"native": false}}
+```
+
+Selection keys on the TRANSPORT, never the model family. Bedrock and OpenRouter
+both serve Claude and neither speaks the Messages API, so a "is this a Claude?"
+check would send a tool the endpoint rejects.
+
+### The persistent shell
+
+Both providers specify their run tool as ONE session: the working directory,
+environment variables and background processes survive between calls, and a
+`restart` starts clean. luca's own `bash` is a fresh subprocess per call, so
+this is a different tool rather than a rename. One shell per conversation, or
+a subagent's `cd` would relocate the main agent's next command.
+
+> ⚠️ **A cancel or a timeout resets the session.** The command runs IN the
+> shell, so there is nothing to kill that leaves the shell standing. Both
+> return whatever the command printed and say the working directory and
+> environment are back to their defaults — the silent version is what makes the
+> NEXT command land somewhere the model did not choose.
+
+### Extending it
+
+`ShellAccessPlugin.native_key_for` decides which provider tools a route gets;
+`install_tools` composes the list. Both are public, and both are re-consulted
+per request, so `/model` mid-session rebuilds the set:
+
+```python
+class MyPlugin(ShellAccessPlugin):
+    def native_key_for(self, session):
+        # (editor type, bash type, OpenAI types)
+        return ("text_editor_20250728", None, ())
+```
+
+See [`docs/client/06-tools.md`](../../../client/06-tools.md#provider-defined-tools)
+for what `provider_type` does on the wire.
 
 Next: [`tui/README.md`](../tui/README.md).

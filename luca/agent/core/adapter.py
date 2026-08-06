@@ -54,9 +54,11 @@ def tool_spec_to_luca_tool(spec: ToolSpec) -> LucaTool:
 
     `input_schema` is already a JSON Schema dict, which `luca.client.Tool`
     accepts verbatim as `parameters` — so the core hands the transport plain
-    data and never touches a Python class. The remaining spec fields
-    (`tool_kind`, `namespace`, `version`, `timeout_in_ms`, `metadata`) are
-    framework/app-space classification the wire has no place for."""
+    data and never touches a Python class. `provider_type` travels too: with
+    it set the transport sends the provider's own form and drops the schema.
+    The remaining spec fields (`tool_kind`, `namespace`, `version`,
+    `timeout_in_ms`, `metadata`) are framework/app-space classification the
+    wire has no place for."""
     return LucaTool(
         name=spec.name,
         description=spec.description,

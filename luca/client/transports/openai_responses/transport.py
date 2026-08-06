@@ -346,6 +346,11 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                     {
                         "stdout": output,
                         "stderr": "",
+                        # `ToolMessage` carries text and `is_error`, nothing
+                        # structured, so the real code is only in the output
+                        # the tool rendered. Reporting it here would mean a new
+                        # field on a core message type for something the model
+                        # already reads.
                         "outcome": {"type": "exit", "exit_code": 1 if msg.is_error else 0},
                     }
                 ],

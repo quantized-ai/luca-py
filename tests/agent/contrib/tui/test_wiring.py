@@ -15,7 +15,7 @@ from luca.agent.contrib.tui.wiring import (
 from luca.agent.core import AgentSessionRunner as _Runner  # noqa: F401
 from luca.agent.core.adapter import tool_spec_to_luca_tool
 from luca.agent.core.context import CancellationToken
-from luca.agent.core.models import ExecutionResult, LLMConfig, TextContent
+from luca.agent.core.models import ExecutionResult, ExecutionStatus, LLMConfig, TextContent, ToolExecution
 from luca.client.types import Tool as LucaTool
 from tests.agent.scenarios import (
     main_conversation,
@@ -250,3 +250,70 @@ async def test_switching_model_mid_session_rebuilds_the_wire_tools(tmp_path):
     tools = await _wire_tools(runner)
     assert {tool.name for tool in tools if tool.provider_type} == {"apply_patch", "shell"}
     assert "str_replace_based_edit_tool" not in {tool.name for tool in tools}
+
+
+# ── provider-native tools through the real runner ────────────────────────────
+#
+# They live HERE and not in tests/agent/contrib/shell/ because that package's
+# tests are self-scoped units: no runner, no registry, no session.
+
+
+def _anthropic_session():
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="claude-opus-5", provider="anthropic")
+    return session
+
+
+async def test_a_native_tool_call_drives_end_to_end(tmp_path):
+    """A scripted `tool_use` naming the provider's tool: resolved, approved,
+    executed, and recorded like any other call."""
+    from luca.client.testing import FauxProvider, faux_assistant_message, faux_text, faux_tool_call
+
+    target = tmp_path / "hello.py"
+    target.write_text("print('old')\n")
+    session = _anthropic_session()
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("str_replace_based_edit_tool", {"command": "view", "path": str(target)}, id="t1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [
+                    faux_tool_call(
+                        "str_replace_based_edit_tool",
+                        {"command": "str_replace", "path": str(target), "old_str": "old", "new_str": "new"},
+                        id="t2",
+                    )
+                ],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("done")], finish_reason="stop"),
+        ]
+    )
+    runner, _ = build_runner(session, workspace=tmp_path, provider=faux, mode="yolo")
+
+    runner.post_message("edit the file")
+    await runner.run()
+
+    executions = [e for e in session.entries.values() if isinstance(e, ToolExecution)]
+    assert [e.raw_tool_call.name for e in executions] == ["str_replace_based_edit_tool", "str_replace_based_edit_tool"]
+    assert [e.status for e in executions] == [ExecutionStatus.COMPLETED, ExecutionStatus.COMPLETED]
+    assert target.read_text() == "print('new')\n"
+
+
+async def test_the_wire_list_swaps_the_editor_in_and_lucas_own_out(tmp_path):
+
+    session = _anthropic_session()
+    runner, _ = build_runner(session, workspace=tmp_path)
+
+    specs = await runner.resolve_tool_specs(runner.main_conversation_id)
+    tools = {tool.name: tool.provider_type for tool in runner.build_tool_list(runner.main_conversation_id, specs)}
+
+    assert tools["str_replace_based_edit_tool"] == "text_editor_20250728"
+    assert tools["bash"] == "bash_20250124"
+    assert {"read", "edit", "write"}.isdisjoint(tools)
+    # the tools with no native counterpart still travel as ordinary ones
+    assert tools["glob"] is None
+    assert tools["apply_patch"] is None

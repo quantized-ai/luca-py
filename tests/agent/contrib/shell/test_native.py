@@ -471,67 +471,6 @@ def test_only_the_anthropic_transport_gets_a_native_editor(provider, model, expe
     assert native_editor_type(provider, model) == expected
 
 
-# ── through the real runner ──────────────────────────────────────────────────
-
-
-async def test_a_native_tool_call_drives_end_to_end(tmp_path):
-    """A scripted `tool_use` naming the provider's tool: resolved, approved,
-    executed, and recorded like any other call."""
-    from luca.agent.contrib.tui.wiring import build_runner
-    from luca.agent.core.models import ExecutionStatus, ToolExecution
-    from luca.client.testing import FauxProvider, faux_assistant_message, faux_text, faux_tool_call
-
-    target = tmp_path / "hello.py"
-    target.write_text("print('old')\n")
-    session = AgentSessionRunner.new_session(LLMConfig(model="claude-opus-5", provider="anthropic"))
-    faux = FauxProvider()
-    faux.set_responses(
-        [
-            faux_assistant_message(
-                [faux_tool_call(TEXT_EDITOR_NAME, {"command": "view", "path": str(target)}, id="t1")],
-                finish_reason="tool_use",
-            ),
-            faux_assistant_message(
-                [
-                    faux_tool_call(
-                        TEXT_EDITOR_NAME,
-                        {"command": "str_replace", "path": str(target), "old_str": "old", "new_str": "new"},
-                        id="t2",
-                    )
-                ],
-                finish_reason="tool_use",
-            ),
-            faux_assistant_message([faux_text("done")], finish_reason="stop"),
-        ]
-    )
-    runner, _ = build_runner(session, workspace=tmp_path, provider=faux, mode="yolo")
-
-    runner.post_message("edit the file")
-    await runner.run()
-
-    executions = [e for e in session.entries.values() if isinstance(e, ToolExecution)]
-    assert [e.raw_tool_call.name for e in executions] == [TEXT_EDITOR_NAME, TEXT_EDITOR_NAME]
-    assert [e.status for e in executions] == [ExecutionStatus.COMPLETED, ExecutionStatus.COMPLETED]
-    assert target.read_text() == "print('new')\n"
-
-
-async def test_the_wire_list_swaps_the_editor_in_and_lucas_own_out(tmp_path):
-    from luca.agent.contrib.tui.wiring import build_runner
-
-    session = AgentSessionRunner.new_session(LLMConfig(model="claude-opus-5", provider="anthropic"))
-    runner, _ = build_runner(session, workspace=tmp_path)
-
-    specs = await runner.resolve_tool_specs(runner.main_conversation_id)
-    tools = {tool.name: tool.provider_type for tool in runner.build_tool_list(runner.main_conversation_id, specs)}
-
-    assert tools[TEXT_EDITOR_NAME] == TEXT_EDITOR_TYPE_CURRENT
-    assert tools[BASH_NAME] == BASH_TYPE
-    assert {"read", "edit", "write"}.isdisjoint(tools)
-    # the tools with no native counterpart still travel as ordinary ones
-    assert tools["glob"] is None
-    assert tools["apply_patch"] is None
-
-
 # ── Anthropic's bash ─────────────────────────────────────────────────────────
 
 

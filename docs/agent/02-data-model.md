@@ -503,6 +503,16 @@ session.tool_specs[execution.tool_spec_id] is execution.tool_spec   # True
 `description` and `input_schema` are required: a tool that takes no arguments
 declares the empty object schema `{"type": "object", "properties": {}}`, never
 `None` — an absent schema and an empty one mean different things to a provider.
+
+`provider_type` is optional and marks a tool the PROVIDER defines and the model
+was trained on (Anthropic's `text_editor_20250728`, OpenAI's `apply_patch`).
+Set, the transport sends the provider's own form and never sends the schema —
+but `input_schema` stays populated, because it is what validates the incoming
+call and what still describes the tool in a session resumed years from now.
+`ToolCall.provider_type` records the same string on the call itself, so a
+replayed call goes back in the item type it arrived in rather than one guessed
+from its name. See
+[`docs/client/06-tools.md`](../client/06-tools.md#provider-defined-tools).
 `output_schema` is optional and, like every other field, part of the hash: a
 tool that gains one becomes a second row, and the executions that ran before it
 keep resolving to the first.
