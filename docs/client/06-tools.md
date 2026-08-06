@@ -226,9 +226,21 @@ def handle_bash(tc: ToolCall) -> ToolMessage:
                        is_error=r.exit_code != 0)
 ```
 
-The text editor's `arguments` carry the `text_editor_20250728` command set:
-`view` / `create` / `str_replace` / `insert`, each with `path` plus its own
-fields (`file_text`, `old_str`/`new_str`, `insert_line`).
+The text editor's `arguments` carry the `text_editor_20250728` command set —
+each command has `path` plus its own fields:
+
+| `command` | Fields | What the caller returns |
+|---|---|---|
+| `view` | `view_range?: [start, end]` (`-1` = last line) | file contents `cat -n` style, or the directory listing |
+| `create` | `file_text` | a confirmation |
+| `str_replace` | `old_str`, `new_str` | a confirmation; `is_error` when `old_str` does not match exactly once |
+| `insert` | `insert_line` (0 = top of file), `insert_text` | a confirmation |
+
+> ⚠️ `insert` carries **`insert_text`**, not `new_str` — only `str_replace`
+> uses `new_str`. Verified live against claude-sonnet-4-5.
+
+Runnable end to end (all four commands, plus bash):
+[`anthropic_example_non_streaming.py`](../../specs/0009-provider-native-tools/examples/anthropic_example_non_streaming.py).
 
 ### Compatibility and provider switches
 
