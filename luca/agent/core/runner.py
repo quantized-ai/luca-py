@@ -99,7 +99,10 @@ every ALLOWED sibling proceeds to dispatch even while another call sits
 deferred — the runner parks (`BLOCKED`) only after all currently
 runnable work has advanced, and it never calls the model again until every
 tool call in the preceding assistant response has a terminal execution and a
-correlated tool output.
+correlated tool output, with one exception (0008): an unseen user post drives
+one round past a gate, the gated execution projecting as an
+awaiting-approval placeholder, and the drive re-parks at the same gate after
+the round.
 
 The wire payload is derived state: the runner's `ConversationProjector`
 collaborator (`projection.py`, `conversation_projector=`) recomputes the
@@ -209,6 +212,7 @@ from .models import (
     is_compaction_bracket,
     open_turn_unresolved_children,
     open_turn_unseen_material,
+    open_turn_unseen_post,
     spawn_payload,
     spawns_committed,
     stop_payload,
@@ -1183,8 +1187,14 @@ class AgentSessionRunner:
           append, subagents included. The message lands inside the turn, the
           model sees it on its next LLM call, and the turn does not close
           COMPLETED until it has (the drive's close-site check loops for one
-          more round instead). Posting into a BLOCKED turn does not unblock
-          anything: the message waits with the turn.
+          more round instead). Posting into a BLOCKED turn reaches the model
+          too (0008): the conversation derives BUSY, the next drive projects
+          the gated execution as an awaiting-approval placeholder and calls
+          the model — one round, answering the post while the approval prompt
+          is still up — then re-parks at the same gate and derives BLOCKED
+          again. The gate itself is untouched: a post is not an approval and
+          never becomes one; `pending_approvals()` returns it before and
+          after the round.
         - An open turn with unresolved subagents — the mid-ORCHESTRATION
           append. The children never see it, but the parent does: a parked
           drive is woken and calls the model with the message (still-running
@@ -2776,7 +2786,13 @@ class AgentSessionRunner:
     ) -> AsyncIterator[AgentEvent]:
         """The conversational loop itself. Split from `_drive` only so the
         wake registration has a `finally` to be removed in."""
-        announced_gate = False
+        # Execution ids already announced through `ApprovalRequired` in THIS
+        # drive. A set rather than a bool since 0008: a fall-through round can
+        # mint a NEW gated call while the first gate is still open, and the
+        # new gate must be announced — while a re-park at the same gate must
+        # not repeat the event. Cleared when the awaiting set empties, exactly
+        # as the old boolean reset.
+        announced_gates: set[str] = set()
         # The path length at the instant of THIS DRIVE's most recent
         # projection — v1's close-site fingerprint, now also consulted by the
         # subagent park (step 3c): a message posted while an LLM call is in
@@ -2925,7 +2941,8 @@ class AgentSessionRunner:
 
             # 3) Park while any approval remains explicitly deferred (a
             # cancel that landed mid-decide or mid-dispatch wins instead:
-            # wind down rather than pausing at the gate).
+            # wind down rather than pausing at the gate) — UNLESS an unseen
+            # user post can reach the model past the gate (3b below).
             awaiting = self.ledger.open_turn_awaiting_executions(conversation_id)
             if awaiting:
                 cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
@@ -2933,27 +2950,40 @@ class AgentSessionRunner:
                     for event in await self._wind_down_async(conversation_id, cancel_entry):
                         yield event
                     return
-                if not announced_gate:
-                    announced_gate = True
+                if any(ex.id not in announced_gates for ex in awaiting):
+                    announced_gates.update(ex.id for ex in awaiting)
                     yield ApprovalRequired(
                         conversation_id=conversation_id,
                         executions=[ex.model_copy(deep=True) for ex in awaiting],
                     )
-                # A DRIVE RETURNS ONLY WHEN NOTHING IN ITS SUBTREE CAN ADVANCE.
-                # One rule, and the whole asymmetry falls out of it: a gated
-                # child with no subtree of its own returns (its drive is gone,
-                # and `notify()` restarts it), while a gated PARENT whose
-                # children are still working waits — which is exactly why
-                # `ApprovalRequired` is not terminal on a parent's stream. The
-                # degenerate case (a gate with nothing else running) returns
-                # exactly as it always did.
-                if not await self._await_subtree(conversation_id, token, wake):
-                    return
-                continue
-            announced_gate = False
-
-            if undecided or ready or spawned or resolved:
-                continue  # re-run the cancel check before calling the model
+                # 3b) A POST REACHES THE MODEL PAST THE GATE (0008). The gated
+                # execution projects as a placeholder, so the path is
+                # well-formed and the user gets an answer while the approval
+                # prompt is still up. ONLY a post does this: an allowed sibling
+                # that completed in this same round is not new material to the
+                # model, and counting it would fire a round on every approval.
+                if not self._has_unseen_post(conversation_id, last_seen):
+                    # A DRIVE RETURNS ONLY WHEN NOTHING IN ITS SUBTREE CAN
+                    # ADVANCE. One rule, and the whole asymmetry falls out of
+                    # it: a gated child with no subtree of its own returns (its
+                    # drive is gone, and `notify()` restarts it), while a gated
+                    # PARENT whose children are still working waits — which is
+                    # exactly why `ApprovalRequired` is not terminal on a
+                    # parent's stream. The degenerate case (a gate with nothing
+                    # else running) returns exactly as it always did.
+                    if not await self._await_subtree(conversation_id, token, wake):
+                        return
+                    continue
+                # fall through to the model call — and deliberately PAST the
+                # progress-continue below: `undecided` holds this gate on every
+                # pass (the ledger counts approval_status=PENDING as undecided
+                # so a re-drive re-asks), so continuing here would re-ask
+                # decide() forever. A cancel landing between here and the model
+                # call trips the token, which `_race_cancellation` catches.
+            else:
+                announced_gates.clear()
+                if undecided or ready or spawned or resolved:
+                    continue  # re-run the cancel check before calling the model
 
             # 3c) UNRESOLVED CHILDREN. The parent's turn cannot CLOSE until
             # every subagent resolves (the close site guards that), but the
@@ -2989,8 +3019,10 @@ class AgentSessionRunner:
                 # fall through — step 4 calls the model with the update;
                 # still-running children project as nothing new
 
-            # 4) Step-limit and doom-loop checks, then call the model — only
-            # reached when every execution in the open turn is terminal.
+            # 4) Step-limit and doom-loop checks, then call the model —
+            # reached when every execution in the open turn is terminal, OR
+            # through 3b's fall-through with a gated execution still live and
+            # projecting its placeholder (0008).
             #
             # Hard max: if the open turn already has step_count LLM responses
             # and step_count >= hard_max_steps, close the turn now.
@@ -3019,6 +3051,11 @@ class AgentSessionRunner:
                         for event in self._wind_down(conversation_id, cancel_entry):
                             yield event
                         return
+                # A gated execution is reachable here since 0008 — each post
+                # while blocked burns a real step — and no close leaves a
+                # nonterminal execution behind.
+                for event in self._settle_undispatched(conversation_id):
+                    yield event
                 self._close_turn(conversation_id, TurnOutcome.ERRORED, error=error)
                 return
 
@@ -3043,8 +3080,9 @@ class AgentSessionRunner:
             # FAILED call (timeout / provider error) closes the turn
             # (TIMED_OUT / ERRORED, status PENDING — retry-ready) and
             # re-raises — unless a cancel is pending, which wins; safe here
-            # and only here, because the model call runs only after every
-            # execution is terminal.
+            # and only here, because every execution is terminal at this point
+            # except a gated one on a 3b fall-through round (0008), and both
+            # the wind-down and the failure close settle those before closing.
             llm_cfg = self.session.session_config.llm_config
             model_string = self.build_model_string(conversation_id, llm_cfg)
             # Recorded instead of `llm_cfg`, so provenance names the model
@@ -3193,6 +3231,13 @@ class AgentSessionRunner:
                         for event in self._wind_down(conversation_id, cancel_entry):
                             yield event
                         return
+                # A gated execution is reachable here since 0008 — a post can
+                # drive a fall-through round over a live gate — and no close
+                # leaves a nonterminal execution behind. Yielding then raising
+                # is fine: the consumer pulls the events, and the next pull
+                # raises.
+                for event in self._settle_undispatched(conversation_id):
+                    yield event
                 outcome = TurnOutcome.TIMED_OUT if isinstance(exc, ClientTimeoutError) else TurnOutcome.ERRORED
                 self._close_turn(conversation_id, outcome, error=str(exc))
                 raise
@@ -3236,8 +3281,17 @@ class AgentSessionRunner:
             cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
                 events.extend(await self._wind_down_async(conversation_id, cancel_entry))
-            elif self._has_unseen_user_message(conversation_id, seen) or _unresolved_children(
-                self.session, conversation_id
+            elif (
+                self._has_unseen_user_message(conversation_id, seen)
+                or _unresolved_children(self.session, conversation_id)
+                # A LIVE GATE KEEPS THE TURN OPEN (0008). Reachable only since
+                # a post can now drive a round past the gate; closing here
+                # would strand the approval outside any open turn, where
+                # `pending_approvals()` cannot see it and `notify()` has
+                # nothing to re-decide, and would freeze the placeholder into
+                # the history for a call that never ran. The next pass parks at
+                # step 3 instead.
+                or self.ledger.has_awaiting_approval(conversation_id)
             ):
                 for event in events:
                     yield event
@@ -3816,18 +3870,24 @@ class AgentSessionRunner:
                 events.append(SubagentFinished(conversation_id=child_id, outcome=cancel_entry.outcome))
         return events
 
-    def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
-        """Consume a `CancelRequested`: every undispatched execution in the
-        open turn is stamped `cancel_signalled_at` and becomes CANCELLED —
-        resultless, errorless, approval state untouched. RECEIVED ones included:
-        a cancel landing while the registry is being consulted must settle the
-        unborn too, or the turn closes over an execution no drive will ever
-        finish. (A denied call was already terminal REJECTED at decision time;
-        an in-flight one was settled by the grace machinery; an orphaned
-        RUNNING one was recovered at drive start.) Each cancelled execution
-        passes through the outcome middleware pair, the turn closes with the
-        requested outcome, and the `ToolExecuted` events return to the caller.
-        All session writes happen before any event is yielded."""
+    def _settle_undispatched(self, conversation_id: str) -> list[AgentEvent]:
+        """Terminalize every undispatched execution in the open turn as
+        CANCELLED — stamped `cancel_signalled_at`, resultless, errorless,
+        approval state untouched — and return their `ToolExecuted` events.
+        RECEIVED ones included: a close landing while the registry is being
+        consulted must settle the unborn too, or the turn closes over an
+        execution no drive will ever finish. (A denied call was already
+        terminal REJECTED at decision time; an in-flight one was settled by
+        the grace machinery; an orphaned RUNNING one was recovered at drive
+        start.) Each settled execution passes through the outcome middleware
+        pair.
+
+        The close-side half of "no close leaves a nonterminal execution
+        behind". The cancel wind-down has always done this; the failure closes
+        need it too since 0008, because a post can now drive rounds while a
+        gate is open, which puts `hard_max_steps` and an LLM failure within
+        reach of a live gate. Closing over one strands the approval outside any
+        open turn and freezes its placeholder into the projected history."""
         events: list[AgentEvent] = []
         for execution in self.ledger.open_turn_undispatched_executions(conversation_id):
             ts = self.now_ms()
@@ -3842,6 +3902,14 @@ class AgentSessionRunner:
             )
             _, event = self._finalize_outcome(conversation_id, stamped)
             events.append(event)
+        return events
+
+    def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
+        """Consume a `CancelRequested`: settle every undispatched execution
+        (`_settle_undispatched`), then close the turn with the requested
+        outcome. The `ToolExecuted` events return to the caller. All session
+        writes happen before any event is yielded."""
+        events = self._settle_undispatched(conversation_id)
         self._close_turn(conversation_id, cancel_entry.outcome, cancel_entry.error)
         return events
 
@@ -4563,6 +4631,18 @@ class AgentSessionRunner:
         entries = self.session.entries
         nodes = self.session.conversations[conversation_id].nodes
         return any(isinstance(entries.get(node_id), UserMessage) for node_id in nodes[seen:])
+
+    def _has_unseen_post(self, conversation_id: str, last_seen: int | None) -> bool:
+        """Is there a user post the model has not been shown? Both halves, the
+        same pair step 3c uses for the subagent park: the DURABLE predicate
+        (`open_turn_unseen_post`) plus this drive's `last_seen` fingerprint,
+        which covers the one state the durable half cannot see — a post that
+        landed under this drive's own in-flight LLM call, and so sits BEFORE
+        the assistant entry that answered the previous round."""
+        conversation = self.session.conversations[conversation_id]
+        if open_turn_unseen_post(conversation.nodes, self.session.entries):
+            return True
+        return last_seen is not None and self._has_unseen_user_message(conversation_id, last_seen)
 
     def _close_turn(self, conversation_id: str, outcome: TurnOutcome, error: str | None = None) -> None:
         """The only TurnFinish writer that APPENDS — normal close, cancel

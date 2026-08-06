@@ -59,7 +59,7 @@ await run   # the model sees it on its next call, and the turn cannot close
 |---|---|
 | `IDLE` main conversation | accepts — the next `run()` opens a turn |
 | trailing message queued (`BUSY`, no open turn) | accepts — one turn answers all of them |
-| open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a gated turn keeps the message waiting with it |
+| open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a gated turn answers the post past the gate: the conversation derives `BUSY`, the next drive projects the gated call as an awaiting-approval placeholder ([10](10-projection.md) §2) and runs ONE model round, then re-parks at the same gate. The gate is untouched — a post is not an approval |
 | open turn with unresolved subagents | accepts — the children never see it, but the PARENT does: a parked drive is woken and the model can steer, including stopping a task ([13](13-subagents.md) §6) |
 | `CANCELLING` | raises `ConversationCancellingError` — retry after the flush |
 | compaction scheduled / in flight | raises `AgentError` ([12](12-compaction.md)) |
@@ -340,8 +340,8 @@ other ([02](02-data-model.md) §10).
 | Status | Predicate | Meaning → your move |
 |---|---|---|
 | `IDLE` | `runner.idle()` | Nothing queued → `post_message()` |
-| `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent, a subagent result or mid-turn post the model has not seen) → `run()` |
-| `BLOCKED` | `runner.blocked()` | Nothing can advance until you act — a gate → resolve, then `run()` ([05](05-permissions.md)) |
+| `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent, a subagent result or mid-turn post the model has not seen — a post into a gated turn included) → `run()` |
+| `BLOCKED` | `runner.blocked()` | Nothing can advance until you act — a gate → resolve, then `run()` ([05](05-permissions.md)). A post flips it to `BUSY` for exactly one round (the acceptance table above), then it re-derives `BLOCKED` |
 | `CANCELLING` | `runner.cancelling()` | Unconsumed cancel → `run()` flushes it |
 
 ```python

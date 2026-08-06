@@ -119,6 +119,7 @@ while True:
         ))
 ```
 
+
 Two things to notice:
 
 - `response.message` is appended directly. It's already an

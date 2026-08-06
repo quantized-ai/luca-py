@@ -87,11 +87,50 @@ touching the method, or replace the method wholesale:
 ```python
 class MyProjector(ConversationProjector):
     CANCELLED_TURN_MARKER = "[User stopped the previous request]"
+    AWAITING_APPROVAL_OUTPUT = "[waiting for your approval — the call has not run]"
     STATUS_ONLY_OUTPUTS = {
         **ConversationProjector.STATUS_ONLY_OUTPUTS,
         ExecutionStatus.REJECTED: "The user declined this tool call.",
     }
 ```
+
+### The one projectable nonterminal state
+
+A **gated** execution — `PENDING` with `approval_status=PENDING`, the policy
+explicitly deferred to a human — projects a placeholder `ToolMessage` carrying
+`AWAITING_APPROVAL_OUTPUT`:
+
+```text
+[tool execution is awaiting approval — it has not run, and this is not its result]
+```
+
+with `is_error=False`, deliberately: the call has not failed, it has not run,
+and an error result is exactly what makes a model retry a call. It is its own
+ClassVar rather than a `STATUS_ONLY_OUTPUTS` row because that table is keyed
+by TERMINAL status and this is the single nonterminal carve-out.
+
+The placeholder is what lets a message posted into a `BLOCKED` conversation
+reach the model while the gate is still open — the path becomes well-formed,
+so the drive can run one round, answer the user, and re-park at the same gate
+([04](04-runner.md)). Two properties follow, both new:
+
+- **A projected tool message is no longer always final.** Every other
+  fabricated tool message comes from a terminal state and never changes; this
+  one is replaced by the real result at the same path position once the
+  approval is answered — the model's history is rewritten underneath it.
+  Consistent with a design that re-derives the whole payload on every call
+  and caches nothing, but worth knowing.
+- **The next request after the gate resolves ends with an assistant
+  message.** The real result replaces the placeholder in place, above the
+  post and the model's answer to it, so the request trails
+  `…, tool (real result), user (the post), assistant (the answer)`. A `tool`
+  message must answer the assistant turn that issued the call on every
+  provider, so the shape cannot be fixed by reordering. Anthropic treats a
+  trailing assistant message as a *prefill* — the model continues it rather
+  than starting fresh, and with extended thinking enabled the request is
+  rejected outright. The framework accepts and documents this; an application
+  that needs it normalized overrides `project()` (at the cost of discarding
+  the model's own last reply).
 
 ## 3. One projection, two consumers
 
@@ -146,7 +185,12 @@ instead of producing invented content:
 - a conversation node missing from the entry store;
 - an entry type the projector doesn't know;
 - a nonterminal (`RECEIVED`, `PENDING` or `RUNNING`) tool execution (the
-  runtime never calls the model mid-execution);
+  runtime never calls the model mid-execution) — with exactly one carve-out:
+  a GATED execution (`PENDING` with `approval_status=PENDING`) projects the
+  `AWAITING_APPROVAL_OUTPUT` placeholder (§2). It is the one nonterminal
+  state that is a durable resting point only the application can move rather
+  than a runtime in flight; `PENDING` with approval `None` or `ALLOWED` still
+  raises;
 - an UNRESOLVED `ChildConversation` **outside the open turn** — no close may
   leave an unresolved subagent behind, so that state is corruption; inside
   the open turn it is legal and renders nothing (the orchestration is simply

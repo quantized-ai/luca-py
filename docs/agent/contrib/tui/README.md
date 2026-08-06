@@ -65,7 +65,15 @@ Transcript block vocabulary (`blocks.py`, rendered from `state.py` models):
 
 Interactions: the composer stays enabled while the agent works (mid-turn
 posts queue into the open turn; the placeholder flips to `working…` and the
-legend to `enter queue`); `esc` interrupts a run, backs out of a modal, and
+legend to `enter queue`) — with one exception: a submit while the main
+conversation is `BLOCKED` at an approval gate is refused with a notice
+(`answer the approval prompt first`), keeping the draft. That is the TUI
+opting out of a framework capability, not a framework limit — the framework
+would answer the post past the gate ([10-projection §2](../../10-projection.md)),
+but in this UI the answer the user owes is the approval prompt itself. A
+SUBAGENT's gate with siblings still working leaves the conversation `BUSY`,
+so mid-orchestration steering posts keep working. `esc` interrupts a run,
+backs out of a modal, and
 selects Cancel turn at an approval prompt — it never quits (`ctrl+q` does,
 saving first). `^p` palette, `^s` skills, `^o` expand
 the last clipped output, `ctrl+v` attach a clipboard image. A drive failure

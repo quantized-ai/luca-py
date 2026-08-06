@@ -221,7 +221,12 @@ only `PENDING` repeats. Sibling calls in one batch are decided concurrently, and
 every call keeps an **independent** outcome: an `ALLOW`ed sibling proceeds to
 execute even while another call sits deferred — the run parks at the gate only
 after all currently runnable work has advanced, and the model is never called
-again until every call in the batch is terminal.
+again until every call in the batch is terminal, with one exception: a user
+message posted while the conversation is `BLOCKED` drives one model round past
+the gate, with the gated call projected as an awaiting-approval placeholder
+([10](10-projection.md) §2). The gate itself is untouched — a post is not an
+approval — and the drive re-parks at it after the round
+([04](04-runner.md)).
 
 ## 5. `extras["approval_context"]` — the tool ↔ policy vocabulary
 

@@ -217,6 +217,154 @@ def test_derive_status_awaiting_when_approval_status_is_pending():
     assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
 
 
+def test_derive_status_busy_when_gated_with_an_unseen_post():
+    session = make_session(
+        id="s",
+        entries={
+            "ts": TurnStart(id="ts", created_at=1),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=2,
+                parts=[ToolCall(id="tc1", name="add")],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "te1": ToolExecution(
+                id="te1",
+                conversation_id="c1",
+                parent_id="a1",
+                created_at=3,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+            "um": UserMessage(id="um", parent_id="te1", created_at=4, parts=[TextContent(text="wait, what?")]),
+        },
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "a1", "te1", "um"],
+                created_at=0,
+                updated_at=4,
+            )
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    # the gate projects a placeholder, so the next run() CAN do something:
+    # answer the post past the gate, then re-park (0008)
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+
+def test_derive_status_blocked_when_gated_and_the_post_was_answered():
+    session = make_session(
+        id="s",
+        entries={
+            "ts": TurnStart(id="ts", created_at=1),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=2,
+                parts=[ToolCall(id="tc1", name="add")],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "te1": ToolExecution(
+                id="te1",
+                conversation_id="c1",
+                parent_id="a1",
+                created_at=3,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+            "um": UserMessage(id="um", parent_id="te1", created_at=4, parts=[TextContent(text="wait, what?")]),
+            "a2": AssistantMessage(
+                id="a2",
+                parent_id="um",
+                created_at=5,
+                parts=[TextContent(text="it would remove tmp/ — still awaiting your approval")],
+                llm_config=MODEL,
+                stop_reason="stop",
+            ),
+        },
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "a1", "te1", "um", "a2"],
+                created_at=0,
+                updated_at=5,
+            )
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    # the post was answered (a2 sits after um) — no spin: back to BLOCKED
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+
+
+def test_derive_status_blocked_when_gated_with_a_completed_sibling_and_no_post():
+    session = make_session(
+        id="s",
+        entries={
+            "ts": TurnStart(id="ts", created_at=1),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=2,
+                parts=[ToolCall(id="tc1", name="add"), ToolCall(id="tc2", name="read")],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "te1": ToolExecution(
+                id="te1",
+                conversation_id="c1",
+                parent_id="a1",
+                created_at=3,
+                tool_call_id="tc1",
+                raw_tool_call=ToolCall(id="tc1", name="add"),
+                tool_spec=spec("add"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+            "te2": ToolExecution(
+                id="te2",
+                conversation_id="c1",
+                parent_id="te1",
+                created_at=4,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="read"),
+                tool_spec=spec("read"),
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="ok")]),
+                started_at=4,
+                ended_at=4,
+            ),
+        },
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["ts", "a1", "te1", "te2"],
+                created_at=0,
+                updated_at=4,
+            )
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    # the misfire guard (0008): an allowed sibling that completed in the same
+    # round as the gate is NOT a post — parks exactly as before
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+
+
 def test_derive_status_pending_when_execution_was_never_processed():
     # crash mid-decide: approval_status None — the strategy was never asked,
     # so the right move is a plain run() (which asks it), NOT the gate.
@@ -2568,12 +2716,14 @@ def test_a_carried_turn_finish_with_no_opener_stops_the_skip():
 # ── derive_status: the unresolved-children branch, in precedence order ────────
 #
 # 1. advanceable executions → BUSY   2. a child that can advance → BUSY
-# 3. a gated execution → BLOCKED     4. unseen material → BUSY   5. BLOCKED
+# 3. a gated execution, no unseen post → BLOCKED
+# 4. unseen material → BUSY          5. BLOCKED
 #
 # Rule 3 ABOVE rule 4 is the load-bearing ordering: a gated wake-round call
 # plus unrelated material must derive BLOCKED — the next run() can only
 # re-park at the gate, and BUSY would hot-loop every poll-for-BLOCKED
-# consumer.
+# consumer. The one exception is an unseen USER POST (0008): the gate
+# projects a placeholder, so the next run() answers the post and re-parks.
 
 
 def _spawn_declaring_spec():
@@ -2718,6 +2868,46 @@ def test_derive_status_busy_when_a_resolution_awaits_the_model():
 def test_derive_status_a_gate_outranks_material():
     session = _orchestrating_session(
         entries={
+            "te2": ToolExecution(
+                id="te2",
+                conversation_id="c1",
+                parent_id="ch1",
+                created_at=700,
+                tool_call_id="tc2",
+                raw_tool_call=ToolCall(id="tc2", name="write"),
+                tool_spec=spec("write"),
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+                approval_decisions=[PENDING_1000],
+            ),
+            "te3": ToolExecution(
+                id="te3",
+                conversation_id="c1",
+                parent_id="te2",
+                created_at=700,
+                tool_call_id="tc3",
+                raw_tool_call=ToolCall(id="tc3", name="read"),
+                tool_spec=spec("read"),
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text="ok")]),
+                started_at=700,
+                ended_at=700,
+            ),
+        },
+        nodes=["u1", "ts", "a1", "te1", "ch1", "te2", "te3"],
+    )
+
+    # material exists (te3, a completed allowed sibling), but it is not a
+    # POST: the next run() can only re-park at the gate — the application
+    # must act first. This is the misfire guard: reusing
+    # `open_turn_unseen_material` at the gate would fire a model round on
+    # every approval in the system.
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+
+
+def test_derive_status_a_gate_yields_to_an_unseen_post():
+    session = _orchestrating_session(
+        entries={
             "um": UserMessage(id="um", parent_id="ch1", created_at=600, parts=[TextContent(text="steer")]),
             "te2": ToolExecution(
                 id="te2",
@@ -2735,9 +2925,9 @@ def test_derive_status_a_gate_outranks_material():
         nodes=["u1", "ts", "a1", "te1", "ch1", "um", "te2"],
     )
 
-    # material exists, but the next run() can only re-park at the gate — the
-    # application must act first
-    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
+    # the gate projects a placeholder, so the next run() CAN do something:
+    # answer the post past the gate, then re-park (0008)
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
 
 
 def test_derive_status_an_advanceable_execution_wins_over_everything():

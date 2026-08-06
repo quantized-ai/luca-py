@@ -18,6 +18,7 @@ stories in `tests/agent/subagents/test_post_messages.py`.
 
 import pytest
 
+from luca.agent.core.events import ApprovalRequired, ToolExecuted
 from luca.agent.core.exceptions import (
     AgentError,
     ConversationCancellingError,
@@ -45,9 +46,11 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import CANCELLED_TURN_MARKER
+from luca.client.exceptions import ProviderAPIError
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
+    faux_error,
     faux_text,
     faux_tool_call,
 )
@@ -378,8 +381,9 @@ async def test_one_turn_answers_two_queued_trailing_messages():
 
 
 async def test_post_message_accepts_while_blocked_at_a_gate():
-    # The mid-turn append into a BLOCKED turn. Nothing is unblocked: the
-    # message waits with the turn.
+    # The mid-turn append into a BLOCKED turn. The gate is untouched — a post
+    # is not an approval — but the message does not just wait (0008): the
+    # conversation derives BUSY, and the next drive answers it past the gate.
     session = GATED_SESSION.model_copy(deep=True)
     runner = DeterministicRunner(session, ids=["um"], now=1000)
 
@@ -387,7 +391,8 @@ async def test_post_message_accepts_while_blocked_at_a_gate():
 
     assert msg_id == "um"
     assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um"]
-    assert runner.blocked()
+    assert runner.busy()
+    assert [ex.id for ex in runner.pending_approvals()] == ["te1"]
 
 
 async def test_post_message_accepts_into_an_open_resumable_bracket():
@@ -889,38 +894,757 @@ async def test_two_steering_messages_before_one_close_are_answered_by_one_extra_
     assert runner.idle()
 
 
-async def test_a_post_while_blocked_is_answered_in_the_same_turn_after_the_gate_resolves():
+async def test_a_post_while_blocked_is_answered_before_the_gate_resolves():
+    # THE 0008 HEADLINE. A post into a gated turn drives exactly ONE model
+    # round: the gated call projects as the awaiting-approval placeholder, the
+    # model answers the user while the prompt is still up, and the drive
+    # re-parks at the same gate. Answering the gate then resolves it normally,
+    # with the real result replacing the placeholder in place.
     faux = FauxProvider()
     faux.set_responses(
         [
-            faux_assistant_message([faux_text("3 — briefly.")], finish_reason="stop"),
+            faux_assistant_message(
+                [faux_text("It's add(1, 2) — waiting on your approval.")],
+                finish_reason="stop",
+            ),
+            faux_assistant_message([faux_text("3 — as approved.")], finish_reason="stop"),
         ]
     )
     session = GATED_SESSION.model_copy(deep=True)
     registry = FakeToolRegistry(
         [AddTool()],
-        decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000)],
+        decisions=[
+            # one re-ask per loop pass of the first run, then the answer
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
+        ],
     )
     runner = DeterministicRunner(
         session,
         tool_registry=registry,
         provider=faux,
-        ids=["um", "a2", "tf"],
+        ids=["um", "a2", "a3", "tf"],
         now=1000,
     )
-    runner.post_message("Be brief")
+    runner.post_message("wait — what does this do?")
 
     result = await runner.run()
 
+    # exactly one round: the placeholder on the wire, the post last
+    assert result.outcome is None
+    assert result.status == ConversationStatus.BLOCKED
+    assert len(faux.requests) == 1
+    assert faux.requests[0].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc1",
+            content=[
+                LucaTextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")
+            ],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="wait — what does this do?")]),
+    ]
+    # the turn did NOT close, and the gate is untouched and still pending
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um", "a2"]
+    assert runner.blocked()
+    assert [ex.id for ex in runner.pending_approvals()] == ["te1"]
+
+    result = await runner.run()  # the registry now answers ALLOW
+
     assert result.outcome == TurnOutcome.COMPLETED
-    # the gate resolved, the tool ran, and the next call carried the message —
-    # answered in the SAME turn it landed in
+    assert len(faux.requests) == 2
+    # the real result replaced the placeholder IN PLACE — above the post and
+    # the model's answer to it, which now TRAILS the request (the documented
+    # 0008 wire shape: a prefill on providers that treat it as one)
+    assert faux.requests[1].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc1",
+            content=[LucaTextBlock(text="3")],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="wait — what does this do?")]),
+        LucaAssistantMessage(
+            content=[LucaTextBlock(text="It's add(1, 2) — waiting on your approval.")],
+            provider="faux",
+            model="test-model",
+        ),
+    ]
     assert runner.session.entries["te1"].status is ExecutionStatus.COMPLETED
-    assert faux.requests[0].messages[-1] == LucaUserMessage(
-        content=[LucaTextBlock(text="Be brief")],
-    )
-    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um", "a2", "tf"]
+    assert main_conversation(runner.session).nodes == [
+        "u1",
+        "ts",
+        "a1",
+        "te1",
+        "um",
+        "a2",
+        "a3",
+        "tf",
+    ]
     assert runner.idle()
+
+
+# A gate raised in a round that also had an ALLOWED sibling — the sibling
+# completed, the gate did not. The material the sibling left behind must not
+# fire a fall-through round on its own.
+GATED_WITH_SIBLING_SESSION = make_session(
+    id="s_gated_sibling",
+    entries={
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Add these")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[
+                ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                ToolCall(id="tc2", name="add", arguments={"a": 3, "b": 4}),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            conversation_id="c1",
+            parent_id="a1",
+            created_at=500,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+            tool_spec=ADD_SPEC,
+            status=ExecutionStatus.PENDING,
+            approval_status=ApprovalStatus.PENDING,
+            approval_decisions=[
+                ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ],
+            updated_at=500,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            conversation_id="c1",
+            parent_id="te1",
+            created_at=500,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 3, "b": 4}),
+            tool_spec=ADD_SPEC,
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="7")]),
+            approval_status=ApprovalStatus.ALLOWED,
+            approval_decisions=[
+                ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
+            ],
+            started_at=500,
+            ended_at=500,
+            updated_at=500,
+        ),
+    },
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2"],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
+
+async def test_a_gate_with_a_completed_sibling_and_no_post_drives_no_round():
+    # THE MISFIRE GUARD (0008). An allowed sibling's result is exactly the
+    # material `open_turn_unseen_material` counts, but it is not a POST:
+    # reusing that predicate at the gate would fire a model round — with the
+    # placeholder on the wire — on every approval in the system. Zero LLM
+    # calls: the empty response script fails loudly if one is attempted.
+    faux = FauxProvider()
+    session = GATED_WITH_SIBLING_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)],
+    )
+    runner = DeterministicRunner(session, tool_registry=registry, provider=faux, now=1000)
+
+    result = await runner.run()
+
+    assert result.outcome is None
+    assert faux.requests == []
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "te2"]
+    assert runner.blocked()
+
+
+async def test_a_post_while_blocked_drives_exactly_one_round_and_reparks():
+    # THE HOT-LOOP GUARD (0008). `undecided` holds the gate on every pass, so
+    # a fall-through that re-entered the progress-continue would re-ask
+    # decide() forever. The scripts are exact — two decide answers, one
+    # response — so one extra of either fails loudly instead of hanging.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Still waiting on you.")], finish_reason="stop"),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "a2"],
+        now=1000,
+    )
+    runner.post_message("why is this taking so long?")
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert len(faux.requests) == 1
+    assert len(registry.seen) == 2  # one re-ask per pass — not a decide() spin
+    # announce-once across the fall-through: the same drive announced the gate,
+    # ran the round, and re-parked at it WITHOUT repeating the event
+    assert [event for event in events if isinstance(event, ApprovalRequired)] == [
+        ApprovalRequired(
+            conversation_id="c1",
+            executions=[
+                ToolExecution(
+                    id="te1",
+                    conversation_id="c1",
+                    parent_id="a1",
+                    created_at=500,
+                    tool_call_id="tc1",
+                    raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+                    tool_spec=ADD_SPEC,
+                    tool_spec_id=ADD_SPEC_ID,
+                    status=ExecutionStatus.PENDING,
+                    approval_status=ApprovalStatus.PENDING,
+                    approval_decisions=[
+                        ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+                        ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+                    ],
+                    updated_at=1000,
+                ),
+            ],
+        ),
+    ]
+    assert runner.blocked()
+
+
+async def test_a_new_gate_minted_by_the_fall_through_round_is_announced():
+    # The model may answer a fall-through round with a NEW sensitive call that
+    # gates too — two gates is legal. The second gate must be ANNOUNCED even
+    # though the first already was: the announced set is per gate, not one
+    # boolean per drive, or an application driving prompts off
+    # `ApprovalRequired` alone would never hear of the second one.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 3, "b": 4}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "a2", "te2"],
+        now=1000,
+    )
+    runner.post_message("what will you do?")
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    approvals = [event for event in events if isinstance(event, ApprovalRequired)]
+    assert [[ex.id for ex in event.executions] for event in approvals] == [
+        ["te1"],
+        ["te1", "te2"],
+    ]
+    assert [ex.id for ex in runner.pending_approvals()] == ["te1", "te2"]
+    assert runner.session.entries["te2"].approval_status is ApprovalStatus.PENDING
+    assert runner.blocked()
+
+
+async def test_an_llm_failure_during_the_fall_through_round_settles_the_gate():
+    # Decision 4's other half: the fall-through round's own LLM call fails.
+    # No close leaves a nonterminal execution behind — the gate settles
+    # CANCELLED, its ToolExecuted is emitted before the TurnFinish, the turn
+    # closes ERRORED, and the failure re-raises.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([], error=faux_error("provider 500", error_class=ProviderAPIError)),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "tf"],
+        now=1000,
+    )
+    runner.post_message("hello?")
+    events = []
+
+    # The append loop is load-bearing: the error fires mid-iteration and the
+    # assertions below read the events captured before it, which a
+    # comprehension would discard. Hence the PERF401/PT012 suppressions.
+    with pytest.raises(ProviderAPIError, match="provider 500"):  # noqa: PT012
+        async with runner.run() as run:
+            async for event in run:
+                events.append(event)  # noqa: PERF401
+
+    gated = ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+        updated_at=1000,
+    )
+    settled = ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        approval_status=ApprovalStatus.PENDING,  # settled, never resolved
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+        cancel_signalled_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert events == [
+        ApprovalRequired(conversation_id="c1", executions=[gated]),
+        ToolExecuted(
+            conversation_id="c1",
+            tool_call_id="tc1",
+            execution=settled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert runner.session.entries["te1"] == settled
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="um",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="provider 500",
+    )
+    assert runner.idle()
+
+
+async def test_an_llm_failure_during_the_fall_through_round_settles_the_gate_eagerly():
+    # The same settle through eager consumption: the background task drains
+    # the generator, and the settle's ToolExecuted must still reach the
+    # consumer before the re-raise.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([], error=faux_error("provider 500", error_class=ProviderAPIError)),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "tf"],
+        now=1000,
+    )
+    runner.post_message("hello?")
+    run = runner.start()
+    events = []
+
+    with pytest.raises(ProviderAPIError, match="provider 500"):  # noqa: PT012
+        async with run:
+            async for event in run:
+                events.append(event)  # noqa: PERF401
+
+    assert [type(event).__name__ for event in events] == ["ApprovalRequired", "ToolExecuted"]
+    assert runner.session.entries["te1"].status is ExecutionStatus.CANCELLED
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="um",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="provider 500",
+    )
+    assert runner.idle()
+
+
+async def test_the_fall_through_round_does_not_close_the_turn_over_the_gate():
+    # THE CLOSE GUARD (0008). The fall-through round answers with
+    # finish_reason="stop", which closes any ordinary turn COMPLETED — but a
+    # live gate keeps the turn open: closing would strand the approval outside
+    # any open turn, where `pending_approvals()` cannot see it and `notify()`
+    # has nothing to re-decide.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Still waiting on you.")], finish_reason="stop"),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "a2"],
+        now=1000,
+    )
+    runner.post_message("why is this taking so long?")
+
+    result = await runner.run()
+
+    assert result.outcome is None
+    # no TurnFinish anywhere on the path, and the gate is byte-untouched by
+    # the round (two re-asks landed in the audit log; nothing else moved)
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um", "a2"]
+    assert runner.session.entries["te1"] == ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+        updated_at=1000,
+    )
+    assert [ex.id for ex in runner.pending_approvals()] == ["te1"]
+
+
+async def test_several_posts_before_one_drive_are_answered_by_one_round():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Answering both.")], finish_reason="stop"),
+        ]
+    )
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um1", "um2", "a2"],
+        now=1000,
+    )
+    runner.post_message("what is this?")
+    runner.post_message("and why?")
+
+    result = await runner.run()
+
+    # the predicate is "any unseen post", not a count: one round carries both
+    assert result.outcome is None
+    assert len(faux.requests) == 1
+    assert faux.requests[0].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc1",
+            content=[
+                LucaTextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")
+            ],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="what is this?")]),
+        LucaUserMessage(content=[LucaTextBlock(text="and why?")]),
+    ]
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um1", "um2", "a2"]
+    assert runner.blocked()
+
+
+async def test_a_post_during_the_fall_through_call_drives_one_more_round():
+    # The blind-spot window: a message landing under the fall-through round's
+    # own LLM call sits BEFORE the recorded assistant entry, where the durable
+    # post predicate cannot see it — the drive-local `last_seen` fingerprint
+    # is what drives the second round.
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("First answer.")], finish_reason="stop"),
+            faux_assistant_message([faux_text("Second answer.")], finish_reason="stop"),
+        ]
+    )
+    mw = PostDuringResponse({1: ["and one more thing"]})
+    session = GATED_SESSION.model_copy(deep=True)
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um1", "um2", "a2", "a3"],
+        now=1000,
+        middleware=[mw],
+    )
+    mw.post = runner.post_message
+    runner.post_message("first question")
+
+    result = await runner.run()
+
+    assert result.outcome is None
+    assert len(faux.requests) == 2
+    assert faux.requests[1].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc1",
+            content=[
+                LucaTextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")
+            ],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="first question")]),
+        LucaUserMessage(content=[LucaTextBlock(text="and one more thing")]),
+        LucaAssistantMessage(
+            content=[LucaTextBlock(text="First answer.")],
+            provider="faux",
+            model="test-model",
+        ),
+    ]
+    assert main_conversation(runner.session).nodes == [
+        "u1",
+        "ts",
+        "a1",
+        "te1",
+        "um1",
+        "um2",
+        "a2",
+        "a3",
+    ]
+    assert runner.blocked()
+    assert [ex.id for ex in runner.pending_approvals()] == ["te1"]
+
+
+async def test_hard_max_steps_over_a_live_gate_settles_it_before_the_errored_close():
+    # Finding 4: each post while blocked burns a real step, so the hard limit
+    # is now reachable with a gate open. No close leaves a nonterminal
+    # execution behind — the gate is settled CANCELLED, its ToolExecuted
+    # emitted, and only then does the turn close ERRORED.
+    faux = FauxProvider()  # zero responses: the round is never reached
+    session = GATED_SESSION.model_copy(deep=True)
+    session.session_config = SessionConfig(
+        llm_config=MODEL,
+        runtime_config=RuntimeConfig(hard_max_steps=1),
+    )
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "tf"],
+        now=1000,
+    )
+    runner.post_message("hurry up")
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    gated = ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+        updated_at=1000,
+    )
+    settled = ToolExecution(
+        id="te1",
+        conversation_id="c1",
+        parent_id="a1",
+        created_at=500,
+        tool_call_id="tc1",
+        raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
+        tool_spec=ADD_SPEC,
+        tool_spec_id=ADD_SPEC_ID,
+        status=ExecutionStatus.CANCELLED,
+        result=None,
+        approval_status=ApprovalStatus.PENDING,  # settled, never resolved
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+        cancel_signalled_at=1000,
+        ended_at=1000,
+        updated_at=1000,
+    )
+    assert events == [
+        ApprovalRequired(conversation_id="c1", executions=[gated]),
+        ToolExecuted(
+            conversation_id="c1",
+            tool_call_id="tc1",
+            execution=settled,
+            result_text="[tool execution cancelled]",
+            is_error=True,
+        ),
+    ]
+    assert faux.requests == []
+    assert runner.session.entries["te1"] == settled
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="um",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="Hard max steps limit reached: 1",
+    )
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um", "tf"]
+    assert runner.idle()
+
+
+class CancelDuringGateDecide:
+    """Cancels while the gate's re-ask is in flight — after the loop-top
+    cancel check has already passed, so the check INSIDE the gate branch is
+    what must catch it, before any fall-through round."""
+
+    def __init__(self) -> None:
+        self.cancel = None
+        self.fired = False
+
+    def before_permission_check(self, session, conversation_id, execution):
+        if not self.fired:
+            self.fired = True
+            self.cancel()
+        return execution
+
+
+async def test_precedence_a_cancel_beats_the_unseen_post_at_a_gate():
+    # Both are true at the gate: a cancel landed and a post is unseen. The
+    # cancel wins — wind down, no fall-through round, the post buried (the
+    # empty response script fails loudly if a round is attempted).
+    faux = FauxProvider()
+    session = GATED_SESSION.model_copy(deep=True)
+    mw = CancelDuringGateDecide()
+    registry = FakeToolRegistry(
+        [AddTool()],
+        decisions=[ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000)],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=["um", "cr", "tf"],
+        now=1000,
+        middleware=[mw],
+    )
+    mw.cancel = runner.cancel
+    runner.post_message("wait, don't")
+
+    result = await runner.run()
+
+    assert result.outcome == TurnOutcome.CANCELLED
+    assert faux.requests == []
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "um", "cr", "tf"]
+    assert runner.session.entries["te1"].status is ExecutionStatus.CANCELLED
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+    )
+    assert runner.idle()  # buried: the closed bracket derives IDLE
 
 
 async def test_precedence_an_unconsumed_cancel_beats_the_unseen_message():

@@ -791,10 +791,53 @@ def test_refused_projects_the_limits_own_wording():
     )
 
 
+def test_gated_execution_projects_the_awaiting_approval_placeholder():
+    # THE ONE PROJECTABLE NONTERMINAL STATE (0008): PENDING with an approval
+    # the policy explicitly deferred. `is_error` stays False — the call has
+    # not failed, it has not run, and an error result is exactly what makes a
+    # model retry.
+    execution = _execution(
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+
+    assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")],
+        is_error=False,
+    )
+
+
 def test_pending_execution_is_not_projectable():
+    # approval_status None: the policy never processed it — a runtime state
+    # the drive advances, not the durable gate the carve-out is for
     execution = _execution(status=ExecutionStatus.PENDING)
 
     with pytest.raises(ProjectionError, match="pending"):
+        PROJECTOR.project_tool_execution(execution, {})
+
+
+def test_pending_allowed_execution_is_not_projectable():
+    # ALLOWED but not yet dispatched: the drive's to move, still mid-execution
+    execution = _execution(
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.ALLOWED,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
+        ],
+    )
+
+    with pytest.raises(ProjectionError, match="pending"):
+        PROJECTOR.project_tool_execution(execution, {})
+
+
+def test_received_execution_is_not_projectable():
+    execution = _execution(status=ExecutionStatus.RECEIVED)
+
+    with pytest.raises(ProjectionError, match="received"):
         PROJECTOR.project_tool_execution(execution, {})
 
 
@@ -870,6 +913,100 @@ def test_subclass_can_change_status_only_wording_via_class_attribute():
         content=[TextBlock(text="The user declined this tool call.")],
         is_error=True,
     )
+
+
+def test_subclass_can_change_the_awaiting_approval_wording():
+    class Terse(ConversationProjector):
+        AWAITING_APPROVAL_OUTPUT: ClassVar[str] = "[waiting on you]"
+
+    execution = _execution(
+        status=ExecutionStatus.PENDING,
+        approval_status=ApprovalStatus.PENDING,
+        approval_decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+
+    assert Terse().project_tool_execution(execution, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="[waiting on you]")],
+        is_error=False,
+    )
+
+
+def test_the_placeholder_is_replaced_in_place_once_the_gate_resolves():
+    # The 0008 headline pair: the SAME path projects the placeholder while
+    # gated and the real result once the execution completed — the projection
+    # is a pure function of the path, and the one projected tool message that
+    # is not final is replaced at the same position.
+    call = ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})
+    gated = {
+        "u1": UserMessage(id="u1", created_at=1000, parts=[TextContent(text="Add 1 and 2")]),
+        "ts": TurnStart(id="ts", created_at=1000),
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1000,
+            parts=[call],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": _execution(
+            status=ExecutionStatus.PENDING,
+            approval_status=ApprovalStatus.PENDING,
+            approval_decisions=[
+                ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ],
+        ),
+        "um": UserMessage(id="um", created_at=1001, parts=[TextContent(text="wait, what are you adding?")]),
+    }
+    nodes = ["u1", "ts", "a1", "te1", "um"]
+
+    assert PROJECTOR.project(nodes, gated) == [
+        LucaUserMessage(content=[TextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="p",
+            model="m",
+        ),
+        ToolMessage(
+            tool_call_id="tc1",
+            content=[
+                TextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")
+            ],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[TextBlock(text="wait, what are you adding?")]),
+    ]
+
+    resolved = {
+        **gated,
+        "te1": _execution(
+            status=ExecutionStatus.COMPLETED,
+            approval_status=ApprovalStatus.ALLOWED,
+            approval_decisions=[
+                ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+                ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1002),
+            ],
+            result=ExecutionResult(content=[TextContent(text="3")]),
+            started_at=1002,
+            ended_at=1002,
+        ),
+    }
+
+    assert PROJECTOR.project(nodes, resolved) == [
+        LucaUserMessage(content=[TextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2})],
+            provider="p",
+            model="m",
+        ),
+        ToolMessage(
+            tool_call_id="tc1",
+            content=[TextBlock(text="3")],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[TextBlock(text="wait, what are you adding?")]),
+    ]
 
 
 def test_subclass_can_replace_project_tool_execution_wholesale():

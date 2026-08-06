@@ -1023,6 +1023,18 @@ def open_turn_is_runnable(
     return not any(execution.status == ExecutionStatus.PENDING for execution in open_turn_executions(nodes, entries))
 
 
+def _last_assistant_index(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+    start: int,
+) -> int | None:
+    """Index of the last `AssistantMessage` at or after `start`, or None."""
+    for i in range(len(nodes) - 1, start - 1, -1):
+        if isinstance(entries.get(nodes[i]), AssistantMessage):
+            return i
+    return None
+
+
 def open_turn_unseen_material(
     nodes: Sequence[str],
     entries: Mapping[str, AnyEntry],
@@ -1061,11 +1073,7 @@ def open_turn_unseen_material(
     index = open_turn_index(nodes, entries)
     if index is None:
         return False
-    last_assistant = None
-    for i in range(len(nodes) - 1, index - 1, -1):
-        if isinstance(entries.get(nodes[i]), AssistantMessage):
-            last_assistant = i
-            break
+    last_assistant = _last_assistant_index(nodes, entries, index)
     if last_assistant is None:
         return False
     excluded: set[str] = set()
@@ -1087,6 +1095,32 @@ def open_turn_unseen_material(
         ):
             return True
     return False
+
+
+def open_turn_unseen_post(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Does the open turn hold a `UserMessage` recorded AFTER its last
+    `AssistantMessage` — a post the model has not been shown?
+
+    The GATE's wake term (0008), and deliberately narrower than
+    `open_turn_unseen_material`: a terminal tool execution does not count. A
+    gated round's ALLOWED siblings complete in the same round the gate was
+    raised, so counting them would fire a model call — with the gate's
+    placeholder on the wire — on every approval in the system, before anyone
+    posted anything. Only a human's message opens this hatch.
+
+    The same blind spot as its sibling: a message posted while an LLM call is
+    in flight lands BEFORE the recorded assistant entry, where this cannot see
+    it. The live drive covers that window with its `seen` fingerprint."""
+    index = open_turn_index(nodes, entries)
+    if index is None:
+        return False
+    last_assistant = _last_assistant_index(nodes, entries, index)
+    if last_assistant is None:
+        return False
+    return any(isinstance(entries.get(node_id), UserMessage) for node_id in nodes[last_assistant + 1 :])
 
 
 # ── the subagent handshakes (pure reads over the data model) ──────────────────
@@ -1329,7 +1363,7 @@ class ConversationStatus(str, Enum):
     |---|---|---|
     | `IDLE` | nothing — there is no work | yes |
     | `BUSY` | work — the run can still be exhausted | yes — into the open turn (or queued behind a trailing message) |
-    | `BLOCKED` | stop again immediately; you must act first | yes — the message waits with the turn |
+    | `BLOCKED` | stop again immediately; you must act first | yes — the conversation derives `BUSY` and the next drive answers it past the gate, then re-parks (0008) |
     | `CANCELLING` | flush the turn, not answer it | no |
 
     The post column is the COMMON case, not the whole rule:
@@ -1554,6 +1588,9 @@ class AgentSession(BaseModel):
 
         - open turn with an unconsumed cancel  → `CANCELLING`
         - open turn with something runnable    → `BUSY`
+        - open turn with nothing runnable (only gated executions remain) but
+          an unseen user post → `BUSY` — the gate projects a placeholder, so
+          the next drive answers the post and re-parks (0008)
         - open turn with nothing runnable      → `BLOCKED`
         - trailing `UserMessage` (queued work) → `BUSY`
         - anything else, INCLUDING a closed `TurnFinish` whatever its outcome
@@ -1601,10 +1638,12 @@ class AgentSession(BaseModel):
                 # 2. A BUSY child is working; an IDLE one has finished and
                 #    this conversation can resolve it; a CANCELLING one is
                 #    winding down → BUSY.
-                # 3. A gated execution with nothing above it → BLOCKED. The
-                #    application must act first — ranked ABOVE the material
-                #    term, because a drive parks at the gate before it could
-                #    ever reach the model, and BUSY here would hot-loop every
+                # 3. A gated execution with nothing above it → BLOCKED, UNLESS
+                #    an unseen post can reach the model past it (0008): with
+                #    the gate projecting a placeholder the next drive CAN do
+                #    something, so the material term below is allowed to speak.
+                #    Without a post the old reasoning stands — the drive would
+                #    only re-park, and BUSY would hot-loop every
                 #    poll-for-BLOCKED consumer.
                 # 4. Unseen material (a resolved child's result, a mid-turn
                 #    post, a non-spawn tool result) → BUSY: the next run()
@@ -1628,7 +1667,7 @@ class AgentSession(BaseModel):
                     if child.conversation_id in self.conversations
                 ):
                     return ConversationStatus.BUSY
-                if open_turn_has_awaiting_executions(nodes, entries):
+                if open_turn_has_awaiting_executions(nodes, entries) and not open_turn_unseen_post(nodes, entries):
                     return ConversationStatus.BLOCKED
                 if open_turn_unseen_material(
                     nodes,
@@ -1638,6 +1677,11 @@ class AgentSession(BaseModel):
                     return ConversationStatus.BUSY
                 return ConversationStatus.BLOCKED
             if open_turn_is_runnable(nodes, entries):
+                return ConversationStatus.BUSY
+            # Not runnable means only gated executions remain. An unseen post
+            # still reaches the model past them (0008): the gate projects a
+            # placeholder, so the next drive answers the post and re-parks.
+            if open_turn_unseen_post(nodes, entries):
                 return ConversationStatus.BUSY
             return ConversationStatus.BLOCKED
         end = end_before_closed_compaction_brackets(nodes, entries)

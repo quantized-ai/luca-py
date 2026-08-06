@@ -24,9 +24,22 @@ from pydantic import BaseModel, ConfigDict
 
 from luca.agent.core import TurnOutcome
 from luca.agent.core.events import SubagentFinished
-from luca.agent.core.models import ExecutionStatus, TextContent
+from luca.agent.core.models import (
+    ApprovalDecision,
+    ApprovalOption,
+    ConversationStatus,
+    ExecutionStatus,
+    TextContent,
+)
 from luca.client.testing import faux_assistant_message, faux_text, faux_tool_call
-from tests.agent.scenarios import DeterministicRunner, FakeTool
+from luca.client.types import (
+    AssistantMessage as LucaAssistantMessage,
+    TextBlock as LucaTextBlock,
+    ToolCall as LucaToolCall,
+    ToolMessage as LucaToolMessage,
+    UserMessage as LucaUserMessage,
+)
+from tests.agent.scenarios import AddTool, DeterministicRunner, FakeTool, FakeToolRegistry
 from tests.agent.subagents.conftest import (
     STOP_TOOL_NAME,
     SubagentRegistry,
@@ -276,6 +289,90 @@ async def test_a_post_to_a_live_subagent_is_answered_within_its_turn(faux):
     assert session.entries[child_nodes[4]].parts == [TextContent(text="Also check the tests")]
     assert faux.requests[2].messages[-1].content[0].text == "Also check the tests"
     assert runner.idle()
+
+
+async def test_a_post_to_a_gated_child_is_answered_past_its_gate(faux):
+    # The 0008 story one level down: the GATED conversation is a subagent. A
+    # post to the child restarts its drive, which answers past the gate — the
+    # gated call projecting as the awaiting-approval placeholder — and
+    # re-parks at the same gate. The parent's path never moves.
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [spawn_call("Research A", "research A", call_id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_text("It adds 1 and 2 — waiting on your approval.")],
+                finish_reason="stop",
+            ),
+        ]
+    )
+    session = subagent_session()
+    registry = SubagentRegistry()
+    registry.other = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
+        ],
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=registry,
+        provider=faux,
+        ids=list(IDS),
+        now=1000,
+    )
+    runner.post_message("go")
+
+    result = await runner.run()  # parent spawns; the child parks at its gate
+
+    child_id = next(cid for cid, c in session.conversations.items() if c.depth == 1)
+    assert result.status == ConversationStatus.BLOCKED
+    assert [ex.conversation_id for ex in runner.pending_approvals()] == [child_id]
+    parent_nodes = list(session.conversations["c1"].nodes)
+
+    runner.post_message("wait — explain what that does first", conversation_id=child_id)
+    result = await runner.run()
+
+    # one fall-through round on the CHILD: placeholder on the wire, post last
+    assert len(faux.requests) == 3
+    assert faux.requests[2].messages == [
+        LucaUserMessage(content=[LucaTextBlock(text="Research A")]),
+        LucaAssistantMessage(
+            content=[LucaToolCall(id="tc2", name="add", arguments={"a": 1, "b": 2})],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaToolMessage(
+            tool_call_id="tc2",
+            content=[
+                LucaTextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")
+            ],
+            is_error=False,
+        ),
+        LucaUserMessage(content=[LucaTextBlock(text="wait — explain what that does first")]),
+    ]
+    # the child answered and re-parked at the same gate; the parent never moved
+    assert [type(session.entries[n]).__name__ for n in session.conversations[child_id].nodes] == [
+        "UserMessage",  # the seed prompt
+        "TurnStart",
+        "AssistantMessage",  # the gated round
+        "ToolExecution",  # the gate, still PENDING
+        "UserMessage",  # the post
+        "AssistantMessage",  # the fall-through answer
+    ]
+    assert result.status == ConversationStatus.BLOCKED
+    assert [ex.conversation_id for ex in runner.pending_approvals()] == [child_id]
+    gate = runner.pending_approvals()[0]
+    assert gate.status is ExecutionStatus.PENDING
+    assert session.conversations["c1"].nodes == parent_nodes
 
 
 async def test_the_parent_accepts_mid_turn_posts_once_children_resolved(faux):

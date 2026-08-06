@@ -13,10 +13,13 @@ and the turn closes CANCELLED. Choosing "Cancel turn" at the approval prompt
 does the same. A drive failure renders as an error block plus the recovery
 prompt (keep retrying / switch model / cancel turn).
 
-The composer stays enabled while the agent works: submitting mid-turn posts
-into the open turn. Slash commands stay idle-only. Typing `/` in an empty
-composer opens the palette; `@` opens the context picker, which writes the
-paths it commits back into the composer as text.
+The composer stays enabled while the agent works, with one exception:
+submitting mid-turn posts into the open turn, but a submit while the main
+conversation is BLOCKED is refused with a notice — the framework would carry
+the message past the gate (0008), and in this UI the user's answer belongs to
+the approval prompt instead. Slash commands stay idle-only. Typing `/` in an
+empty composer opens the palette; `@` opens the context picker, which writes
+the paths it commits back into the composer as text.
 """
 
 from __future__ import annotations
@@ -233,6 +236,22 @@ class AgentApp(LucaApp):
                 return
         parts: list[ContentPart] = [*self._pending_images, *self._expand_mentions(text)]
         if not parts:
+            return
+        # THE TUI OPTS OUT OF POSTING PAST A GATE (0008). The framework will
+        # carry this message to the model with the gated call projected as a
+        # placeholder; in this UI that is never what the user meant — the
+        # answer they want is the approval prompt two lines below. The composer
+        # is normally not even mounted here (the prompt replaces it), but the
+        # swap is driven by the drive worker, so there are windows where it is:
+        # before the parked run has returned, and after `_restore_composer()`
+        # when a partially-answered gate re-arms.
+        #
+        # `blocked()` and not `pending_approvals()`: a SUBAGENT gate with
+        # siblings still working leaves this conversation BUSY, and steering
+        # posts into a live orchestration stay supported. Checked BEFORE the
+        # post, so 0008's own BLOCKED → BUSY transition cannot bypass it.
+        if self.runner.blocked():
+            await self._notice("answer the approval prompt first", error=True)
             return
         try:
             self.runner.post_message(parts)

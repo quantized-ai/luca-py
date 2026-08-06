@@ -614,7 +614,7 @@ state.step_count    # assistant messages in the OPEN turn
 | `status` | Derived when |
 |---|---|
 | `cancelling` | the open turn holds an unconsumed `cancel_requested` (§6) |
-| `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued, or a subagent result / mid-turn post awaits the model |
+| `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued, or a subagent result / mid-turn post awaits the model (a post into a gated turn included: the next drive answers it past the gate, [04](04-runner.md)) |
 | `blocked` | the open turn has nothing runnable: every execution is waiting on an approval, or every subagent is and nothing new awaits the model |
 | `idle` | anything else, INCLUDING a closed `turn_finish` whatever its outcome |
 
@@ -631,8 +631,12 @@ the open turn awaits the model (`open_turn_unseen_material` — a posted
 message, a resolved child's result; with
 `wake_parent_on_subagent_completion=False` a resolved child's result no
 longer counts, [08](08-runtime-config.md)). A gate on the parent's own
-execution outranks that material term: the next `run()` can only re-park at
-the gate, so the honest answer is `blocked`. The busy/blocked transition can be
+execution outranks that material term — the next `run()` can only re-park at
+the gate, so the honest answer is `blocked` — with one exception: an unseen
+user POST lets the gate term yield (`open_turn_unseen_post`, deliberately
+narrower than the material predicate), because the gated call projects a
+placeholder and the next drive can answer the post
+([10](10-projection.md) §2). The busy/blocked transition can be
 triggered by a *sibling* finishing, with nothing in the parent's own entries
 changing at all — which is exactly why nothing can cache it.
 

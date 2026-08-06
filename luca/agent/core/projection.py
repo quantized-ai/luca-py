@@ -42,8 +42,14 @@ Projection is deterministic, read-only derivation:
 
 Tool executions project by `ExecutionStatus`:
 
-- `PENDING` / `RUNNING` are not projectable as tool outputs — raising here is
-  the fail-loud guard against calling the model mid-execution;
+- nonterminal executions (`RECEIVED` / `PENDING` / `RUNNING`) are not
+  projectable as tool outputs — raising here is the fail-loud guard against
+  calling the model mid-execution — with EXACTLY ONE carve-out: a GATED
+  execution (`PENDING` with `approval_status=PENDING`) projects the
+  `AWAITING_APPROVAL_OUTPUT` placeholder. It is the one nonterminal state
+  that is a durable resting point only the application can move, not a
+  runtime in flight, and the placeholder is what lets a message posted while
+  the gate is open reach the model at all (0008);
 - `COMPLETED` projects `result.content` and preserves `result.is_error`
   (an `is_error=True` result is still a completed execution);
 - every other terminal status projects derived error content with
@@ -96,6 +102,7 @@ from .exceptions import ProjectionError
 from .models import (
     NONTERMINAL_STATUSES,
     AnyEntry,
+    ApprovalStatus,
     AssistantMessage,
     CancelRequested,
     ChildConversation,
@@ -142,6 +149,16 @@ class ConversationProjector:
     CHILD_UPDATE_PREAMBLE: ClassVar[str] = "Subagent task update:\n"
     CHILD_UPDATE_TEMPLATE: ClassVar[str] = "<task id={task_id} status={status}{completed_at}>\n{content}\n</task>"
     CHILD_COMPLETED_AT_TEMPLATE: ClassVar[str] = ' completed_at="{iso}"'
+
+    # Derived tool output for a GATED execution — PENDING with an approval the
+    # policy explicitly deferred. Deliberately NOT a row in
+    # STATUS_ONLY_OUTPUTS: that table is keyed by TERMINAL status, and this is
+    # the single nonterminal state that projects at all. `is_error` stays False
+    # where every other derived output sets it True — the call has not failed,
+    # it has not run, and an error result is exactly what makes a model retry.
+    AWAITING_APPROVAL_OUTPUT: ClassVar[str] = (
+        "[tool execution is awaiting approval — it has not run, and this is not its result]"
+    )
 
     # Derived tool output for the terminal statuses that are complete
     # lifecycle facts on their own (no ToolExecutionError to elaborate with).
@@ -354,6 +371,19 @@ class ConversationProjector:
         that lacks what the rule needs fails loudly rather than being
         mutated into projectability."""
         status = entry.status
+        if status == ExecutionStatus.PENDING and entry.approval_status == ApprovalStatus.PENDING:
+            # THE ONE PROJECTABLE NONTERMINAL STATE. A gated execution is not a
+            # runtime bug the way RECEIVED / RUNNING / undecided-PENDING are: it
+            # is a durable resting state only the application can move, and the
+            # placeholder is what lets a message posted while the gate is open
+            # reach the model at all (0008). Replaced by the real result at this
+            # same path position once the approval is answered — the one
+            # projected tool message that is not final.
+            return ToolMessage(
+                tool_call_id=entry.tool_call_id,
+                content=[TextBlock(text=self.AWAITING_APPROVAL_OUTPUT)],
+                is_error=False,
+            )
         if status in NONTERMINAL_STATUSES:
             raise ProjectionError(
                 f"ToolExecution {entry.id!r} is {status.value}; a nonterminal "
