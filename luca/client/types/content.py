@@ -5,11 +5,18 @@ Discriminated union on `type`. Every block has `extra="forbid"`.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from .media import MediaSource
+
+# Native tool-call classes keyed by their `type` literal — the canonical
+# serialization discriminator, which for every first-party native equals the
+# wire item type. Filled by ToolCall.__pydantic_init_subclass__ when the
+# defining module imports; importing `luca.client` imports all first-party
+# native modules, so any client import registers them.
+NATIVE_TOOL_CALL_TYPES: dict[str, type[ToolCall]] = {}
 
 
 class TextBlock(BaseModel):
@@ -71,6 +78,36 @@ class ToolCall(BaseModel):
     partial_arguments: str = ""
     complete: bool = True
     thought_signature: str | None = None
+
+    # Bound by native subclasses to their ToolProjector subclass; None on the
+    # base and on any non-native subclass means the transport's default
+    # projector. ClassVar[Any] deliberately: the sibling `type` FIELD shadows
+    # the builtin in this namespace during annotation evaluation.
+    projector_class: ClassVar[Any] = None
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        wire_type = cls.model_fields["type"].default
+        if wire_type == "tool_call":
+            return  # not a native subclass
+        existing = NATIVE_TOOL_CALL_TYPES.get(wire_type)
+        if existing is not None and existing is not cls:
+            raise TypeError(f"tool-call type {wire_type!r} is already registered by {existing.__name__}")
+        NATIVE_TOOL_CALL_TYPES[wire_type] = cls
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _dispatch_native(cls, value: Any, handler: Any) -> Any:
+        # Validating a native payload against the BASE class dispatches to the
+        # registered subclass, so containers annotated with ToolCall
+        # revalidate conversations that contain native calls. Deserializing a
+        # native payload whose module was never imported fails validation.
+        if cls is ToolCall and isinstance(value, dict):
+            target = NATIVE_TOOL_CALL_TYPES.get(value.get("type", "tool_call"))
+            if target is not None:
+                return target.model_validate(value)
+        return handler(value)
 
     def parse_arguments(self, schema: Any) -> Any:
         """Validate self.arguments against `schema`. Returns a typed object.

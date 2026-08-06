@@ -51,6 +51,12 @@ mid-stream without races.
 | **`finish`** | `message`, `finish_reason`, `provider_finish_reason`, `cancelled`, `usage`, `tool_calls` | **Exactly one terminal** when the model produced a turn. |
 | **`error`** | `error`, `partial_message`, `usage` | **Terminal** when the stream itself broke (HTTP error, malformed metadata). |
 
+> ⚠️ **OpenAI native tools stream start → end only.** An
+> [OpenAI native call](06-tools.md#provider-native-tools) (apply_patch,
+> shell) emits no `tool_call_delta` — its in-progress payload is raw text,
+> not JSON — and `tool_call_end.tool_call` carries the complete typed call.
+> Anthropic native tools stream full JSON deltas like any other tool.
+
 ## Two terminals, on a strict split
 
 - `FinishEvent` — the **model** produced a terminal. Always the terminal

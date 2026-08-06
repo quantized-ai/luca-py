@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SerializeAsAny
 
 from ..exceptions import ClientError, StreamError, TimeoutError as SDKTimeoutError
 from .completion import Usage
@@ -113,7 +113,9 @@ class ToolCallDeltaEvent(BaseModel):
 class ToolCallEndEvent(BaseModel):
     type: Literal["tool_call_end"] = "tool_call_end"
     index: int
-    tool_call: ToolCall
+    # SerializeAsAny: native ToolCall subclass fields must survive a dump,
+    # same rule as AssistantMessage.content.
+    tool_call: SerializeAsAny[ToolCall]
     partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
@@ -160,7 +162,7 @@ class FinishEvent(BaseModel):
     provider_finish_reason: str | None
     cancelled: bool = False
     usage: Usage
-    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_calls: list[SerializeAsAny[ToolCall]] = Field(default_factory=list)
 
     _response_format: Any | None = PrivateAttr(default=None)
 
@@ -225,6 +227,19 @@ class RawBlockStart:
     # arrives when the item opens (OpenAI Responses: `rs_…`) — before any
     # delta, so RawThinkingDelta is too late to carry it.
     item_id: str | None = None
+    # A transport-built typed ToolCall (native tools): appended as-is with
+    # complete=False. The accumulator stays projector-blind — it never sees
+    # more than the finished object.
+    prebuilt: ToolCall | None = None
+
+
+@dataclass
+class RawBlockStop:
+    index: int
+    # The complete native ToolCall built when its wire item finished: swapped
+    # in whole, so final arguments arrive without a JSON parse. None keeps
+    # today's path (parse partial_arguments).
+    replacement: ToolCall | None = None
 
 
 @dataclass
@@ -250,11 +265,6 @@ class RawToolArgumentsDelta:
 class RawRefusalDelta:
     index: int
     text: str
-
-
-@dataclass
-class RawBlockStop:
-    index: int
 
 
 @dataclass
@@ -582,27 +592,39 @@ class _ChatCompletionAccumulator:
                 self._open_block_indices.add(raw.index)
                 yield RefusalStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
             elif raw.block_type == "tool_call":
-                if raw.tool_id is None or raw.tool_name is None:
+                if raw.prebuilt is not None:
+                    # Transport-built typed call (native tools), still
+                    # in progress; the stop's `replacement` finishes it.
+                    self._message.content.append(raw.prebuilt)
+                    self._open_block_indices.add(raw.index)
+                    yield ToolCallStartEvent(
+                        index=raw.index,
+                        id=raw.prebuilt.id,
+                        name=raw.prebuilt.name,
+                        partial=self._message.model_copy(deep=True),
+                    )
+                elif raw.tool_id is None or raw.tool_name is None:
                     raise StreamError(
                         f"RawBlockStart(tool_call, index={raw.index}) missing tool_id or tool_name",
                         partial_message=self._message,
                     )
-                self._message.content.append(
-                    ToolCall(
+                else:
+                    self._message.content.append(
+                        ToolCall(
+                            id=raw.tool_id,
+                            name=raw.tool_name,
+                            arguments={},
+                            partial_arguments="",
+                            complete=False,
+                        )
+                    )
+                    self._open_block_indices.add(raw.index)
+                    yield ToolCallStartEvent(
+                        index=raw.index,
                         id=raw.tool_id,
                         name=raw.tool_name,
-                        arguments={},
-                        partial_arguments="",
-                        complete=False,
+                        partial=self._message.model_copy(deep=True),
                     )
-                )
-                self._open_block_indices.add(raw.index)
-                yield ToolCallStartEvent(
-                    index=raw.index,
-                    id=raw.tool_id,
-                    name=raw.tool_name,
-                    partial=self._message.model_copy(deep=True),
-                )
             else:
                 raise StreamError(
                     f"Unknown block_type={raw.block_type!r}",
@@ -659,20 +681,30 @@ class _ChatCompletionAccumulator:
             elif isinstance(block, RefusalBlock):
                 yield RefusalEndEvent(index=raw.index, content=block.text, partial=snapshot)
             elif isinstance(block, ToolCall):
-                try:
-                    block.arguments = json.loads(block.partial_arguments) if block.partial_arguments else {}
-                except json.JSONDecodeError as e:
-                    raise StreamError(
-                        f"Tool call {raw.index} ({block.name!r}) returned malformed JSON",
-                        partial_message=self._message,
-                    ) from e
-                block.complete = True
-                block.partial_arguments = ""
-                yield ToolCallEndEvent(
-                    index=raw.index,
-                    tool_call=block,
-                    partial=self._message.model_copy(deep=True),
-                )
+                if raw.replacement is not None:
+                    # The complete native call: final arguments arrive whole,
+                    # no JSON parse of partial_arguments.
+                    self._message.content[raw.index] = raw.replacement
+                    yield ToolCallEndEvent(
+                        index=raw.index,
+                        tool_call=raw.replacement,
+                        partial=self._message.model_copy(deep=True),
+                    )
+                else:
+                    try:
+                        block.arguments = json.loads(block.partial_arguments) if block.partial_arguments else {}
+                    except json.JSONDecodeError as e:
+                        raise StreamError(
+                            f"Tool call {raw.index} ({block.name!r}) returned malformed JSON",
+                            partial_message=self._message,
+                        ) from e
+                    block.complete = True
+                    block.partial_arguments = ""
+                    yield ToolCallEndEvent(
+                        index=raw.index,
+                        tool_call=block,
+                        partial=self._message.model_copy(deep=True),
+                    )
 
         elif isinstance(raw, RawFinish):
             self._terminal = raw.reason

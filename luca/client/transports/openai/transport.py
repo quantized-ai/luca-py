@@ -9,7 +9,7 @@ identity is on self._provider.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -30,13 +30,92 @@ from ...types.content import (
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.structured import response_format_to_json_schema, strictify_json_schema
-from ...types.tools import tool_parameters_to_json_schema
+from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .errors import OpenAIErrorMappingMixin
 
 
+class OpenAIToolProjector(ToolProjector):
+    """Standard function-tool behavior on the chat-completions wire — the
+    default projector, inherited by every OpenAI-compatible host (OpenRouter
+    subclasses the transport and accepts the same projectors). No native
+    tools ship on this wire; the projector exists so foreign native calls
+    can be detected and dropped, and so third parties can plug in."""
+
+    def project_tool_to_llm(self, tool: Tool) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool_parameters_to_json_schema(tool.parameters),
+            },
+        }
+
+    def build_tool_call(self, item: dict) -> ToolCall:
+        # `item` is one entry of the message's `tool_calls` array.
+        try:
+            args = json.loads(item["function"]["arguments"] or "{}")
+        except (json.JSONDecodeError, KeyError, TypeError):
+            args = {}
+        return ToolCall(
+            id=item["id"],
+            name=item["function"]["name"],
+            arguments=args,
+            complete=True,
+        )
+
+    def project_tool_call_to_llm(self, tool_call: ToolCall) -> dict:
+        # One entry for the assistant message's `tool_calls` array; the
+        # transport owns the array and the message envelope.
+        return {
+            "id": tool_call.id,
+            "type": "function",
+            "function": {
+                "name": tool_call.name,
+                "arguments": json.dumps(tool_call.arguments) if tool_call.arguments else "{}",
+            },
+        }
+
+    def project_tool_message_to_llm(
+        self,
+        message: ToolMessage,
+        tool_call: ToolCall | None,
+    ) -> dict:
+        # A whole wire message — results ARE top-level on this wire.
+        if isinstance(message.content, str):
+            content = message.content
+        else:
+            # Refusing beats dropping: the model would be told the tool call
+            # succeeded and handed a result with the image missing.
+            unsupported = {type(b).__name__ for b in message.content if not isinstance(b, TextBlock)}
+            if unsupported:
+                raise BadRequestError(
+                    "The chat-completions API allows only text in a tool "
+                    f"result; cannot send {', '.join(sorted(unsupported))} "
+                    f"for tool_call_id {message.tool_call_id!r}.",
+                )
+            content = "".join(b.text for b in message.content)
+        wire: dict = {
+            "role": "tool",
+            "tool_call_id": message.tool_call_id,
+            "content": content,
+        }
+        if message.name is not None:
+            wire["name"] = message.name
+        return wire
+
+    def project_tool_choice_to_llm(self, tool: BaseTool) -> dict:
+        return {"type": "function", "function": {"name": tool.name}}
+
+
 class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTransportMixin):
     transport_id = "openai"
+
+    TOOL_PROJECTOR_BASE: ClassVar[type] = OpenAIToolProjector
+
+    def _default_tool_projector(self) -> ToolProjector:
+        return OpenAIToolProjector()
 
     # --- payload building ---
 
@@ -88,7 +167,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         if request.tools:
             payload["tools"] = self._project_tools(request.tools)
         if request.tool_choice is not None:
-            payload["tool_choice"] = self._project_tool_choice(request.tool_choice)
+            payload["tool_choice"] = self._project_tool_choice(request.tool_choice, request.tools)
         if request.response_format is not None:
             payload["response_format"] = self._project_response_format(request.response_format)
 
@@ -111,14 +190,25 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         return {"role": "system", "content": text}
 
     def _project_messages(self, messages: list) -> list[dict]:
+        """The walk records call lineage — `{call_id: (projector, call)}` —
+        so a ToolMessage projects through the projector of the call it
+        answers; a dropped foreign call maps to None and takes its result
+        down with it. An assistant message left with nothing (no content, no
+        tool_calls, no refusal — e.g. a foreign native-only turn) is omitted:
+        this wire rejects an empty assistant message."""
         out: list[dict] = []
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] = {}
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                out.append(self._project_assistant_message(msg))
+                projected = self._project_assistant_message(msg, lineage)
+                if projected["content"] is not None or "tool_calls" in projected or "refusal" in projected:
+                    out.append(projected)
             elif isinstance(msg, ToolMessage):
-                out.append(self._project_tool_message(msg))
+                wire = self._project_tool_message(msg, lineage)
+                if wire is not None:
+                    out.append(wire)
             else:
                 raise BadRequestError(
                     f"Unknown message type {type(msg).__name__}",
@@ -166,7 +256,13 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             provider=self._provider,
         )
 
-    def _project_assistant_message(self, msg: AssistantMessage) -> dict:
+    def _project_assistant_message(
+        self,
+        msg: AssistantMessage,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
+    ) -> dict:
+        if lineage is None:
+            lineage = {}
         wire: dict = {"role": "assistant"}
         text_parts: list[str] = []
         tool_calls_wire: list[dict] = []
@@ -182,16 +278,10 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             elif isinstance(block, RefusalBlock):
                 wire["refusal"] = block.text
             elif isinstance(block, ToolCall):
-                tool_calls_wire.append(
-                    {
-                        "id": block.id,
-                        "type": "function",
-                        "function": {
-                            "name": block.name,
-                            "arguments": json.dumps(block.arguments) if block.arguments else "{}",
-                        },
-                    }
-                )
+                projector = self._projector_for_call(block)
+                lineage[block.id] = (projector, block) if projector is not None else None
+                if projector is not None:
+                    tool_calls_wire.append(projector.project_tool_call_to_llm(block))
         if text_parts:
             wire["content"] = "".join(text_parts)
         else:
@@ -200,52 +290,30 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             wire["tool_calls"] = tool_calls_wire
         return wire
 
-    def _project_tool_message(self, msg: ToolMessage) -> dict:
-        if isinstance(msg.content, str):
-            content = msg.content
-        else:
-            # Refusing beats dropping: the model would be told the tool call
-            # succeeded and handed a result with the image missing.
-            unsupported = {type(b).__name__ for b in msg.content if not isinstance(b, TextBlock)}
-            if unsupported:
-                raise BadRequestError(
-                    "The chat-completions API allows only text in a tool "
-                    f"result; cannot send {', '.join(sorted(unsupported))} "
-                    f"for tool_call_id {msg.tool_call_id!r}.",
-                    provider=self._provider,
-                )
-            content = "".join(b.text for b in msg.content)
-        wire: dict = {
-            "role": "tool",
-            "tool_call_id": msg.tool_call_id,
-            "content": content,
-        }
-        if msg.name is not None:
-            wire["name"] = msg.name
-        return wire
+    def _project_tool_message(
+        self,
+        msg: ToolMessage,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
+    ) -> dict | None:
+        if lineage is not None and msg.tool_call_id in lineage:
+            entry = lineage[msg.tool_call_id]
+            if entry is None:
+                return None  # its call was dropped (foreign native)
+            projector, call = entry
+            return projector.project_tool_message_to_llm(msg, call)
+        return self._default_tool_projector().project_tool_message_to_llm(msg, None)
 
-    def _project_tools(self, tools: list) -> list[dict]:
-        out = []
-        for t in tools:
-            schema = tool_parameters_to_json_schema(t.parameters)
-            out.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": schema,
-                    },
-                }
-            )
-        return out
-
-    def _project_tool_choice(self, choice: Any) -> Any:
+    def _project_tool_choice(self, choice: Any, tools: list | None) -> Any:
+        # Strings and raw dicts are protocol-level and stay here; the
+        # {"name": ...} forcing shape resolves through the named tool's
+        # projector.
         if isinstance(choice, str):
             return choice
         if isinstance(choice, dict):
-            # {"name": "x"} → {"type": "function", "function": {"name": "x"}}
             if set(choice.keys()) == {"name"}:
+                tool = self._declared_tool_named(choice["name"], tools)
+                if tool is not None:
+                    return self._resolve_projector(tool).project_tool_choice_to_llm(tool)
                 return {"type": "function", "function": {"name": choice["name"]}}
             return choice
         return choice
@@ -309,19 +377,8 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         refusal = msg_json.get("refusal")
         if refusal:
             content.append(RefusalBlock(text=refusal))
-        for tc in msg_json.get("tool_calls") or []:
-            try:
-                args = json.loads(tc["function"]["arguments"] or "{}")
-            except (json.JSONDecodeError, KeyError, TypeError):
-                args = {}
-            content.append(
-                ToolCall(
-                    id=tc["id"],
-                    name=tc["function"]["name"],
-                    arguments=args,
-                    complete=True,
-                ),
-            )
+        default = self._default_tool_projector()
+        content.extend(default.build_tool_call(tc) for tc in msg_json.get("tool_calls") or [])
         return AssistantMessage(
             content=content,
             provider=self._provider,

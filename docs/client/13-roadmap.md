@@ -20,7 +20,10 @@ nobody has to grep to find out whether a feature is real.
   blocks defined but per-transport projection has thin coverage outside
   ImageBlock.
 - Tools: dict / Pydantic `BaseModel` / `TypeAdapter` parameter forms; tool
-  choice; parallel tool calls (where the host supports it).
+  choice (incl. the provider-agnostic `{"name": ...}` forcing form);
+  parallel tool calls (where the host supports it); provider-native tools
+  (OpenAI apply_patch + local shell, Anthropic text editor + bash) on the
+  per-tool projector mechanism — see [06-tools.md](06-tools.md).
 - Structured output: `response_format=` + `response.parse()` /
   `FinishEvent.parse()` with the same three input styles, projected onto the
   provider's own field (OpenAI `text.format` / `response_format`, Anthropic

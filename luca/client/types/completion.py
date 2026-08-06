@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from .catalog import ModelCost, ModelInfo
 from .content import TextBlock
 from .messages import AssistantMessage, Message
 from .reasoning import Reasoning
 from .structured import parse_structured_output
-from .tools import Tool, ToolChoice
+from .tools import BaseTool, Tool, ToolChoice
 
 
 class UsageCost(BaseModel):
@@ -66,7 +66,7 @@ class ChatCompletionRequest(BaseModel):
     provider: str | None = None
     messages: list[Message] = Field(default_factory=list)
     system_message: str | list[TextBlock] | None = None
-    tools: list[Tool] | None = None
+    tools: list[BaseTool] | None = None
     tool_choice: ToolChoice | None = None
     response_format: Any | None = None  # ResponseFormat is Union[dict, type, TypeAdapter] — accept Any
 
@@ -98,6 +98,15 @@ class ChatCompletionRequest(BaseModel):
     provider_options: dict[str, dict] | None = None
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _coerce_tool_dicts(cls, value: Any) -> Any:
+        # Dicts mean STANDARD function tools; native tools are instances and
+        # pass through untouched. Same rule as the helper's _coerce_tools.
+        if not isinstance(value, list):
+            return value
+        return [Tool.model_validate(t) if isinstance(t, dict) else t for t in value]
 
 
 # pydantic v2 routes its own `__getattribute__` for declared fields and private

@@ -37,6 +37,20 @@ def test_single_scripted_response():
     assert response.message.content[0].text == "hello"
 
 
+def test_native_tools_pass_through_untouched():
+    # Faux never projects tools, so a native tool rides along unharmed.
+    from luca.client.providers.openai import ApplyPatchTool
+
+    faux = FauxTransport()
+    faux.set_responses([faux_assistant_message([faux_text("ok")], finish_reason="stop")])
+    native = ApplyPatchTool()
+    request = _req()
+    request.tools = [native]
+    response = faux.completion(request)
+    assert response.finish_reason == "stop"
+    assert request.tools == [native]
+
+
 def test_multiple_scripted_responses_in_order():
     faux = FauxTransport()
     faux.set_responses(

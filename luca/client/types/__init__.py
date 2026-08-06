@@ -59,7 +59,14 @@ from .structured import (
     response_format_to_json_schema,
     strictify_json_schema,
 )
-from .tools import Tool, ToolChoice, ToolParameters, tool_parameters_to_json_schema
+from .tools import (
+    BaseTool,
+    Tool,
+    ToolChoice,
+    ToolParameters,
+    ToolProjector,
+    tool_parameters_to_json_schema,
+)
 
 # Resolve forward references. AssistantMessage references Usage as a string;
 # completion.py is now imported, so we can rebuild.
@@ -135,8 +142,10 @@ __all__ = [
     "response_format_to_json_schema",
     "strictify_json_schema",
     # tools
+    "BaseTool",
     "Tool",
     "ToolChoice",
     "ToolParameters",
+    "ToolProjector",
     "tool_parameters_to_json_schema",
 ]

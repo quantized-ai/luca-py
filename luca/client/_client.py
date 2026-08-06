@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from . import catalog as _catalog_module
 from .exceptions import BadRequestError, TimeoutError as SDKTimeoutError
 from .providers import BaseProvider, resolve_provider
 from .types.completion import ChatCompletionRequest
 from .types.messages import AssistantMessage, ToolMessage, UserMessage
-from .types.tools import Tool
+from .types.tools import BaseTool, Tool
 
 if TYPE_CHECKING:
     from .types.completion import ChatCompletionResponse
@@ -68,17 +70,24 @@ def _coerce_messages(messages: list) -> list:
     return out
 
 
-def _coerce_tools(tools: list | None) -> list[Tool] | None:
+def _coerce_tools(tools: list | None) -> list[BaseTool] | None:
     if tools is None:
         return None
-    out: list[Tool] = []
+    out: list[BaseTool] = []
     for t in tools:
-        if isinstance(t, Tool):
+        if isinstance(t, BaseTool):  # Tool AND native tools
             out.append(t)
         elif isinstance(t, dict):
-            out.append(Tool.model_validate(t))
+            # Dicts mean STANDARD function tools; native tools are instances.
+            try:
+                out.append(Tool.model_validate(t))
+            except ValidationError as e:
+                raise BadRequestError(
+                    f"tool dict is not a standard function tool: {e}. "
+                    "Native tools are passed as instances (e.g. ApplyPatchTool()).",
+                ) from e
         else:
-            raise BadRequestError(f"tool entry is {type(t).__name__}; expected dict or Tool.")
+            raise BadRequestError(f"tool entry is {type(t).__name__}; expected dict or BaseTool.")
     return out
 
 

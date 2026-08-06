@@ -1,0 +1,32 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_078e3489cb16e5e4016a74c4c1fe64819dbb6844811ca41217","object":"response","created_at":1786037442,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.1-2025-11-13","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"none","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"apply_patch"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"apply_patch"}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_078e3489cb16e5e4016a74c4c1fe64819dbb6844811ca41217","object":"response","created_at":1786037442,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.1-2025-11-13","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"none","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"apply_patch"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"apply_patch"}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","type":"apply_patch_call","status":"in_progress","call_id":"call_bNSZXJtrFzni0yQhLu4BOkFQ","operation":{"type":"create_file","diff":"","path":"hello.txt"}},"output_index":0,"sequence_number":2}
+
+event: response.apply_patch_call_operation_diff.delta
+data: {"type":"response.apply_patch_call_operation_diff.delta","delta":"+","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","obfuscation":"wwujON49wZAN5V2","output_index":0,"sequence_number":3}
+
+event: response.apply_patch_call_operation_diff.delta
+data: {"type":"response.apply_patch_call_operation_diff.delta","delta":"hi","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","obfuscation":"y5YYAtofV9YsDz","output_index":0,"sequence_number":4}
+
+event: response.apply_patch_call_operation_diff.delta
+data: {"type":"response.apply_patch_call_operation_diff.delta","delta":" luc","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","obfuscation":"0mDNpu4qyIk5","output_index":0,"sequence_number":5}
+
+event: response.apply_patch_call_operation_diff.delta
+data: {"type":"response.apply_patch_call_operation_diff.delta","delta":"a","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","obfuscation":"MFT9st1QFbJQrM8","output_index":0,"sequence_number":6}
+
+event: response.apply_patch_call_operation_diff.delta
+data: {"type":"response.apply_patch_call_operation_diff.delta","delta":"\n","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","obfuscation":"bFqKKMxts7GRZee","output_index":0,"sequence_number":7}
+
+event: response.apply_patch_call_operation_diff.done
+data: {"type":"response.apply_patch_call_operation_diff.done","diff":"+hi luca\n","item_id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","output_index":0,"sequence_number":8}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","type":"apply_patch_call","status":"completed","call_id":"call_bNSZXJtrFzni0yQhLu4BOkFQ","operation":{"type":"create_file","diff":"+hi luca\n","path":"hello.txt"}},"output_index":0,"sequence_number":9}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_078e3489cb16e5e4016a74c4c1fe64819dbb6844811ca41217","object":"response","created_at":1786037442,"status":"completed","background":false,"completed_at":1786037444,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.1-2025-11-13","moderation":null,"output":[{"id":"apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f","type":"apply_patch_call","status":"completed","call_id":"call_bNSZXJtrFzni0yQhLu4BOkFQ","operation":{"type":"create_file","diff":"+hi luca\n","path":"hello.txt"}}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"none","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"apply_patch"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"apply_patch"}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":643,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":32,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":675},"user":null,"metadata":{}},"sequence_number":10}

@@ -47,7 +47,7 @@ from ...types.structured import (
     strictify_json_schema,
     strip_unsupported_keywords,
 )
-from ...types.tools import tool_parameters_to_json_schema
+from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
@@ -55,8 +55,95 @@ _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096
 
 
+def _project_image_block(block: ImageBlock) -> dict:
+    """One image block to its wire shape — shared by user messages (via the
+    transport) and tool-result content (via the projector)."""
+    source = block.source
+    if isinstance(source, MediaURL):
+        return {"type": "image", "source": {"type": "url", "url": source.url}}
+    if isinstance(source, MediaBase64):
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": source.media_type,
+                "data": source.data,
+            },
+        }
+    if isinstance(source, MediaFileId):
+        return {"type": "image", "source": {"type": "file", "file_id": source.file_id}}
+    raise BadRequestError("Unknown image source type")
+
+
+class AnthropicToolProjector(ToolProjector):
+    """Standard function-tool behavior on the Anthropic wire — the default
+    projector. Anthropic-NATIVE tools (bash, text editor) differ only in
+    declaration: their calls are ordinary tool_use blocks and their results
+    ordinary tool_result blocks, so they inherit everything else."""
+
+    def project_tool_to_llm(self, tool: Tool) -> dict:
+        return {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool_parameters_to_json_schema(tool.parameters),
+        }
+
+    def build_tool_call(self, item: dict) -> ToolCall:
+        # `item` is a tool_use content block.
+        return ToolCall(
+            id=item["id"],
+            name=item["name"],
+            arguments=item.get("input", {}) or {},
+            complete=True,
+        )
+
+    def project_tool_call_to_llm(self, tool_call: ToolCall) -> dict:
+        return {
+            "type": "tool_use",
+            "id": tool_call.id,
+            "name": tool_call.name,
+            "input": tool_call.arguments,
+        }
+
+    def project_tool_message_to_llm(
+        self,
+        message: ToolMessage,
+        tool_call: ToolCall | None,
+    ) -> dict:
+        # Returns the tool_result BLOCK; the transport owns the
+        # {"role": "user", "content": [block]} envelope around it.
+        return {
+            "type": "tool_result",
+            "tool_use_id": message.tool_call_id,
+            "content": self._result_content(message),
+            "is_error": message.is_error,
+        }
+
+    def project_tool_choice_to_llm(self, tool: BaseTool) -> dict:
+        # {"type": "tool", "name": ...} forces native tools too (they are
+        # ordinary named tools) — the native projectors need no override.
+        return {"type": "tool", "name": tool.name}
+
+    def _result_content(self, message: ToolMessage) -> str | list[dict]:
+        if isinstance(message.content, str):
+            return message.content
+        # Mixed text/image content — keep as block list.
+        content: list[dict] = []
+        for b in message.content:
+            if isinstance(b, TextBlock):
+                content.append({"type": "text", "text": b.text})
+            elif isinstance(b, ImageBlock):
+                content.append(_project_image_block(b))
+        return content
+
+
 class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     transport_id = "anthropic"
+
+    TOOL_PROJECTOR_BASE: ClassVar[type] = AnthropicToolProjector
+
+    def _default_tool_projector(self) -> ToolProjector:
+        return AnthropicToolProjector()
 
     # Adaptive models omit the reasoning text by default and return only
     # the encrypted signature, which leaves nothing to render. Ask for
@@ -122,7 +209,7 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         if request.tools:
             payload["tools"] = self._project_tools(request.tools)
         if request.tool_choice is not None:
-            payload["tool_choice"] = self._project_tool_choice(request.tool_choice)
+            payload["tool_choice"] = self._project_tool_choice(request.tool_choice, request.tools)
         if request.metadata is not None:
             payload["metadata"] = request.metadata
         payload.update(options)
@@ -192,16 +279,29 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return [{"type": "text", "text": b.text} for b in system_message if isinstance(b, TextBlock)]
 
     def _project_messages(self, messages: list, request: ChatCompletionRequest) -> list[dict]:
+        """The walk records call lineage — `{call_id: (projector, call)}` —
+        so a ToolMessage projects through the projector of the call it
+        answers; a dropped foreign call maps to None and takes its result
+        down with it.
+
+        An assistant message that projects to ZERO wire blocks (foreign
+        thinking + foreign native calls, the typical post-provider-switch
+        turn) is omitted entirely — this wire rejects empty content."""
         out: list[dict] = []
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] = {}
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                out.append(self._project_assistant_message(msg, request))
+                projected = self._project_assistant_message(msg, request, lineage)
+                if projected["content"]:
+                    out.append(projected)
             elif isinstance(msg, ToolMessage):
                 # Anthropic represents tool results as a user message with a
                 # tool_result content block.
-                out.append(self._project_tool_message_as_user(msg))
+                wrapped = self._project_tool_message_as_user(msg, lineage)
+                if wrapped is not None:
+                    out.append(wrapped)
             else:
                 raise BadRequestError(
                     f"Unknown message type {type(msg).__name__}",
@@ -224,27 +324,16 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return {"role": "user", "content": wire_blocks}
 
     def _project_image_block(self, block: ImageBlock) -> dict:
-        source = block.source
-        if isinstance(source, MediaURL):
-            return {"type": "image", "source": {"type": "url", "url": source.url}}
-        if isinstance(source, MediaBase64):
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": source.media_type,
-                    "data": source.data,
-                },
-            }
-        if isinstance(source, MediaFileId):
-            return {"type": "image", "source": {"type": "file", "file_id": source.file_id}}
-        raise BadRequestError("Unknown image source type", provider=self._provider)
+        return _project_image_block(block)
 
     def _project_assistant_message(
         self,
         msg: AssistantMessage,
         request: ChatCompletionRequest,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
     ) -> dict:
+        if lineage is None:
+            lineage = {}
         wire_blocks: list[dict] = []
         for block in msg.content:
             if isinstance(block, TextBlock):
@@ -254,14 +343,10 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 if thinking is not None:
                     wire_blocks.append(thinking)
             elif isinstance(block, ToolCall):
-                wire_blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.arguments,
-                    }
-                )
+                projector = self._projector_for_call(block)
+                lineage[block.id] = (projector, block) if projector is not None else None
+                if projector is not None:
+                    wire_blocks.append(projector.project_tool_call_to_llm(block))
             elif isinstance(block, RefusalBlock):
                 # Anthropic doesn't take refusals on the way in; drop.
                 continue
@@ -299,43 +384,24 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             "signature": block.signature,
         }
 
-    def _project_tool_message_as_user(self, msg: ToolMessage) -> dict:
-        if isinstance(msg.content, str):
-            content: Any = msg.content
+    def _project_tool_message_as_user(
+        self,
+        msg: ToolMessage,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
+    ) -> dict | None:
+        if lineage is not None and msg.tool_call_id in lineage:
+            entry = lineage[msg.tool_call_id]
+            if entry is None:
+                return None  # its call was dropped (foreign native)
+            projector, call = entry
+            block = projector.project_tool_message_to_llm(msg, call)
         else:
-            # Mixed text/image content — keep as block list.
-            content = []
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    content.append({"type": "text", "text": b.text})
-                elif isinstance(b, ImageBlock):
-                    content.append(self._project_image_block(b))
-        return {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": msg.tool_call_id,
-                    "content": content,
-                    "is_error": msg.is_error,
-                }
-            ],
-        }
+            block = self._default_tool_projector().project_tool_message_to_llm(msg, None)
+        return {"role": "user", "content": [block]}
 
-    def _project_tools(self, tools: list) -> list[dict]:
-        out = []
-        for t in tools:
-            schema = tool_parameters_to_json_schema(t.parameters)
-            out.append(
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": schema,
-                }
-            )
-        return out
-
-    def _project_tool_choice(self, choice: Any) -> Any:
+    def _project_tool_choice(self, choice: Any, tools: list | None) -> Any:
+        # Strings are protocol-level and stay here; the {"name": ...} forcing
+        # shape resolves through the named tool's projector.
         if isinstance(choice, str):
             return {
                 "auto": {"type": "auto"},
@@ -343,6 +409,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 "none": {"type": "none"},
             }.get(choice, {"type": "auto"})
         if isinstance(choice, dict) and "name" in choice:
+            tool = self._declared_tool_named(choice["name"], tools)
+            if tool is not None:
+                return self._resolve_projector(tool).project_tool_choice_to_llm(tool)
             return {"type": "tool", "name": choice["name"]}
         return choice
 
@@ -373,6 +442,7 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         request: ChatCompletionRequest,
     ) -> AssistantMessage:
         content: list = []
+        default = self._default_tool_projector()
         for block in data.get("content") or []:
             block_type = block.get("type")
             if block_type == "text":
@@ -385,14 +455,9 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                     )
                 )
             elif block_type == "tool_use":
-                content.append(
-                    ToolCall(
-                        id=block["id"],
-                        name=block["name"],
-                        arguments=block.get("input", {}) or {},
-                        complete=True,
-                    )
-                )
+                # Native tools (bash, text editor) arrive through the SAME
+                # branch — they are ordinary tool_use blocks with names.
+                content.append(default.build_tool_call(block))
             elif block_type == "redacted_thinking":
                 content.append(
                     ThinkingBlock(

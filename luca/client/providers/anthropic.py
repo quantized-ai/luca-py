@@ -1,5 +1,8 @@
 from ..transports import AnthropicTransport
+from ..transports.anthropic.native_tools import BashTool, TextEditorTool
 from .base import BaseProvider, ChatCompletionMixin
+
+__all__ = ["AnthropicProvider", "BashTool", "TextEditorTool"]
 
 
 class AnthropicProvider(BaseProvider, ChatCompletionMixin):

@@ -48,13 +48,105 @@ from ...types.content import (
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
-from ...types.tools import tool_parameters_to_json_schema
+from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
 
+def _image_format(media_type: str | None) -> str:
+    if not media_type:
+        return "png"
+    fmt = media_type.rsplit("/", 1)[-1].lower()
+    return "jpeg" if fmt == "jpg" else fmt
+
+
+def _project_image_block(block: ImageBlock) -> dict:
+    """One image block to its Converse shape — shared by user messages (via
+    the transport) and tool-result content (via the projector)."""
+    source = block.source
+    if isinstance(source, MediaBase64):
+        return {
+            "image": {
+                "format": _image_format(source.media_type),
+                "source": {"bytes": source.data},
+            },
+        }
+    # Converse takes image bytes or an s3Location, never a URL or file id.
+    if isinstance(source, (MediaURL, MediaFileId)):
+        raise BadRequestError(
+            "Bedrock Converse needs inline image bytes; a URL or file id cannot be sent.",
+        )
+    raise BadRequestError("Unknown image source type")
+
+
+class BedrockToolProjector(ToolProjector):
+    """Standard function-tool behavior on the Converse wire — the default
+    projector. No native tools ship here; the projector exists so foreign
+    native calls can be detected and dropped, and so third parties can plug
+    in."""
+
+    def project_tool_to_llm(self, tool: Tool) -> dict:
+        return {
+            "toolSpec": {
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": {"json": tool_parameters_to_json_schema(tool.parameters)},
+            },
+        }
+
+    def build_tool_call(self, item: dict) -> ToolCall:
+        # `item` is a toolUse payload (the value under the block's "toolUse").
+        return ToolCall(
+            id=item["toolUseId"],
+            name=item["name"],
+            arguments=item.get("input", {}) or {},
+            complete=True,
+        )
+
+    def project_tool_call_to_llm(self, tool_call: ToolCall) -> dict:
+        return {
+            "toolUse": {
+                "toolUseId": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_call.arguments,
+            },
+        }
+
+    def project_tool_message_to_llm(
+        self,
+        message: ToolMessage,
+        tool_call: ToolCall | None,
+    ) -> dict:
+        # Returns the toolResult BLOCK; the transport owns the user-role
+        # envelope and the same-role coalescing around it.
+        if isinstance(message.content, str):
+            content: list[dict] = [{"text": message.content}]
+        else:
+            content = []
+            for b in message.content:
+                if isinstance(b, TextBlock):
+                    content.append({"text": b.text})
+                elif isinstance(b, ImageBlock):
+                    content.append(_project_image_block(b))
+        result: dict[str, Any] = {
+            "toolUseId": message.tool_call_id,
+            "content": content,
+        }
+        if message.is_error:
+            result["status"] = "error"
+        return {"toolResult": result}
+
+    def project_tool_choice_to_llm(self, tool: BaseTool) -> dict:
+        return {"tool": {"name": tool.name}}
+
+
 class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     transport_id = "bedrock"
+
+    TOOL_PROJECTOR_BASE: ClassVar[type] = BedrockToolProjector
+
+    def _default_tool_projector(self) -> ToolProjector:
+        return BedrockToolProjector()
 
     # Adaptive Anthropic models omit the reasoning text by default; ask for
     # summaries. Model facts live in `capabilities.py`; this is policy.
@@ -177,20 +269,26 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return [{"text": b.text} for b in system_message if isinstance(b, TextBlock)]
 
     def _project_messages(self, messages: list, request: ChatCompletionRequest) -> list[dict]:
+        """The walk records call lineage — `{call_id: (projector, call)}` —
+        so a toolResult projects through the projector of the call it
+        answers; a dropped foreign call maps to None and takes its result
+        down with it. An assistant message that projects to zero blocks
+        (foreign thinking + foreign natives) is omitted — Converse rejects
+        empty content, and the role coalescing repairs the alternation."""
         out: list[dict] = []
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] = {}
         for msg in messages:
             if isinstance(msg, UserMessage):
                 out.append({"role": "user", "content": self._project_user_content(msg)})
             elif isinstance(msg, AssistantMessage):
-                out.append(
-                    {
-                        "role": "assistant",
-                        "content": self._project_assistant_content(msg, request),
-                    }
-                )
+                content = self._project_assistant_content(msg, request, lineage)
+                if content:
+                    out.append({"role": "assistant", "content": content})
             elif isinstance(msg, ToolMessage):
                 # Converse has no tool role: a result is a user toolResult block.
-                out.append({"role": "user", "content": [self._project_tool_result(msg)]})
+                block = self._project_tool_result(msg, lineage)
+                if block is not None:
+                    out.append({"role": "user", "content": [block]})
             else:
                 raise BadRequestError(
                     f"Unknown message type {type(msg).__name__}",
@@ -225,34 +323,16 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return blocks
 
     def _project_image_block(self, block: ImageBlock) -> dict:
-        source = block.source
-        if isinstance(source, MediaBase64):
-            return {
-                "image": {
-                    "format": self._image_format(source.media_type),
-                    "source": {"bytes": source.data},
-                },
-            }
-        # Converse takes image bytes or an s3Location, never a URL or file id.
-        if isinstance(source, (MediaURL, MediaFileId)):
-            raise BadRequestError(
-                "Bedrock Converse needs inline image bytes; a URL or file id cannot be sent.",
-                provider=self._provider,
-            )
-        raise BadRequestError("Unknown image source type", provider=self._provider)
-
-    @staticmethod
-    def _image_format(media_type: str | None) -> str:
-        if not media_type:
-            return "png"
-        fmt = media_type.rsplit("/", 1)[-1].lower()
-        return "jpeg" if fmt == "jpg" else fmt
+        return _project_image_block(block)
 
     def _project_assistant_content(
         self,
         msg: AssistantMessage,
         request: ChatCompletionRequest,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
     ) -> list[dict]:
+        if lineage is None:
+            lineage = {}
         blocks: list[dict] = []
         for block in msg.content:
             if isinstance(block, TextBlock):
@@ -262,15 +342,10 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 if reasoning is not None:
                     blocks.append(reasoning)
             elif isinstance(block, ToolCall):
-                blocks.append(
-                    {
-                        "toolUse": {
-                            "toolUseId": block.id,
-                            "name": block.name,
-                            "input": block.arguments,
-                        },
-                    }
-                )
+                projector = self._projector_for_call(block)
+                lineage[block.id] = (projector, block) if projector is not None else None
+                if projector is not None:
+                    blocks.append(projector.project_tool_call_to_llm(block))
             elif isinstance(block, RefusalBlock):
                 continue
         return blocks
@@ -301,47 +376,36 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
             },
         }
 
-    def _project_tool_result(self, msg: ToolMessage) -> dict:
-        if isinstance(msg.content, str):
-            content: list[dict] = [{"text": msg.content}]
-        else:
-            content = []
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    content.append({"text": b.text})
-                elif isinstance(b, ImageBlock):
-                    content.append(self._project_image_block(b))
-        result: dict[str, Any] = {
-            "toolUseId": msg.tool_call_id,
-            "content": content,
-        }
-        if msg.is_error:
-            result["status"] = "error"
-        return {"toolResult": result}
+    def _project_tool_result(
+        self,
+        msg: ToolMessage,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
+    ) -> dict | None:
+        if lineage is not None and msg.tool_call_id in lineage:
+            entry = lineage[msg.tool_call_id]
+            if entry is None:
+                return None  # its call was dropped (foreign native)
+            projector, call = entry
+            return projector.project_tool_message_to_llm(msg, call)
+        return self._default_tool_projector().project_tool_message_to_llm(msg, None)
 
     def _project_tool_config(self, request: ChatCompletionRequest) -> dict:
-        tools = [
-            {
-                "toolSpec": {
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": {"json": tool_parameters_to_json_schema(t.parameters)},
-                },
-            }
-            for t in request.tools
-        ]
-        config: dict[str, Any] = {"tools": tools}
-        choice = self._project_tool_choice(request.tool_choice)
+        config: dict[str, Any] = {"tools": self._project_tools(request.tools)}
+        choice = self._project_tool_choice(request.tool_choice, request.tools)
         if choice is not None:
             config["toolChoice"] = choice
         return config
 
-    @staticmethod
-    def _project_tool_choice(choice: Any) -> dict | None:
-        # Converse has no "none"; omit toolChoice for it (and anything unknown).
+    def _project_tool_choice(self, choice: Any, tools: list | None) -> dict | None:
+        # Converse has no "none"; omit toolChoice for it (and anything
+        # unknown). The {"name": ...} forcing shape resolves through the
+        # named tool's projector.
         if isinstance(choice, str):
             return {"auto": {"auto": {}}, "required": {"any": {}}}.get(choice)
         if isinstance(choice, dict) and "name" in choice:
+            tool = self._declared_tool_named(choice["name"], tools)
+            if tool is not None:
+                return self._resolve_projector(tool).project_tool_choice_to_llm(tool)
             return {"tool": {"name": choice["name"]}}
         return None
 
@@ -373,20 +437,13 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         request: ChatCompletionRequest,
     ) -> AssistantMessage:
         content: list = []
+        default = self._default_tool_projector()
         message = (data.get("output") or {}).get("message") or {}
         for block in message.get("content") or []:
             if "text" in block:
                 content.append(TextBlock(text=block["text"]))
             elif "toolUse" in block:
-                tool = block["toolUse"]
-                content.append(
-                    ToolCall(
-                        id=tool["toolUseId"],
-                        name=tool["name"],
-                        arguments=tool.get("input", {}) or {},
-                        complete=True,
-                    )
-                )
+                content.append(default.build_tool_call(block["toolUse"]))
             elif "reasoningContent" in block:
                 content.append(self._parse_reasoning_block(block["reasoningContent"]))
         return AssistantMessage(

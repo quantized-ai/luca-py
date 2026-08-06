@@ -1,5 +1,28 @@
 from ..transports import OpenAIResponsesTransport
+from ..transports.openai_responses.native_tools import (
+    ApplyPatchTool,
+    ApplyPatchToolCall,
+    LocalShellTool,
+    ShellCommandResult,
+    ShellExitOutcome,
+    ShellTimeoutOutcome,
+    ShellToolCall,
+    ShellToolMessage,
+)
 from .base import BaseProvider, ChatCompletionMixin
+
+__all__ = [
+    "OpenAIProvider",
+    # native tools (Responses wire)
+    "ApplyPatchTool",
+    "ApplyPatchToolCall",
+    "LocalShellTool",
+    "ShellCommandResult",
+    "ShellExitOutcome",
+    "ShellTimeoutOutcome",
+    "ShellToolCall",
+    "ShellToolMessage",
+]
 
 
 class OpenAIProvider(BaseProvider, ChatCompletionMixin):

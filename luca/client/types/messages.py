@@ -10,9 +10,9 @@ timestamp) so a serialized conversation reloads with full context.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, model_validator
 
 if TYPE_CHECKING:
     from .completion import Usage
@@ -26,6 +26,12 @@ from .content import (
     ThinkingBlock,
     ToolCall,
 )
+
+# Native tool-message classes keyed by their `type` literal. The base
+# ToolMessage has NO `type` field — payloads without one validate as the
+# base, so existing serialized data is untouched. Filled by
+# ToolMessage.__pydantic_init_subclass__ for subclasses that declare one.
+NATIVE_TOOL_MESSAGE_TYPES: dict[str, type[ToolMessage]] = {}
 
 
 class _UsageHolder:
@@ -45,7 +51,10 @@ class UserMessage(BaseModel):
 
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
-    content: list[TextBlock | ThinkingBlock | ToolCall | RefusalBlock] = Field(
+    # SerializeAsAny: model_dump() must keep native ToolCall subclass fields
+    # (item_id, status, …). Without it pydantic dumps per the declared base
+    # and drops them, with a warning the test suite turns into an error.
+    content: list[TextBlock | ThinkingBlock | SerializeAsAny[ToolCall] | RefusalBlock] = Field(
         default_factory=list,
     )
 
@@ -84,6 +93,30 @@ class ToolMessage(BaseModel):
     timestamp: int | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        field = cls.model_fields.get("type")
+        if field is None:
+            return  # not a native subclass
+        wire_type = field.default
+        existing = NATIVE_TOOL_MESSAGE_TYPES.get(wire_type)
+        if existing is not None and existing is not cls:
+            raise TypeError(f"tool-message type {wire_type!r} is already registered by {existing.__name__}")
+        NATIVE_TOOL_MESSAGE_TYPES[wire_type] = cls
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _dispatch_native(cls, value: Any, handler: Any) -> Any:
+        # Same dispatch as ToolCall: a dict with a registered "type" validated
+        # against the BASE class becomes the subclass; an unknown "type" falls
+        # through to the base and fails its extra="forbid".
+        if cls is ToolMessage and isinstance(value, dict) and "type" in value:
+            target = NATIVE_TOOL_MESSAGE_TYPES.get(value["type"])
+            if target is not None:
+                return target.model_validate(value)
+        return handler(value)
 
 
 Message = Annotated[

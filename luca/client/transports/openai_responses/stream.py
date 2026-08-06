@@ -15,6 +15,7 @@ from typing import Any
 
 from ...exceptions import StreamError
 from ...types.completion import Usage
+from ...types.content import NATIVE_TOOL_CALL_TYPES
 from ...types.streaming import (
     AsyncChatCompletionStream,
     ChatCompletionStream,
@@ -28,11 +29,31 @@ from ...types.streaming import (
     RawToolArgumentsDelta,
     RawUsage,
 )
+from .transport import OpenAIResponsesToolProjector
 
 # Synthetic content_index slots, so reasoning and function-call items share the
 # one allocator with real content parts without colliding with content_index 0.
 _REASONING_SLOT = -1
 _FUNCTION_CALL_SLOT = -2
+# Native tool-call items (apply_patch_call, shell_call, …). Their in-progress
+# payloads stream as RAW TEXT events (`response.apply_patch_call_operation_diff.*`,
+# `response.shell_call_command.*`) that violate the partial_arguments-is-JSON
+# contract — they fall through the dispatch unhandled, and the complete call
+# arrives whole on output_item.done. V1 rule: start + end, no public deltas.
+_NATIVE_CALL_SLOT = -3
+
+
+def _native_call_projector(item_type: str | None) -> OpenAIResponsesToolProjector | None:
+    """Registry lookup, compatibility-checked against this wire's projector
+    family — a foreign family's registration can never mint calls here."""
+    if item_type is None:
+        return None
+    cls = NATIVE_TOOL_CALL_TYPES.get(item_type)
+    if cls is None or cls.projector_class is None:
+        return None
+    projector = cls.projector_class()
+    return projector if isinstance(projector, OpenAIResponsesToolProjector) else None
+
 
 # Between two summary parts of the same reasoning item — they are separate
 # paragraphs of one train of thought, and read as one block.
@@ -201,6 +222,24 @@ def _item_added(state: _ResponsesParserState, event: dict) -> Iterator[RawStream
             tool_id=call_id,
             tool_name=name,
         )
+    elif (projector := _native_call_projector(item_type)) is not None:
+        # Observed SSE: output_item.added carries the item skeleton — status
+        # "in_progress", call_id present, payload partial (apply_patch knows
+        # type+path with an empty diff; shell's commands are still empty).
+        if item.get("call_id") is None:
+            raise StreamError(
+                f"OpenAI Responses stream opened a {item_type} item without a call_id (output_index={output_index})",
+            )
+        call = projector.build_tool_call(item)
+        call.complete = False
+        index = state.allocate((output_index, _NATIVE_CALL_SLOT))
+        yield RawBlockStart(
+            index=index,
+            block_type="tool_call",
+            tool_id=call.id,
+            tool_name=call.name,
+            prebuilt=call,
+        )
     # A `message` item's blocks open on content_part.added, one per part.
 
 
@@ -225,6 +264,14 @@ def _item_done(state: _ResponsesParserState, event: dict) -> Iterator[RawStreamE
         index = state.resolve((output_index, _FUNCTION_CALL_SLOT))
         if index is not None and state.close(index):
             yield RawBlockStop(index=index)
+    elif (projector := _native_call_projector(item_type)) is not None:
+        index = state.resolve((output_index, _NATIVE_CALL_SLOT))
+        if index is not None and state.close(index):
+            if item.get("call_id") is None:
+                yield RawBlockStop(index=index)  # degenerate close, empty args
+            else:
+                # The complete item: swapped in whole, final arguments and all.
+                yield RawBlockStop(index=index, replacement=projector.build_tool_call(item))
     # A `message` item's parts already closed on content_part.done.
 
 

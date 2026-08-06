@@ -8,6 +8,7 @@ from luca.client import completion
 from luca.client.exceptions import BadRequestError
 from luca.client.types import (
     AssistantMessage,
+    BaseTool,
     ChatCompletionResponse,
     TextBlock,
     Tool,
@@ -90,3 +91,31 @@ def test_tools_dict_coerce_to_typed(stub_provider):
     req = stub_provider.instances[0].calls[0].request
     assert isinstance(req.tools[0], Tool)
     assert req.tools[0].name == "t"
+
+
+class _FakeNativeTool(BaseTool):
+    pass
+
+
+def test_native_tool_instance_passes_through_untouched(stub_provider):
+    stub_provider.configure(responses=[RESP])
+    native = _FakeNativeTool()
+    completion(model="stub:m", messages=[UserMessage(content="hi")], tools=[native])
+    req = stub_provider.instances[0].calls[0].request
+    assert req.tools[0] is native
+
+
+def test_native_shaped_dict_raises_bad_request(stub_provider):
+    stub_provider.configure(responses=[RESP])
+    with pytest.raises(BadRequestError, match="passed as instances"):
+        completion(
+            model="stub:m",
+            messages=[UserMessage(content="hi")],
+            tools=[{"type": "apply_patch"}],
+        )
+
+
+def test_non_dict_tool_entry_raises_bad_request(stub_provider):
+    stub_provider.configure(responses=[RESP])
+    with pytest.raises(BadRequestError, match="expected dict or BaseTool"):
+        completion(model="stub:m", messages=[UserMessage(content="hi")], tools=[42])

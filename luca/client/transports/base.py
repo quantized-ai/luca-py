@@ -8,11 +8,13 @@ hook methods that concrete subclasses override.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
-from ..exceptions import ClientError
+from ..exceptions import BadRequestError, ClientError
+from ..types.content import NATIVE_TOOL_CALL_TYPES, ToolCall
+from ..types.tools import BaseTool, ToolProjector
 
 if TYPE_CHECKING:
     from ..types.completion import ChatCompletionRequest, ChatCompletionResponse
@@ -232,3 +234,66 @@ class ChatCompletionTransportMixin:
 
     def _async_chat_completion_stream_class(self) -> type:
         raise NotImplementedError(f"{type(self).__name__} must implement _async_chat_completion_stream_class")
+
+    # --- tool projection (shared mechanics; shapes live in projectors) ---
+
+    # Each transport family binds this to its projector base class. The check
+    # is class-based, not transport_id-based, so it composes with transport
+    # subclassing: OpenRouter inherits OpenAITransport's base and accepts the
+    # same projectors.
+    TOOL_PROJECTOR_BASE: ClassVar[type] = ToolProjector
+
+    def _default_tool_projector(self) -> ToolProjector:
+        raise NotImplementedError(f"{type(self).__name__} must implement _default_tool_projector")
+
+    def _resolve_projector(self, tool: BaseTool) -> ToolProjector:
+        """The projector for a DECLARED tool, checked against this transport
+        — an incompatible native tool fails before any HTTP."""
+        projector = tool.get_projector() or self._default_tool_projector()
+        if not isinstance(projector, self.TOOL_PROJECTOR_BASE):
+            raise BadRequestError(
+                f"{type(tool).__name__}'s projector targets another transport; "
+                f"this request uses {type(self).__name__}.",
+                provider=self._provider,  # type: ignore[attr-defined]
+            )
+        return projector
+
+    def _project_tools(self, tools: list) -> list[dict]:
+        return [self._resolve_projector(t).project_tool_to_llm(t) for t in tools]
+
+    def _projector_for_call(self, tool_call: ToolCall) -> ToolProjector | None:
+        """The projector that replays a ToolCall from history, or None when
+        the call was minted by another transport family (e.g. `/model`
+        switched providers mid-session). None means the call is dropped
+        together with its result — the foreign-attestation policy: one lost
+        exchange beats a 400 that kills the conversation."""
+        if type(tool_call).projector_class is None:
+            return self._default_tool_projector()
+        projector = type(tool_call).projector_class()
+        if isinstance(projector, self.TOOL_PROJECTOR_BASE):
+            return projector
+        return None
+
+    def _native_projector_for_item(self, item_type: str | None) -> ToolProjector | None:
+        """Parse-side registry lookup, compatibility-checked: a foreign
+        family's registration can never mint calls on this wire. A miss (or
+        an incompatible hit) means the item is ignored, exactly like any
+        unknown hosted-tool item."""
+        if item_type is None:
+            return None
+        cls = NATIVE_TOOL_CALL_TYPES.get(item_type)
+        if cls is None or cls.projector_class is None:
+            return None
+        projector = cls.projector_class()
+        if isinstance(projector, self.TOOL_PROJECTOR_BASE):
+            return projector
+        return None
+
+    def _declared_tool_named(self, name: Any, tools: list | None) -> BaseTool | None:
+        """First declared tool whose name matches — tool_choice resolution.
+        Name collisions between a custom Tool and a native tool are
+        documented, not policed; first match wins."""
+        for t in tools or []:
+            if getattr(t, "name", None) == name:
+                return t
+        return None
