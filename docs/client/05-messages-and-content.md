@@ -65,9 +65,21 @@ ToolMessage`) is discriminated on `role`.
 | `AudioBlock(source)` | `"audio"` | User |
 | `FileBlock(source, name=None)` | `"file"` | User |
 | `ThinkingBlock(text, id=None, signature=None, redacted=False)` | `"thinking"` | Assistant |
-| `ToolCall(id, name, arguments, partial_arguments, complete, thought_signature=None)` | `"tool_call"` | Assistant |
+| `ToolCall(id, name, arguments, partial_arguments, complete, thought_signature=None, provider_type=None)` | `"tool_call"` | Assistant |
 | `ToolResultBlock(tool_call_id, content, is_error=False)` | `"tool_result"` | (Anthropic-style inline; prefer `ToolMessage`) |
 | `RefusalBlock(text)` | `"refusal"` | Assistant |
+
+### A provider-defined call remembers what it was
+
+`ToolCall.provider_type` is set when the call arrived as a provider-defined
+tool rather than a function call — `"apply_patch"`, `"shell"`, or `None`.
+
+Keep it with the call. Some providers give their tools their own wire items,
+and replaying one correctly means knowing what it was, not guessing from its
+name. Names are not durable: you can perfectly well ship an `apply_patch` of
+your own, and a call recorded before provider tools were enabled has to go
+back as the function call it was. See
+[`06-tools.md`](06-tools.md#provider-defined-tools).
 
 ### Reasoning is provider-owned
 

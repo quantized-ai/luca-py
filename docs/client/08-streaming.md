@@ -142,6 +142,13 @@ string passed through unchanged" rules are documented in
 underlying item, which arrives when the item opens rather than with its
 deltas; the accumulator writes it to `ThinkingBlock.id`.
 
+`RawBlockStart.provider_type` marks a tool_call block that opened as a
+provider-defined tool; the accumulator writes it to `ToolCall.provider_type`.
+A transport whose provider gives its tools their own response items has to
+handle them in the STREAMING parser as well as the buffered one — an item type
+the stream does not model is silently dropped, and the turn ends with no
+content and no error.
+
 The public event list is identical whichever OpenAI protocol you use, but the
 wire is not. Chat completions streams `delta` chunks over one choice; the
 Responses API streams NAMED events over the whole response

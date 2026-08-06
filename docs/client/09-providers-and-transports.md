@@ -220,6 +220,38 @@ the hook methods defined in `ChatCompletionTransportMixin`:
 The `transport=` kwarg on `BaseProvider.__init__` lets you wrap a
 pre-configured transport in a provider for a uniform call surface.
 
+## Provider-defined tools per transport
+
+A `Tool` carrying `provider_type` is sent in the provider's own form instead of
+as a schema. Support is per TRANSPORT, not per model family:
+
+| Transport | Serves | Types |
+|---|---|---|
+| `AnthropicTransport` | yes | `text_editor_20250728`, `text_editor_20250124`, `bash_20250124` |
+| `OpenAIResponsesTransport` | yes | `apply_patch`, `shell` |
+| `OpenAITransport` (chat completions) | no | — |
+| `BedrockTransport` | no | — |
+
+Bedrock and OpenRouter both serve Claude models, and neither speaks the
+Messages API. A "is this a Claude?" check would send a tool the endpoint
+rejects, so route on the transport instead:
+
+```python
+from luca.client.providers import PROVIDERS
+from luca.client.transports import AnthropicTransport
+
+entry = PROVIDERS["bedrock"]
+cls = entry.default_transport_class if not isinstance(entry, dict) else entry["default_transport_class"]
+issubclass(cls, AnthropicTransport)     # False — no client tools here
+```
+
+Writing a transport of your own? Refusing is the default and understanding a
+type is the opt-in. Call `self._reject_provider_tools(tools)` from your tool
+projection for everything you do not serve, and it raises
+`UnsupportedParameterError` before the request rather than silently shipping
+the tool as an ordinary function. See
+[`06-tools.md`](06-tools.md#provider-defined-tools).
+
 ## Caching
 
 The helper functions cache one provider instance per
