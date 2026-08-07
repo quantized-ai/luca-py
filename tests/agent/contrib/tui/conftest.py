@@ -1,10 +1,13 @@
 """Skips the whole directory when textual (the `tui` dependency group) is not
 installed, and keeps every TUI test off the developer's real configuration."""
 
+import logging
+
 import pytest
 
 pytest.importorskip("textual")
 
+from luca.agent.contrib.tui.cli import _remove_log_handlers
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.client.catalog import _store
 from luca.client.providers import PROVIDERS
@@ -24,6 +27,18 @@ def _isolated_config_environment(monkeypatch, tmp_path):
     # the store loads once per process; drop it so the patched env is what it reads
     _store._clear_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_luca_logger():
+    """`main()` points the process-wide `luca` logger at a session file. Left
+    attached, it holds a deleted tmp_path open and its `propagate=False` blinds
+    `caplog` for every test that runs after it."""
+    log = logging.getLogger("luca")
+    level = log.level
+    yield
+    _remove_log_handlers()
+    log.setLevel(level)
 
 
 @pytest.fixture(autouse=True)

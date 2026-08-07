@@ -92,6 +92,37 @@ def test_tool_arg_empty_arguments():
     assert tool_arg(execution("status", ExecutionStatus.PENDING)) == ""
 
 
+def test_tool_arg_joins_a_command_list():
+    # the native shell's primary argument is a list, not a string
+    assert tool_arg(execution("openai_shell", ExecutionStatus.PENDING, {"commands": ["ruff check", "pytest -q"]})) == (
+        "ruff check; pytest -q"
+    )
+
+
+def test_tool_arg_falls_back_when_the_command_list_is_empty():
+    assert tool_arg(execution("openai_shell", ExecutionStatus.PENDING, {"commands": []})) == "commands=[]"
+
+
+# ── tool_block: the header name ───────────────────────────────────────────────
+
+
+def test_the_header_shows_the_specs_title_when_it_has_one():
+    # a provider-native tool is `openai_apply_patch` to the framework and
+    # "Apply patch" to a person
+    titled = execution(
+        "openai_apply_patch",
+        ExecutionStatus.PENDING,
+        {"path": "app.py"},
+        tool_spec=spec("openai_apply_patch", title="Apply patch"),
+    )
+
+    assert tool_block(titled) == vm.ToolBlock(tool="Apply patch", arg="app.py", status="pending")
+
+
+def test_the_header_falls_back_to_the_raw_name_when_the_call_never_resolved():
+    assert tool_block(execution("mystery", ExecutionStatus.NOT_FOUND, tool_spec=None)).tool == "mystery"
+
+
 # ── tool_block: non-terminal and denied ───────────────────────────────────────
 
 

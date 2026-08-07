@@ -112,7 +112,12 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   "sessions": {
     "directory": "~/.luca/projects"  // the session store ROOT
   },
-  "streaming": true
+  "logging": {
+    "level": "INFO",               // DEBUG|INFO|WARNING|ERROR, or OFF for no log
+    "file": "~/luca.log"           // default: <session dir>/logs/<session-id>.log
+  },
+  "streaming": true,
+  "use_native_tools": true       // provider-native tools where the model has them
 }
 ```
 
@@ -143,14 +148,45 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   own list comes from the model catalog, so this key is for hosts models.dev
   does not know: a custom provider, or a local `ollama`. See
   [`10-catalog.md`](../../../client/10-catalog.md).
+- `use_native_tools` (default true) offers the provider's own tools where the
+  ACTIVE model supports them — `apply_patch` + `shell` on OpenAI,
+  `text_editor` + `bash` on Anthropic — and the generic shell tools they
+  replace drop out of that request. It is an adaptation input, not a session
+  property: the same session is valid either way, the set is re-derived before
+  every call, and a model with no natives (or reached through OpenRouter) is
+  unaffected. See [`shell/`](../shell/README.md#6-provider-native-tools).
 - The file is pure data. Nothing in it is executed, unlike some other agents'
   configs.
+
+## Logging
+
+Each session writes a rotating log next to the session file it belongs to:
+
+```
+~/.luca/projects/<encoded-project-path>/
+├── a1b2c3d4.json          # the session
+└── logs/
+    └── a1b2c3d4.log       # what happened while it ran
+```
+
+Default level `INFO`. Errors carry the traceback, which the session file cannot
+keep — so this is where you look when a tool blew up and the transcript only
+showed you `KeyError: 'path'`. Precedence is `--log-level` > `LUCA_LOG_LEVEL` >
+`logging.level` > `INFO`; `OFF` writes no file, and `--log-file` (or
+`logging.file`) moves it.
+
+Nothing is ever written to stderr — the TUI is drawing there. The `luca` logger
+is given the file handler and `propagate` is turned off, so luca's records also
+stay out of any root handler your own program installed. See
+[`14-logging.md`](../../14-logging.md) for the records themselves.
 
 ## CLI flags that override it
 
 `--model`, `--provider`, `--reasoning`, `--theme`, `--workspace`, `--mode`,
+`--log-level`, `--log-file`,
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
-`--compact-threshold`, `--compact-keep-turns`.
+`--compact-threshold`, `--compact-keep-turns`,
+`--use-native` / `--no-use-native`.
 
 `--no-skills` and `--no-instructions` withhold skills and the project's
 instruction files entirely, whatever the config says.

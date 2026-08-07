@@ -24,7 +24,7 @@ from tests.agent.scenarios import (
 from .helpers import fresh_session
 
 MATH_TOOLS = {"add", "subtract", "multiply"}
-SHELL_TOOLS = {"read", "glob", "grep", "edit", "write", "apply_patch", "bash"}
+SHELL_TOOLS = {"read", "glob", "grep", "edit", "write", "apply_patch", "delete_file", "bash"}
 MEMORY_TOOLS = {"read_scratchpad", "write_scratchpad", "read_todo", "update_todos"}
 SKILL_TOOLS = {"skill"}
 

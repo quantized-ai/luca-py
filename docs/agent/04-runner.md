@@ -116,6 +116,18 @@ The conversation is then `IDLE` — a failed turn is a closed turn, so recoverin
 means posting a new message, not re-driving the same request. A pending cancel
 is the exception — it consumes the failure and returns normally.
 
+A model that **stops without answering** counts as a failure too. A round with
+no tool calls and a finish reason that is not an answer — `length` (the token
+cap cut it off) or `error` (a refusal, safety filter or guardrail, which every
+transport canonicalizes to that value) — closes `ERRORED` and raises
+`IncompleteResponseError`. Unlike a transport failure it **keeps** the partial
+assistant message, because the model really did produce those tokens and on a
+truncation they are the useful half; the natural recovery is another
+`post_message()` ("continue"), not re-running an identical request that would
+truncate in the identical place. A truncated round that still produced complete
+tool calls is *not* a failure — the calls parsed, so they run and the turn goes
+on.
+
 ## 3. Eager: `start()`
 
 `start()` is the eager twin: it begins immediately in a background task and runs

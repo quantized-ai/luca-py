@@ -82,9 +82,13 @@ The demo needs `OPENROUTER_API_KEY` (or whichever model you swap in) in env or `
 
 Skills (`<name>/SKILL.md`) are read from `.claude/skills`, `.agents/skills` and the `~` equivalents, plus any `extra_skill_locations` in the config; `--no-skills` turns that off. See [docs/agent/contrib/skills/README.md](docs/agent/contrib/skills/README.md).
 
+Provider-native tools are ON by default: a model that supports them is offered its provider's own `apply_patch`/`shell` or `text_editor`/`bash` instead of the generic shell tools those replace. `--no-use-native` (or `use_native_tools` in the config) keeps every model on the generic set. Support is per MODEL, and a session stays valid either way — the tool set is re-derived before every call. See [docs/agent/contrib/shell/README.md](docs/agent/contrib/shell/README.md#6-provider-native-tools).
+
 The system prompt is assembled per model: a base coding-agent prompt plus an addendum for the model's family, an environment block, and the project's instruction files (`LUCA.md`, then `AGENTS.md`, then `CLAUDE.md` — one per directory from the git root down to the workspace). `--no-instructions` turns the last part off; `instructions` in the config names extra files. See [docs/agent/contrib/prompts/README.md](docs/agent/contrib/prompts/README.md).
 
 Configuration is read from the nearest `luca.json` at or above the cwd (bounded by the repo) over `~/.config/luca/luca.json`. `--config <path>` (or `LUCA_CONFIG_PATH`, which the flag overrides) names one file to use INSTEAD of both — see [docs/agent/contrib/tui/config.md](docs/agent/contrib/tui/config.md).
+
+The library EMITS log records and configures nothing — module loggers under `luca`, no handlers, no levels. Failure sites log at ERROR with the traceback, because the runner converts exceptions into durable state and only `str(exc)` reaches the session. Records carry `conv=<id>` in the message text; there is no `extra` dict and no adapter. The demo writes each session's log to `<session dir>/logs/<session-id>.log` at INFO (`--log-level`, `LUCA_LOG_LEVEL`, `logging.level`; `OFF` disables) and never to stderr, which the TUI is drawing on. See [docs/agent/14-logging.md](docs/agent/14-logging.md).
 
 ## Code style (project-wide)
 

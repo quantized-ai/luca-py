@@ -415,4 +415,4 @@ offering the spawn tool past the cap or the budget trips the runner's
 `_verify_gate` check loudly. The budget overflow itself is not a violation —
 it is an ordinary `REFUSED` execution the model reads and moves on from.
 
-Next: back to the [index](README.md).
+Next: [`14-logging.md`](14-logging.md).

@@ -1,4 +1,5 @@
-"""The shell tools: read, glob, grep, edit, write, apply_patch, bash.
+"""The shell tools: read, glob, grep, edit, write, apply_patch, delete_file,
+bash.
 
 Filesystem and process tools bound to an "active working directory" fixed at
 construction (relative arguments resolve against it; absolute arguments are
@@ -1286,6 +1287,94 @@ class ApplyPatchTool(ShellTool):
             raise ShellToolError(
                 f"Failed to apply patch to {plan['display']}: {error}",
             ) from error
+
+
+# ── delete_file ──────────────────────────────────────────────────────────────
+
+DELETE_FILE_DESCRIPTION = """Deletes a file from the local filesystem.
+
+Usage:
+- The file_path parameter should be an absolute path.
+- This tool removes ONE regular file. Directories are refused; use a shell command if a directory tree really has to go.
+- A symbolic link is removed itself; whatever it points at is left untouched.
+- Deletion is permanent: there is no trash and no undo. Only delete a file the user asked you to delete, or one you created yourself.
+- NEVER delete and recreate a file to change its contents; use edit or write."""
+
+
+class DeleteFileTool(ShellTool):
+    """Removes one file.
+
+    Deliberately NOT under the read-first contract `edit` and `write` share.
+    `read` refuses binaries outright, so a tracker check would make a stray
+    `.pyc`, archive or screenshot undeletable; and having read 2000 lines of a
+    file says nothing about the whole of it being destroyed. What contains a
+    delete is its approval step — `delete_file` is not in the read tier
+    `ShellAccessPlugin` auto-allows, so it prompts inside the workspace just
+    like `edit` and `write`."""
+
+    name = "delete_file"
+    description = DELETE_FILE_DESCRIPTION
+    tool_kind = ToolKind.DELETE
+
+    class Args(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        file_path: str = Field(
+            min_length=1,
+            description="The absolute path to the file to delete",
+        )
+
+    def build_permission_requests(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> list[PermissionRequest]:
+        path = self._resolve(args["file_path"])
+        return [
+            self._access_request(self._access_scope(path)),
+            PermissionRequest(
+                resources=[
+                    ResourcePermission(permission="delete_file", resource=str(path)),
+                ],
+                answer_options=[
+                    AnswerOption(
+                        resource_permissions=[
+                            ResourcePermission(
+                                permission="delete_file",
+                                resource=f"{path.parent}/*",
+                            )
+                        ],
+                        metadata={"preview": f"Delete files under {path.parent}"},
+                    ),
+                ],
+                metadata={"preview": f"Delete {path}"},
+            ),
+        ]
+
+    async def _run(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult:
+        path = self._resolve(args["file_path"])
+        symlink = path.is_symlink()
+        if not symlink and not path.exists():
+            raise ShellToolError(f"File not found: {path}")
+        if path.is_dir() and not symlink:
+            raise ShellToolError(f"Path is a directory, not a file: {path}")
+        async with _file_lock(path):
+            await asyncio.to_thread(self._delete, path)
+        return ExecutionResult(content=[TextContent(text=f"Deleted file: {path}")])
+
+    def _delete(self, path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError as error:
+            raise ShellToolError(f"Failed to delete file: {error}") from error
 
 
 # ── bash ─────────────────────────────────────────────────────────────────────

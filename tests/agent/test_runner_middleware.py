@@ -1226,7 +1226,7 @@ def test_mixin_every_hook_returns_its_input():
     assert mixin.after_tool_execution(session, cid, execution, ValueError("x")) is execution
 
 
-def test_mixin_exposes_exactly_the_twelve_hooks_with_the_scope_prefix():
+def test_mixin_exposes_exactly_the_thirteen_hooks_with_the_scope_prefix():
     import inspect
 
     hooks = {
@@ -1236,6 +1236,7 @@ def test_mixin_exposes_exactly_the_twelve_hooks_with_the_scope_prefix():
     }
 
     assert hooks == {
+        "adapt_tool_declarations": ["self", "session", "conversation_id"],
         "after_llm_response": ["self", "session", "conversation_id"],
         "after_permission_decision": ["self", "session", "conversation_id"],
         "after_tool_creation": ["self", "session", "conversation_id"],

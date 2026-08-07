@@ -74,3 +74,16 @@ class ProjectionError(AgentError):
     type, a nonterminal tool execution, or a COMPLETED execution without a
     result. Projection errors propagate; they are never converted into
     synthetic conversation content."""
+
+
+class IncompleteResponseError(AgentError):
+    """The model stopped without answering: the round produced no tool calls
+    and a finish reason that is not an answer (`length` — the token cap cut it
+    off mid-sentence; `error` — a refusal, safety filter or guardrail, which
+    every transport canonicalizes to this value with an `error_message`).
+
+    Closes the turn ERRORED, and the partial content STAYS recorded — unlike a
+    transport failure, the model really did produce those tokens and they are
+    the useful half of a truncation. The session is IDLE afterwards, so the
+    natural recovery is another `post_message()` ("continue"), not a retry of
+    the identical request, which would truncate in the identical place."""

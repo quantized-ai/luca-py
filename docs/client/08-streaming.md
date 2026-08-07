@@ -49,7 +49,7 @@ mid-stream without races.
 | `refusal_end` | `index`, `content` | Refusal block closed. |
 | `usage` | `usage` | Token usage available. |
 | **`finish`** | `message`, `finish_reason`, `provider_finish_reason`, `cancelled`, `usage`, `tool_calls` | **Exactly one terminal** when the model produced a turn. |
-| **`error`** | `error`, `partial_message`, `usage` | **Terminal** when the stream itself broke (HTTP error, malformed metadata). |
+| **`error`** | `error`, `partial_message`, `usage` | **Terminal** when the stream broke *after it opened* (mid-stream HTTP error, malformed metadata). A request rejected *before* the stream opens raises instead — see [exceptions](11-exceptions.md#streaming). |
 
 > ⚠️ **OpenAI native tools stream start → end only.** An
 > [OpenAI native call](06-tools.md#provider-native-tools) (apply_patch,
@@ -63,15 +63,17 @@ mid-stream without races.
   when the wire closed normally, even when `finish_reason="error"` (a
   refusal / safety filter / content filter outcome). Cancellation is also a
   `FinishEvent` with `cancelled=True`.
-- `ErrorEvent` — the **stream** broke. HTTP error, malformed JSON
-  mid-stream, parser bug. Carries `error: ClientError` and
-  `partial_message`.
+- `ErrorEvent` — the **stream** broke. Mid-stream HTTP error, malformed JSON,
+  parser bug. Carries `error: ClientError` and `partial_message`.
 
 The split is on **source of failure**, not on outcome. A safety refusal is
 still `FinishEvent(finish_reason="error", error_message="...")`, not an
 `ErrorEvent`.
 
-Every stream emits **exactly one** terminal event by structure.
+Every stream that opens emits **exactly one** terminal event by structure. A
+stream the provider *rejects* never opens and emits none: the mapped
+`ClientError` is raised from the first iteration instead
+([exceptions](11-exceptions.md#streaming)).
 
 ## Live accessors
 

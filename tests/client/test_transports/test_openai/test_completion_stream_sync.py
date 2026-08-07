@@ -8,6 +8,10 @@ from luca.client.types import (
     AssistantMessage,
     ChatCompletionRequest,
     FinishEvent,
+    RefusalBlock,
+    RefusalDeltaEvent,
+    RefusalEndEvent,
+    RefusalStartEvent,
     StartEvent,
     StreamEvent,
     TextBlock,
@@ -309,6 +313,86 @@ CASES = [
         ],
     ),
 ]
+
+
+def test_streamed_refusal_is_preserved_and_classified_as_an_error(openai_transport_factory):
+    client = make_sync_client(
+        sse_response(
+            [
+                _data('{"choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":""}}]}'),
+                _data('{"choices":[{"index":0,"delta":{"refusal":"I\'m sorry"}}]}'),
+                _data('{"choices":[{"index":0,"delta":{"refusal":", I cannot assist with that request."}}]}'),
+                _data('{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'),
+                _data('{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}'),
+                _data("[DONE]"),
+            ]
+        )
+    )
+    transport = openai_transport_factory(http_client=client)
+
+    with transport.completion_stream(_REQ) as stream:
+        events = collect_events_with_snapshots(stream)
+
+    refusal = "I'm sorry, I cannot assist with that request."
+    assert events == [
+        StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
+        RefusalStartEvent(
+            index=0,
+            partial=AssistantMessage(content=[RefusalBlock(text="")], provider="openai", model="gpt-4o"),
+        ),
+        RefusalDeltaEvent(
+            index=0,
+            delta="I'm sorry",
+            partial=AssistantMessage(
+                content=[RefusalBlock(text="I'm sorry")],
+                provider="openai",
+                model="gpt-4o",
+            ),
+        ),
+        RefusalDeltaEvent(
+            index=0,
+            delta=", I cannot assist with that request.",
+            partial=AssistantMessage(
+                content=[RefusalBlock(text=refusal)],
+                provider="openai",
+                model="gpt-4o",
+            ),
+        ),
+        RefusalEndEvent(
+            index=0,
+            content=refusal,
+            partial=AssistantMessage(
+                content=[RefusalBlock(text=refusal)],
+                provider="openai",
+                model="gpt-4o",
+            ),
+        ),
+        UsageEvent(
+            usage=Usage(input_tokens=1, output_tokens=2, total_tokens=3),
+            partial=AssistantMessage(
+                content=[RefusalBlock(text=refusal)],
+                provider="openai",
+                model="gpt-4o",
+            ),
+        ),
+        FinishEvent(
+            message=AssistantMessage(
+                content=[RefusalBlock(text=refusal)],
+                finish_reason="error",
+                provider_finish_reason="stop",
+                cancelled=False,
+                error_message=f"OpenAI refusal: {refusal}",
+                provider="openai",
+                model="gpt-4o",
+                usage=Usage(input_tokens=1, output_tokens=2, total_tokens=3),
+            ),
+            finish_reason="error",
+            provider_finish_reason="stop",
+            cancelled=False,
+            usage=Usage(input_tokens=1, output_tokens=2, total_tokens=3),
+            tool_calls=[],
+        ),
+    ]
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)

@@ -66,6 +66,7 @@ request hook.
 from __future__ import annotations
 
 from luca.client.types.messages import AssistantMessage as ClientAssistantMessage, Message
+from luca.client.types.tools import BaseTool as ClientBaseTool
 
 from .models import (
     AgentSession,
@@ -108,6 +109,22 @@ class AgentMiddlewareMixin:
         DTOs. A spec carries `tool_kind`, `namespace`, `is_private`,
         `output_schema` and `metadata`, none of which survive onto the wire, so
         this is the list a policy can actually filter on."""
+        return tools
+
+    def adapt_tool_declarations(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        tools: list[ClientBaseTool],
+    ) -> list[ClientBaseTool]:
+        """After the spec → client-declaration conversion, immediately before
+        the list is handed to the client as `acompletion(tools=…)`. CLIENT
+        vocabulary — the counterpart of `build_tool_list`, one conversion
+        later: that hook DECIDES which tools this request advertises (spec
+        vocabulary, the richer fields to filter on), this one RESHAPES how a
+        surviving tool is declared. The place to swap a function declaration
+        for a provider-native declaration item (`ApplyPatchTool()`,
+        `TextEditorTool()`, …); dropping or adding tools belongs upstream."""
         return tools
 
     def before_post_message(

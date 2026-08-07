@@ -11,7 +11,7 @@ from luca.agent.contrib.resource_permissions import (
     ResourcePermission,
     ToolRule,
 )
-from luca.agent.contrib.shell import ShellAccessPlugin
+from luca.agent.contrib.shell import ShellAccessPlugin, ShellNativeMiddleware
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.core import (
     AgentSession,
@@ -68,6 +68,18 @@ SESSION = AgentSession(
 )
 
 
+def native_session(model: str, provider: str) -> AgentSession:
+    return AgentSession(
+        id="s_native",
+        conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(
+            llm_config=LLMConfig(model=model, provider=provider),
+            use_native_tools=True,
+        ),
+    )
+
+
 # ── construction wiring ───────────────────────────────────────────────────────
 
 
@@ -87,18 +99,22 @@ def test_mode_accepts_the_string_form(tmp_path):
     assert make_plugin(tmp_path, mode="yolo").mode == PermissionMode.YOLO
 
 
-def test_one_tracker_is_shared_across_read_edit_write(tmp_path):
+def test_one_tracker_is_shared_across_every_reader_and_writer(tmp_path):
     plugin = make_plugin(tmp_path)
 
     assert tool(plugin, "read").tracker is plugin.tracker
     assert tool(plugin, "edit").tracker is plugin.tracker
     assert tool(plugin, "write").tracker is plugin.tracker
+    # the native editors too, or the read-first guard would stop applying the
+    # moment a session runs native
+    assert tool(plugin, "openai_apply_patch").tracker is plugin.tracker
+    assert tool(plugin, "anthropic_text_editor_20250728").tracker is plugin.tracker
 
 
 def test_every_tool_resolves_against_the_workspace(tmp_path):
     plugin = make_plugin(tmp_path)
 
-    assert [t.workdir for t in plugin.tools] == [tmp_path] * 7
+    assert [t.workdir for t in plugin.tools] == [tmp_path] * 12
 
 
 async def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path):
@@ -114,7 +130,15 @@ async def test_get_tool_registry_bundles_the_tools_behind_the_strategy(tmp_path)
         "edit",
         "write",
         "apply_patch",
+        "delete_file",
         "bash",
+        # The natives are ALWAYS resolvable — advertisement is the
+        # middleware's business, and a call born under one provider has to
+        # execute after a switch to another.
+        "openai_apply_patch",
+        "openai_shell",
+        "anthropic_text_editor_20250728",
+        "anthropic_bash_20250124",
     ]
     assert registry.permission_policy is plugin.permission_strategy
 
@@ -126,9 +150,36 @@ def test_system_prompt_part_names_the_permitted_directories(tmp_path):
     )
 
     [part] = plugin.get_system_prompt_parts(SESSION)
+    text = part(SESSION, main_conversation(SESSION).id)
 
-    assert str(tmp_path) in part
-    assert str(tmp_path.parent / "sibling") in part
+    assert str(tmp_path) in text
+    assert str(tmp_path.parent / "sibling") in text
+
+
+def test_system_prompt_part_names_the_generic_tools_when_native_is_off(tmp_path):
+    plugin = make_plugin(tmp_path)
+
+    text = plugin.get_system_prompt_parts(SESSION)[0](SESSION, main_conversation(SESSION).id)
+
+    assert "(read, glob, grep, edit, write, apply_patch, delete_file, bash)" in text
+
+
+def test_system_prompt_part_names_the_provider_facing_tools_on_a_native_model(tmp_path):
+    plugin = make_plugin(tmp_path)
+    session = native_session("gpt-5.1", "openai")
+
+    text = plugin.get_system_prompt_parts(session)[0](session, main_conversation(session).id)
+
+    assert "(read, glob, grep, apply_patch, shell)" in text
+
+
+def test_get_middleware_returns_the_native_middleware_bound_to_the_session(tmp_path):
+    plugin = make_plugin(tmp_path)
+
+    [middleware] = plugin.get_middleware(SESSION)
+
+    assert isinstance(middleware, ShellNativeMiddleware)
+    assert middleware.session is SESSION
 
 
 # ── seeded rules ──────────────────────────────────────────────────────────────
@@ -250,6 +301,25 @@ async def test_edit_inside_the_workspace_prompts_only_for_the_verb(
     [verb] = plugin.permission_strategy.pending_requests(execution)
     assert verb.resources == [
         ResourcePermission(permission="edit", resource=str(tmp_path / "notes.txt")),
+    ]
+
+
+async def test_delete_file_inside_the_workspace_prompts_for_the_verb(
+    tmp_path,
+    session,
+):
+    plugin = make_plugin(tmp_path)
+    execution = execution_for(plugin, "delete_file", {"file_path": "notes.txt"}, session)
+
+    decision = await plugin.permission_strategy.decide(SESSION, execution)
+
+    assert decision.decision == ApprovalOption.PENDING
+    [verb] = plugin.permission_strategy.pending_requests(execution)
+    assert verb.resources == [
+        ResourcePermission(
+            permission="delete_file",
+            resource=str(tmp_path / "notes.txt"),
+        ),
     ]
 
 

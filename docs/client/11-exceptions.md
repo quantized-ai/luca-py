@@ -74,13 +74,30 @@ its `_map_chat_completion_http_error` for specifics.
 
 ## Streaming
 
-Inside a stream, a transport error or protocol violation flows through
-`_handle_iter_exception` and surfaces as a terminal `ErrorEvent` carrying
-the typed `ClientError`. Iteration ends after that event — the stream is
+Streams fail in two places, and the place decides the shape.
+
+**Rejected before the stream opens** — the provider answered the HTTP request
+with a 4xx/5xx, so no event was ever emitted. The mapped `ClientError` is
+**raised** from the first iteration, exactly as `completion()` raises it. The
+same rejection must not change shape just because you asked for a stream:
+
+```python
+try:
+    with completion_stream(model="openrouter:anthropic/claude-sonnet-5", messages=[...]) as stream:
+        for event in stream:
+            ...
+except ProviderAPIError as e:
+    print(e)  # "This request requires more credits, or fewer max_tokens…"
+```
+
+**Broken after it opened** — a transport error or protocol violation mid-flight
+flows through `_handle_iter_exception` and surfaces as a terminal `ErrorEvent`
+carrying the typed `ClientError`. There is a partial message to hand back, so
+there is an event to carry it. Iteration ends after that event — the stream is
 single-use.
 
 Calling `stream.collect()` re-raises the `error` from the `ErrorEvent`
-directly.
+directly, so `collect()` raises in both cases.
 
 ## Typical handler
 

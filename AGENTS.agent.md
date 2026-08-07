@@ -78,7 +78,9 @@ luca/agent/
 │   │   └── plugin.py    # SystemPromptPlugin (callable PUBLIC part builders —
 │   │                    #   subclass and override one; /model moves the prompt)
 │   │                    #   + InstructionsPlugin
-│   └── shell/           # the 7 shell tools + ShellAccessPlugin — see AGENTS.md there
+│   └── shell/           # the 8 generic shell tools + native/ (the 4
+│                        #   provider-native ones + ShellNativeMiddleware) +
+│                        #   ShellAccessPlugin — see AGENTS.md there
 └── core/
     ├── __init__.py      # external surface: AgentSessionRunner, ToolRegistry, PreparedTool,
     │                    #   SystemPromptAssembler, all entry types, exceptions.
@@ -116,7 +118,7 @@ luca/agent/
     │                    #   strategy (subclass to customize history/tool-output policy)
     ├── adapter.py       # message_to_parts() (inbound response conversion) +
     │                    #   tool_spec_to_luca_tool() (tool-definition conversion)
-    ├── middleware.py    # AgentMiddlewareMixin — the 12 duck-typed middleware
+    ├── middleware.py    # AgentMiddlewareMixin — the 13 duck-typed middleware
                          #   hooks, every one (session, conversation_id, …)
     ├── ledger.py        # SessionLedger — the single append/read door onto the entry
     │                    #   log; every door takes a conversation_id
@@ -461,6 +463,15 @@ Limits the implementation may rely on: a subagent is never compaction-checked (b
 
 Nothing in a restored spec references a live class, an `Args` model, or anything importable — it is plain data, so a session whose tools were deleted from the codebase years ago still renders its `name`, `description`, `input_schema` and `tool_kind`. `input_schema` is required and never `None`, including for a tool that takes no arguments (that case is the empty object schema `{"type": "object", "properties": {}}` — an absent schema and an empty schema mean different things to a provider). `tool_kind` defaults to `OTHER`; the network-egress kind is `WEB_FETCH`. Invocation arguments are never here — they live on `ToolExecution.raw_tool_call`.
 
+`title: str | None` is the one PRESENTATION field, reached through
+`display_name` (`title` when set, `name` otherwise). It exists so a tool whose
+internal identity is a mouthful — `openai_apply_patch` — can render as "Apply
+patch" without anything keying on the label: `name` stays the identity for
+resolution, approvals, doom-loop and middleware. It is the only field excluded
+from `spec_id()`, so giving a tool a title (or rewording one) never invalidates
+a stored spec id — with the deliberate consequence that a title-only relabel
+does not mint a new row and the FIRST-filed spec keeps standing.
+
 `is_private: bool` is the ONE exception to "the advertisement sent to the model": a private spec is returned by `get_tools()` and resolved, prepared and dispatched exactly like any other, but the runner omits it from the wire list and a model tool call naming it records `NOT_FOUND` rather than resolving. Its execution never projects as a `ToolMessage` (forced — no `ToolCall` for it exists on the path), and V0's projector renders it as nothing at all. It participates in `spec_id()` like every other field.
 
 `output_schema: dict | None` is a THIRD role, and neither of the two above: an optional declaration of the shape the tool can return in `ExecutionResult.structured_content`. It is application-facing — and, for a spawn tool, read by the runner's depth gate — but no provider accepts an output schema on a function tool, so `tool_spec_to_luca_tool` drops it like every other non-wire field, and nothing in the framework validates a payload against it. `structured_content` is likewise never projected (`content` stays the sole model-facing channel) and never counted by `calculate_context`. Both fields exist so an MCP-backed registry has somewhere to map `outputSchema` / `structuredContent`; the core reads neither. Note that `output_schema` participates in `spec_id()` like every other field — a tool that gains one is a new row.
@@ -529,7 +540,7 @@ It is always recomputed via `AgentSession.get_conversation_status(conversation_i
 
 `AssistantMessage.parts` retains `ThinkingContent`, so reasoning is durable in the saved session and survives reload — text, `id`, `signature` and `redacted` alike. `id` is the provider's identity for the reasoning ITEM (OpenAI's `rs_…`); `signature` its attestation over the content (Anthropic's signature, OpenAI's `encrypted_content`). The Responses API needs both to replay an item.
 
-Whether it goes back on the wire is the transport's call, and it turns on TWO facts. First the protocol: chat-completions hosts have no replay surface and drop reasoning outright, while Anthropic and the OpenAI Responses API replay the block verbatim. Second the producing model: an attestation is minted by one (provider, model) pair and refused by every other, so `ConversationProjector.project_assistant_message` copies `entry.llm_config`'s provider and model onto the projected client message and the transport drops any block whose provenance disagrees with the model being called (`BaseTransport._attestation_is_replayable`). That path is live whenever an application switches models mid-session and replays the whole history to the new one. For the same reason `AssistantMessage.llm_config` records the EFFECTIVE model (`runner.effective_llm_config`), not the session's: a `build_model_string` middleware may route a turn elsewhere, and recording the session config would make provenance lie.
+Whether it goes back on the wire is the transport's call, and it turns on TWO facts. First the protocol: chat-completions hosts have no replay surface and drop reasoning outright, while Anthropic and the OpenAI Responses API replay the block verbatim. Second the producing model: an attestation is minted by one (provider, model) pair and refused by every other, so `ConversationProjector.project_assistant_message` copies `entry.llm_config`'s provider and model onto the projected client message and the transport drops any block whose provenance disagrees with the model being called (`BaseTransport._attestation_is_replayable`). That path is live whenever an application switches models mid-session and replays the whole history to the new one. For the same reason `AssistantMessage.llm_config` records the ACTIVE model (`session.llm_config`, stamped by the drive via `session.update_llm_config()` after `build_model_string` middleware ran — the CONFIGURED value stays on `session.session_config.llm_config`), not the configured one: a `build_model_string` middleware may route a turn elsewhere, and recording the configured value would make provenance lie.
 
 A `ThinkingContent` is therefore immutable once persisted; rewriting `thinking` in middleware invalidates the signature and the provider will reject the turn.
 
@@ -572,7 +583,7 @@ The runner projects `get_tools()`'s `ToolSpec`s to wire tools via `adapter.tool_
 
 ### Add middleware
 
-Write a plain Python class that implements any of the 12 hook methods defined in `luca/agent/core/middleware.py` (`AgentMiddlewareMixin` — its hooks are identity pass-throughs, so subclassing is safe for partial overrides, but plain classes are the recommended style; the runner dispatches via `hasattr`). Pass instances as `middleware=[mw1, mw2]` to `AgentSessionRunner`. Hooks run in list order; there is no reverse ordering. There is deliberately NO `build_messages` hook — history policy belongs on the `ConversationProjector`.
+Write a plain Python class that implements any of the 13 hook methods defined in `luca/agent/core/middleware.py` (`AgentMiddlewareMixin` — its hooks are identity pass-throughs, so subclassing is safe for partial overrides, but plain classes are the recommended style; the runner dispatches via `hasattr`). Pass instances as `middleware=[mw1, mw2]` to `AgentSessionRunner`. Hooks run in list order; there is no reverse ordering. There is deliberately NO `build_messages` hook — history policy belongs on the `ConversationProjector`.
 
 **Every hook starts with `(session, conversation_id)`** — the live session the runner writes through, plus the conversation whose OPERATION invoked the hook. One instance serves the main conversation and every subagent concurrently, so that id is what makes per-conversation routing, state and attribution possible at all; it does NOT assert the value belongs exclusively to that conversation. Same prefix as `ToolRegistry`, `ContextManager.compact`, `Tool.execute` and system-prompt callables.
 
@@ -618,6 +629,7 @@ The handle owns lifecycle plumbing: `_begin_run`'s one-engine-at-a-time guard, t
    - `soft_max_steps` reached, or a doom-loop-flagged execution exists → `tool_choice="none"`.
    - Race the cancellation token via `_race_cancellation` (grace window, hard-kill via `_kill`), wired to `RuntimeConfig`'s `timeout=`/`total_timeout=`.
    - `TimeoutError` → `TurnFinish(TIMED_OUT)` and re-raise; any other failure → `ERRORED` (status PENDING, retry-ready); cancel pending → wins (wind-down, normal return). With unresolved children the close splits by depth: the MAIN conversation leaves the turn OPEN and re-raises (children keep working; the next `run()` resumes), a SUBAGENT parent cascade-cancels + settles its children and closes ERRORED (nothing outside it ever retries a subagent mid-run).
+   - THE ROUND KEYS OFF `tool_calls`, NOT the finish reason — a misclassifying provider can neither wedge the conversation ("stop" + calls) nor loop it ("tool_use" + none). That settles "stop" vs "tool_use" and says nothing about a model that produced NEITHER: no calls plus a finish reason in `NON_ANSWER_FINISH_REASONS` (`{"error", "length"}` — the client's vocabulary is already normalized, so OpenAI's `length` and Anthropic's/Bedrock's `max_tokens` both arrive as `"length"`, and every refusal / safety filter / guardrail as `"error"` with an `error_message`) closes `ERRORED` and raises `IncompleteResponseError`, carrying `message.error_message` when the transport supplied one. It sits LAST in the close-site precedence chain, so it only ever converts what would otherwise have closed COMPLETED — a cancel, an unseen post, an unresolved child and a live gate all still win, unchanged. Unlike a transport failure it **keeps** the partial assistant message (`_record_assistant` already ran): those tokens were really produced, and on a truncation they are the useful half. Settles undispatched executions before closing, like every other failure close.
    - Recording the assistant message, RECEIVING its executions, and closing a final-answer bracket is **atomic**, and atomic here means **no `await` between**, not merely no yield. This is the invariant the whole `RECEIVED` state exists to serve: no append — a `post_message` from an application's UI on the same event loop, most of all — can ever land between a `tool_call` and the execution nodes that answer it, so the path is always projectable. Birth is deliberately outside that block (it is async and application-owned) and runs as step 1a against the durable entries this wrote.
 
 **Per-step methods:**
@@ -695,12 +707,13 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_projection.py` | `ConversationProjector`: every entry type, every terminal tool status, fail-loud rules, subclass override points |
 | `tests/agent/test_adapter.py` | Inbound message parts + `tool_spec_to_luca_tool` (the `input_schema` → `parameters` pass-through) |
 | `tests/agent/test_utils.py` | `pretty_print`: whole-transcript assertions per session shape (answered turn, tool tree, failure, open turn, compaction/pruning, clipping) |
-| `tests/agent/test_runner_middleware.py` | Middleware hook dispatch: the twelve hooks, the `(session, conversation_id)` prefix, the four-hook tool lifecycle (creation pair, dispatch-only `before_tool_execution`, universal `after_tool_execution`), chaining + exception context, `after_llm_response` exactly-once across streaming/non-streaming, and `recalculate_context_tokens()` firing nothing |
+| `tests/agent/test_runner_middleware.py` | Middleware hook dispatch: the thirteen hooks, the `(session, conversation_id)` prefix, the four-hook tool lifecycle (creation pair, dispatch-only `before_tool_execution`, universal `after_tool_execution`), chaining + exception context, `after_llm_response` exactly-once across streaming/non-streaming, and `recalculate_context_tokens()` firing nothing |
 | `tests/agent/contrib/test_tools.py` | Self-scoped contrib tests: the `Tool` base contract (spec stamping incl. `input_schema`, `output_schema` and `timeout_in_ms`, session + token pass-through, a result carrying `structured_content`) and the working `tool()` / `tool_class()` factories (incl. `output=` in both forms and its `class_attrs` collision) |
 | `tests/agent/contrib/test_simple_tool_registry.py` | Self-scoped contrib tests: birth drafts per preflight outcome, decide delegation, `prepare` returning a callable WITHOUT running the body and its two raise paths, `ProxyToolRegistry` routing/nesting and cache-independent `decide`/`prepare` on a never-warmed route — no runner |
 | `tests/agent/contrib/test_plugins.py` | Self-scoped contrib tests: `PluginAgentSessionRunner` composition (one proxy, parts/middleware flattening, equality with a directly-configured runner) |
 | `tests/agent/contrib/test_resource_permissions.py` | Self-scoped contrib tests: `PermissionStrategy` decide / apply_answer / pending_requests / grant + the tool mixin — no runner, no session |
-| `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
+| `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`), `native/` (the per-model support table, the four native tools, the middleware's own tables) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
+| `tests/agent/test_native_tools/` | The provider-native BATTERY: given entries and an active config, the exact `(tools, messages)` `acompletion()` receives — advertisement per mode, adoption, projection across provider switches, the denied-shell synthesis, the no-plugin fail-safe. Real `ShellNativeMiddleware`, fixture tools |
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
 | `tests/agent/contrib/test_skills.py` | Self-scoped contrib tests: frontmatter parsing (incl. the `>` / `\|` block scalars real skills use), the skip-don't-raise rules, location precedence, the `skill` tool, the plugin surface — no runner |
 | `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |

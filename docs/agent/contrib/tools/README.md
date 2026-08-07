@@ -176,6 +176,7 @@ class ReadFileTool(Tool):
     name = "read_file"
     description = "..."
     Args = ReadFileArgs
+    title = "Read file"                 # optional UI label — see below
     tool_kind = ToolKind.READ           # read | search | web_fetch | edit | move | delete | execute | switch_mode | other
     namespace = "builtin.fs"            # optional owning group
     version = "1.0.0"                   # optional
@@ -183,6 +184,11 @@ class ReadFileTool(Tool):
     output_schema = ReadFileResult      # optional output model — see §6
     is_private = False                  # optional — keep it off the wire, see §7
 ```
+
+`title` is presentation only: a UI reads `spec.display_name` (the title when
+set, `name` otherwise), while `name` stays the identity for resolution,
+approvals and middleware. Reach for it when the internal name is not what a
+person should read — `openai_apply_patch` rendering as "Apply patch".
 
 A spec must stay a pure function of the tool *definition*: it is stored once
 per session under a content hash ([`03-tools.md`](../../03-tools.md) §4), so

@@ -1,6 +1,6 @@
 # Middleware
 
-Middleware lets you intercept and modify the runner's pipeline at **12** points —
+Middleware lets you intercept and modify the runner's pipeline at **13** points —
 without subclassing the runner or touching the session model. Pass a list of
 plain objects; each hook they implement is called, in list order.
 
@@ -75,6 +75,22 @@ class AgentMiddlewareMixin:
         DTOs. A spec carries `tool_kind`, `namespace`, `is_private`,
         `output_schema` and `metadata`, none of which survive onto the wire, so
         this is the list a policy can actually filter on."""
+        return tools
+
+    def adapt_tool_declarations(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        tools: list[ClientBaseTool],
+    ) -> list[ClientBaseTool]:
+        """After the spec → client-declaration conversion, immediately before
+        the list is handed to the client as `acompletion(tools=…)`. CLIENT
+        vocabulary — the counterpart of `build_tool_list`, one conversion
+        later: that hook DECIDES which tools this request advertises (spec
+        vocabulary, the richer fields to filter on), this one RESHAPES how a
+        surviving tool is declared. The place to swap a function declaration
+        for a provider-native declaration item (`ApplyPatchTool()`,
+        `TextEditorTool()`, …); dropping or adding tools belongs upstream."""
         return tools
 
     def before_post_message(
@@ -280,6 +296,7 @@ Every signature below is shown *after* the `(session, conversation_id)` prefix.
 | **Any** entry persistence | `before_entry_written` | `(entry: AnyEntry)` → `AnyEntry` |
 | Per model call | `build_model_string` | `(model_string: str, llm_cfg: LLMConfig)` → `str` |
 | Per model call | `build_tool_list` | `(tools: list[ToolSpec])` → `list[ToolSpec]` |
+| Per model call | `adapt_tool_declarations` | `(tools: list[client tools])` → `list[client tools]` |
 | Per model call | `before_llm_call` | `(messages, system_message)` → `(messages, system_message)` |
 | Model responded (complete) | `after_llm_response` | `(message)` → `message` |
 | Per creation attempt | `before_tool_creation` | `(call: ToolCall)` → `ToolCall` |
@@ -296,7 +313,20 @@ Every signature below is shown *after* the `(session, conversation_id)` prefix.
 > `build_tool_list`, by contrast, is the registry's own
 > [`ToolSpec`](03-tools.md) list: the adapter converts it to wire tools *after*
 > the hook, so a policy can filter on `tool_kind`, `namespace`, `metadata` and
-> `output_schema`, none of which survive the conversion.
+> `output_schema`, none of which survive the conversion. `tools` in
+> `adapt_tool_declarations` is the CONVERTED list — client tool declarations,
+> exactly what `acompletion(tools=…)` will receive — so a middleware can swap a
+> function declaration for a provider-native declaration item there.
+>
+> `ShellNativeMiddleware`
+> ([`contrib/shell/`](contrib/shell/README.md#6-provider-native-tools)) is the
+> reference use of all four outbound hooks together: `build_tool_list` drops
+> the generics the active provider's native tools replace,
+> `adapt_tool_declarations` swaps the survivors for the native items,
+> `before_llm_call` upgrades their projected calls and results to the native
+> payloads, and `after_llm_response` adopts the calls that come back. Provider
+> knowledge stays in the plugin that owns those tools; the core stays
+> provider-blind.
 
 > ⚠️ **Only `before_tool_execution` is exactly-once and paired.** It fires once
 > per dispatch attempt, and its returned execution is what the dispatch uses.
@@ -310,8 +340,9 @@ Every signature below is shown *after* the `(session, conversation_id)` prefix.
 > `conversation_id` would honestly scope it. It is an operational refresh of a
 > derived estimate, not a write ([11](11-context-and-usage.md)).
 
-> ⚠️ **The four per-call hooks do NOT fire for a compaction's own LLM request.**
-> `build_model_string`, `build_tool_list`, `before_llm_call` and
+> ⚠️ **The five per-call hooks do NOT fire for a compaction's own LLM request.**
+> `build_model_string`, `build_tool_list`, `adapt_tool_declarations`,
+> `before_llm_call` and
 > `after_llm_response` are written in terms of the conversational turn, and a
 > hook has no argument telling it which call it is in — a trailing reminder or
 > a turn-count router would silently corrupt summarization requests. The

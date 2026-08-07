@@ -130,6 +130,10 @@ def tool_arg(execution: ToolExecution) -> str:
         value = arguments.get(key)
         if isinstance(value, str) and value:
             return _collapse(value)
+    # the native shell's primary argument is a LIST of command strings
+    commands = arguments.get("commands")
+    if isinstance(commands, list) and commands:
+        return _collapse("; ".join(str(command) for command in commands))
     if not arguments:
         return ""
     return ", ".join(f"{key}={_collapse(_plain(value))}" for key, value in arguments.items())
@@ -217,7 +221,11 @@ def tool_block(
     a `ToolBlock`. Every automatic permission decision is stated: an
     auto-allowed gated call carries `approved by rule` on its result row, a
     denial says whether a rule or the user refused it."""
-    name = execution.raw_tool_call.name
+    # The spec's `display_name` is `title` when the tool declares one and the
+    # internal `name` otherwise — so a provider-native tool reads as "Apply
+    # patch" here while staying `openai_apply_patch` everywhere identity
+    # matters. An unresolved call has no spec; its raw name is all there is.
+    name = execution.tool_spec.display_name if execution.tool_spec is not None else execution.raw_tool_call.name
     status = _STATUS_MAP.get(execution.status, "pending")
     if status == "running":
         status = "pending"
