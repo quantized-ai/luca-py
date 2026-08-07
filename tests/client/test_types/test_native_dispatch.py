@@ -174,6 +174,7 @@ def test_base_toolcall_dump_shape_unchanged():
             "partial_arguments": "",
             "complete": True,
             "thought_signature": None,
+            "extras": {},
         },
     ]
 

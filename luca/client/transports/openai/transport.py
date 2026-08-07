@@ -278,10 +278,11 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             elif isinstance(block, RefusalBlock):
                 wire["refusal"] = block.text
             elif isinstance(block, ToolCall):
-                projector = self._projector_for_call(block)
-                lineage[block.id] = (projector, block) if projector is not None else None
-                if projector is not None:
-                    tool_calls_wire.append(projector.project_tool_call_to_llm(block))
+                entry = self._resolve_call(block)
+                lineage[block.id] = entry
+                if entry is not None:
+                    projector, call = entry
+                    tool_calls_wire.append(projector.project_tool_call_to_llm(call))
         if text_parts:
             wire["content"] = "".join(text_parts)
         else:
@@ -295,6 +296,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         msg: ToolMessage,
         lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
     ) -> dict | None:
+        msg = msg.as_native()
         if lineage is not None and msg.tool_call_id in lineage:
             entry = lineage[msg.tool_call_id]
             if entry is None:

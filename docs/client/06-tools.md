@@ -170,6 +170,9 @@ session, report honest failures).
 | `TextEditorTool(max_characters=...)` | Anthropic | base `ToolCall`, name `"str_replace_based_edit_tool"` | plain `ToolMessage` |
 | `BashTool()` | Anthropic | base `ToolCall`, name `"bash"` | plain `ToolMessage` |
 
+Every typed class above has an equivalent canonical-types-only form — see
+[the generic form](#the-generic-form-extras).
+
 ### OpenAI: apply_patch + shell
 
 Calls surface as **typed `ToolCall` subclasses** with synthesized names (the
@@ -242,6 +245,56 @@ each command has `path` plus its own fields:
 Runnable end to end (all four commands, plus bash):
 [`anthropic_example_non_streaming.py`](../../specs/0009-provider-native-tools/examples/anthropic_example_non_streaming.py).
 
+### The generic form: `extras`
+
+Every native call and result has a second, equivalent representation that uses
+**only the canonical types**. `ToolCall.extras` and `ToolMessage.extras` are
+free-form dicts with one reserved key, `custom_type`, naming the native type;
+every other key is a field of that class.
+
+```python
+from luca.client.types import ToolCall, ToolMessage
+
+# identical to ApplyPatchToolCall(item_id="apc_1", status="completed", …)
+ToolCall(
+    id="call_1",
+    name="apply_patch",
+    arguments={"type": "create_file", "path": "hello.txt", "diff": "+hi\n"},
+    extras={"custom_type": "apply_patch_call", "item_id": "apc_1", "status": "completed"},
+)
+
+# identical to ShellToolMessage(results=[ShellCommandResult(…)])
+ToolMessage(
+    tool_call_id="call_2",
+    content="",
+    extras={
+        "custom_type": "shell_call_output",
+        "results": [{"stdout": "5\n", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}],
+    },
+)
+```
+
+The transports normalize before projecting, so the two forms produce the
+**same wire payload** — including the shell-result requirement, the
+`max_output_length` echo, and the foreign-drop policy. Converting between them
+is one call each way, and lossless:
+
+```python
+call.as_generic()      # ApplyPatchToolCall -> base ToolCall + extras
+call.as_native()       # base ToolCall + extras -> ApplyPatchToolCall
+```
+
+Use the typed classes when you are writing Python against a known tool — they
+give you `tc.operation`, `tc.action`, and validation. Use the generic form
+when you would rather not import a provider class at all: storing a session,
+crossing a process or language boundary, or writing tool-agnostic plumbing.
+Nothing else changes: **responses always come back as the typed subclass**,
+whichever form you sent.
+
+An unregistered `custom_type` raises `BadRequestError` at projection — the
+generic form removes the need to *import* a native class, not the need for one
+to exist.
+
 ### Compatibility and provider switches
 
 A native tool declared on the wrong transport fails **before any HTTP** with
@@ -272,7 +325,9 @@ Native calls and results survive a JSON round trip: `model_dump()` keeps the
 subclass fields, and validating against the base classes
 (`AssistantMessage` / `ToolMessage`) restores the typed subclasses —
 provided `luca.client` is imported, which registers every first-party native
-type.
+type. Store `as_generic()` instead and that import stops mattering: the
+generic form reloads as a plain `ToolCall` / `ToolMessage` and projects the
+same.
 
 ### Extending: your own native tool
 

@@ -18,6 +18,70 @@ from .media import MediaSource
 # native modules, so any client import registers them.
 NATIVE_TOOL_CALL_TYPES: dict[str, type[ToolCall]] = {}
 
+# The one reserved key in `ToolCall.extras` / `ToolMessage.extras`: it names
+# the native type the entry really is, and every other key is a field of that
+# class. See ToolCall.as_native / as_generic.
+CUSTOM_TYPE_KEY = "custom_type"
+
+
+def _native_wire_type(cls: type[BaseModel]) -> str | None:
+    """The native `type` literal a class declares, or None for a base class.
+
+    `ToolCall` defaults `type` to "tool_call" and `ToolMessage` has no `type`
+    field at all — the same two shapes `__pydantic_init_subclass__` treats as
+    "not a native subclass"."""
+    field = cls.model_fields.get("type")
+    if field is None or field.default == "tool_call":
+        return None
+    return field.default
+
+
+def _as_native(obj: Any, registry: dict[str, Any], label: str) -> Any:
+    """The generic form -> the registered native class it names in `extras`.
+
+    Returns `obj` unchanged when there is nothing to do: no `custom_type`, or
+    an instance that is already native (its own `extras` are then inert)."""
+    from ..exceptions import BadRequestError
+
+    custom_type = obj.extras.get(CUSTOM_TYPE_KEY)
+    if custom_type is None or _native_wire_type(type(obj)) is not None:
+        return obj
+    target = registry.get(custom_type)
+    if target is None:
+        raise BadRequestError(
+            f"Unknown native {label} type {custom_type!r} in extras. Native "
+            "types register themselves at import; the module defining this "
+            "one was never imported.",
+        )
+    data = obj.model_dump(exclude={"type", "extras"})
+    data.update({k: v for k, v in obj.extras.items() if k != CUSTOM_TYPE_KEY})
+    try:
+        return target.model_validate(data)
+    except ValidationError as e:
+        raise BadRequestError(
+            f"extras do not describe a valid {target.__name__}: {e}",
+            original_exception=e,
+        ) from e
+
+
+def _as_generic(obj: Any, base_cls: type[BaseModel]) -> Any:
+    """A native instance -> the base class carrying its identity in `extras`.
+
+    Mechanical and exactly inverse to `_as_native`: `custom_type` is the
+    class's `type` literal, and every field it declares beyond the base
+    becomes one entry."""
+    wire_type = _native_wire_type(type(obj))
+    if wire_type is None:
+        return obj
+    data = obj.model_dump()
+    base_names = set(base_cls.model_fields)
+    extras = {**obj.extras, CUSTOM_TYPE_KEY: wire_type}
+    extras.update({k: v for k, v in data.items() if k not in base_names and k != "type"})
+    return base_cls(
+        **{k: v for k, v in data.items() if k in base_names and k not in ("type", "extras")},
+        extras=extras,
+    )
+
 
 class TextBlock(BaseModel):
     type: Literal["text"] = "text"
@@ -79,6 +143,13 @@ class ToolCall(BaseModel):
     complete: bool = True
     thought_signature: str | None = None
 
+    # Free-form and inert, with ONE reserved key: `custom_type` names a
+    # registered native type, making this the generic form of that native
+    # call — every other key is then one of that class's own fields. The
+    # transports normalize through as_native() before projecting, so the two
+    # forms produce identical wire payloads. See as_native / as_generic.
+    extras: dict[str, Any] = Field(default_factory=dict)
+
     # Bound by native subclasses to their ToolProjector subclass; None on the
     # base and on any non-native subclass means the transport's default
     # projector. ClassVar[Any] deliberately: the sibling `type` FIELD shadows
@@ -108,6 +179,23 @@ class ToolCall(BaseModel):
             if target is not None:
                 return target.model_validate(value)
         return handler(value)
+
+    def as_native(self) -> ToolCall:
+        """This call as the native subclass its `extras` name.
+
+        `ToolCall(extras={"custom_type": "apply_patch_call", "item_id": …})`
+        becomes the equivalent `ApplyPatchToolCall`. Self when there is
+        nothing to do. Raises BadRequestError on an unregistered
+        `custom_type` or extras the class rejects."""
+        return _as_native(self, NATIVE_TOOL_CALL_TYPES, "tool-call")
+
+    def as_generic(self) -> ToolCall:
+        """This call as a base ToolCall carrying its native identity in
+        `extras` — the inverse of as_native(), and self when already generic.
+
+        The transport-independent form: no provider class needed to store it,
+        replay it, or hand it to another process."""
+        return _as_generic(self, ToolCall)
 
     def parse_arguments(self, schema: Any) -> Any:
         """Validate self.arguments against `schema`. Returns a typed object.

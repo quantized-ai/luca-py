@@ -1,6 +1,10 @@
 """Native tools on the Responses wire: declarations, parse, replay, results,
 tool_choice forcing, and the foreign-drop policy. Wire shapes mirror the live
-captures from 2026-08-06."""
+captures from 2026-08-06.
+
+Every projection test runs twice — once with the typed native class, once with
+the generic `extras` form of the same call/result — against ONE expected
+payload. The two forms are interchangeable or these tests fail."""
 
 from typing import ClassVar, Literal
 
@@ -63,6 +67,45 @@ SHELL_CALL = ShellToolCall(
     status="completed",
 )
 
+# The generic twins: the same calls/results expressed with canonical types
+# only. Written out literally rather than derived with as_generic(), so the
+# shape a caller has to produce is what these tests actually exercise.
+APPLY_CALL_GENERIC = ToolCall(
+    id="call_1",
+    name="apply_patch",
+    arguments={"type": "create_file", "diff": "+hi luca\n", "path": "hello.txt"},
+    extras={"custom_type": "apply_patch_call", "item_id": "apc_1", "status": "completed"},
+)
+
+SHELL_CALL_GENERIC = ToolCall(
+    id="call_2",
+    name="shell",
+    arguments={"commands": ["wc -c hello.txt"], "timeout_ms": 10000, "max_output_length": 10240},
+    extras={"custom_type": "shell_call", "item_id": "sh_1", "status": "completed"},
+)
+
+SHELL_RESULT = ShellToolMessage(
+    tool_call_id="call_2",
+    results=[ShellCommandResult(stdout="5\n", stderr="", outcome=ShellExitOutcome(exit_code=0))],
+)
+
+SHELL_RESULT_GENERIC = ToolMessage(
+    tool_call_id="call_2",
+    content="",
+    extras={
+        "custom_type": "shell_call_output",
+        "results": [{"stdout": "5\n", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}],
+    },
+)
+
+APPLY_CALLS = pytest.mark.parametrize("apply_call", [APPLY_CALL, APPLY_CALL_GENERIC], ids=["typed", "generic"])
+SHELL_CALLS = pytest.mark.parametrize("shell_call", [SHELL_CALL, SHELL_CALL_GENERIC], ids=["typed", "generic"])
+SHELL_RESULTS = pytest.mark.parametrize(
+    "shell_result",
+    [SHELL_RESULT, SHELL_RESULT_GENERIC],
+    ids=["typed", "generic"],
+)
+
 
 def _request(**kwargs) -> ChatCompletionRequest:
     return ChatCompletionRequest(
@@ -117,12 +160,13 @@ def test_unknown_item_type_is_still_ignored(responses_transport_factory):
 # --- replay + results ------------------------------------------------------
 
 
-def test_apply_patch_replays_verbatim_and_result_carries_status(responses_transport_factory):
+@APPLY_CALLS
+def test_apply_patch_replays_verbatim_and_result_carries_status(responses_transport_factory, apply_call):
     transport = responses_transport_factory()
     items = transport._project_messages(
         [
             UserMessage(content="hi"),
-            AssistantMessage(content=[APPLY_CALL]),
+            AssistantMessage(content=[apply_call]),
             ToolMessage(tool_call_id="call_1", content="Created hello.txt"),
         ],
         _request(),
@@ -145,11 +189,12 @@ def test_apply_patch_replays_verbatim_and_result_carries_status(responses_transp
     ]
 
 
-def test_apply_patch_error_result_projects_failed(responses_transport_factory):
+@APPLY_CALLS
+def test_apply_patch_error_result_projects_failed(responses_transport_factory, apply_call):
     transport = responses_transport_factory()
     items = transport._project_messages(
         [
-            AssistantMessage(content=[APPLY_CALL]),
+            AssistantMessage(content=[apply_call]),
             ToolMessage(tool_call_id="call_1", content="no such file", is_error=True),
         ],
         _request(),
@@ -162,14 +207,16 @@ def test_apply_patch_error_result_projects_failed(responses_transport_factory):
     }
 
 
-def test_shell_result_is_structured_and_echoes_max_output_length(responses_transport_factory):
+@SHELL_CALLS
+@SHELL_RESULTS
+def test_shell_result_is_structured_and_echoes_max_output_length(
+    responses_transport_factory,
+    shell_call,
+    shell_result,
+):
     transport = responses_transport_factory()
-    result = ShellToolMessage(
-        tool_call_id="call_2",
-        results=[ShellCommandResult(stdout="5\n", stderr="", outcome=ShellExitOutcome(exit_code=0))],
-    )
     items = transport._project_messages(
-        [AssistantMessage(content=[SHELL_CALL]), result],
+        [AssistantMessage(content=[shell_call]), shell_result],
         _request(),
     )
     assert items == [
@@ -189,23 +236,26 @@ def test_shell_result_is_structured_and_echoes_max_output_length(responses_trans
     ]
 
 
-def test_shell_result_without_call_limit_omits_the_echo(responses_transport_factory):
+@SHELL_CALLS
+@SHELL_RESULTS
+def test_shell_result_without_call_limit_omits_the_echo(
+    responses_transport_factory,
+    shell_call,
+    shell_result,
+):
     transport = responses_transport_factory()
-    call = SHELL_CALL.model_copy(update={"arguments": {"commands": ["ls"]}})
-    result = ShellToolMessage(
-        tool_call_id="call_2",
-        results=[ShellCommandResult(stdout="", stderr="", outcome=ShellExitOutcome(exit_code=0))],
-    )
-    items = transport._project_messages([AssistantMessage(content=[call]), result], _request())
+    call = shell_call.model_copy(update={"arguments": {"commands": ["ls"]}})
+    items = transport._project_messages([AssistantMessage(content=[call]), shell_result], _request())
     assert "max_output_length" not in items[-1]
 
 
-def test_plain_tool_message_for_a_shell_call_is_refused(responses_transport_factory):
+@SHELL_CALLS
+def test_plain_tool_message_for_a_shell_call_is_refused(responses_transport_factory, shell_call):
     transport = responses_transport_factory()
     with pytest.raises(BadRequestError, match="ShellToolMessage"):
         transport._project_messages(
             [
-                AssistantMessage(content=[SHELL_CALL]),
+                AssistantMessage(content=[shell_call]),
                 ToolMessage(tool_call_id="call_2", content="5"),
             ],
             _request(),
@@ -242,12 +292,20 @@ class _ForeignTool(BaseTool):
         return _ForeignProjector()
 
 
-def test_foreign_native_call_and_its_result_are_dropped(responses_transport_factory):
+@pytest.mark.parametrize(
+    "foreign_call",
+    [
+        _ForeignToolCall(id="call_f", name="x"),
+        ToolCall(id="call_f", name="x", extras={"custom_type": "foreign_test_call"}),
+    ],
+    ids=["typed", "generic"],
+)
+def test_foreign_native_call_and_its_result_are_dropped(responses_transport_factory, foreign_call):
     transport = responses_transport_factory()
     items = transport._project_messages(
         [
             UserMessage(content="hi"),
-            AssistantMessage(content=[TextBlock(text="doing it"), _ForeignToolCall(id="call_f", name="x")]),
+            AssistantMessage(content=[TextBlock(text="doing it"), foreign_call]),
             ToolMessage(tool_call_id="call_f", content="result"),
         ],
         _request(),
@@ -301,6 +359,30 @@ def test_tool_choice_for_an_undeclared_name_keeps_the_blind_shape(responses_tran
         _request(tools=[ADD], tool_choice={"name": "ghost"}),
     )
     assert payload["tool_choice"] == {"type": "function", "name": "ghost"}
+
+
+# --- the two forms ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("typed", "generic"),
+    [
+        (APPLY_CALL, APPLY_CALL_GENERIC),
+        (SHELL_CALL, SHELL_CALL_GENERIC),
+        (SHELL_RESULT, SHELL_RESULT_GENERIC),
+    ],
+    ids=["apply_patch_call", "shell_call", "shell_call_output"],
+)
+def test_each_native_converts_into_its_generic_twin_and_back(typed, generic):
+    assert typed.as_generic() == generic
+    assert generic.as_native() == typed
+
+
+def test_an_unregistered_custom_type_is_refused_at_projection(responses_transport_factory):
+    transport = responses_transport_factory()
+    call = ToolCall(id="call_1", name="ghost", extras={"custom_type": "gpt_9_telepathy_call"})
+    with pytest.raises(BadRequestError, match="Unknown native tool-call type 'gpt_9_telepathy_call'"):
+        transport._project_messages([AssistantMessage(content=[call])], _request())
 
 
 # --- serialization ---------------------------------------------------------

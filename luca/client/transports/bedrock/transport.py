@@ -342,10 +342,11 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 if reasoning is not None:
                     blocks.append(reasoning)
             elif isinstance(block, ToolCall):
-                projector = self._projector_for_call(block)
-                lineage[block.id] = (projector, block) if projector is not None else None
-                if projector is not None:
-                    blocks.append(projector.project_tool_call_to_llm(block))
+                entry = self._resolve_call(block)
+                lineage[block.id] = entry
+                if entry is not None:
+                    projector, call = entry
+                    blocks.append(projector.project_tool_call_to_llm(call))
             elif isinstance(block, RefusalBlock):
                 continue
         return blocks
@@ -381,6 +382,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         msg: ToolMessage,
         lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
     ) -> dict | None:
+        msg = msg.as_native()
         if lineage is not None and msg.tool_call_id in lineage:
             entry = lineage[msg.tool_call_id]
             if entry is None:

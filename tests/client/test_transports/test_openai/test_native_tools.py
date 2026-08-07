@@ -26,6 +26,31 @@ _FOREIGN_SHELL_CALL = ShellToolCall(
     item_id="sh_1",
 )
 
+_FOREIGN_SHELL_RESULT = ShellToolMessage(tool_call_id="call_2", results=[])
+
+# The same foreign exchange in the generic form — dropped identically.
+_FOREIGN_SHELL_CALL_GENERIC = ToolCall(
+    id="call_2",
+    name="shell",
+    arguments={"commands": ["ls"]},
+    extras={"custom_type": "shell_call", "item_id": "sh_1", "status": "completed"},
+)
+
+_FOREIGN_SHELL_RESULT_GENERIC = ToolMessage(
+    tool_call_id="call_2",
+    content="",
+    extras={"custom_type": "shell_call_output", "results": []},
+)
+
+FOREIGN_EXCHANGES = pytest.mark.parametrize(
+    ("foreign_call", "foreign_result"),
+    [
+        (_FOREIGN_SHELL_CALL, _FOREIGN_SHELL_RESULT),
+        (_FOREIGN_SHELL_CALL_GENERIC, _FOREIGN_SHELL_RESULT_GENERIC),
+    ],
+    ids=["typed", "generic"],
+)
+
 
 def test_other_families_native_tools_are_rejected_before_http(openai_transport_factory):
     transport = openai_transport_factory()
@@ -37,7 +62,8 @@ def test_other_families_native_tools_are_rejected_before_http(openai_transport_f
         transport._project_tools([ApplyPatchTool()])
 
 
-def test_foreign_native_call_and_result_are_dropped(openai_transport_factory):
+@FOREIGN_EXCHANGES
+def test_foreign_native_call_and_result_are_dropped(openai_transport_factory, foreign_call, foreign_result):
     transport = openai_transport_factory()
     projected = transport._project_messages(
         [
@@ -46,11 +72,11 @@ def test_foreign_native_call_and_result_are_dropped(openai_transport_factory):
                 content=[
                     TextBlock(text="running"),
                     ToolCall(id="call_1", name="add", arguments={"a": 1}),
-                    _FOREIGN_SHELL_CALL,
+                    foreign_call,
                 ],
             ),
             ToolMessage(tool_call_id="call_1", content="2"),
-            ShellToolMessage(tool_call_id="call_2", results=[]),
+            foreign_result,
         ],
     )
     assert projected == [
@@ -66,13 +92,14 @@ def test_foreign_native_call_and_result_are_dropped(openai_transport_factory):
     ]
 
 
-def test_fully_dropped_assistant_turn_is_omitted_entirely(openai_transport_factory):
+@FOREIGN_EXCHANGES
+def test_fully_dropped_assistant_turn_is_omitted_entirely(openai_transport_factory, foreign_call, foreign_result):
     transport = openai_transport_factory()
     projected = transport._project_messages(
         [
             UserMessage(content="hi"),
-            AssistantMessage(content=[_FOREIGN_SHELL_CALL]),
-            ShellToolMessage(tool_call_id="call_2", results=[]),
+            AssistantMessage(content=[foreign_call]),
+            foreign_result,
             UserMessage(content="continue"),
         ],
     )

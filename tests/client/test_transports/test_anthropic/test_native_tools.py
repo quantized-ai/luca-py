@@ -5,6 +5,8 @@ unchanged (driven by the live captures from 2026-08-06)."""
 
 from pathlib import Path
 
+import pytest
+
 from luca.client.transports.anthropic.native_tools import BashTool, TextEditorTool
 from luca.client.transports.openai_responses.native_tools import ShellToolCall, ShellToolMessage
 from luca.client.types import (
@@ -104,14 +106,41 @@ _FOREIGN_SHELL_CALL = ShellToolCall(
     item_id="sh_1",
 )
 
+_FOREIGN_SHELL_RESULT = ShellToolMessage(tool_call_id="call_2", results=[])
 
-def test_openai_native_call_and_result_are_dropped(anthropic_transport_factory):
+# The same foreign exchange in the generic form — dropped identically, which
+# is what keeps a stored session portable across a provider switch.
+_FOREIGN_SHELL_CALL_GENERIC = ToolCall(
+    id="call_2",
+    name="shell",
+    arguments={"commands": ["ls"], "max_output_length": 10240},
+    extras={"custom_type": "shell_call", "item_id": "sh_1", "status": "completed"},
+)
+
+_FOREIGN_SHELL_RESULT_GENERIC = ToolMessage(
+    tool_call_id="call_2",
+    content="",
+    extras={"custom_type": "shell_call_output", "results": []},
+)
+
+FOREIGN_EXCHANGES = pytest.mark.parametrize(
+    ("foreign_call", "foreign_result"),
+    [
+        (_FOREIGN_SHELL_CALL, _FOREIGN_SHELL_RESULT),
+        (_FOREIGN_SHELL_CALL_GENERIC, _FOREIGN_SHELL_RESULT_GENERIC),
+    ],
+    ids=["typed", "generic"],
+)
+
+
+@FOREIGN_EXCHANGES
+def test_openai_native_call_and_result_are_dropped(anthropic_transport_factory, foreign_call, foreign_result):
     transport = anthropic_transport_factory()
     projected = transport._project_messages(
         [
             UserMessage(content="hi"),
-            AssistantMessage(content=[TextBlock(text="running"), _FOREIGN_SHELL_CALL]),
-            ShellToolMessage(tool_call_id="call_2", results=[]),
+            AssistantMessage(content=[TextBlock(text="running"), foreign_call]),
+            foreign_result,
         ],
         _request(),
     )
@@ -121,7 +150,12 @@ def test_openai_native_call_and_result_are_dropped(anthropic_transport_factory):
     ]
 
 
-def test_fully_dropped_assistant_turn_is_omitted_entirely(anthropic_transport_factory):
+@FOREIGN_EXCHANGES
+def test_fully_dropped_assistant_turn_is_omitted_entirely(
+    anthropic_transport_factory,
+    foreign_call,
+    foreign_result,
+):
     # The typical post-provider-switch OpenAI turn: [reasoning, shell_call].
     # Both blocks are foreign here; an empty content array is a 400 on this
     # wire, so the whole message is omitted, along with the call's result.
@@ -131,11 +165,11 @@ def test_fully_dropped_assistant_turn_is_omitted_entirely(anthropic_transport_fa
         [
             UserMessage(content="hi"),
             AssistantMessage(
-                content=[foreign_thinking, _FOREIGN_SHELL_CALL],
+                content=[foreign_thinking, foreign_call],
                 provider="openai",
                 model="gpt-5.1",
             ),
-            ShellToolMessage(tool_call_id="call_2", results=[]),
+            foreign_result,
             UserMessage(content="continue"),
         ],
         _request(),

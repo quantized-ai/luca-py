@@ -174,6 +174,23 @@ There is no `SystemMessage` class and no `"system"` role in the message list. Th
 
 The same `ToolCall` instances live inside `AssistantMessage.content` and are also surfaced via `message.tool_calls`, `response.tool_calls`, `stream.tool_calls`, and `FinishEvent.tool_calls`. These are **filter views**, never copies. Mutating a `ToolCall` through one view mutates it through all others.
 
+### Provider-native calls have two equivalent forms
+
+A native call/result is either a typed subclass (`ApplyPatchToolCall`,
+`ShellToolMessage`, …) or a canonical `ToolCall` / `ToolMessage` whose
+`extras` carry `{"custom_type": "<the native type>", …the subclass's own
+fields}`. `as_native()` / `as_generic()` convert either way, losslessly.
+
+Equivalence is **by construction, not by parallel code**:
+`BaseTransport._resolve_call` normalizes through `as_native()` before any
+projector runs, and each transport's result projection starts with
+`msg = msg.as_native()`. No projector, and no native class, knows `extras`
+exists. Keep it that way — a projector that starts reading `extras` directly
+is the bug this design exists to prevent.
+
+Parsing is unaffected: the wire always builds the typed subclass. `extras` is
+an input and storage form.
+
 ### Two finish-reason fields on `AssistantMessage`
 
 | Field | Value |

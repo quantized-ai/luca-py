@@ -261,17 +261,26 @@ class ChatCompletionTransportMixin:
     def _project_tools(self, tools: list) -> list[dict]:
         return [self._resolve_projector(t).project_tool_to_llm(t) for t in tools]
 
-    def _projector_for_call(self, tool_call: ToolCall) -> ToolProjector | None:
-        """The projector that replays a ToolCall from history, or None when
-        the call was minted by another transport family (e.g. `/model`
-        switched providers mid-session). None means the call is dropped
+    def _resolve_call(self, tool_call: ToolCall) -> tuple[ToolProjector, ToolCall] | None:
+        """The projector that replays a ToolCall from history and the call to
+        hand it — the lineage entry every transport records.
+
+        The call is normalized through `as_native()` first, so a native
+        expressed generically (`extras={"custom_type": …}`) reaches the same
+        projector, with the same fields, as the typed subclass: the two forms
+        are equivalent by construction rather than by parallel code paths.
+
+        None when the call was minted by another transport family (e.g.
+        `/model` switched providers mid-session). It means the call is dropped
         together with its result — the foreign-attestation policy: one lost
         exchange beats a 400 that kills the conversation."""
-        if type(tool_call).projector_class is None:
-            return self._default_tool_projector()
-        projector = type(tool_call).projector_class()
+        call = tool_call.as_native()
+        projector_class = type(call).projector_class
+        if projector_class is None:
+            return (self._default_tool_projector(), call)
+        projector = projector_class()
         if isinstance(projector, self.TOOL_PROJECTOR_BASE):
-            return projector
+            return (projector, call)
         return None
 
     def _native_projector_for_item(self, item_type: str | None) -> ToolProjector | None:

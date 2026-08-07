@@ -13,7 +13,42 @@ from luca.client.types import (
     AssistantMessage,
     ChatCompletionRequest,
     TextBlock,
+    ToolCall,
+    ToolMessage,
     UserMessage,
+)
+
+_FOREIGN_SHELL_CALL = ShellToolCall(id="call_2", name="shell", arguments={"commands": ["ls"]}, item_id="sh_1")
+
+_FOREIGN_SHELL_RESULT = ShellToolMessage(tool_call_id="call_2", results=[])
+
+# The same foreign exchange in the generic form — dropped identically.
+_FOREIGN_SHELL_CALL_GENERIC = ToolCall(
+    id="call_2",
+    name="shell",
+    arguments={"commands": ["ls"]},
+    extras={"custom_type": "shell_call", "item_id": "sh_1", "status": "completed"},
+)
+
+_FOREIGN_SHELL_RESULT_GENERIC = ToolMessage(
+    tool_call_id="call_2",
+    content="",
+    extras={"custom_type": "shell_call_output", "results": []},
+)
+
+FOREIGN_EXCHANGES = pytest.mark.parametrize(
+    ("foreign_call", "foreign_result"),
+    [
+        (_FOREIGN_SHELL_CALL, _FOREIGN_SHELL_RESULT),
+        (_FOREIGN_SHELL_CALL_GENERIC, _FOREIGN_SHELL_RESULT_GENERIC),
+    ],
+    ids=["typed", "generic"],
+)
+
+FOREIGN_CALLS = pytest.mark.parametrize(
+    "foreign_call",
+    [_FOREIGN_SHELL_CALL, _FOREIGN_SHELL_CALL_GENERIC],
+    ids=["typed", "generic"],
 )
 
 
@@ -32,15 +67,18 @@ def test_native_tool_from_another_family_is_rejected_before_http(bedrock_transpo
         transport._project_tools([ApplyPatchTool()])
 
 
-def test_foreign_native_call_and_result_are_dropped_and_users_coalesce(bedrock_transport_factory):
+@FOREIGN_EXCHANGES
+def test_foreign_native_call_and_result_are_dropped_and_users_coalesce(
+    bedrock_transport_factory,
+    foreign_call,
+    foreign_result,
+):
     transport = bedrock_transport_factory()
     projected = transport._project_messages(
         [
             UserMessage(content="hi"),
-            AssistantMessage(
-                content=[ShellToolCall(id="call_2", name="shell", arguments={"commands": ["ls"]}, item_id="sh_1")],
-            ),
-            ShellToolMessage(tool_call_id="call_2", results=[]),
+            AssistantMessage(content=[foreign_call]),
+            foreign_result,
             UserMessage(content="continue"),
         ],
         _request(),
@@ -52,17 +90,11 @@ def test_foreign_native_call_and_result_are_dropped_and_users_coalesce(bedrock_t
     ]
 
 
-def test_surviving_blocks_keep_the_assistant_turn(bedrock_transport_factory):
+@FOREIGN_CALLS
+def test_surviving_blocks_keep_the_assistant_turn(bedrock_transport_factory, foreign_call):
     transport = bedrock_transport_factory()
     projected = transport._project_messages(
-        [
-            AssistantMessage(
-                content=[
-                    TextBlock(text="running"),
-                    ShellToolCall(id="call_2", name="shell", arguments={}, item_id="sh_1"),
-                ],
-            ),
-        ],
+        [AssistantMessage(content=[TextBlock(text="running"), foreign_call])],
         _request(),
     )
     assert projected == [{"role": "assistant", "content": [{"text": "running"}]}]

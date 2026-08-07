@@ -25,6 +25,8 @@ from .content import (
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    _as_generic,
+    _as_native,
 )
 
 # Native tool-message classes keyed by their `type` literal. The base
@@ -92,7 +94,26 @@ class ToolMessage(BaseModel):
     is_error: bool = False
     timestamp: int | None = None
 
+    # Same contract as ToolCall.extras: free-form and inert, except for the
+    # reserved `custom_type` key naming a registered native result type.
+    extras: dict[str, Any] = Field(default_factory=dict)
+
     model_config = ConfigDict(extra="forbid")
+
+    def as_native(self) -> ToolMessage:
+        """This result as the native subclass its `extras` name.
+
+        `ToolMessage(extras={"custom_type": "shell_call_output", "results":
+        […]})` becomes the equivalent `ShellToolMessage`. Self when there is
+        nothing to do. Raises BadRequestError on an unregistered
+        `custom_type` or extras the class rejects."""
+        return _as_native(self, NATIVE_TOOL_MESSAGE_TYPES, "tool-message")
+
+    def as_generic(self) -> ToolMessage:
+        """This result as a base ToolMessage carrying its native identity in
+        `extras` — the inverse of as_native(), and self when already
+        generic."""
+        return _as_generic(self, ToolMessage)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
