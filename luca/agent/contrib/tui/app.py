@@ -881,9 +881,19 @@ class AgentApp(LucaApp):
 
     async def _quit(self) -> None:
         save_session(self.runner.session, self._session_dir)
+        await self._close_plugins()
         self.exit()
 
     # ── session plumbing ──────────────────────────────────────────────────────
+
+    async def _close_plugins(self) -> None:
+        """Dispose of the runner we are about to drop. `ShellAccessPlugin`
+        holds live bash processes (one per conversation, for the Anthropic
+        native bash); a plugin with nothing to release has no `aclose`."""
+        for plugin in getattr(self.runner, "plugins", []):
+            aclose = getattr(plugin, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     def _build_runner(self, session: AgentSession):
         return build_runner(
@@ -910,6 +920,9 @@ class AgentApp(LucaApp):
             self._start_drive()
 
     async def _reset_session(self, session: AgentSession) -> None:
+        # `/clear`, `/resume` and fork all land here, each discarding a whole
+        # runner — including the shell plugin's live bash processes.
+        await self._close_plugins()
         self.runner, self.strategy = self._build_runner(session)
         await self.clear_transcript()
         self._live_thinking.clear()

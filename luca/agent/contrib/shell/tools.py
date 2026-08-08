@@ -118,6 +118,24 @@ BASH_DEFAULT_TIMEOUT_MS = 120_000
 BASH_MAX_OUTPUT_LINES = 2_000
 BASH_MAX_OUTPUT_BYTES = 50 * 1024
 
+# What `<shell_metadata>` says about a command that did not simply finish. The
+# `completed` case has no note; `shell_died` is reachable only from the
+# persistent session behind the Anthropic native bash (`session.py`), whose
+# results this same `_render` builds.
+SHELL_METADATA_NOTES = {
+    "timed_out": (
+        "shell tool terminated command after exceeding timeout {timeout_ms} ms."
+        " If this command is expected to take longer and is not waiting for"
+        " interactive input, retry with a larger timeout value in milliseconds."
+    ),
+    "cancelled": "shell tool cancelled the command before completion; partial output is shown above.",
+    "shell_died": (
+        "the shell session exited, so this command's output may be incomplete."
+        " The next command starts a new shell: working directory, environment"
+        " variables, shell functions and background jobs are gone."
+    ),
+}
+
 _BOM_BYTES = b"\xef\xbb\xbf"
 _BOM_CHAR = "\ufeff"
 
@@ -1379,11 +1397,11 @@ class DeleteFileTool(ShellTool):
 
 # ── bash ─────────────────────────────────────────────────────────────────────
 
-BASH_DESCRIPTION_TEMPLATE = """Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
+BASH_DESCRIPTION_TEMPLATE = """Executes a given bash command in a fresh shell with optional timeout, ensuring proper handling and security measures.
 
 Be aware: OS: {os}, Shell: {shell}
 
-All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.
+Each call runs in its OWN shell, so a `cd`, an `export` or a shell function from an earlier call does not carry over. All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.
 
 Use `{tmp}` for temporary work outside the workspace. This directory has already been created, already exists, and is pre-approved for external directory access.
 
@@ -1482,6 +1500,18 @@ class BashTool(ShellTool):
             max_bytes=BASH_MAX_OUTPUT_BYTES,
         )
 
+    def _effective_workdir(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> Path:
+        """The directory the command will run in — what the access step asks
+        approval for. Here it is the `workdir` argument or the instance's own,
+        because every call gets a fresh shell; the persistent native bash
+        overrides it, since its shell carries a working directory of its own."""
+        return self._resolve(args["workdir"]) if args.get("workdir") else self.workdir
+
     def build_permission_requests(
         self,
         args: dict,
@@ -1490,9 +1520,8 @@ class BashTool(ShellTool):
     ) -> list[PermissionRequest]:
         command = args["command"].strip()
         head = command.split()[0]
-        workdir = self._resolve(args["workdir"]) if args.get("workdir") else self.workdir
         return [
-            self._access_request(workdir),
+            self._access_request(self._effective_workdir(args, session, conversation_id)),
             PermissionRequest(
                 resources=[ResourcePermission(permission="bash", resource=command)],
                 answer_options=[
@@ -1542,7 +1571,8 @@ class BashTool(ShellTool):
             timeout_ms,
             cancellation_token,
         )
-        return self._render(output, outcome, process, timeout_ms)
+        exit_code = process.returncode if outcome == "completed" else None
+        return self._render(output, outcome, exit_code, timeout_ms)
 
     async def _collect(
         self,
@@ -1588,25 +1618,15 @@ class BashTool(ShellTool):
         self,
         output: str,
         outcome: str,
-        process: asyncio.subprocess.Process,
+        exit_code: int | None,
         timeout_ms: int,
     ) -> ExecutionResult:
-        exit_code = process.returncode if outcome == "completed" else None
         text, truncated, output_path = self._truncate(output)
         if not text.strip():
             text = "(no output)"
-        if outcome == "timed_out":
-            text += (
-                f"\n\n<shell_metadata>\nshell tool terminated command after"
-                f" exceeding timeout {timeout_ms} ms. If this command is expected"
-                " to take longer and is not waiting for interactive input, retry"
-                " with a larger timeout value in milliseconds.\n</shell_metadata>"
-            )
-        elif outcome == "cancelled":
-            text += (
-                "\n\n<shell_metadata>\nshell tool cancelled the command before"
-                " completion; partial output is shown above.\n</shell_metadata>"
-            )
+        note = SHELL_METADATA_NOTES.get(outcome)
+        if note is not None:
+            text += f"\n\n<shell_metadata>\n{note.format(timeout_ms=timeout_ms)}\n</shell_metadata>"
         return ExecutionResult(
             content=[TextContent(text=text)],
             metadata={
