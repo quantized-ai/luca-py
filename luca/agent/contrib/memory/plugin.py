@@ -102,6 +102,8 @@ class ReadScratchPadTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return self.store.get(conversation_id, {}).get("content", "")
@@ -126,6 +128,8 @@ class WriteScratchPadTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.store.setdefault(conversation_id, {})["content"] = args["content"]
@@ -232,6 +236,8 @@ class ReadTodoTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         todos = self.store.get(conversation_id, {}).get("todos", [])
@@ -263,6 +269,8 @@ class UpdateTodosTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         slot = self.store.setdefault(conversation_id, new_slot())

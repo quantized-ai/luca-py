@@ -50,12 +50,21 @@ def conversation_id(session) -> str:
 
 @pytest.fixture
 def run(session, conversation_id):
-    async def _run(tool, arguments, *, cancellation_token=None, conversation=None):
+    async def _run(
+        tool,
+        arguments,
+        *,
+        cancellation_token=None,
+        conversation=None,
+        tool_call_id="tc1",
+    ):
         validated = tool.Args.model_validate(arguments).model_dump()
         return await tool.execute(
             validated,
             session,
             conversation or conversation_id,
+            tool_name=tool.name,
+            tool_call_id=tool_call_id,
             cancellation_token=cancellation_token or CancellationToken(),
         )
 

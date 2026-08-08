@@ -50,6 +50,7 @@ from luca.agent.core import (
     ApprovalDecision,
     ApprovalOption,
     CancellationToken,
+    ExecutionDeferred,
     ExecutionResult,
     ExecutionStatus,
     InvalidToolArguments,
@@ -74,7 +75,7 @@ def _draft(
     extras: dict | None = None,
 ) -> ToolExecution:
     """A birth draft with no identity — the runner stamps `id`,
-    `parent_id`, `created_at`, and `ended_at` (for a terminal birth), and the
+    `parent_id`, `created_at`, and `finished_at` (for a terminal birth), and the
     ledger files the spec and stamps `tool_spec_id`."""
     return ToolExecution(
         tool_call_id=call.id,
@@ -190,11 +191,17 @@ class SimpleToolRegistry(ToolRegistry):
 
         Everything fallible happens here, before the runner writes RUNNING:
         `ToolNotFound` and `InvalidToolArguments` mean the body never ran and
-        record with `started_at=None`. The closure binds the validated
-        arguments, the session AND the conversation — nothing is re-derived at
+        record with no `ExecutionAttempt` appended. The closure binds the
+        validated arguments, the session, the conversation AND the call's
+        identity (`tool_name` / `tool_call_id`) — nothing is re-derived at
         invocation time — and takes only the run's cancellation token. Binding
-        the conversation here is what carries it into the tool body without
-        adding a parameter to `PreparedTool`."""
+        all four here is what carries them into the tool body without adding a
+        parameter to `PreparedTool`.
+
+        RE-CALLABLE BY CONTRACT, and now load-bearing rather than merely
+        correct: a tool that returns `ExecutionDeferred` is re-dispatched from
+        scratch on a later drive, straight back through this method, so it runs
+        once per dispatch attempt and must stay an idempotent resolve."""
         name = tool_execution.raw_tool_call.name
         tool = self.tools_by_name.get(name)
         if tool is None:
@@ -207,12 +214,18 @@ class SimpleToolRegistry(ToolRegistry):
                 errors=json.loads(exc.json(include_url=False)),
             ) from exc
         payload = args.model_dump()
+        tool_call_id = tool_execution.tool_call_id
 
-        async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
+        async def run(
+            *,
+            cancellation_token: CancellationToken,
+        ) -> ExecutionResult | ExecutionDeferred:
             return await tool.execute(
                 payload,
                 session,
                 conversation_id,
+                tool_name=name,
+                tool_call_id=tool_call_id,
                 cancellation_token=cancellation_token,
             )
 

@@ -100,10 +100,17 @@ class ToolCallReceived(AgentEventBase):
 
 class ToolExecutionStarted(AgentEventBase):
     """Emitted if and only if the tool body is dispatched: after the execution
-    has been persisted as RUNNING (with `started_at`), immediately before the
-    body is invoked. `execution.raw_tool_call` reflects the effective call
-    after `before_tool_execution`, which may differ from the earlier
-    `ToolCallReceived` snapshot."""
+    has been persisted as RUNNING with a fresh open `ExecutionAttempt`,
+    immediately before the body is invoked. `execution.raw_tool_call` reflects
+    the effective call after `before_tool_execution`, which may differ from the
+    earlier `ToolCallReceived` snapshot.
+
+    ONCE PER DISPATCH ATTEMPT, not once per call: a tool that returns
+    `ExecutionDeferred` is re-dispatched on a later drive and emits this again.
+    So a consumer watching the stream alone sees repeated Starteds with no
+    terminal event and cannot tell parked from in flight — reading the durable
+    session (`AgentSessionRunner.pending_deferred_tool_executions()`) is the
+    supported way, and the same one approvals already use."""
 
     type: Literal["tool_execution_started"] = "tool_execution_started"
     tool_call_id: str
@@ -113,7 +120,9 @@ class ToolExecutionStarted(AgentEventBase):
 class ToolExecuted(AgentEventBase):
     """Emitted once per execution when it reaches the terminal outcome that
     will be projected as the correlated tool output — after outcome middleware
-    and the final persistence. `execution` answers what happened;
+    and the final persistence. Once per CALL, however many times its body was
+    dispatched: a deferral is not a terminal outcome and fires nothing.
+    `execution` answers what happened;
     `result_text` / `is_error` answer what the model is told (both derive from
     the same `ConversationProjector.project_tool_execution` output used for
     the next LLM request, so `is_error` is a projection flag, not a substitute

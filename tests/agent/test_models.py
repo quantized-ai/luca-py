@@ -36,6 +36,8 @@ from luca.agent.core.models import (
     CompactionSource,
     Conversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -87,8 +89,8 @@ REPEATED_CALL_SESSION = make_session(
             tool_spec=ADD_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
             updated_at=500,
         ),
         "te2": ToolExecution(
@@ -101,8 +103,8 @@ REPEATED_CALL_SESSION = make_session(
             tool_spec=ADD_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="7")]),
-            started_at=600,
-            ended_at=600,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=600, ended_at=600)],
+            finished_at=600,
             updated_at=600,
         ),
     },
@@ -374,7 +376,8 @@ def test_an_execution_result_carrying_structured_content_round_trips():
 
 
 def test_execution_result_carries_no_timing():
-    # timing lives on ToolExecution.started_at / ended_at
+    # timing lives on ToolExecution: `finished_at` for the call, and one
+    # `ExecutionAttempt` per body invocation for the wall clock
     with pytest.raises(ValidationError):
         ExecutionResult(content=[TextContent(text="3")], executed_at=1000)
 
@@ -429,8 +432,8 @@ def test_tool_execution_defaults_to_birth_state():
         status=ExecutionStatus.PENDING,
         result=None,
         error=None,
-        started_at=None,
-        ended_at=None,
+        attempts=[],
+        finished_at=None,
         cancel_signalled_at=None,
         updated_at=None,
         is_doom_loop_flagged=False,
@@ -466,15 +469,18 @@ def test_tool_execution_dispatched_and_duration_are_derived():
     settled = ToolExecution(
         id="te2",
         conversation_id="c1",
-        created_at=1,
+        created_at=1000,
         tool_call_id="tc2",
         raw_tool_call=ToolCall(id="tc2", name="add"),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000,
-        ended_at=1250,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1050, ended_at=1250)],
+        finished_at=1250,
     )
 
+    # `dispatched` reads the attempt log — one entry per body invocation — and
+    # `duration_ms` is the TOTAL time the call was outstanding (created →
+    # finished), not the body's 200ms of wall clock
     assert undispatched.dispatched is False
     assert undispatched.duration_ms is None
     assert settled.dispatched is True
@@ -493,7 +499,7 @@ def test_tool_execution_does_not_enforce_cross_field_invariants():
         status=ExecutionStatus.COMPLETED,  # no result, error present
         error=ToolExecutionError(error_type="X", error_message="authored"),
         approval_status=ApprovalStatus.REJECTED,
-        ended_at=5,
+        finished_at=5,
     )
     assert unusual.status == ExecutionStatus.COMPLETED
 
@@ -534,8 +540,12 @@ def test_versioned_tool_execution_round_trips_through_json():
             ),
         ],
         status=ExecutionStatus.INTERRUPTED,
-        started_at=1780495332500,
-        ended_at=1780495333500,
+        attempts=[
+            ExecutionAttempt(
+                outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1780495332500, ended_at=1780495333500
+            )
+        ],
+        finished_at=1780495333500,
         cancel_signalled_at=1780495333000,
         updated_at=1780495333500,
     )
@@ -570,7 +580,7 @@ def test_failed_tool_execution_round_trips_with_structured_error():
                 ],
             },
         ),
-        ended_at=1780495331220,
+        finished_at=1780495331220,
     )
     assert ToolExecution.model_validate_json(execution.model_dump_json()) == execution
 
@@ -615,8 +625,8 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
             "extras": {},
         },
         "error": None,
-        "started_at": 500,
-        "ended_at": 500,
+        "attempts": [{"outcome": "completed", "started_at": 500, "ended_at": 500}],
+        "finished_at": 500,
         "cancel_signalled_at": None,
         "updated_at": 500,
         "is_doom_loop_flagged": False,
@@ -650,8 +660,8 @@ def test_structured_content_survives_a_session_round_trip():
                     content=[TextContent(text="25°C, wind from the south.")],
                     structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
                 ),
-                started_at=500,
-                ended_at=500,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+                finished_at=500,
                 updated_at=500,
             ),
         },
@@ -674,8 +684,8 @@ def test_a_standalone_tool_execution_still_serializes_its_spec_inline():
         tool_spec_id=ADD_SPEC.spec_id(),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=500,
-        ended_at=500,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+        finished_at=500,
         updated_at=500,
     )
 
@@ -756,8 +766,8 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
                 tool_spec=ADD_SPEC,
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=500,
-                ended_at=500,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+                finished_at=500,
                 updated_at=500,
             ),
             "te2": ToolExecution(
@@ -770,8 +780,8 @@ def test_a_rephrased_tool_keeps_the_older_executions_pointing_at_the_older_spec(
                 tool_spec=REPHRASED_ADD_SPEC,
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="7")]),
-                started_at=600,
-                ended_at=600,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=600, ended_at=600)],
+                finished_at=600,
                 updated_at=600,
             ),
         },
@@ -811,6 +821,7 @@ def test_execution_status_members():
         "RECEIVED": "received",
         "PENDING": "pending",
         "RUNNING": "running",
+        "AWAITING_RESULT": "awaiting_result",
         "COMPLETED": "completed",
         "FAILED": "failed",
         "NOT_FOUND": "not_found",
@@ -1043,8 +1054,8 @@ def test_pruned_entry_round_trips_inside_a_session():
                 raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=1,
-                ended_at=1,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1, ended_at=1)],
+                finished_at=1,
             ),
             "p1": PrunedEntry(
                 id="p1",

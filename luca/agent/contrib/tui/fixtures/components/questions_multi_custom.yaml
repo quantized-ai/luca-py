@@ -1,0 +1,44 @@
+# Component sheet — one state of the agent's `ask_user` question set.
+# multi select, custom answer typed — tick column vs. the boxless chat row
+name: components/questions_multi_custom
+title: multi select, custom answer typed — tick column vs. the boxless chat row
+status: {cwd: ~/quantized/luca, model: sonnet-4.5, branch: main, dirty: true, tokens: 9.7k, cost: $0.06}
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+questions:
+  active: 3
+  phase: asking
+  editing_custom: true
+  questions:
+    - tab: storage
+      title: Where should the sqlite file live?
+      answered: true
+      options:
+        - {label: '~/.luca/projects/<project>/events.db'}
+    - tab: reader
+      title: Keep the jsonl reader?
+      answered: true
+      options:
+        - {label: 'Keep it, version-gated'}
+    - tab: backfill
+      title: How should existing sessions be backfilled?
+      answered: true
+      options:
+        - {label: 'On first launch, in-process'}
+    - tab: rollout
+      title: Which surfaces should read sqlite first?
+      mode: multi
+      selected: 4
+      body:
+        - Every surface below parses each stored session on open (~3ms per 500KB), so the
+        - sessions screen is where the win is largest and the blast radius smallest.
+        - Anything left unticked keeps the jsonl path until it's ported.
+      options:
+        - {label: the sessions screen, checked: true}
+        - {label: resume / replay, checked: true}
+        - {label: the cost screen, checked: false}
+        - {label: the gallery, checked: false}
+        - {label: 'Custom answer:', kind: custom, checked: true, text: 'the replay screen, behind a flag'}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+hints: [enter save, esc clear]

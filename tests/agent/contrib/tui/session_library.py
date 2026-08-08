@@ -30,6 +30,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     ChildConversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
@@ -84,6 +86,14 @@ def assistant(entry_id: str, minutes: float, *, thinking: str | None = None, tex
     )
 
 
+_ATTEMPT_OUTCOMES: dict[ExecutionStatus, ExecutionAttemptOutcome] = {
+    ExecutionStatus.COMPLETED: ExecutionAttemptOutcome.COMPLETED,
+    ExecutionStatus.FAILED: ExecutionAttemptOutcome.FAILED,
+    ExecutionStatus.TIMED_OUT: ExecutionAttemptOutcome.TIMED_OUT,
+    ExecutionStatus.INTERRUPTED: ExecutionAttemptOutcome.INTERRUPTED,
+}
+
+
 def call(
     entry_id: str,
     name: str,
@@ -98,11 +108,28 @@ def call(
     context_tokens: int = 300,
     extras: dict | None = None,
 ) -> ToolExecution:
+    # A dispatched call, so it carries one `ExecutionAttempt`: the body's own
+    # wall-clock (what the transcript's duration note reads) lives there, while
+    # `finished_at` is when the call went terminal. PENDING is the one status
+    # here that never dispatched — a gated call — so it carries no attempt.
+    ended = at(minutes) + int(seconds * 1000)
+    dispatched = status is not ExecutionStatus.PENDING
+    attempts = (
+        [
+            ExecutionAttempt(
+                outcome=_ATTEMPT_OUTCOMES.get(status),
+                started_at=at(minutes),
+                ended_at=ended,
+            )
+        ]
+        if dispatched
+        else []
+    )
     return ToolExecution(
         id=entry_id,
         created_at=at(minutes),
-        started_at=at(minutes),
-        ended_at=at(minutes) + int(seconds * 1000),
+        attempts=attempts,
+        finished_at=ended if status not in (ExecutionStatus.PENDING,) else None,
         tool_call_id=f"tc_{entry_id}",
         raw_tool_call=ToolCall(id=f"tc_{entry_id}", name=name, arguments=arguments),
         tool_spec=spec(name),

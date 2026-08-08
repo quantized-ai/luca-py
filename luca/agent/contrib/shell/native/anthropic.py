@@ -140,6 +140,8 @@ class AnthropicTextEditorTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         target = self._resolve(args["path"])
@@ -302,6 +304,8 @@ class AnthropicBashTool(BashTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         if not args.get("command"):
@@ -312,5 +316,7 @@ class AnthropicBashTool(BashTool):
             {"command": args["command"], "timeout": None, "workdir": None},
             session,
             conversation_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
             cancellation_token=cancellation_token,
         )

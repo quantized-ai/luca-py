@@ -1,0 +1,26 @@
+# Component sheet — one state of the agent's `ask_user` question set.
+# a question with no long description — the body row collapses entirely
+name: components/questions_no_body
+title: a question with no long description — the body row collapses entirely
+status: {cwd: ~/quantized/luca, model: sonnet-4.5, branch: main, dirty: true, tokens: 9.7k, cost: $0.06}
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+questions:
+  active: 0
+  questions:
+    - tab: storage
+      title: Where should the sqlite file live?
+      options:
+        - {label: '~/.luca/projects/<project>/events.db'}
+        - {label: 'Beside the jsonl files, same directory'}
+        - {label: 'One database per workspace, at the repo root'}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+    - tab: reader
+      title: Keep the jsonl reader?
+      options:
+        - {label: 'Keep it, version-gated'}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+hints: [↑↓ move, 1–5 pick, enter confirm, ⇥ next]

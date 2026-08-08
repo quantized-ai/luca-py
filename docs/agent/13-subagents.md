@@ -244,7 +244,7 @@ async with runner.run() as run:
 > session (`IDLE` → finished, everything else → waiting) — a paused subagent
 > leaves no durable trace, and the next `run()` re-announces what it admits.
 
-## 5. Approvals
+## 5. Approvals and parked tool calls
 
 A subagent's tools are gated exactly like the main agent's — same registries,
 same policy. What changes is only *where* the gate comes from:
@@ -273,6 +273,33 @@ async for execution in run.approvals:      # gates as they are raised, at-least-
 A gate does **not** end the parent's run while anything else in the tree can
 still advance. One rule explains that and everything like it: **a drive returns
 only when nothing in its subtree can advance.**
+
+A subagent's tool can also answer *not yet* ([03](03-tools.md) §7), and a
+parked call surfaces through the twin door, subtree-scoped in the same way:
+
+```python
+for execution in runner.pending_deferred_tool_executions():   # SUBTREE-scoped
+    await handlers[execution.tool_spec.name](execution)       # blocks until resolved
+    run.notify(execution)                                     # inside a live run
+```
+
+`run.notify(execution)` is what makes that usable mid-run, for the identical
+reason it exists for gates: a subagent parked on a deferred tool has no live
+drive of its own — its drive returned, and the parent is what is still running —
+so there is no between-drives moment to poll in. Its meaning is unchanged
+(*something changed out of band for that execution's conversation, look again
+NOW*; no decision and no result travels through it), and the restarted child
+re-dispatches the call from scratch ([04](04-runner.md) §9).
+`pending_deferred_tool_executions()` is a plain read over the session, so
+calling it from another task while the run is live is safe — which is the whole
+point, since this feature ships no stream: the application polls rather than
+being pushed.
+
+> **A parked subagent starves nobody.** Its drive returns, so its worker slot
+> goes back exactly like at a gate (§4), and a nested parent waiting on it holds
+> none either. And the parent's *own* path holds no unfinished tool call, so it
+> can still be posted to, still call the model, and still `stop_subagent` the
+> waiting child (§6).
 
 ## 6. Steering and stopping mid-flight
 
@@ -389,7 +416,10 @@ class DelegateWork(Tool):
     name = "delegate_work"
     output_schema = SubagentSpawn          # the declaration IS the contract
 
-    async def execute(self, args, session, conversation_id, *, cancellation_token):
+    async def execute(
+        self, args, session, conversation_id,
+        *, tool_name, tool_call_id, cancellation_token,
+    ):
         if not self.worth_delegating(args):
             return ExecutionResult(                       # gated, but spawns nothing
                 content=[TextContent(text="Handled inline.")],

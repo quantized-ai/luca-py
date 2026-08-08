@@ -204,7 +204,7 @@ async def _cmd_theme(app: AgentApp, arg: str) -> None:
 
 async def _cmd_clear(app: AgentApp, arg: str) -> None:
     old_id = app.runner.session.id
-    save_session(app.runner.session, app._session_dir)
+    app._save()
     config = app.runner.session.session_config
     new = AgentSessionRunner.new_session(
         config.llm_config,
@@ -217,7 +217,7 @@ async def _cmd_clear(app: AgentApp, arg: str) -> None:
 async def _cmd_sessions(app: AgentApp, arg: str) -> None:
     session = app.runner.session
     if session.conversations[session.main_conversation_id].nodes:
-        save_session(session, app._session_dir)
+        app._save()
     await app.open_sessions_screen()
 
 

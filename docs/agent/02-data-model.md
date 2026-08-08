@@ -187,7 +187,8 @@ request:
 | `status` | the lifecycle state (table below) |
 | `result` | what the tool returned — set iff `status=completed` |
 | `error` | structured failure (`error_type`, `error_message`, `details`) for `failed` / `not_found` / `invalid`; the runner records the failing `phase` under `details` |
-| `started_at` / `ended_at` | when the body was dispatched / when the execution turned terminal (unix ms) |
+| `attempts` | one `ExecutionAttempt` per body invocation — audit only (below) |
+| `created_at` / `finished_at` | when the call was created / when the execution turned terminal (unix ms) |
 | `cancel_signalled_at` | when a run cancellation reached this execution |
 | `is_doom_loop_flagged` | set by doom-loop detection ([08](08-runtime-config.md)) |
 
@@ -198,6 +199,7 @@ The lifecycle (`ExecutionStatus`):
 | `received` | the model asked for the call and the entry exists; the registry has not been consulted yet |
 | `pending` | born, body not started, no terminal outcome |
 | `running` | body started, no terminal outcome |
+| `awaiting_result` | the body ran and answered *not yet* — parked until the application resolves whatever it waits on (below) |
 | `completed` | the body returned a result |
 | `failed` | tool- or registry-owned code raised — while resolving the call, or inside the body |
 | `not_found` | no such tool |
@@ -228,18 +230,91 @@ produce a request every provider rejects. `received` is the durable
 proof that the promise was recorded before the work began; a session that
 crashes there reloads and births on the next drive.
 
-`started_at` is stamped **iff the body was dispatched**, and `execution.dispatched`
-is exactly `started_at is not None`. Everything the framework settles before
-dispatch leaves it `None`:
+`execution.dispatched` is `bool(attempts)` — an attempt exists iff the body was
+invoked. Everything the framework settles before dispatch leaves the list
+empty, so for a call dispatched **at most once** the statuses split like this:
 
 | `dispatched` | Statuses |
 |---|---|
-| `True` | `running`, `completed`, `timed_out`, `interrupted`, and a `failed` raised by the tool body |
-| `False` | `pending`, `rejected`, `refused`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
+| `True` | `running`, `awaiting_result`, `completed`, `timed_out`, `interrupted`, and a `failed` raised by the tool body |
+| `False` | `received`, `pending`, `rejected`, `refused`, `cancelled`, `not_found`, `invalid`, and a `failed` raised while resolving or validating the call |
+
+> ⚠️ **The second row is about the FIRST dispatch.** Once a call has deferred
+> once it carries an attempt forever, so a later `prepare()` failure records
+> `not_found` / `invalid` / `failed` with `dispatched == True`, and a cancel
+> landing inside that `prepare()` records `interrupted` rather than
+> `cancelled` — the body demonstrably started. `dispatched` answers "was a body
+> ever invoked for this call", never "did THIS attempt run".
 
 Every tool call yields **exactly one** tool output for the model — even a
 denied, cancelled, or malformed one (error text is derived from `status` +
 `error` at projection time, never stored; see [10](10-projection.md)).
+
+### One call, many attempts
+
+A tool may answer *not yet* instead of returning a result — it returns
+`ExecutionDeferred()` and the execution parks at `awaiting_result`
+([03](03-tools.md) §7). Nothing about the parked call stays alive, so the next
+drive **re-dispatches it from scratch**: one execution, dispatched as many
+times as it takes.
+
+```
+tool_execution  call_4 · ask_user → running           # attempt 1 opens
+tool_execution  call_4 · ask_user → awaiting_result   # attempt 1: deferred
+      … the driver collects the answer; a later run() re-dispatches …
+tool_execution  call_4 · ask_user → running           # attempt 2 opens
+tool_execution  call_4 · ask_user → completed         # attempt 2: completed
+ └─ result      "user picked: postgres"
+```
+
+`attempts` is the record of that, one entry per body invocation, in dispatch
+order:
+
+```python
+from luca.agent.core import ExecutionAttempt, ExecutionAttemptOutcome
+
+execution.attempts == [
+    ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=1000, ended_at=1001),
+    ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=3000, ended_at=3001),
+]
+```
+
+| `outcome` | That invocation |
+|---|---|
+| `deferred` | returned `ExecutionDeferred` — the call parked |
+| `completed` | returned an `ExecutionResult` |
+| `failed` | raised |
+| `timed_out` | hit its deadline |
+| `interrupted` | was killed by the framework (the cancel grace expired) |
+| `discarded` | the process died; nobody ever saw how that run went |
+| `None` | still in flight |
+
+An attempt is appended when the execution is persisted `running` — after the
+registry's `prepare()` returned, before the body is invoked. That placement is
+the invariant: **a `prepare()` that raises appends no attempt**, on the first
+dispatch and the fifth alike.
+
+Three timestamps, one per thing that can be timed:
+
+| Field | Means |
+|---|---|
+| `ToolExecution.created_at` | the call was created — stamped with the assistant message that asked for it, before birth, approval or dispatch |
+| `ToolExecution.finished_at` | the execution turned terminal, whatever the outcome |
+| `ExecutionAttempt.started_at` / `ended_at` | one body invocation's wall clock |
+
+> ⚠️ **`dispatched` and `duration_ms` changed meaning.** `started_at` left the
+> execution for the attempt, `ended_at` was renamed `finished_at`, and the two
+> derived properties re-derive: `dispatched` is now `bool(attempts)` and
+> `duration_ms` is `finished_at - created_at` — the **total** time the call was
+> outstanding, approval wait and parked time included, not body wall clock.
+> Body time is per attempt (`attempts[-1]`, or the sum). Every existing
+> consumer of `duration_ms` reads a different number now.
+
+> ⚠️ **`attempts` derives nothing, and nothing bounds it.** It is an audit log:
+> `status`, `result` and `error` stay the source of truth, written by the
+> runner exactly as before. There is no cap and no fold — an application that
+> wants to trim does it in `after_tool_execution`, which runs exactly once,
+> when the list is final.
 
 ## 4. Approval — an orthogonal fact
 
@@ -615,7 +690,7 @@ state.step_count    # assistant messages in the OPEN turn
 |---|---|
 | `cancelling` | the open turn holds an unconsumed `cancel_requested` (§6) |
 | `busy` | the open turn has something runnable — or a trailing `UserMessage` is queued, or a subagent result / mid-turn post awaits the model (a post into a gated turn included: the next drive answers it past the gate, [04](04-runner.md)) |
-| `blocked` | the open turn has nothing runnable: every execution is waiting on an approval, or every subagent is and nothing new awaits the model |
+| `blocked` | the open turn has nothing runnable: every execution is waiting on an approval or parked at `awaiting_result`, or every subagent is and nothing new awaits the model |
 | `idle` | anything else, INCLUDING a closed `turn_finish` whatever its outcome |
 
 Two consequences, both deliberate. A **failed** turn derives `idle`, so
@@ -630,12 +705,13 @@ accepted (that is `post_message`'s own acceptance matrix — [04](04-runner.md))
 the open turn awaits the model (`open_turn_unseen_material` — a posted
 message, a resolved child's result; with
 `wake_parent_on_subagent_completion=False` a resolved child's result no
-longer counts, [08](08-runtime-config.md)). A gate on the parent's own
-execution outranks that material term — the next `run()` can only re-park at
-the gate, so the honest answer is `blocked` — with one exception: an unseen
-user POST lets the gate term yield (`open_turn_unseen_post`, deliberately
-narrower than the material predicate), because the gated call projects a
-placeholder and the next drive can answer the post
+longer counts, [08](08-runtime-config.md)). A gate — or a parked
+`awaiting_result` call — on the parent's own execution outranks that material
+term: the next `run()` can only re-park, so the honest answer is `blocked`,
+and `busy` would hot-loop every poll-for-blocked driver. One exception covers
+both: an unseen user POST lets that term yield (`open_turn_unseen_post`,
+deliberately narrower than the material predicate), because a gated or parked
+call projects a placeholder and the next drive can answer the post
 ([10](10-projection.md) §2). The busy/blocked transition can be
 triggered by a *sibling* finishing, with nothing in the parent's own entries
 changing at all — which is exactly why nothing can cache it.
@@ -661,7 +737,8 @@ runner = AgentSessionRunner(session, tool_registry=registry)
 Loading is just deserializing; resuming is constructing a runner around the
 loaded session and supplying the collaborators again. An open turn resumes
 (§5), status re-derives itself (§10), a pending approval is still pending (§4),
-and an unresolved subagent is picked up where it stopped (§7).
+a parked `awaiting_result` call is still parked and is re-dispatched from
+scratch (§3), and an unresolved subagent is picked up where it stopped (§7).
 
 Tool specs go out normalized and come back restored. Two calls to the same tool
 are one stored spec and two references — the inline `tool_spec` is not written

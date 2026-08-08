@@ -34,6 +34,8 @@ from luca.agent.core import (
     CancellationToken,
     CancelRequested,
     ChildConversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
@@ -114,6 +116,8 @@ async def test_spawn_returns_a_status_line_and_the_payload():
         {"prompt": "Research A", "description": "research A", "task_id": "t1"},
         session_with(),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -135,6 +139,8 @@ async def test_a_missing_task_id_is_made_up_and_told_to_the_model():
         {"prompt": "p", "description": "d", "task_id": None},
         session_with(),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -153,6 +159,8 @@ async def test_the_result_tool_name_travels_in_the_payload():
         {"prompt": "p", "description": "d", "task_id": "t1"},
         session_with(),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -190,6 +198,8 @@ async def test_the_result_is_the_childs_last_words():
         {"task_id": "t1", "prompt": "Research A", "description": "research A", "conversation_id": "c2"},
         session,
         "c1",  # the PARENT — where this tool runs
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -214,6 +224,8 @@ async def test_a_child_that_never_answered_yields_a_transcript():
         {"task_id": "t1", "prompt": "p", "description": "research A", "conversation_id": "c2"},
         session,
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -358,8 +370,8 @@ def orchestrating_session(*, resolved: bool = False, cancelling: bool = False) -
                     "process_subagent_result_tool_name": RESULT_TOOL_NAME,
                 },
             ),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
         ),
         "ch1": ChildConversation(
             id="ch1",
@@ -413,6 +425,8 @@ async def test_stop_signals_a_live_task():
         {"task_id": "t1", "reason": "no longer needed"},
         orchestrating_session(),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -430,6 +444,8 @@ async def test_stop_refuses_an_unknown_task():
         {"task_id": "ghost"},
         orchestrating_session(),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -446,6 +462,8 @@ async def test_stop_refuses_a_finished_task():
         {"task_id": "t1"},
         orchestrating_session(resolved=True),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -459,6 +477,8 @@ async def test_stop_notes_an_already_stopping_task():
         {"task_id": "t1"},
         orchestrating_session(cancelling=True),
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 
@@ -468,7 +488,9 @@ async def test_stop_notes_an_already_stopping_task():
 
 
 async def test_list_renders_the_turns_tasks():
-    result = await ListSubagents().execute({}, orchestrating_session(), "c1", cancellation_token=TOKEN)
+    result = await ListSubagents().execute(
+        {}, orchestrating_session(), "c1", tool_name="t", tool_call_id="tc1", cancellation_token=TOKEN
+    )
 
     assert result.content == [
         TextContent(
@@ -478,8 +500,12 @@ async def test_list_renders_the_turns_tasks():
 
 
 async def test_list_reports_completed_and_cancelling_states():
-    completed = await ListSubagents().execute({}, orchestrating_session(resolved=True), "c1", cancellation_token=TOKEN)
-    stopping = await ListSubagents().execute({}, orchestrating_session(cancelling=True), "c1", cancellation_token=TOKEN)
+    completed = await ListSubagents().execute(
+        {}, orchestrating_session(resolved=True), "c1", tool_name="t", tool_call_id="tc1", cancellation_token=TOKEN
+    )
+    stopping = await ListSubagents().execute(
+        {}, orchestrating_session(cancelling=True), "c1", tool_name="t", tool_call_id="tc1", cancellation_token=TOKEN
+    )
 
     assert completed.content == [
         TextContent(text="<task id=t1 status=completed>\ndescription: research A\nprompt: Research A\n</task>"),
@@ -497,7 +523,9 @@ async def test_list_reports_a_failed_resolution_as_failed():
         update={"execution_result": ExecutionResult(content=[TextContent(text="[subagent cancelled]")], is_error=True)},
     )
 
-    result = await ListSubagents().execute({}, session, "c1", cancellation_token=TOKEN)
+    result = await ListSubagents().execute(
+        {}, session, "c1", tool_name="t", tool_call_id="tc1", cancellation_token=TOKEN
+    )
 
     assert result.content == [
         TextContent(text="<task id=t1 status=failed>\ndescription: research A\nprompt: Research A\n</task>"),
@@ -505,7 +533,9 @@ async def test_list_reports_a_failed_resolution_as_failed():
 
 
 async def test_list_with_no_tasks_says_so():
-    result = await ListSubagents().execute({}, session_with(), "c1", cancellation_token=TOKEN)
+    result = await ListSubagents().execute(
+        {}, session_with(), "c1", tool_name="t", tool_call_id="tc1", cancellation_token=TOKEN
+    )
 
     assert result.content == [TextContent(text="No subagents have been spawned in the current turn.")]
 
@@ -551,6 +581,8 @@ async def test_the_result_tool_reports_a_stopped_child_as_stopped():
         {"task_id": "t1", "prompt": "Research A", "description": "research A", "conversation_id": "c2"},
         session,
         "c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=TOKEN,
     )
 

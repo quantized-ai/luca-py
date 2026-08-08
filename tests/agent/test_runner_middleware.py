@@ -47,6 +47,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CompactionEntry,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -539,8 +541,8 @@ async def test_middleware_before_entry_written_replacing_the_spec_restamps_tool_
         result=ExecutionResult(content=[TextContent(text="3")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     assert runner.session.tool_specs == {
@@ -668,8 +670,8 @@ async def test_middleware_before_permission_check_modified_execution_is_seen_and
         result=ExecutionResult(content=[TextContent(text="3")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
 
@@ -734,8 +736,8 @@ async def test_middleware_after_permission_decision_return_recorded_and_used():
         result=ExecutionResult(content=[TextContent(text="5")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
 
@@ -803,8 +805,8 @@ async def test_middleware_before_tool_execution_effective_call_is_dispatched():
         result=ExecutionResult(content=[TextContent(text="30")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     # the original request block in the assistant message is untouched
@@ -876,7 +878,7 @@ async def test_middleware_before_tool_execution_effective_call_is_what_prepare_r
         ),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
     )
     assert registry.prepared == []
@@ -1022,8 +1024,8 @@ async def test_middleware_after_tool_execution_return_persisted():
         result=ExecutionResult(content=[TextContent(text="RESULT_MODIFIED")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     assert runner.session.entries["te1"] == persisted
@@ -1333,8 +1335,8 @@ async def test_mixin_subclass_override_applies_and_inherited_hooks_pass_full_tur
         result=ExecutionResult(content=[TextContent(text="3")]),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     assert runner.session.entries["a2"] == AssistantMessage(

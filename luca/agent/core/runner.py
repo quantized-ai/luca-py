@@ -78,10 +78,16 @@ all four take the live session and the conversation they are answering for, and
 all four are raced against the run's
 cancellation token, so no registry or tool-owned code can make `cancel()` a
 no-op. Because preparation is separate from the body, the durable `RUNNING`
-row is written only once `prepare()` has returned: `started_at` /
-`dispatched` mean "the body was dispatched", for every outcome, and NOT_FOUND
-/ INVALID mean resolution and validation failed rather than that a body raised
-a similarly-named exception. The loop has exactly ONE decide() call site — its
+row is written only once `prepare()` has returned: an `ExecutionAttempt` is
+appended there, so `dispatched` means "the body was dispatched", for every
+outcome, and NOT_FOUND / INVALID mean resolution and validation failed rather
+than that a body raised a similarly-named exception. A tool may also answer
+"not yet" (`ExecutionDeferred`): the execution parks at `AWAITING_RESULT`, the
+drive returns, and the application resolves whatever the tool is waiting on
+(`pending_deferred_tool_executions()`) before driving again — at which point
+the call is RE-DISPATCHED from scratch, appending another attempt. Nothing
+about a parked call stays alive; there is no resume. The loop has exactly ONE
+decide() call site — its
 top: "any undecided
 executions? → ask the registry" — which serves the fresh path (executions
 created this iteration) and every resume path (a re-entered run, a reloaded
@@ -138,7 +144,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import ClassVar
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from luca.client import acompletion, acompletion_stream
 from luca.client.exceptions import TimeoutError as ClientTimeoutError
@@ -200,6 +206,9 @@ from .models import (
     ContentPart,
     Conversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
+    ExecutionDeferred,
     ExecutionResult,
     ExecutionStatus,
     Inf,
@@ -257,6 +266,10 @@ class RunResult(BaseModel):
     - Approval pause → `status=BLOCKED`, `outcome=None`, `pending_approvals`
       non-empty. Subtree-scoped: a run whose SUBAGENT gated stops here too, and
       `pending_approvals` names the conversation each gate came from.
+    - Deferred-tool pause → `status=BLOCKED`, `outcome=None`,
+      `pending_deferred_tool_executions` non-empty. The same shape as an
+      approval pause, and the same subtree scope: a tool said "not yet", and
+      resolving it is the application's.
     - Compaction-only drive → `status` from the new (or unchanged) path,
       `outcome` COMPLETED or CANCELLED. A caller that needs to tell "the agent
       answered" from "a compaction ran" reads `CompactionFinished`.
@@ -275,7 +288,12 @@ class RunResult(BaseModel):
 
     status: ConversationStatus  # derived where the run stopped
     outcome: TurnOutcome | None  # set iff a bracket closed during this run
-    pending_approvals: list[ToolExecution]  # non-empty iff BLOCKED
+    pending_approvals: list[ToolExecution]  # reported whenever non-empty
+    # Executions parked at AWAITING_RESULT — a tool that cannot produce its
+    # final result yet. Reported whenever non-empty, the same rule
+    # `pending_approvals` follows, and for the same reason: a pause no longer
+    # implies a status of its own, so the list IS the signal.
+    pending_deferred_tool_executions: list[ToolExecution] = Field(default_factory=list)
 
 
 class _SlotWaiter:
@@ -1367,6 +1385,41 @@ class AgentSessionRunner:
                 awaiting.extend(self.pending_approvals(child_id))
         return awaiting
 
+    def pending_deferred_tool_executions(self, conversation_id: str | None = None) -> list[ToolExecution]:
+        """The open turn's executions parked at `AWAITING_RESULT` — dispatched,
+        deferred, and waiting on something only the application can resolve.
+
+        SUBTREE-SCOPED, exactly like `pending_approvals()`: asking a
+        conversation returns every parked execution BENEATH it, each
+        attributable through its own `conversation_id`. It is a plain read over
+        the session, so it is safe to call from another task while a run is
+        live — which is how a parked SUBAGENT is discovered, since a live
+        parent run leaves no between-drives gap to poll in.
+
+        Resolve each one however the tool you installed expects — the tool owns
+        that, and the driver knows how to interact with the tools it configured
+        — then call `run()` again (or `run.notify(execution)` from inside a
+        live run). The next drive RE-DISPATCHES each from scratch, through
+        `before_tool_execution` → `prepare()` → a brand-new callable. There is
+        no resume.
+
+        THE HANDLER MUST BLOCK UNTIL IT HAS MADE PROGRESS. There is no
+        framework backoff and there deliberately is none: a handler that
+        returns without resolving anything causes an immediate re-drive,
+        another deferral, and a spin.
+
+        Deliberately a POLL rather than an event: no event announces a parked
+        call, because `ToolExecutionStarted` fires per dispatch attempt and
+        `ToolExecuted` only at the end, so a consumer reading the stream alone
+        cannot tell parked from in flight. Reading durable state is the
+        supported way, and the same one approvals already use."""
+        root = conversation_id or self.main_conversation_id
+        parked = list(self.ledger.open_turn_parked_executions(root))
+        for child_id in self._unresolved_child_ids(root):
+            if child_id in self.session.conversations:
+                parked.extend(self.pending_deferred_tool_executions(child_id))
+        return parked
+
     def cancel(
         self,
         outcome: TurnOutcome = TurnOutcome.CANCELLED,
@@ -1946,13 +1999,14 @@ class AgentSessionRunner:
         and after a compaction-only drive the leaf may be the `CompactionEntry`
         itself or a carried assistant message — neither has an outcome to read.
 
-        `pending_approvals` is reported whenever it is non-empty, rather than
-        only in one status: a gate no longer implies a status of its own, so
-        the list IS the signal."""
+        `pending_approvals` and `pending_deferred_tool_executions` are reported
+        whenever they are non-empty, rather than only in one status: a pause no
+        longer implies a status of its own, so the list IS the signal."""
         return RunResult(
             status=self.session.get_conversation_status(conversation_id).status,
             outcome=self._closed_outcomes.get(conversation_id),
             pending_approvals=self.pending_approvals(conversation_id),
+            pending_deferred_tool_executions=self.pending_deferred_tool_executions(conversation_id),
         )
 
     # ── middleware machinery ─────────────────────────────────────────────────
@@ -2116,6 +2170,39 @@ class AgentSessionRunner:
 
     # ── tool-execution outcome machinery ─────────────────────────────────────
 
+    _ATTEMPT_OUTCOMES: ClassVar[dict[ExecutionStatus, ExecutionAttemptOutcome]] = {
+        ExecutionStatus.COMPLETED: ExecutionAttemptOutcome.COMPLETED,
+        ExecutionStatus.FAILED: ExecutionAttemptOutcome.FAILED,
+        ExecutionStatus.TIMED_OUT: ExecutionAttemptOutcome.TIMED_OUT,
+        ExecutionStatus.INTERRUPTED: ExecutionAttemptOutcome.INTERRUPTED,
+        ExecutionStatus.AWAITING_RESULT: ExecutionAttemptOutcome.DEFERRED,
+    }
+
+    def _close_attempt(
+        self,
+        execution: ToolExecution,
+        outcome: ExecutionAttemptOutcome | None = None,
+    ) -> ToolExecution:
+        """Close the OPEN `ExecutionAttempt`, if one exists.
+
+        A no-op otherwise, which is what makes it safe at the shared outcome
+        tail: the seven pre-dispatch outcomes never invoked a body and hold no
+        attempt at all, and a cancel landing on an already-parked call finds
+        its last attempt closed as DEFERRED.
+
+        `outcome` overrides the status-derived mapping — the one caller is
+        orphan recovery, where the execution is INTERRUPTED but its dangling
+        attempt is DISCARDED."""
+        if not execution.attempts or execution.attempts[-1].outcome is not None:
+            return execution
+        resolved = outcome or self._ATTEMPT_OUTCOMES.get(execution.status)
+        if resolved is None:  # a status with no body-level meaning; leave it open
+            return execution
+        closed = execution.attempts[-1].model_copy(
+            update={"outcome": resolved, "ended_at": self.now_ms()},
+        )
+        return execution.model_copy(update={"attempts": [*execution.attempts[:-1], closed]})
+
     def to_tool_execution_error(
         self,
         execution: ToolExecution,
@@ -2132,8 +2219,8 @@ class AgentSessionRunner:
         `details["errors"]` where they exist.
 
         `phase` is a FACT the caller knows — which of the runner's three
-        observation points the raise came out of — not an inference from
-        `started_at`: `"create_execution"`, `"prepare"`, or `"execution"`. It
+        observation points the raise came out of — not an inference from the
+        execution's state: `"create_execution"`, `"prepare"`, or `"execution"`. It
         is populated on every registry- or tool-owned raise. Those three
         values are the RUNNER's vocabulary for raises it observed; a registry
         authoring a terminal-at-birth error owns its own `details` and may use
@@ -2171,13 +2258,24 @@ class AgentSessionRunner:
         conversation_id: str,
         execution: ToolExecution,
         exception: Exception | None = None,
+        *,
+        attempt_outcome: ExecutionAttemptOutcome | None = None,
     ) -> tuple[ToolExecution, ToolExecuted]:
-        """The shared tail of every execution outcome: recalculate
-        `context_tokens` from the final model-facing result or error (the
-        birth count was 0 — no outcome existed; context always settles
-        BEFORE middleware, never after) → `after_tool_execution` over the
-        fully formed execution → final persistence through
-        `before_entry_written` → the `ToolExecuted` event."""
+        """The shared tail of every execution outcome: close the open
+        `ExecutionAttempt` if there is one → recalculate `context_tokens` from
+        the final model-facing result or error (the birth count was 0 — no
+        outcome existed; context always settles BEFORE middleware, never
+        after) → `after_tool_execution` over the fully formed execution →
+        final persistence through `before_entry_written` → the `ToolExecuted`
+        event.
+
+        The attempt closes HERE, at the one tail every terminal construction
+        site funnels through, which is what makes the audit invariant
+        enforceable rather than aspirational. `attempt_outcome` overrides the
+        status-derived mapping for the single case where they differ — orphan
+        recovery, whose execution is INTERRUPTED while its dangling attempt is
+        DISCARDED."""
+        execution = self._close_attempt(execution, attempt_outcome)
         execution = execution.model_copy(
             update={
                 "context_tokens": self.context_manager.calculate_context(
@@ -2200,17 +2298,27 @@ class AgentSessionRunner:
         orphan (a crash, or a drive suspended mid-body). Transition it to
         INTERRUPTED: `after_tool_execution` runs with no exception,
         `before_tool_execution` is NOT re-invoked, and the tool is never
-        automatically re-dispatched. Durable state records nothing
-        crash-specific — an orphan is exactly another INTERRUPTED execution."""
+        automatically re-dispatched.
+
+        Durable state records ONE crash-specific fact, and only on the audit
+        list: that run left an attempt open, and it is closed here as
+        DISCARDED rather than INTERRUPTED. The distinction is the whole point —
+        INTERRUPTED means the framework killed the body and knows it did not
+        finish; DISCARDED means the process died and nobody ever saw how that
+        run went. It is the one case the audit log exists to explain."""
         events: list[AgentEvent] = []
         for execution in self.ledger.open_turn_running_executions(conversation_id):
             terminal = execution.model_copy(
                 update={
                     "status": ExecutionStatus.INTERRUPTED,
-                    "ended_at": self.now_ms(),
+                    "finished_at": self.now_ms(),
                 },
             )
-            _, event = self._finalize_outcome(conversation_id, terminal)
+            _, event = self._finalize_outcome(
+                conversation_id,
+                terminal,
+                attempt_outcome=ExecutionAttemptOutcome.DISCARDED,
+            )
             events.append(event)
         return events
 
@@ -2838,6 +2946,20 @@ class AgentSessionRunner:
         # not repeat the event. Cleared when the awaiting set empties, exactly
         # as the old boolean reset.
         announced_gates: set[str] = set()
+        # Execution ids this drive has already POLLED while parked. The park
+        # branch's twin of `announced_gates`, and it exists for the same reason:
+        # a drive can re-enter the loop many times without the application
+        # having had any chance to act, and re-selecting a parked call on each
+        # pass would invoke the tool body again for nothing.
+        #
+        # The re-entries are real and necessary — a parent parked on a deferral
+        # still has to loop whenever a SUBAGENT wakes it, or it could never
+        # resolve the finished child — so the poll has to be gated on "did
+        # anything happen that could have resolved THIS call", which is exactly
+        # what `notify()` means. Cleared on a notify below; a fresh drive starts
+        # with an empty set, so the ordinary
+        # park → return → resolve → `run()` loop polls once per drive.
+        polled: set[str] = set()
         # The path length at the instant of THIS DRIVE's most recent
         # projection — v1's close-site fingerprint, now also consulted by the
         # subagent park (step 3c): a message posted while an LLM call is in
@@ -2874,6 +2996,11 @@ class AgentSessionRunner:
             # in flight has to survive it and cause another pass; consuming the
             # flag after the fact would swallow exactly that signal and leave
             # an answered gate sitting inert.
+            #
+            # A notify is ALSO the one thing that can have resolved a parked
+            # call from outside a live run, so it is what re-arms the poll.
+            if conversation_id in self._recheck:
+                polled.clear()
             self._recheck.discard(conversation_id)
             wake.clear()
 
@@ -2907,7 +3034,7 @@ class AgentSessionRunner:
                     }
                     if denied:
                         changes["status"] = ExecutionStatus.REJECTED
-                        changes["ended_at"] = self.now_ms()
+                        changes["finished_at"] = self.now_ms()
                     persisted = self._persist_execution(conversation_id, modified, **changes)
                     if decision.decision == ApprovalOption.PENDING:
                         self._publish_approval(conversation_id, persisted)
@@ -2920,8 +3047,24 @@ class AgentSessionRunner:
             # 2) Dispatch every ALLOWED-and-unrun execution. An allowed
             # sibling proceeds even while another call sits deferred — the
             # runner parks only after all currently runnable work advanced.
-            ready = self.ledger.open_turn_ready_executions(conversation_id)
+            #
+            # ONE POLL PER PARK: a call this drive already polled is held back
+            # until something says it may have moved (`polled`, above). A
+            # never-dispatched PENDING execution is never in that set, so the
+            # ordinary path is untouched.
+            ready = [
+                execution
+                for execution in self.ledger.open_turn_ready_executions(conversation_id)
+                if execution.id not in polled
+            ]
             if ready:
+                # Recorded for EVERY dispatch, not only for calls that were
+                # already parked: a first deferral turns a PENDING execution
+                # into a parked one mid-batch, and it has to be held back on
+                # the very next pass like any other. A call that settled
+                # terminally is never re-selected anyway, so the extra ids are
+                # inert.
+                polled.update(execution.id for execution in ready if execution.id is not None)
                 async for event in self._dispatch_batch(conversation_id, ready, token):
                     yield event
 
@@ -2989,6 +3132,7 @@ class AgentSessionRunner:
             # wind down rather than pausing at the gate) — UNLESS an unseen
             # user post can reach the model past the gate (3b below).
             awaiting = self.ledger.open_turn_awaiting_executions(conversation_id)
+            parked = self.ledger.open_turn_parked_executions(conversation_id)
             if awaiting:
                 cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
                 if cancel_entry is not None:
@@ -3025,6 +3169,43 @@ class AgentSessionRunner:
                 # so a re-drive re-asks), so continuing here would re-ask
                 # decide() forever. A cancel landing between here and the model
                 # call trips the token, which `_race_cancellation` catches.
+            elif parked:
+                # 3b') A PARKED TOOL PARKS THE DRIVE. A copy of the gate branch
+                # above minus the announcement: no event says "parked"
+                # (`ToolExecutionStarted` fires per dispatch attempt and
+                # `ToolExecuted` only at the end, so the stream cannot tell
+                # parked from in flight), and the driver polls
+                # `pending_deferred_tool_executions()` after the drive returns
+                # — the same channel approvals already use.
+                #
+                # PLACEMENT IS LOAD-BEARING, TWICE. Ahead of the
+                # progress-continue below, because a re-dispatched deferral IS
+                # progress by that test: a branch after it would re-select the
+                # same execution, invoke the tool body again, and spin as fast
+                # as Python runs — no LLM cost, no limit tripped. And ahead of
+                # 3c, whose wake rule counts any terminal execution as fresh
+                # material, so a drive reaching it with a call still parked
+                # would call the model because a SIBLING tool completed, with
+                # no post anywhere. Sitting here keeps "a post is the only
+                # thing that projects a parked call" true.
+                #
+                # The gate arm is checked FIRST on purpose: a gate and a
+                # deferral can be open in the same drive, and the gate's
+                # announcement must still happen even when the deferral is what
+                # would park.
+                announced_gates.clear()
+                cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
+                if cancel_entry is not None:
+                    for event in await self._wind_down_async(conversation_id, cancel_entry):
+                        yield event
+                    return
+                if not self._has_unseen_post(conversation_id, last_seen):
+                    if not await self._await_subtree(conversation_id, token, wake):
+                        return
+                    continue
+                # fall through to the model call: the parked execution projects
+                # its placeholder, the post gets its one answer, and the next
+                # pass re-parks here.
             else:
                 announced_gates.clear()
                 if undecided or ready or spawned or resolved:
@@ -3096,10 +3277,10 @@ class AgentSessionRunner:
                         for event in self._wind_down(conversation_id, cancel_entry):
                             yield event
                         return
-                # A gated execution is reachable here since 0008 — each post
-                # while blocked burns a real step — and no close leaves a
-                # nonterminal execution behind.
-                for event in self._settle_undispatched(conversation_id):
+                # A gated OR PARKED execution is reachable here since 0008 —
+                # each post while blocked burns a real step — and no close
+                # leaves a nonterminal execution behind.
+                for event in self._settle_open_executions(conversation_id):
                     yield event
                 self._close_turn(conversation_id, TurnOutcome.ERRORED, error=error)
                 return
@@ -3291,12 +3472,13 @@ class AgentSessionRunner:
                         for event in self._wind_down(conversation_id, cancel_entry):
                             yield event
                         return
-                # A gated execution is reachable here since 0008 — a post can
-                # drive a fall-through round over a live gate — and no close
-                # leaves a nonterminal execution behind. Yielding then raising
+                # A gated OR PARKED execution is reachable here since 0008 — a
+                # post can drive a fall-through round over a live gate or a
+                # live deferral — and no close leaves a nonterminal execution
+                # behind. Yielding then raising
                 # is fine: the consumer pulls the events, and the next pull
                 # raises.
-                for event in self._settle_undispatched(conversation_id):
+                for event in self._settle_open_executions(conversation_id):
                     yield event
                 outcome = TurnOutcome.TIMED_OUT if isinstance(exc, ClientTimeoutError) else TurnOutcome.ERRORED
                 self._close_turn(conversation_id, outcome, error=str(exc))
@@ -3354,6 +3536,13 @@ class AgentSessionRunner:
                 # the history for a call that never ran. The next pass parks at
                 # step 3 instead.
                 or self.ledger.has_awaiting_approval(conversation_id)
+                # A LIVE DEFERRAL KEEPS IT OPEN FOR THE IDENTICAL REASON. Same
+                # reachability (a post drives the round), same consequence:
+                # `pending_deferred_tool_executions()` reads the OPEN turn, so
+                # closing here would hide a call the tool still holds and
+                # freeze its placeholder into the history forever. The next
+                # pass parks at step 3b' instead.
+                or self.ledger.has_parked_executions(conversation_id)
             ):
                 for event in events:
                     yield event
@@ -3374,7 +3563,7 @@ class AgentSessionRunner:
                 # its partial: those tokens were really produced, and on a
                 # truncation they are the useful half. Settling first because
                 # no close may leave a nonterminal execution behind.
-                events.extend(self._settle_undispatched(conversation_id))
+                events.extend(self._settle_open_executions(conversation_id))
                 failure = message.error_message or f"the model stopped with finish_reason {finish_reason!r}"
                 self._close_turn(conversation_id, TurnOutcome.ERRORED, error=failure)
                 for event in events:
@@ -3731,7 +3920,18 @@ class AgentSessionRunner:
         creation middleware pair included, which is why `after_tool_creation`
         runs inside the build below rather than being skipped as a
         model-behavior concern. `_birth_draft` already fired its partner, and
-        the two must stay paired on every creation path."""
+        the two must stay paired on every creation path.
+
+        A THIRD RULE DOES NOT APPLY: this call MAY NOT DEFER
+        (`allow_deferral=False`). A runtime-minted call has no durable
+        re-selection path — `_derive_child_result` mints a fresh `ToolCall`
+        with a new id on every pass and only resolves the `ChildConversation`
+        on `ToolExecuted` — so a deferral here would never resolve the link,
+        the next iteration would mint ANOTHER result execution, and the
+        progress-continue would spin, growing the entry store with no LLM cost
+        and no limit to trip. A deferring result tool is therefore a registry
+        contract violation, recorded as an ordinary tool failure. Revisit only
+        if a real deferring result tool appears."""
         draft, exception = await self._birth_draft(conversation_id, call, set(), token)
         execution = self._append(
             conversation_id,
@@ -3744,7 +3944,7 @@ class AgentSessionRunner:
                         "parent_id": parent_id,
                         "created_at": ts,
                         "conversation_id": conversation_id,
-                        "ended_at": (ts if draft.status != ExecutionStatus.PENDING else None),
+                        "finished_at": (ts if draft.status != ExecutionStatus.PENDING else None),
                     },
                 ),
                 exception,
@@ -3770,7 +3970,7 @@ class AgentSessionRunner:
         denied = decision.decision == ApprovalOption.DENY
         if denied:
             changes["status"] = ExecutionStatus.REJECTED
-            changes["ended_at"] = self.now_ms()
+            changes["finished_at"] = self.now_ms()
         persisted = self._persist_execution(conversation_id, modified, **changes)
         if denied:
             _, event = self._finalize_outcome(conversation_id, persisted)
@@ -3781,7 +3981,7 @@ class AgentSessionRunner:
             # any other gate. The child stays unresolved until it is answered.
             self._publish_approval(conversation_id, persisted)
             return
-        async for event in self._dispatch_one(conversation_id, persisted, token):
+        async for event in self._dispatch_one(conversation_id, persisted, token, allow_deferral=False):
             yield event
 
     # ── waiting on the subtree ──────────────────────────────────────────────
@@ -3954,24 +4154,38 @@ class AgentSessionRunner:
                 events.append(SubagentFinished(conversation_id=child_id, outcome=cancel_entry.outcome))
         return events
 
-    def _settle_undispatched(self, conversation_id: str) -> list[AgentEvent]:
-        """Terminalize every undispatched execution in the open turn as
-        CANCELLED — stamped `cancel_signalled_at`, resultless, errorless,
-        approval state untouched — and return their `ToolExecuted` events.
+    def _settle_open_executions(self, conversation_id: str) -> list[AgentEvent]:
+        """Terminalize every still-open execution in the open turn, in two
+        buckets, and return their `ToolExecuted` events.
+
+        UNDISPATCHED (RECEIVED or PENDING) → CANCELLED — stamped
+        `cancel_signalled_at`, resultless, errorless, approval state untouched.
         RECEIVED ones included: a close landing while the registry is being
         consulted must settle the unborn too, or the turn closes over an
-        execution no drive will ever finish. (A denied call was already
-        terminal REJECTED at decision time; an in-flight one was settled by
-        the grace machinery; an orphaned RUNNING one was recovered at drive
-        start.) Each settled execution passes through the outcome middleware
-        pair.
+        execution no drive will ever finish.
+
+        PARKED (AWAITING_RESULT) → INTERRUPTED, with the same stamps.
+        INTERRUPTED rather than CANCELLED because the body demonstrably
+        STARTED, and CANCELLED is defined as "cancellation prevented the body
+        from starting". `_close_attempt` no-ops here — the last attempt is
+        already closed as DEFERRED — which is why a call cancelled while parked
+        records exactly ONE attempt: nothing was running when the cancel
+        landed. The tool is never told; the driver owns resolution, so it owns
+        abandonment.
+
+        (A denied call was already terminal REJECTED at decision time; an
+        in-flight one was settled by the grace machinery; an orphaned RUNNING
+        one was recovered at drive start.) Each settled execution passes
+        through the outcome middleware pair.
 
         The close-side half of "no close leaves a nonterminal execution
-        behind". The cancel wind-down has always done this; the failure closes
-        need it too since 0008, because a post can now drive rounds while a
-        gate is open, which puts `hard_max_steps` and an LLM failure within
-        reach of a live gate. Closing over one strands the approval outside any
-        open turn and freezes its placeholder into the projected history."""
+        behind", and it is SHARED across all three closes — the cancel
+        wind-down, `hard_max_steps`, and a failed LLM call — precisely because
+        a post can drive real rounds while an execution sits nonterminal, which
+        puts both failure closes within reach of a live gate (0008) and of a
+        live deferral. A parked bucket in the cancel path alone would strand
+        the execution outside any open turn on the other two and freeze its
+        placeholder into the projected history forever."""
         events: list[AgentEvent] = []
         for execution in self.ledger.open_turn_undispatched_executions(conversation_id):
             ts = self.now_ms()
@@ -3981,7 +4195,20 @@ class AgentSessionRunner:
                     "status": ExecutionStatus.CANCELLED,
                     "result": None,
                     "error": None,
-                    "ended_at": ts,
+                    "finished_at": ts,
+                },
+            )
+            _, event = self._finalize_outcome(conversation_id, stamped)
+            events.append(event)
+        for execution in self.ledger.open_turn_parked_executions(conversation_id):
+            ts = self.now_ms()
+            stamped = execution.model_copy(
+                update={
+                    "cancel_signalled_at": ts,
+                    "status": ExecutionStatus.INTERRUPTED,
+                    "result": None,
+                    "error": None,
+                    "finished_at": ts,
                 },
             )
             _, event = self._finalize_outcome(conversation_id, stamped)
@@ -3989,11 +4216,11 @@ class AgentSessionRunner:
         return events
 
     def _wind_down(self, conversation_id: str, cancel_entry: CancelRequested) -> list[AgentEvent]:
-        """Consume a `CancelRequested`: settle every undispatched execution
-        (`_settle_undispatched`), then close the turn with the requested
+        """Consume a `CancelRequested`: settle every still-open execution
+        (`_settle_open_executions`), then close the turn with the requested
         outcome. The `ToolExecuted` events return to the caller. All session
         writes happen before any event is yielded."""
-        events = self._settle_undispatched(conversation_id)
+        events = self._settle_open_executions(conversation_id)
         self._close_turn(conversation_id, cancel_entry.outcome, cancel_entry.error)
         return events
 
@@ -4109,7 +4336,7 @@ class AgentSessionRunner:
         The registry owns the call-scoped facts (`raw_tool_call`, `tool_spec`,
         the birth `status` — PENDING or terminal-at-birth — `error`, `extras`,
         any approval state); the runner keeps the identity set and
-        `is_doom_loop_flagged`, stamps `ended_at` for a terminal birth, and the
+        `is_doom_loop_flagged`, stamps `finished_at` for a terminal birth, and the
         ledger files the spec and stamps `tool_spec_id`. Failures are isolated
         per call: a raising `create_execution` (or a toolless runner) never
         breaks the set — the runner synthesizes the draft itself, FAILED for a
@@ -4161,7 +4388,7 @@ class AgentSessionRunner:
             if refusal is not None:
                 changes |= {"status": ExecutionStatus.REFUSED, "error": refusal}
             if changes["status"] != ExecutionStatus.PENDING:  # terminal birth
-                changes["ended_at"] = self.now_ms()
+                changes["finished_at"] = self.now_ms()
             # `after_tool_creation` sees the EFFECTIVE birth state — the
             # registry's draft folded into the entry, with every runner-owned
             # birth fact already applied — and its return value is what gets
@@ -4398,6 +4625,8 @@ class AgentSessionRunner:
         conversation_id: str,
         execution: ToolExecution,
         token: CancellationToken,
+        *,
+        allow_deferral: bool = True,
     ) -> AsyncIterator[AgentEvent]:
         """Prepare, then run, for one allowed execution.
 
@@ -4405,25 +4634,37 @@ class AgentSessionRunner:
            effective call, which is why the hook stays AHEAD of `prepare()`.
         2. `prepare()` runs, raced against the token.
         3. A raise, or a return that is not callable, terminalizes the
-           execution WITHOUT it ever being marked RUNNING: `started_at` stays
-           None, `dispatched` stays False, no `ToolExecutionStarted` is
-           emitted, and `details["phase"]` is `"prepare"`.
+           execution WITHOUT it ever being marked RUNNING: no
+           `ExecutionAttempt` is appended, `dispatched` stays False, no
+           `ToolExecutionStarted` is emitted, and `details["phase"]` is
+           `"prepare"`. That phrasing holds on a RE-dispatch too, where the
+           execution demonstrably was dispatched before — the invariant is
+           about the attempt list, not about a single `started_at`.
         4. A cancellation observed at any point up to and including
            `prepare()` settling means the body is NOT dispatched — even when
            `prepare()` returned successfully. The grace window exists to let
            in-flight work finish, not to start new work after a cancellation
            was requested.
-        5. Otherwise RUNNING + `started_at` are persisted, the birth
-           `tool_spec` standing (there is NO dispatch-time re-snapshot),
-           `ToolExecutionStarted` is emitted, and the callable is invoked
-           under the cancellation race and the deadline.
+        5. Otherwise RUNNING is persisted with a fresh open `ExecutionAttempt`,
+           the birth `tool_spec` standing (there is NO dispatch-time
+           re-snapshot), `ToolExecutionStarted` is emitted, and the callable is
+           invoked under the cancellation race and the deadline.
+        6. A returned `ExecutionDeferred` is NOT an outcome: the attempt closes
+           as DEFERRED, the execution parks at `AWAITING_RESULT`, and the
+           shared tail is skipped entirely — no `ToolExecuted`, no
+           `after_tool_execution`, no `finished_at`.
+
+        `allow_deferral=False` refuses step 6 for a RUNTIME-MINTED call (see
+        `_invoke_runtime_tool`), which has no durable re-selection path.
 
         This is the ONLY `before_tool_execution` call site. The hook means "a
         dispatch attempt is starting" and nothing else: a call that is terminal
         at birth, rejected, refused, cancelled before dispatch, or recovered
-        from an orphaned RUNNING never reaches here and never fires it. Every
-        such outcome still runs `after_tool_execution`, which is the universal
-        terminal transformation point."""
+        from an orphaned RUNNING never reaches here and never fires it. It
+        fires once per DISPATCH ATTEMPT, so a call that defers fires it again
+        on every re-dispatch. Every terminal outcome still runs
+        `after_tool_execution`, which is the universal terminal transformation
+        point."""
         execution = self._run_middlewares("before_tool_execution", conversation_id, execution)
 
         prepare_task = asyncio.ensure_future(self._prepare_tool(conversation_id, execution))
@@ -4476,20 +4717,62 @@ class AgentSessionRunner:
             yield event
             return
 
+        # THE ATTEMPT OPENS HERE — after `prepare()` returned, before the
+        # callable is invoked. That placement IS the invariant "a `prepare()`
+        # that raises appends no attempt", and it holds on the first dispatch
+        # and the fifth alike.
         execution = self._persist_execution(
             conversation_id,
             execution,
             status=ExecutionStatus.RUNNING,
-            started_at=self.now_ms(),
+            attempts=[*execution.attempts, ExecutionAttempt(started_at=self.now_ms())],
         )
         yield ToolExecutionStarted(
             conversation_id=conversation_id,
             tool_call_id=execution.tool_call_id,
             execution=execution.model_copy(deep=True),
         )
-        terminal, exception = await self._run_tool_body(conversation_id, execution, prepared, token)
-        _, event = self._finalize_outcome(conversation_id, terminal, exception)
+        settled, exception = await self._run_tool_body(conversation_id, execution, prepared, token)
+        if settled.status is ExecutionStatus.AWAITING_RESULT:
+            if allow_deferral:
+                # THE ONE OUTCOME THAT SKIPS THE SHARED TAIL, because it is not
+                # an outcome. The attempt closes, the park is persisted, and
+                # nothing else fires: no ToolExecuted, no after_tool_execution,
+                # no process_tool_output, no `finished_at` — the call has not
+                # finished. The drive's park branch takes it from here.
+                self._persist_execution(conversation_id, self._close_attempt(settled))
+                return
+            settled, exception = self._refuse_deferral(settled)
+            _, event = self._finalize_outcome(
+                conversation_id,
+                settled,
+                exception,
+                # The BODY deferred; the FRAMEWORK failed the call. The audit
+                # list records what the body did, or a refused deferral would
+                # be indistinguishable from a body that raised.
+                attempt_outcome=ExecutionAttemptOutcome.DEFERRED,
+            )
+            yield event
+            return
+        _, event = self._finalize_outcome(conversation_id, settled, exception)
         yield event
+
+    def _refuse_deferral(self, execution: ToolExecution) -> tuple[ToolExecution, AgentError]:
+        """Turn a deferral the runner cannot honour into an ordinary tool
+        failure. Only reachable for a RUNTIME-MINTED call — see
+        `_invoke_runtime_tool`."""
+        exc = AgentError(
+            f"tool {execution.raw_tool_call.name!r} returned ExecutionDeferred, "
+            "but a runtime-minted call cannot be re-dispatched."
+        )
+        terminal = execution.model_copy(
+            update={
+                "status": ExecutionStatus.FAILED,
+                "finished_at": self.now_ms(),
+            },
+        )
+        terminal.error = self.to_tool_execution_error(terminal, exc, phase="execution")
+        return terminal, exc
 
     def _terminal_for_prepare_failure(
         self,
@@ -4502,7 +4785,12 @@ class AgentSessionRunner:
         The exception-type-to-status mapping did not disappear with `execute`
         — it MOVED here, where it is accurate, because the only work done at
         this point is resolution and validation. Once the callable has been
-        invoked every raise is FAILED."""
+        invoked every raise is FAILED.
+
+        No `ExecutionAttempt` is appended on this path — the body was never
+        invoked. On a RE-dispatch that leaves a terminal execution which
+        demonstrably WAS dispatched before, carrying the earlier attempts and
+        no new one, which is exactly the honest record."""
         if isinstance(exception, ToolNotFound):
             status = ExecutionStatus.NOT_FOUND
         elif isinstance(exception, (InvalidToolArguments, ValidationError)):
@@ -4512,7 +4800,7 @@ class AgentSessionRunner:
         terminal = execution.model_copy(
             update={
                 "status": status,
-                "ended_at": self.now_ms(),
+                "finished_at": self.now_ms(),
             },
         )
         terminal.error = self.to_tool_execution_error(
@@ -4529,17 +4817,26 @@ class AgentSessionRunner:
         Everywhere else a cancelled registry phase leaves the execution
         PENDING for the loop-top wind-down. Here it cannot:
         `before_tool_execution` has already fired, and the wind-down would
-        fire it again. The durable shape is identical to a wind-down
-        cancellation — resultless, errorless, `cancel_signalled_at` and
-        `ended_at` stamped, `started_at` unset, `dispatched` False."""
+        fire it again. The durable shape is identical to whichever wind-down
+        bucket would have claimed it — resultless, errorless,
+        `cancel_signalled_at` and `finished_at` stamped, no new
+        `ExecutionAttempt`.
+
+        WHICH bucket depends on whether a body ever ran. A first dispatch is
+        CANCELLED, the status defined as "cancellation prevented the body from
+        starting". A RE-dispatch of a parked call is INTERRUPTED, because the
+        body demonstrably started — that is the same reasoning
+        `_settle_open_executions`' parked bucket uses, and the same user action
+        must not record two different statuses depending on which await the
+        cancel happened to land in."""
         ts = self.now_ms()
         return execution.model_copy(
             update={
                 "cancel_signalled_at": ts,
-                "status": ExecutionStatus.CANCELLED,
+                "status": (ExecutionStatus.INTERRUPTED if execution.attempts else ExecutionStatus.CANCELLED),
                 "result": None,
                 "error": None,
-                "ended_at": ts,
+                "finished_at": ts,
             },
         )
 
@@ -4564,9 +4861,11 @@ class AgentSessionRunner:
     ) -> tuple[ToolExecution, Exception | None]:
         """Invoke the prepared callable under the cancellation race and the
         outside deadline; return the terminal (not yet persisted) execution
-        and the live exception, if one exists. Outcomes: the body *returned*
-        (even early, cooperatively, within the cancel grace) → COMPLETED with
-        its real result, whatever `is_error` says; it *raised* → FAILED for
+        and the live exception, if one exists. Outcomes: the body *returned* an
+        `ExecutionResult` (even early, cooperatively, within the cancel grace)
+        → COMPLETED with its real result, whatever `is_error` says; it returned
+        `ExecutionDeferred` → AWAITING_RESULT, which is NOT a terminal outcome
+        and which the caller settles differently; it *raised* → FAILED for
         EVERY exception type, because resolution and validation already
         happened in `prepare()` and a body that raises `ToolNotFound` looking
         up a sub-resource is a tool failure, not a resolution failure; the
@@ -4637,7 +4936,7 @@ class AgentSessionRunner:
                     return current.model_copy(
                         update={
                             "status": ExecutionStatus.TIMED_OUT,
-                            "ended_at": self.now_ms(),
+                            "finished_at": self.now_ms(),
                         },
                     ), None
         except Exception as exc:
@@ -4650,7 +4949,7 @@ class AgentSessionRunner:
             terminal = current.model_copy(
                 update={
                     "status": ExecutionStatus.FAILED,
-                    "ended_at": self.now_ms(),
+                    "finished_at": self.now_ms(),
                 },
             )
             terminal.error = self.to_tool_execution_error(
@@ -4663,9 +4962,15 @@ class AgentSessionRunner:
             return current.model_copy(
                 update={
                     "status": ExecutionStatus.INTERRUPTED,
-                    "ended_at": self.now_ms(),
+                    "finished_at": self.now_ms(),
                 },
             ), None
+        if isinstance(result, ExecutionDeferred):
+            # NOT a terminal outcome. No ExecutionResult is stored, no
+            # `process_tool_output` runs (there is nothing to process, and
+            # `context_tokens` stays 0 while nonterminal), and `finished_at`
+            # is deliberately left unset — the call has not finished.
+            return current.model_copy(update={"status": ExecutionStatus.AWAITING_RESULT}), None
         # The returned result passes through the context manager BEFORE the
         # terminal execution is constructed (and thus before any middleware):
         # what persists, projects, and feeds the ToolExecuted event is the
@@ -4679,7 +4984,7 @@ class AgentSessionRunner:
                     current,
                     result,
                 ),
-                "ended_at": self.now_ms(),
+                "finished_at": self.now_ms(),
             },
         ), None
 

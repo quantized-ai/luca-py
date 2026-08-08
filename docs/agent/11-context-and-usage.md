@@ -57,7 +57,7 @@ Five hooks; the runner calls them at fixed points:
 | Hook | Called | Default behavior |
 |---|---|---|
 | `calculate_context(session, entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
-| `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output) | identity pass-through |
+| `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output). A returned `ExecutionDeferred` skips it — there is no output to process | identity pass-through |
 | `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
 | `should_compact(session, conversation_id) -> bool` | at the top of every drive, and at `start()` (hence sync) | `False` — never compacts |
 | `compact(session, conversation_id, nodes, entry)` | once `should_compact` says yes, or after `schedule_compaction()` | raises `NotImplementedError` |
@@ -101,6 +101,14 @@ and JSON arguments — counted once, never again on the execution); a tool
 execution only its outcome (result content, else the structured error
 message; `0` while nonterminal); a compaction its summary; a pruned entry its
 replacement content; markers own nothing.
+
+> ⚠️ **A parked tool call counts `0`.** An execution deferred at
+> `AWAITING_RESULT` ([03](03-tools.md) §7) is nonterminal, so it contributes
+> nothing however long it stays parked and however many times it is
+> re-dispatched — `calculate_context` runs again only when it finally turns
+> terminal, and a deferral is not a terminal transition. The placeholder it
+> puts on the wire ([10](10-projection.md) §2) is therefore unbudgeted; it is
+> one short line.
 
 > ⚠️ **Middleware has the final say on every write.** Context is calculated
 > *before* `before_entry_written` / `after_tool_execution`; whatever middleware

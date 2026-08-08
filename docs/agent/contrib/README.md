@@ -19,6 +19,7 @@ from luca.agent.contrib.tools import Tool
 |---|---|
 | [`tools/`](tools/README.md) | `Tool` + the `tool()` / `tool_class()` factories — the ergonomic way to write a Python tool; the core itself only knows `ToolSpec` |
 | [`simple_tool_registry/`](simple_tool_registry/README.md) | The batteries-included `ToolRegistry`: a static tool list + `PermissionPolicy`, and `ProxyToolRegistry` for composition |
+| [`questions/`](questions/README.md) | `QuestionsTool` (`ask_user`) + `QuestionsPlugin` — the first **deferred** tool: the model asks, the turn parks, your driver answers |
 | [`plugins/`](plugins/README.md) | `BasePlugin` + `PluginAgentSessionRunner` — install a capability (registry + prompt parts + middleware) in one move |
 | [`resource_permissions/`](resource_permissions/README.md) | Rule-based tool approval — modes, resource globs, answer-decoupled grants, and a typed tool mixin |
 | [`shell/`](shell/README.md) | The eight shell tools (read/glob/grep/edit/write/apply_patch/delete_file/bash), the four provider-native ones, + `ShellAccessPlugin` — workspace-scoped, two-step directory permissions |

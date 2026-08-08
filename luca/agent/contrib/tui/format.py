@@ -31,12 +31,15 @@ GLYPH_CARET = "❯"
 GLYPH_BAR = "▎"
 GLYPH_MARK = "◧"
 GLYPH_CURSOR = "█"
+GLYPH_BOX = "☐"
+GLYPH_BOX_TICKED = "☑"
+GLYPH_ARROW = "→"
 MINUS = "−"  # U+2212, never a hyphen
 
 LIST_GLYPHS = {
-    "done": "☑",
+    "done": GLYPH_BOX_TICKED,
     "active": "◉",
-    "pending": "☐",
+    "pending": GLYPH_BOX,
     "included": "✓",
     "none": " ",
 }
@@ -180,6 +183,13 @@ HINTS: dict[str, list[str]] = {
     "sessions": ["↑↓ move", "enter resume", "f fork", "d delete", "esc back"],
     "settings": ["↑↓ move", "← → change", "enter edit", "esc save & close"],
     "cost": ["^k compact context", "esc back"],
+    # The agent's question set. `N` is filled per question by
+    # `question_hints`; these are the shapes.
+    "questions-single": ["↑↓ move", "1–N pick", "enter confirm", "⇥ next"],
+    "questions-multi": ["↑↓ move", "1–N toggle", "space toggle", "enter confirm"],
+    "questions-last": ["↑↓ move", "1–N pick", "enter answer + submit"],
+    "questions-custom": ["enter save", "esc clear"],
+    "questions-confirm": ["enter submit", "esc back to questions"],
 }
 
 
@@ -188,3 +198,58 @@ def approval_hints(option_count: int, *, has_diff: bool = False) -> list[str]:
     if has_diff:
         hints.append("^d full diff")
     return hints
+
+
+def question_hints(
+    option_count: int,
+    *,
+    mode: str = "single",
+    last: bool = False,
+    editing_custom: bool = False,
+    confirming: bool = False,
+) -> list[str]:
+    """The legend for wherever the question set currently is.
+
+    `last` and `enter`'s meaning come from the SAME predicate
+    (`question_set_is_last`), so the legend can never disagree with the key. `N`
+    is the live row count INCLUDING the custom and chat rows, built the way
+    `approval_hints` builds `1–4 pick`."""
+    if confirming:
+        return list(HINTS["questions-confirm"])
+    if editing_custom:
+        # While the field has the keyboard, digits and `space` are LITERAL
+        # TEXT — advertising them would be actively wrong.
+        return list(HINTS["questions-custom"])
+    hints = [hint.replace("1–N", f"1–{option_count}") for hint in HINTS[f"questions-{mode}"]]
+    if not last:
+        return hints
+    # `enter` has exactly two meanings and the legend always states which. On
+    # the last open question the same keystroke answers it AND opens the
+    # confirmation, so `⇥ next` has nowhere to go.
+    submit = HINTS["questions-last"][-1]
+    return [submit if hint == "enter confirm" else hint for hint in hints if hint != "⇥ next"]
+
+
+def question_set_is_last(state) -> bool:
+    """Would answering the ACTIVE question leave none open?
+
+    THE ONE PREDICATE behind both `enter`'s two meanings and the legend that
+    states which. While any other question is unanswered, `enter` confirms and
+    advances; when this is the last one open, the same keystroke answers it and
+    opens the confirmation — and the legend then reads `enter answer + submit`,
+    not `enter confirm`."""
+    return all(question.answered for index, question in enumerate(state.questions) if index != state.active)
+
+
+def question_hints_for(state) -> list[str]:
+    """`question_hints` derived from a whole `state.QuestionSetState`. Duck-typed
+    rather than importing the view-model, so `format` stays dependency-free."""
+    if state.phase == "confirming":
+        return question_hints(0, confirming=True)
+    question = state.questions[state.active]
+    return question_hints(
+        len(question.options),
+        mode=question.mode,
+        last=question_set_is_last(state),
+        editing_custom=state.editing_custom,
+    )

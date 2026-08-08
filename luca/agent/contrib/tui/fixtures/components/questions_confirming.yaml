@@ -1,0 +1,54 @@
+# Component sheet — one state of the agent's `ask_user` question set.
+# the confirmation — read-only summary; enter submits, esc goes back
+name: components/questions_confirming
+title: the confirmation — read-only summary; enter submits, esc goes back
+status: {cwd: ~/quantized/luca, model: sonnet-4.5, branch: main, dirty: true, tokens: 9.7k, cost: $0.06}
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+  - kind: thinking
+    duration: 4
+questions:
+  active: 3
+  phase: confirming
+  extra: in-process is fine if it is scoped
+  questions:
+    - tab: storage
+      title: Where should the sqlite file live?
+      answered: true
+      selected: 0
+      answer: 0
+      options:
+        - {label: '~/.luca/projects/<project>/events.db'}
+    - tab: reader
+      title: Keep the jsonl reader?
+      answered: true
+      selected: 0
+      answer: 0
+      options:
+        - {label: 'keep it, version-gated'}
+    - tab: backfill
+      title: How should existing sessions be backfilled?
+      answered: true
+      selected: 4
+      answer: 4
+      options:
+        - {label: 'On first launch, in-process'}
+        - {label: A separate luca migrate command}
+        - {label: 'Lazily, when a session resumes'}
+        - {label: "Don't backfill at all"}
+        - {label: 'Custom answer:', kind: custom, text: only sessions touched since the 0.8 tag}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+    - tab: rollout
+      title: Which surfaces should read sqlite first?
+      mode: multi
+      answered: true
+      selected: 4
+      options:
+        - {label: the sessions screen, checked: true}
+        - {label: resume / replay, checked: true}
+        - {label: the cost screen}
+        - {label: the gallery}
+        - {label: 'Custom answer:', kind: custom, checked: true, text: 'the replay screen, behind a flag'}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+hints: [enter submit, esc back to questions]

@@ -59,7 +59,8 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/reader.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
       "extras": {},
@@ -76,11 +77,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000024000,
-      "ended_at": 1700000024400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000024000,
+          "ended_at": 1700000024400
+        }
+      ],
+      "finished_at": 1700000024400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -100,7 +108,8 @@
         "arguments": {
           "pattern": "def emit",
           "path": "luca"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
       "extras": {},
@@ -117,11 +126,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000054000,
-      "ended_at": 1700000054400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000054000,
+          "ended_at": 1700000054400
+        }
+      ],
+      "finished_at": 1700000054400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -178,7 +194,8 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
@@ -227,11 +244,18 @@
           ]
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000084000,
-      "ended_at": 1700000084400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000084000,
+          "ended_at": 1700000084400
+        }
+      ],
+      "finished_at": 1700000084400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -250,7 +274,8 @@
         "name": "edit",
         "arguments": {
           "path": "luca/events.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
       "extras": {
@@ -298,11 +323,18 @@
         "metadata": {
           "diff": "--- a\n+++ b\n-    for e in events:\n-        out.append(e)\n+    if fmt == 'json':\n+        return [json.dumps(asdict(e)) for e in events]\n+\n+    for e in events:\n+        out.append(e)\n+"
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000126000,
-      "ended_at": 1700000126200,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000126000,
+          "ended_at": 1700000126200
+        }
+      ],
+      "finished_at": 1700000126200,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -321,7 +353,8 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest tests/store -q"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
       "extras": {},
@@ -340,11 +373,18 @@
         "metadata": {
           "exit": 1
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000156000,
-      "ended_at": 1700000157900,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000156000,
+          "ended_at": 1700000157900
+        }
+      ],
+      "finished_at": 1700000157900,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -437,7 +477,8 @@
         "name": "edit",
         "arguments": {
           "path": "luca/store/writer.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
       "extras": {},
@@ -456,11 +497,18 @@
         "metadata": {
           "diff": "--- a\n+++ b\n-    pass\n+    handle.flush()\n"
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000756000,
-      "ended_at": 1700000756200,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000756000,
+          "ended_at": 1700000756200
+        }
+      ],
+      "finished_at": 1700000756200,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -479,7 +527,8 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest tests/store -q"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
       "extras": {},
@@ -498,11 +547,18 @@
         "metadata": {
           "exit": 0
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000780000,
-      "ended_at": 1700000781700,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000780000,
+          "ended_at": 1700000781700
+        }
+      ],
+      "finished_at": 1700000781700,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -541,6 +597,7 @@
   "tool_specs": {
     "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
       "name": "read",
+      "title": null,
       "description": "read tool.",
       "input_schema": {
         "type": "object",
@@ -556,6 +613,7 @@
     },
     "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
       "name": "grep",
+      "title": null,
       "description": "grep tool.",
       "input_schema": {
         "type": "object",
@@ -571,6 +629,7 @@
     },
     "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
       "name": "update_todos",
+      "title": null,
       "description": "update_todos tool.",
       "input_schema": {
         "type": "object",
@@ -586,6 +645,7 @@
     },
     "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
       "name": "edit",
+      "title": null,
       "description": "edit tool.",
       "input_schema": {
         "type": "object",
@@ -601,6 +661,7 @@
     },
     "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b": {
       "name": "bash",
+      "title": null,
       "description": "bash tool.",
       "input_schema": {
         "type": "object",
@@ -712,8 +773,16 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "reasoning": null
+  },
+  "use_native_tools": false,
   "extras": {
     "todos": {
       "c1": {

@@ -236,6 +236,8 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         raise NotImplementedError
@@ -246,6 +248,8 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
@@ -253,6 +257,8 @@ class ShellTool(ResourcePermissionToolMixin, Tool):
                 args,
                 session,
                 conversation_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
                 cancellation_token=cancellation_token,
             )
         except ShellToolError as error:
@@ -389,6 +395,8 @@ class ReadTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
@@ -623,6 +631,8 @@ class GlobTool(RipgrepTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         root = self._resolve(args["path"]) if args.get("path") else self.workdir
@@ -730,6 +740,8 @@ class GrepTool(RipgrepTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         target = self._resolve(args["path"]) if args.get("path") else self.workdir
@@ -867,6 +879,8 @@ class EditTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
@@ -1031,6 +1045,8 @@ class WriteTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
@@ -1167,6 +1183,8 @@ class ApplyPatchTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         patch_text = args["patch_text"]
@@ -1358,6 +1376,8 @@ class DeleteFileTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         path = self._resolve(args["file_path"])
@@ -1516,6 +1536,8 @@ class BashTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         workdir = self._resolve(args["workdir"]) if args.get("workdir") else self.workdir

@@ -17,6 +17,8 @@ from luca.agent.core.models import (
     AgentSession,
     AssistantMessage,
     ChildConversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -69,8 +71,8 @@ SPAWN = ToolExecution(
             "process_subagent_result_tool_name": "create_conversation_result",
         },
     ),
-    started_at=500,
-    ended_at=500,
+    attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+    finished_at=500,
 )
 
 # The runtime-minted result execution whose path position carries the update.
@@ -83,8 +85,8 @@ RESULT_EXEC = ToolExecution(
     tool_spec=RESULT_SPEC,
     status=ExecutionStatus.COMPLETED,
     result=ExecutionResult(content=[TextContent(text="A is fine.")]),
-    started_at=700,
-    ended_at=700,
+    attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=700, ended_at=700)],
+    finished_at=700,
 )
 
 TS = TurnStart(id="ts", created_at=500)

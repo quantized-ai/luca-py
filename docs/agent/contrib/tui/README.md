@@ -2,14 +2,17 @@
 
 A [Textual](https://textual.textualize.io/) terminal UI for the agent loop,
 built as a **design system**: a full-screen app with one scrolling
-conversation column, an inline approval prompt, overlay lists (command
-palette, context picker), and modal screens for sessions, settings and cost.
+conversation column, an inline approval prompt, an inline question set (the
+agent's `ask_user`), overlay lists (command palette, context picker), and modal
+screens for sessions, settings and cost.
 Every visual state is expressible as declarative data (`state.ScreenState`),
 renderable without a live agent (the gallery), and snapshot-tested. It is
 also the reference for wiring a real interactive app on top of the runner:
 one drive worker, one shared
 [`PermissionStrategy`](../resource_permissions/README.md), sessions saved as
-`~/.luca/projects/<encoded-project-path>/<session-id>.json`. Requires the
+`~/.luca/projects/<encoded-project-path>/<session-id>.json` — with the TUI's
+own state (outstanding questions) in a `<session-id>.tui.json` sidecar beside
+it. Requires the
 `tui` dependency group (installed by default with `uv sync`).
 
 ```python
@@ -46,7 +49,8 @@ Subagent flags (`--subagents-max-depth`, `--subagents-max-per-turn`,
 
 One `Vertical`: a custom status bar (`◧ luca · cwd · model · branch* ·
 tokens · $cost`), the single rule, the scrolling transcript, the dock
-(composer OR approval prompt OR overlay list), and the hint legend — which is
+(composer OR approval prompt OR question set OR overlay list), and the hint
+legend — which is
 always visible and always reflects the focused context. No stock
 Header/Footer, no panel borders; blocks are separated by blank rows.
 
@@ -58,7 +62,7 @@ Transcript block vocabulary (`blocks.py`, rendered from `state.py` models):
 | thinking | `∴ thought for 3s` collapsed; `∴ <activity>` while in progress |
 | text | assistant prose at an 84-column measure; `` `code spans` `` in accent; streaming ends with a block cursor |
 | tool | `▸ name arg` header (6-cell name column), then the result in a `1+│+2` gutter: a faint summary (`84 lines`, `exit 0 · removed 12 paths`), a diff stat (`+7 −1`), or verbatim output with `^o expand`. Denied calls turn `▸` and `denied` to `$error`; **every automatic permission decision is stated** (`approved by rule`, `denied · by rule`) |
-| list | active skills / context set / consumers, and the docked plan panel (§2.2): a faint label row + glyph rows (`☑ ◉ ☐ ✓`), settled rows struck through |
+| list | active skills / context set / consumers, the answered question set (§2.2), and the docked plan panel (§2.3): a faint label row + glyph rows (`☑ ◉ ☐ ✓`), settled rows struck through |
 | diff | unified diff in the gutter: `[5 line-no][3 sign][code]`, added/removed row backgrounds spanning the block |
 | notice | one faint (or `$error`) row: cancellations, turn failures |
 | task | a subagent: `task · <description> · <status>` label, the child's own blocks nested in a gutter (see §2.1) |
@@ -66,11 +70,14 @@ Transcript block vocabulary (`blocks.py`, rendered from `state.py` models):
 Interactions: the composer stays enabled while the agent works (mid-turn
 posts queue into the open turn; the placeholder flips to `working…` and the
 legend to `enter queue`) — with one exception: a submit while the main
-conversation is `BLOCKED` at an approval gate is refused with a notice
-(`answer the approval prompt first`), keeping the draft. That is the TUI
+conversation is `BLOCKED` is refused with a notice, keeping the draft — naming
+whichever of the two causes is in front of the user (`answer the approval
+prompt first`, or `answer the questions first` when a deferred `ask_user` is
+what parked the turn). That is the TUI
 opting out of a framework capability, not a framework limit — the framework
-would answer the post past the gate ([10-projection §2](../../10-projection.md)),
-but in this UI the answer the user owes is the approval prompt itself. A
+would answer the post past the gate or past the parked call
+([10-projection §2](../../10-projection.md)),
+but in this UI the answer the user owes is the prompt two lines below. A
 SUBAGENT's gate with siblings still working leaves the conversation `BUSY`,
 so mid-orchestration steering posts keep working. `esc` interrupts a run,
 backs out of a modal, and
@@ -93,7 +100,46 @@ the private result tool renders as nothing (both matched by DECLARATION —
 resolved `ChildConversation`, not the result tool's event, so a cancelled
 subagent stops saying `running`. Resume replays the same tree.
 
-### 2.2 The docked plan panel
+### 2.2 The question set — the fourth dock
+
+When the model calls `ask_user`
+([questions](../questions/README.md)) the tool DEFERS: the runner parks the open
+turn, the drive returns, and the question set takes the dock — same border, same
+inner rules, same `▎❯` selection as the approval prompt. Up to four questions,
+one tab each (`☑ storage  ☑ reader  ▎☐ backfill`, right-aligned `3 of 4`), the
+question title, its long body at the full 99-column measure, then the options.
+
+Every question ends with the same two rows, always last and never authored by
+the model: **Custom answer** — an inline field, for when none of the offered
+options is the answer — and **Chat about this**, which has no tick box at all
+because it is the way out rather than an answer. There is no skip: those two
+rows are what make every question answerable.
+
+| key | single select | multi select |
+|---|---|---|
+| `↑` `↓` | move the caret | move the caret |
+| `1`–`9` | pick that option and advance | toggle that option's tick |
+| `space` | pick the caret's option and advance | toggle the caret's tick |
+| `enter` | confirm, then advance — or open the confirmation | **commit** the ticks (never toggles), then advance — or open the confirmation |
+| `⇥` `⇧⇥` | next / previous question | next / previous question |
+
+> ⚠️ **`esc` never leaves a question unanswered.** In this panel it has exactly
+> one job — clearing the custom-answer field while that field is being edited —
+> and is otherwise swallowed. It does not skip, does not close the set, and
+> does not reach the composer or the cancel binding.
+
+Nothing reaches the agent until a **confirmation** panel: one read-only line per
+question plus one optional free-text field. `enter` submits, `esc` goes back
+with every answer intact, so submission always takes two deliberate presses.
+Then the set collapses into an ordinary tool block with one `☑ tab → answer` row
+per question.
+
+`ScreenState.questions` carries the whole thing (`state.QuestionSetState`), and
+`QuestionSetState.settled` is the ONE predicate behind both `enter`'s two
+meanings and the legend that states which — so the panel and the hint row can
+never disagree.
+
+### 2.3 The docked plan panel
 
 The todo list is not a transcript block. It sits in its own region between the
 transcript and the dock (`#plan-dock`), which means it outlives the turn that
@@ -261,15 +307,15 @@ replays on resume, so what you see is what a resume would show.
 |---|---|
 | `theme.py` / `app.tcss` / `state.py` / `format.py` | The design system's contract: palette, geometry, view-model, pure text helpers (token spans, humanized figures, hint legends) |
 | `render.py` | Pure derivations: entries/events → view-models (`tool_block`, `plan_block`, `preview_rows`, `subagent_task`, …) plus a whole stored session → transcript blocks (`entry_blocks`, `transcript_blocks`) — live, replay and the catalog share them, so they cannot drift |
-| `blocks.py` / `chrome.py` / `shells.py` / `modals.py` | The widgets: transcript blocks, status bar + legend + composer, the shared selection treatment + approval prompt + overlay list + modal base, the three modal screens |
+| `blocks.py` / `chrome.py` / `shells.py` / `modals.py` | The widgets: transcript blocks, status bar + legend + composer, the shared selection treatment + approval prompt + question set + overlay list + modal base, the three modal screens |
 | `frame.py` | `LucaApp` — the frame; `apply_state(ScreenState)` renders any state |
 | `catalog.py` | The derived catalog: `screen × world → ScreenState`, the `SCREENS` registry and the `World` / `Entry` models |
 | `gallery.py` | `GalleryApp` (`--gallery`) over both tiers; fixture and session loading |
 | `app.py` | `AgentApp(LucaApp)` — the drive worker and one event handler for both streaming and block tiers |
-| `wiring.py` | `build_runner(...)` — shell + memory plugins, demo math tools, one shared strategy; `build_faux_provider()` scripts the `--faux` conversation |
+| `wiring.py` | `build_runner(...)` — shell + memory + questions plugins, demo math tools, one shared strategy; returns `(runner, strategy, questions_plugin)`; `build_faux_provider()` scripts the `--faux` conversation |
 | `approvals.py` | Pending permission steps → the fixed 4-option prompt model (`Approve once / Approve always — <scope> / Deny / Cancel turn`), no UI |
 | `usage.py` / `gitinfo.py` / `files.py` | Status counter + cost-screen state; branch/dirty; `@`-picker file listing |
-| `sessions.py` / `commands.py` / `config.py` / `cli.py` / `prompt.py` / `clipboard.py` | The store (atomic save, summaries with previews), the command registry + live modal-state builders, `luca.json`, argparse, the composer's TextArea, clipboard image read |
+| `sessions.py` / `commands.py` / `config.py` / `cli.py` / `prompt.py` / `clipboard.py` | The store (atomic save, summaries with previews, and the `.tui.json` sidecar), the command registry + live modal-state builders, `luca.json`, argparse, the composer's TextArea, clipboard image read |
 
 ## 6. Test with the faux client
 

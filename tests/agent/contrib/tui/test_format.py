@@ -11,7 +11,11 @@ from pathlib import Path
 from rich.style import Style
 from rich.text import Span
 
+from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.format import (
+    GLYPH_ARROW,
+    GLYPH_BOX,
+    GLYPH_BOX_TICKED,
     HINTS,
     approval_hints,
     code_spans,
@@ -21,6 +25,9 @@ from luca.agent.contrib.tui.format import (
     fmt_when,
     home_path,
     inline_paths,
+    question_hints,
+    question_hints_for,
+    question_set_is_last,
     short_model,
     spans,
 )
@@ -150,6 +157,11 @@ def test_hints_covers_every_focus_context():
         "sessions",
         "settings",
         "cost",
+        "questions-single",
+        "questions-multi",
+        "questions-last",
+        "questions-custom",
+        "questions-confirm",
     ]
 
 
@@ -183,3 +195,117 @@ def test_a_trailing_space_on_the_prefix_does_not_double_up():
 
 def test_no_paths_gives_the_prefix_back_untouched():
     assert inline_paths("explain ", []) == "explain "
+
+
+# ── the agent's question set ──────────────────────────────────────────────────
+
+# Two questions and the four rows each of them ends up with. Only `answered`
+# and `mode` ever differ between them, which is all these tests read.
+SINGLE_QUESTION = vm.Question(
+    tab="backfill",
+    title="How should existing sessions be backfilled?",
+    options=[
+        vm.QuestionOption(label="On first launch, in-process"),
+        vm.QuestionOption(label="Lazily, when a session resumes"),
+        vm.QuestionOption(label="Custom answer:", kind="custom"),
+        vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+    ],
+)
+MULTI_QUESTION = vm.Question(
+    tab="rollout",
+    title="Which surfaces read sqlite first?",
+    mode="multi",
+    options=[
+        vm.QuestionOption(label="the sessions screen"),
+        vm.QuestionOption(label="the cost screen"),
+        vm.QuestionOption(label="Custom answer:", kind="custom"),
+        vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+    ],
+)
+ANSWERED_QUESTION = SINGLE_QUESTION.model_copy(update={"tab": "storage", "answered": True})
+
+
+def test_the_question_glyphs_are_the_ones_the_design_names():
+    # §4 of the design spec is normative about these three — the tick, the
+    # empty box and the answer separator — not `x`, `[ ]` or `->`.
+    assert [GLYPH_BOX, GLYPH_BOX_TICKED, GLYPH_ARROW] == ["☐", "☑", "→"]
+
+
+def test_question_hints_scale_with_the_row_count():
+    assert question_hints(6) == ["↑↓ move", "1–6 pick", "enter confirm", "⇥ next"]
+
+
+def test_a_multi_select_question_advertises_space_instead_of_the_next_tab():
+    assert question_hints(6, mode="multi") == ["↑↓ move", "1–6 toggle", "space toggle", "enter confirm"]
+
+
+def test_the_last_open_question_says_enter_answers_and_submits():
+    # `⇥ next` is dropped rather than kept and inert: there is nowhere left to
+    # go, and the same keystroke now opens the confirmation.
+    assert question_hints(6, last=True) == ["↑↓ move", "1–6 pick", "enter answer + submit"]
+
+
+def test_the_last_open_multi_select_question_keeps_both_toggles():
+    assert question_hints(5, mode="multi", last=True) == [
+        "↑↓ move",
+        "1–5 toggle",
+        "space toggle",
+        "enter answer + submit",
+    ]
+
+
+def test_editing_a_custom_answer_advertises_only_the_keys_that_are_not_text():
+    # While the field has the keyboard, digits and `space` are literal text —
+    # advertising them would be actively wrong.
+    assert question_hints(6, editing_custom=True) == ["enter save", "esc clear"]
+
+
+def test_the_confirmation_has_exactly_two_keys():
+    assert question_hints(0, confirming=True) == ["enter submit", "esc back to questions"]
+
+
+def test_the_confirmations_legend_wins_over_every_other_branch():
+    assert question_hints(6, mode="multi", last=True, editing_custom=True, confirming=True) == [
+        "enter submit",
+        "esc back to questions",
+    ]
+
+
+def test_the_active_question_is_the_last_one_when_every_other_is_answered():
+    state = vm.QuestionSetState(questions=[ANSWERED_QUESTION, SINGLE_QUESTION], active=1)
+
+    assert question_set_is_last(state) is True
+
+
+def test_it_is_not_the_last_one_while_another_question_is_still_open():
+    state = vm.QuestionSetState(questions=[SINGLE_QUESTION, SINGLE_QUESTION], active=1)
+
+    assert question_set_is_last(state) is False
+
+
+def test_a_one_question_set_is_always_on_its_last_question():
+    assert question_set_is_last(vm.QuestionSetState(questions=[SINGLE_QUESTION])) is True
+
+
+def test_question_hints_for_reads_the_active_question_out_of_the_state():
+    state = vm.QuestionSetState(questions=[MULTI_QUESTION, SINGLE_QUESTION], active=0)
+
+    assert question_hints_for(state) == ["↑↓ move", "1–4 toggle", "space toggle", "enter confirm"]
+
+
+def test_question_hints_for_the_last_open_question_of_a_state():
+    state = vm.QuestionSetState(questions=[ANSWERED_QUESTION, SINGLE_QUESTION], active=1)
+
+    assert question_hints_for(state) == ["↑↓ move", "1–4 pick", "enter answer + submit"]
+
+
+def test_question_hints_for_a_custom_field_that_has_the_keyboard():
+    state = vm.QuestionSetState(questions=[SINGLE_QUESTION], editing_custom=True)
+
+    assert question_hints_for(state) == ["enter save", "esc clear"]
+
+
+def test_question_hints_for_the_confirmation_never_reads_a_question():
+    state = vm.QuestionSetState(questions=[ANSWERED_QUESTION], phase="confirming")
+
+    assert question_hints_for(state) == ["enter submit", "esc back to questions"]

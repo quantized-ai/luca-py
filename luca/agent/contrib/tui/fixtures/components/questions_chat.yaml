@@ -1,0 +1,30 @@
+# Component sheet — one state of the agent's `ask_user` question set.
+# chat about this — the set ends, answers so far are kept, the composer comes back
+#
+# NOTE the legend: the design sketched a `^q resume questions` affordance and
+# flagged it as unconfirmed. `^q` is already bound to quit, so nothing reopens a
+# set that ended — Chat about this is a one-way exit, and the model asks again
+# if it still needs the answer.
+name: components/questions_chat
+title: chat about this — the set ends, answers so far are kept, the composer comes back
+status: {cwd: ~/quantized/luca, model: sonnet-4.5, branch: main, dirty: true, tokens: 10.4k, cost: $0.07}
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+  - kind: thinking
+    duration: 4
+  - kind: tool
+    tool: Ask the user
+    arg: 4 questions
+    status: ok
+    note_right: 2 answered · chat about this
+  - kind: list
+    column: 28
+    rows:
+      - {glyph: done, text: storage, annotation: '→  ~/.luca/projects/<project>/events.db'}
+      - {glyph: done, text: reader, annotation: '→  keep it, version-gated'}
+      - {glyph: pending, text: backfill, annotation: '→  [accent]chat about this[/]'}
+  - kind: text
+    text: Sure — what's the constraint on the backfill? Wall-clock on next launch, or the two-reader maintenance?
+composer: {text: "neither, it's that CI restores a fixture dir every run"}
+hints: [enter send, ⇥ complete, ^p palette]

@@ -21,9 +21,9 @@ Six kinds of building blocks:
   per-entry accounting is inherited untouched.
 - **Tool doubles**: minimal `FakeTool` subclasses covering each behavior the
   registry/runner must handle (plain success, a duck-typed approval context,
-  a captured session, a raised exception, a rich is_error result). `FakeTool`
-  is deliberately NOT contrib's `Tool`: the core knows only `ToolSpec`, and
-  building the doubles out of core types is what proves it.
+  a captured session, a raised exception, a rich is_error result, a DEFERRING
+  tool). `FakeTool` is deliberately NOT contrib's `Tool`: the core knows only
+  `ToolSpec`, and building the doubles out of core types is what proves it.
 - **`spec()` / `make_session()`**: the two literal factories. `ToolSpec` now
   requires `description` and `input_schema`, and a session literal has to
   carry `tool_specs` plus a `tool_spec_id` on every execution — neither is
@@ -65,6 +65,9 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Conversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
+    ExecutionDeferred,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -311,11 +314,18 @@ class FakeToolRegistry(ToolRegistry):
         payload = args.model_dump()
         self.prepared.append(name)
 
-        async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
+        tool_call_id = tool_execution.tool_call_id
+
+        async def run(
+            *,
+            cancellation_token: CancellationToken,
+        ) -> ExecutionResult | ExecutionDeferred:
             return await tool.execute(
                 payload,
                 session,
                 conversation_id,
+                tool_name=name,
+                tool_call_id=tool_call_id,
                 cancellation_token=cancellation_token,
             )
 
@@ -471,6 +481,8 @@ class FakeTool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         raise NotImplementedError
@@ -481,12 +493,16 @@ class FakeTool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
-    ) -> ExecutionResult:
+    ) -> ExecutionResult | ExecutionDeferred:
         output = await self._execute(
             args,
             session,
             conversation_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -503,6 +519,8 @@ class AddTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -519,6 +537,8 @@ class MultiplyTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
@@ -539,6 +559,8 @@ class CapturingTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.seen.append(session)
@@ -570,6 +592,8 @@ class ReadFileTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return f"contents of {args['path']}"
@@ -586,6 +610,8 @@ class RaisingTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         raise ValueError("kaboom")
@@ -606,6 +632,8 @@ class PrivateTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return "ran privately"
@@ -624,6 +652,8 @@ class RichErrorTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         return ExecutionResult(
@@ -631,6 +661,43 @@ class RichErrorTool(FakeTool):
             is_error=True,
             metadata={"code": 28},
         )
+
+
+class DeferringTool(FakeTool):
+    """Defers until the test resolves the call by id.
+
+    A PURE PREDICATE — it reads `answers` and returns; it never waits, which is
+    what makes it safe for the runner to invoke once per drive. `answers` is
+    the whole state, so a test resolves a specific parked call with
+    `tool.answers["tc1"] = "..."` and drives again.
+
+    `dispatches` records every body invocation by call id, which is how a test
+    distinguishes "the drive parked" from "the drive re-selected the same
+    execution and spun"."""
+
+    name = "ask"
+    description = "Asks and waits."
+    Args = BinaryArgs
+
+    def __init__(self, answers: dict[str, str] | None = None) -> None:
+        self.answers: dict[str, str] = {} if answers is None else answers
+        self.dispatches: list[str] = []
+
+    async def execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        tool_name: str,
+        tool_call_id: str,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult | ExecutionDeferred:
+        self.dispatches.append(tool_call_id)
+        answer = self.answers.get(tool_call_id)
+        if answer is None:
+            return ExecutionDeferred()
+        return ExecutionResult(content=[TextContent(text=answer)])
 
 
 # The specs the registry double produces for the doubles above. Session
@@ -644,6 +711,7 @@ CAPTURE_SPEC = CapturingTool().get_tool_spec()
 BOOM_SPEC = RaisingTool().get_tool_spec()
 REPORT_SPEC = RichErrorTool().get_tool_spec()
 SECRET_SPEC = PrivateTool().get_tool_spec()
+ASK_SPEC = DeferringTool().get_tool_spec()
 
 
 # ── mid-state session literals ─────────────────────────────────────────────────
@@ -809,10 +877,12 @@ POST_FAILURE_SESSION = make_session(
 )
 
 # A crash mid-body: the execution was persisted RUNNING (approval ALLOWED,
-# started_at stamped) and the process died before the tool settled — the
+# with an OPEN ExecutionAttempt) and the process died before the tool settled —
+# the
 # session carries an orphaned RUNNING execution and a stale RUNNING status.
 # The next drive must recover it to INTERRUPTED (after_tool_execution runs,
-# no re-dispatch) before doing anything else.
+# no re-dispatch) and close its dangling attempt as DISCARDED before doing
+# anything else.
 RUNNING_ORPHAN_SESSION = make_session(
     id="s_orphan",
     entries={
@@ -844,7 +914,7 @@ RUNNING_ORPHAN_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500,
+            attempts=[ExecutionAttempt(started_at=500)],
             updated_at=500,
         ),
     },
@@ -907,8 +977,8 @@ RICH_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=400),
             ],
-            started_at=400,
-            ended_at=400,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=400, ended_at=400)],
+            finished_at=400,
             updated_at=400,
         ),
         "cmp0": CompactionEntry(
@@ -968,8 +1038,8 @@ RICH_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
             updated_at=500,
         ),
         "te2": ToolExecution(
@@ -994,8 +1064,8 @@ RICH_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=500, ended_at=500)],
+            finished_at=500,
             updated_at=500,
         ),
         "pr1": PrunedEntry(
@@ -1064,7 +1134,7 @@ RICH_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.DENY, created_at=500),
             ],
-            ended_at=500,
+            finished_at=500,
             updated_at=500,
         ),
         "cr1": CancelRequested(id="cr1", parent_id="te3", created_at=500),

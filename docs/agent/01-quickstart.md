@@ -27,7 +27,7 @@ class WeatherTool(Tool):
     Args = WeatherArgs
     async def _execute(
         self, args: dict, session: AgentSession, conversation_id: str,
-        *, cancellation_token: CancellationToken,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
     ) -> str:
         return f"It's 22°C and sunny in {args['city']}."
 

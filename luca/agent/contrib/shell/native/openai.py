@@ -140,6 +140,8 @@ class OpenAIApplyPatchTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         target = self._resolve(args["path"])
@@ -328,6 +330,8 @@ class OpenAIShellTool(BashTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         # Not `_run`: this tool builds its own result (the native extras), and

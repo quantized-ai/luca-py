@@ -49,7 +49,8 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
@@ -94,11 +95,18 @@
           ]
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000018000,
-      "ended_at": 1700000018400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000018000,
+          "ended_at": 1700000018400
+        }
+      ],
+      "finished_at": 1700000018400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -130,7 +138,8 @@
               "status": "completed"
             }
           ]
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
@@ -175,11 +184,18 @@
           ]
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000168000,
-      "ended_at": 1700000168400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000168000,
+          "ended_at": 1700000168400
+        }
+      ],
+      "finished_at": 1700000168400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -218,6 +234,7 @@
   "tool_specs": {
     "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
       "name": "update_todos",
+      "title": null,
       "description": "update_todos tool.",
       "input_schema": {
         "type": "object",
@@ -290,8 +307,16 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "reasoning": null
+  },
+  "use_native_tools": false,
   "extras": {
     "todos": {
       "c1": {

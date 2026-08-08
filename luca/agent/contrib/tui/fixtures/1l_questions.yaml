@@ -1,0 +1,82 @@
+# 1l — Agent questions: the ask_user set holds the dock (the composer is
+# replaced). Single-select question, two already answered, one still to go.
+#
+# Requires the `questions:` field on ScreenState and the QuestionSetState
+# view-model — see ../README.md §6. Until that lands this file will not load.
+name: 1l_questions
+status:
+  cwd: ~/quantized/luca
+  model: sonnet-4.5
+  branch: main
+  dirty: true
+  tokens: 9.7k
+  cost: $0.06
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+  - kind: thinking
+    duration: 4
+  - kind: text
+    text: Four things I'd rather not guess at before I start.
+questions:
+  active: 2
+  phase: asking
+  editing_custom: false
+  questions:
+    - tab: storage
+      title: Where should the sqlite file live?
+      answered: true
+      mode: single
+      selected: 0
+      options:
+        - {label: '~/.luca/projects/<project>/events.db'}
+        - {label: 'Beside the jsonl files, same directory'}
+        - {label: 'One database per workspace, at the repo root'}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+    - tab: reader
+      title: Keep the jsonl reader?
+      answered: true
+      mode: single
+      selected: 0
+      options:
+        - {label: 'Keep it, version-gated on session.format'}
+        - {label: Drop it — convert everything up front}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+    - tab: backfill
+      title: How should existing `.jsonl` sessions be backfilled?
+      answered: false
+      mode: single
+      selected: 0
+      body:
+        - ~4,100 stored sessions across nine projects, 380MB on disk. Conversion runs at
+        - ~40ms per session, single-threaded, and is idempotent.
+        - ''
+        - In-process costs a one-off ~2.7min stall on the next `luca` you run and leaves
+        - nothing half-migrated. Lazily is invisible, but two readers then live in the
+        - tree forever and `/session` has to parse both formats to list rows.
+      options:
+        - {label: 'On first launch, in-process'}
+        - {label: A separate `luca migrate` command}
+        - {label: 'Lazily, when a session resumes'}
+        - {label: Don't backfill at all}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+    - tab: rollout
+      title: Which surfaces should read sqlite first?
+      answered: false
+      mode: multi
+      selected: 0
+      body:
+        - Every surface below parses each stored session on open (~3ms per 500KB), so the
+        - sessions screen is where the win is largest and the blast radius smallest.
+        - Anything left unticked keeps the jsonl path until it's ported.
+      options:
+        - {label: the sessions screen, checked: false}
+        - {label: resume / replay, checked: false}
+        - {label: the cost screen, checked: false}
+        - {label: the gallery, checked: false}
+        - {label: 'Custom answer:', kind: custom}
+        - {label: Chat about this, kind: chat, key_hint: enter}
+hints: [↑↓ move, 1–6 pick, enter confirm, ⇥ next]

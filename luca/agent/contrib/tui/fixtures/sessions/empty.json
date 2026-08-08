@@ -41,7 +41,15 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "reasoning": null
+  },
+  "use_native_tools": false,
   "extras": {}
 }
