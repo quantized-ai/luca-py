@@ -13,7 +13,7 @@ from luca.client.exceptions import (
     TimeoutError as ClientTimeoutError,
 )
 from luca.client.types import ChatCompletionRequest, UserMessage
-from tests.client._helpers.httpx_mocks import error_response, make_sync_client
+from tests.client._helpers.httpx_mocks import error_response, make_async_client, make_sync_client
 
 from ..test_openai.test_errors import CASES
 
@@ -31,6 +31,42 @@ def test_responses_transport_http_error_mapping(case, responses_transport_factor
 
     with pytest.raises(case.expected_exc) as exc_info:
         transport.completion(REQUEST)
+
+    assert exc_info.value.provider == "openai"
+    assert exc_info.value.original_exception is not None
+    if case.extra_assertion is not None:
+        assert case.extra_assertion(exc_info.value)
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
+def test_responses_transport_stream_http_error_mapping(case, responses_transport_factory):
+    """`OpenAIResponsesStream` is its own subclass of `ChatCompletionStream`,
+    so the open-time mapping is a separate MRO path from the chat one."""
+    client = make_sync_client(error_response(case.status_code, case.body, case.headers))
+    transport = responses_transport_factory(http_client=client)
+
+    with pytest.raises(case.expected_exc) as exc_info, transport.completion_stream(REQUEST) as stream:
+        list(stream)
+
+    assert exc_info.value.provider == "openai"
+    assert exc_info.value.original_exception is not None
+    if case.extra_assertion is not None:
+        assert case.extra_assertion(exc_info.value)
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
+async def test_responses_transport_astream_http_error_mapping(case, responses_transport_factory):
+    """The exact shape of the reported failure: an async streaming call on the
+    Responses wire, rejected before a single event."""
+    client = make_async_client(error_response(case.status_code, case.body, case.headers))
+    transport = responses_transport_factory(async_http_client=client)
+    try:
+        with pytest.raises(case.expected_exc) as exc_info:  # noqa: PT012
+            async with transport.acompletion_stream(REQUEST) as stream:
+                async for _event in stream:
+                    pass
+    finally:
+        await transport.aclose()
 
     assert exc_info.value.provider == "openai"
     assert exc_info.value.original_exception is not None

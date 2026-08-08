@@ -161,7 +161,9 @@ Some tools are built into the provider: the model is trained against them and
 the declaration is a type marker, not a schema. Declare them as instances
 alongside your own tools — the loop above works unchanged, and the client
 still only *describes* tools; **you execute** (apply the diffs, own the shell
-session, report honest failures).
+session, report honest failures). For the two file-editing tools you don't
+have to write that yourself: see
+[`luca.client.native`](#executing-them-lucaclientnative).
 
 | Tool | Provider | Call arrives as | Result you return |
 |---|---|---|---|
@@ -244,6 +246,61 @@ each command has `path` plus its own fields:
 
 Runnable end to end (all four commands, plus bash):
 [`anthropic_example_non_streaming.py`](../../specs/0009-provider-native-tools/examples/anthropic_example_non_streaming.py).
+
+### Executing them: `luca.client.native`
+
+The two file-editing tools ship with a working caller-side implementation:
+`luca.client.native`, opt-in (nothing else in the SDK imports it) and
+standard-library-only. Give it a root directory and the call's `arguments`:
+
+```python
+from luca.client.native import NativeToolError, execute_apply_patch, execute_text_editor
+from luca.client.types import TextBlock, ToolCall, ToolMessage
+
+WORKSPACE = "./workspace"
+HANDLERS = {"apply_patch": execute_apply_patch, "str_replace_based_edit_tool": execute_text_editor}
+
+def handle_edit(tc: ToolCall) -> ToolMessage:
+    try:
+        output, failed = HANDLERS[tc.name](tc.arguments, root=WORKSPACE), False
+    except NativeToolError as exc:
+        output, failed = str(exc), True     # the message is written for the model
+    return ToolMessage(tool_call_id=tc.id, name=tc.name,
+                       content=[TextBlock(text=output)], is_error=failed)
+```
+
+| Function | Runs | Returns |
+|---|---|---|
+| `execute_apply_patch(operation, *, root)` | one `apply_patch` operation | `Created/Updated/Deleted <path>`, plus a second `Moved <path> to <move_to>` line |
+| `execute_text_editor(command, *, root)` | one `str_replace_based_edit_tool` command | the `view` render, else `Created <path>` / `Updated <path>` |
+
+Underneath sit the pure transforms — no filesystem, no IO, useful on their own:
+
+| Function | Does |
+|---|---|
+| `native.apply_diff(text, diff, mode="default")` | the V4A grammar an `apply_patch` `diff` carries; `mode="create"` for the add-file syntax |
+| `native.text_editor.view(text, view_range=None)` | `cat -n` numbering; `view_range=[start, end]`, `-1` = last line |
+| `native.text_editor.str_replace(text, old_str, new_str)` | replace the one match |
+| `native.text_editor.insert(text, insert_line, insert_text)` | insert after that line; `0` = top |
+
+```python
+from luca.client.native import apply_diff
+
+apply_diff("alpha\nbeta\n", "@@ alpha\n-beta\n+BETA")   # -> "alpha\nBETA\n"
+```
+
+> ⚠️ **`root` is the boundary, and the only one.** A model path — relative or
+> absolute — is fully resolved and then must be inside `root`, so a symlink
+> pointing out of it is refused. `view` on a directory names symlinks with a
+> trailing `@` and never descends into them, for the same reason. `root="/"`
+> turns confinement off. Nothing else here is a sandbox: `create` overwrites,
+> `delete_file` deletes.
+
+Everything a model can recover from — a missing file, an `old_str` matching
+zero or three times, a diff whose context is gone — raises `NativeToolError`,
+whose message is the text to send back. It sits deliberately **outside** the
+[`ClientError` hierarchy](11-exceptions.md): those mean transport or network
+failure, and none of this code touches the network.
 
 ### The generic form: `extras`
 

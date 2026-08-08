@@ -67,6 +67,16 @@ class SessionSettings(BaseModel):
     model_config = _STRICT
 
 
+class LoggingSettings(BaseModel):
+    """Where the session log goes and how loud it is. `file` overrides the
+    default `<session dir>/logs/<session-id>.log`; a level of `"OFF"` writes
+    nothing at all."""
+
+    level: str | None = None
+    file: str | None = None
+    model_config = _STRICT
+
+
 class FileReadSettings(BaseModel):
     """The `@`-mention inline ceiling. The effective cap is the SMALLER of the
     hard limit and the model's context share, so a small-context model is never
@@ -160,6 +170,7 @@ class LucaConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
     sessions: SessionSettings = Field(default_factory=SessionSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     client: ClientSettings = Field(default_factory=ClientSettings)
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
@@ -174,6 +185,11 @@ class LucaConfig(BaseModel):
     # CLAUDE.md; `~` expanded, relative entries resolved against the workspace.
     instructions: list[str] = Field(default_factory=list)
     streaming: bool | None = None
+    # Offer the provider's own native tools where the ACTIVE model supports
+    # them (`--use-native` / `--no-use-native`; default on). Purely an
+    # adaptation input: the same session is valid either way, and the tool set
+    # is re-derived before every call.
+    use_native_tools: bool | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

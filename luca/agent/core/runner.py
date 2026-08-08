@@ -116,15 +116,22 @@ class carries no test parameters; tests subclass and override the hooks for
 determinism (see `DeterministicRunner` in `tests/agent/scenarios.py`).
 `provider=` is forwarded verbatim to the client (its public kwarg for passing
 a provider instance), which is also how tests hand in a `FauxProvider`.
+
+LOGGING. The runner converts exceptions into durable state — a raise becomes a
+`ToolExecutionError` or a `TurnFinish(ERRORED)`, and only `str(exc)` survives.
+Every one of those conversion points logs at ERROR with `exc_info=True` first,
+because this is the only place the traceback still exists. Records carry the
+conversation in the message (`conv=<id>`); nothing is configured here — see
+`luca/__init__.py`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import copy
 import inspect
 import json
+import logging
 import time
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -172,6 +179,7 @@ from .exceptions import (
     AgentError,
     AlreadyCancellingError,
     ConversationCancellingError,
+    IncompleteResponseError,
     InvalidToolArguments,
     ToolNotFound,
 )
@@ -226,7 +234,18 @@ from .system_prompt import (
 )
 from .tool_registry import PreparedTool, ToolRegistry
 
+logger = logging.getLogger(__name__)
+
 EventCallback = Callable[[AgentEvent], "Awaitable[None] | None"]
+
+# Canonical finish reasons that are NOT an answer, so a round carrying no tool
+# calls and one of these must not close the turn COMPLETED. The client's
+# vocabulary is already normalized across transports — OpenAI's `length` and
+# Anthropic's / Bedrock's `max_tokens` both arrive as "length", and every
+# refusal, safety filter and guardrail arrives as "error" with an
+# `error_message` — so this set is provider-agnostic by construction. See
+# `IncompleteResponseError`.
+NON_ANSWER_FINISH_REASONS = frozenset({"error", "length"})
 
 
 class RunResult(BaseModel):
@@ -940,9 +959,21 @@ class AgentRun:
     async def _deliver(self, event: AgentEvent) -> None:
         if self._on_event is None:
             return
-        result = self._on_event(event)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self._on_event(event)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # Application code with crash semantics: the caller sees the raise,
+            # but only here does its traceback still exist. `Exception`, not
+            # `BaseException`, so a cancellation passes through unlogged.
+            logger.error(
+                "conv=%s on_event callback raised on %s",
+                self.conversation_id,
+                type(event).__name__,
+                exc_info=True,
+            )
+            raise
 
 
 class AgentSessionRunner:
@@ -1736,6 +1767,11 @@ class AgentSessionRunner:
             # whose `finally` pumped the queue must not inherit the failure,
             # and the parent would otherwise park forever on a child whose
             # seed message still derives BUSY. Route it to the parent's drive.
+            logger.error(
+                "conv=%s subagent failed to start",
+                waiter.conversation_id,
+                exc_info=exc,
+            )
             self._working.discard(waiter.conversation_id)
             if waiter.handle is not None:
                 waiter.handle._abandoned = True
@@ -2190,22 +2226,6 @@ class AgentSessionRunner:
         model_string = f"{llm_cfg.provider}:{llm_cfg.model}"
         return self._run_middlewares("build_model_string", conversation_id, model_string, llm_cfg)
 
-    def effective_llm_config(self, llm_cfg: LLMConfig, model_string: str) -> LLMConfig:
-        """The config a call actually ran under, which is NOT always the
-        session's — `build_model_string` middleware may have routed the turn
-        elsewhere. Recording the session config for a routed turn makes
-        provenance lie, and the transports compare provenance against the
-        model being called to decide whether a thinking signature may be
-        replayed: a stale record both drops valid reasoning and replays
-        foreign attestations.
-
-        Splits at the FIRST colon, the rule the client uses, so a model id
-        containing one survives. `reasoning` and `extras` are preserved."""
-        provider, _, model = model_string.partition(":")
-        if not model:  # no prefix — middleware returned a bare model id
-            return llm_cfg.model_copy(update={"model": model_string})
-        return llm_cfg.model_copy(update={"provider": provider, "model": model})
-
     async def resolve_tool_specs(self, conversation_id: str) -> list[ToolSpec]:
         """The registry's answer for this conversation — the RUNTIME's view of
         what tools exist, private ones included.
@@ -2306,12 +2326,17 @@ class AgentSessionRunner:
 
         The gate runs on the REGISTRY's answer, before the middleware hook: it
         checks a registry-contract violation, not an application one.
-        Adaptation to client tool DTOs happens here, after the hook, so the
-        middleware contract stays in the core's own vocabulary."""
+        Adaptation to client tool DTOs happens here, after the spec-level hook,
+        so that contract stays in the core's own vocabulary — and the adapted
+        list then runs through `adapt_tool_declarations`, the CLIENT-vocabulary
+        slot, where a middleware swaps a function declaration for a
+        provider-native declaration item (dropping belongs in
+        `build_tool_list`, which sees the richer spec fields)."""
         specs = await self.resolve_tool_specs(conversation_id)
         self._verify_gate(conversation_id, specs)
         visible = self.build_tool_list(conversation_id, specs)
-        return specs, [adapter.tool_spec_to_luca_tool(spec) for spec in visible]
+        tools = [adapter.tool_spec_to_luca_tool(spec) for spec in visible]
+        return specs, self._run_middlewares("adapt_tool_declarations", conversation_id, tools)
 
     def build_messages(self, conversation_id: str) -> list:
         """Project the driven conversation's path to canonical client messages
@@ -2477,6 +2502,14 @@ class AgentSessionRunner:
                 raise ClientTimeoutError(stop.error) from None
             return
         except Exception as exc:
+            # A POLICY failure is swallowed below, so this log line is the only
+            # record of it anywhere.
+            logger.error(
+                "conv=%s compaction failed during planning (source=%s)",
+                conversation_id,
+                entry.source.value,
+                exc_info=exc,
+            )
             yield self._close_compaction(conversation_id, entry, _outcome_for(exc), str(exc))
             if entry.source == CompactionSource.USER:
                 raise
@@ -2502,6 +2535,12 @@ class AgentSessionRunner:
                 )
                 self.ledger.record_usage(conversation_id, entry.id, **plan.usage.model_dump())
             except Exception as exc:
+                logger.error(
+                    "conv=%s compaction plan rejected (source=%s)",
+                    conversation_id,
+                    entry.source.value,
+                    exc_info=exc,
+                )
                 yield self._close_compaction(conversation_id, entry, TurnOutcome.ERRORED, str(exc))
                 if entry.source == CompactionSource.USER:
                     raise
@@ -2523,6 +2562,12 @@ class AgentSessionRunner:
         try:
             conversation, final, created = self._commit(conversation_id, entry, plan, snapshot)
         except Exception as exc:
+            logger.error(
+                "conv=%s compaction commit failed (source=%s)",
+                conversation_id,
+                entry.source.value,
+                exc_info=exc,
+            )
             yield self._close_compaction(conversation_id, entry, TurnOutcome.ERRORED, str(exc))
             if entry.source == CompactionSource.USER:
                 raise
@@ -3083,11 +3128,20 @@ class AgentSessionRunner:
             # and only here, because every execution is terminal at this point
             # except a gated one on a 3b fall-through round (0008), and both
             # the wind-down and the failure close settle those before closing.
-            llm_cfg = self.session.session_config.llm_config
-            model_string = self.build_model_string(conversation_id, llm_cfg)
-            # Recorded instead of `llm_cfg`, so provenance names the model
-            # that actually produced the turn.
-            effective_cfg = self.effective_llm_config(llm_cfg, model_string)
+            model_string = self.build_model_string(
+                conversation_id,
+                self.session.session_config.llm_config,
+            )
+            # Stamp the ACTIVE config + native flag on the session, derived
+            # from the CONFIGURED values (a routing middleware must not drift
+            # the session) — from here on, everything handed the session
+            # (`get_tools`, every middleware, provenance recording) reads what
+            # THIS call will use from it. Re-stamped every iteration, which is
+            # what makes a mid-session model or native flip just work.
+            self.session.update_llm_config(
+                model_string,
+                use_native_tools=self.session.session_config.use_native_tools,
+            )
             # What this LLM call will have seen, fingerprinted by path length
             # — exact because the path is append-only and nothing yields
             # between this capture and the projection inside
@@ -3137,7 +3191,7 @@ class AgentSessionRunner:
                         system_message=system_message,
                         tools=tool_list or None,
                         tool_choice=tool_choice,
-                        reasoning=llm_cfg.reasoning,
+                        reasoning=self.session.llm_config.reasoning,
                         provider=self.provider,
                         timeout=request_timeout,
                         total_timeout=total_timeout,
@@ -3180,7 +3234,7 @@ class AgentSessionRunner:
                             system_message=system_message,
                             tools=tool_list or None,
                             tool_choice=tool_choice,
-                            reasoning=llm_cfg.reasoning,
+                            reasoning=self.session.llm_config.reasoning,
                             provider=self.provider,
                             timeout=request_timeout,
                             total_timeout=total_timeout,
@@ -3202,6 +3256,12 @@ class AgentSessionRunner:
                 # unconsumed cancel controls this close too: the call was
                 # being torn down anyway, so the requested outcome stands and
                 # the run returns normally (the failure is discarded).
+                logger.error(
+                    "conv=%s LLM call failed (model=%s)",
+                    conversation_id,
+                    self.session.llm_config.model,
+                    exc_info=exc,
+                )
                 cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
                 if cancel_entry is not None:
                     for event in await self._wind_down_async(conversation_id, cancel_entry):
@@ -3260,7 +3320,7 @@ class AgentSessionRunner:
             # The round keys off the tool_calls themselves, not finish_reason:
             # a misclassifying provider can neither wedge the conversation
             # ("stop" + calls) nor loop it ("tool_use" + none).
-            events = self._record_assistant(conversation_id, message, finish_reason, effective_cfg)
+            events = self._record_assistant(conversation_id, message, finish_reason, self.session.llm_config)
             if message.tool_calls:
                 self._receive_executions(conversation_id, message)
                 for event in events:
@@ -3275,9 +3335,11 @@ class AgentSessionRunner:
             # record the premature final answer and loop instead of closing
             # (an unseen message runs another round straight away via
             # `last_seen`; unresolved children park until the next material);
-            # else close COMPLETED. All checks are synchronous inside the
-            # same no-yield window as the record and the close, so nothing
-            # can land between a check and the `TurnFinish`.
+            # next, a finish reason that is NOT AN ANSWER closes ERRORED
+            # instead (see below); else close COMPLETED. All checks are
+            # synchronous inside the same no-yield window as the record and
+            # the close, so nothing can land between a check and the
+            # `TurnFinish`.
             cancel_entry = self.ledger.open_turn_cancel_requested(conversation_id)
             if cancel_entry is not None:
                 events.extend(await self._wind_down_async(conversation_id, cancel_entry))
@@ -3296,6 +3358,28 @@ class AgentSessionRunner:
                 for event in events:
                     yield event
                 continue  # → the next projection carries answer + message
+            elif finish_reason in NON_ANSWER_FINISH_REASONS:
+                # NO TOOL CALLS AND NOT AN ANSWER. The round above keys off
+                # `tool_calls` so a misclassifying provider cannot wedge or
+                # loop the conversation; that rule settles "stop" vs
+                # "tool_use" and says nothing about a model that stopped
+                # WITHOUT answering. Reaching here means the turn was about to
+                # be declared a complete answer when it is not one: `length`
+                # cut it off mid-sentence, or `error` — every transport's
+                # canonical value for a refusal / safety filter / guardrail,
+                # always with an `error_message` — refused it.
+                #
+                # The partial STAYS recorded (`_record_assistant` ran above).
+                # That is the difference from a transport failure, which drops
+                # its partial: those tokens were really produced, and on a
+                # truncation they are the useful half. Settling first because
+                # no close may leave a nonterminal execution behind.
+                events.extend(self._settle_undispatched(conversation_id))
+                failure = message.error_message or f"the model stopped with finish_reason {finish_reason!r}"
+                self._close_turn(conversation_id, TurnOutcome.ERRORED, error=failure)
+                for event in events:
+                    yield event
+                raise IncompleteResponseError(failure)
             else:
                 self._close_turn(conversation_id, TurnOutcome.COMPLETED)
             for event in events:
@@ -3974,17 +4058,15 @@ class AgentSessionRunner:
 
         Only what the runner already knows is recorded: identity, the
         deep-copied `raw_tool_call` (so an entry can never alias the assistant
-        message part), and `is_doom_loop_flagged` — evaluated in append order,
-        seeing only previously-appended executions."""
-        for tc in message.tool_calls:
+        message part — `extras` and any future `ToolCall` field ride along),
+        and `is_doom_loop_flagged` — evaluated in append order, seeing only
+        previously-appended executions."""
+        calls = [part for part in adapter.message_to_parts(message) if isinstance(part, ToolCall)]
+        for tc in calls:
             # Runs before the append so it only sees previously-appended
             # executions; parallel tool calls are evaluated in append order.
             doom_flagged = self._is_doom_loop(conversation_id, tc)
-            raw = ToolCall(
-                id=tc.id,
-                name=tc.name,
-                arguments=copy.deepcopy(tc.arguments),
-            )
+            raw = tc.model_copy(deep=True)
 
             def build(
                 entry_id,
@@ -4168,11 +4250,9 @@ class AgentSessionRunner:
         `BaseException`, so the broad `except Exception` below never sees it,
         and the race helper absorbs the kill it issued and reports the outcome
         as a boolean rather than re-raising.)"""
-        raw = ToolCall(
-            id=tc.id,
-            name=tc.name,
-            arguments=copy.deepcopy(tc.arguments),
-        )
+        # A model_copy, not a field-by-field rebuild: `extras` (and any future
+        # `ToolCall` field) must ride into the draft's `raw_tool_call`.
+        raw = tc.model_copy(deep=True)
         # `before_tool_creation` runs on the deep COPY, ahead of the private
         # check: a middleware that renames a call must be checked against the
         # effective name, or "private" would be bypassable by rewriting into
@@ -4205,6 +4285,12 @@ class AgentSessionRunner:
         try:
             completed, draft, _ = await _race_cancellation(task, token, 0, None)
         except Exception as exc:
+            logger.error(
+                "conv=%s create_execution raised for tool=%s",
+                conversation_id,
+                raw.name,
+                exc_info=exc,
+            )
             failed = ToolExecution(
                 tool_call_id=raw.id,
                 raw_tool_call=raw,
@@ -4349,6 +4435,12 @@ class AgentSessionRunner:
                 None,
             )
         except Exception as exc:
+            logger.error(
+                "conv=%s prepare() raised for tool=%s",
+                conversation_id,
+                execution.raw_tool_call.name,
+                exc_info=exc,
+            )
             _, event = self._finalize_outcome(
                 conversation_id,
                 self._terminal_for_prepare_failure(execution, exc),
@@ -4535,6 +4627,12 @@ class AgentSessionRunner:
                 except TimeoutError:
                     if not scope.expired():
                         raise  # the tool's own TimeoutError — a normal raise
+                    logger.warning(
+                        "conv=%s tool=%s timed out after %sms",
+                        conversation_id,
+                        current.raw_tool_call.name,
+                        deadline_ms,
+                    )
                     await _kill(tool_task, detach=True)  # idempotent backstop
                     return current.model_copy(
                         update={
@@ -4543,6 +4641,12 @@ class AgentSessionRunner:
                         },
                     ), None
         except Exception as exc:
+            logger.error(
+                "conv=%s tool=%s raised",
+                conversation_id,
+                current.raw_tool_call.name,
+                exc_info=exc,
+            )
             terminal = current.model_copy(
                 update={
                     "status": ExecutionStatus.FAILED,

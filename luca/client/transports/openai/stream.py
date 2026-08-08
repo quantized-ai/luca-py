@@ -14,6 +14,7 @@ from ...types.streaming import (
     RawBlockStart,
     RawBlockStop,
     RawFinish,
+    RawRefusalDelta,
     RawStreamEvent,
     RawTextDelta,
     RawThinkingDelta,
@@ -29,6 +30,7 @@ class _OpenAIParserState:
         self.next_content_index: int = 0
         self.reasoning_content_index: int | None = None
         self.text_content_index: int | None = None
+        self.refusal_content_index: int | None = None
         # openai tool_idx -> our content_idx (block IS open)
         self.tool_content_index: dict[int, int] = {}
         # openai tool_idx -> {"id", "name", "buffered_args"}
@@ -47,6 +49,21 @@ def _parse_sse_line(line: str) -> str | None:
 
 def _process_chunk(state: _OpenAIParserState, chunk: dict) -> Iterator[RawStreamEvent]:
     """Translate one OpenAI SSE chunk into RawStreamEvents."""
+
+    # A failure the HOST reports mid-stream, inside an already-200 body.
+    # OpenRouter's shape, observed 2026-08-08: a chunk with EMPTY `choices`
+    # carrying `{"error": {"code": 502, "message": …}}`, followed by a
+    # `finish_reason: "error"` chunk. Empty choices means every branch below
+    # is skipped, so without this the error is dropped and the stream ends in
+    # a FinishEvent indistinguishable from a real answer.
+    #
+    # Checked here rather than in an OpenRouter-specific parser for the same
+    # reason `delta.reasoning` is read below: pure OpenAI never sends the key,
+    # so it is inert there. The Responses parser already raises on its own
+    # error event — this is the chat-completions half of the same rule.
+    if (error := chunk.get("error")) is not None:
+        detail = error.get("message") if isinstance(error, dict) else None
+        raise StreamError(f"OpenAI stream returned an error: {detail or error}")
 
     choices = chunk.get("choices") or []
     choice = choices[0] if choices else {}
@@ -74,6 +91,15 @@ def _process_chunk(state: _OpenAIParserState, chunk: dict) -> Iterator[RawStream
             state.next_content_index += 1
             yield RawBlockStart(index=state.text_content_index, block_type="text")
         yield RawTextDelta(index=state.text_content_index, text=content_piece)
+
+    # --- refusal ---
+    refusal_piece = delta.get("refusal")
+    if refusal_piece:
+        if state.refusal_content_index is None:
+            state.refusal_content_index = state.next_content_index
+            state.next_content_index += 1
+            yield RawBlockStart(index=state.refusal_content_index, block_type="refusal")
+        yield RawRefusalDelta(index=state.refusal_content_index, text=refusal_piece)
 
     # --- tool calls ---
     for tc_delta in delta.get("tool_calls") or []:
@@ -135,6 +161,8 @@ def _process_chunk(state: _OpenAIParserState, chunk: dict) -> Iterator[RawStream
             yield RawBlockStop(index=state.reasoning_content_index)
         if state.text_content_index is not None:
             yield RawBlockStop(index=state.text_content_index)
+        if state.refusal_content_index is not None:
+            yield RawBlockStop(index=state.refusal_content_index)
         for content_idx in state.tool_content_index.values():
             yield RawBlockStop(index=content_idx)
         yield RawFinish(reason=finish)

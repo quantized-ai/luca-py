@@ -291,6 +291,17 @@ def test_declaring_an_output_schema_mints_a_new_spec_id():
     assert ADD_SPEC.spec_id() != ADD_SPEC.model_copy(update={"output_schema": EMPTY_SCHEMA}).spec_id()
 
 
+def test_a_title_does_not_mint_a_new_spec_id():
+    # `title` is presentation, not identity: relabeling a tool for a UI must
+    # never invalidate the stored ids executions already point at
+    assert ADD_SPEC.spec_id() == ADD_SPEC.model_copy(update={"title": "Add"}).spec_id()
+
+
+def test_display_name_prefers_the_title_and_falls_back_to_the_name():
+    assert ADD_SPEC.model_copy(update={"title": "Add"}).display_name == "Add"
+    assert ADD_SPEC.display_name == "add"
+
+
 def test_tool_kind_members():
     assert {kind.name: kind.value for kind in ToolKind} == {
         "READ": "read",
@@ -589,6 +600,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
             "id": "tc1",
             "name": "add",
             "arguments": {"a": 1, "b": 2},
+            "extras": {},
         },
         "tool_spec_id": ADD_SPEC.spec_id(),
         "extras": {},
@@ -600,6 +612,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
             "structured_content": None,
             "metadata": {},
             "is_error": False,
+            "extras": {},
         },
         "error": None,
         "started_at": 500,

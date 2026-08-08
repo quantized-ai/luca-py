@@ -16,6 +16,7 @@ from luca.agent.contrib.resource_permissions import (
 from luca.agent.contrib.tui.config import (
     ENV_CONFIG_PATH,
     CompactionSettings,
+    LoggingSettings,
     LucaConfig,
     LucaConfigError,
     ModelConfig,
@@ -622,3 +623,35 @@ def test_a_partial_file_read_section_keeps_the_other_default():
 def test_an_unknown_key_under_client_is_rejected():
     with pytest.raises(ValidationError):
         LucaConfig.model_validate({"client": {"nope": {}}})
+
+
+# ── logging ──────────────────────────────────────────────────────────────────
+
+
+def test_logging_is_a_strict_optional_config_section():
+    assert LucaConfig.model_validate({"logging": {"level": "DEBUG", "file": "/tmp/luca.log"}}) == LucaConfig(
+        logging=LoggingSettings(level="DEBUG", file="/tmp/luca.log"),
+    )
+
+
+def test_luca_schema_describes_the_logging_section():
+    schema = json.loads((Path(__file__).parents[4] / "luca.schema.json").read_text())
+
+    assert (
+        schema["properties"]["logging"],
+        schema["$defs"]["LoggingSettings"]["properties"],
+    ) == (
+        {"$ref": "#/$defs/LoggingSettings"},
+        {
+            "level": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": None,
+                "title": "Level",
+            },
+            "file": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": None,
+                "title": "File",
+            },
+        },
+    )

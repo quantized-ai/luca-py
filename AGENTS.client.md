@@ -76,14 +76,26 @@ luca/client/                       # the supporting LLM SDK
 │   ├── bedrock/                   # Converse translation; binary eventstream decoder
 │   └── faux/                      # scripted responses; no httpx
 │
-└── catalog/                       # in-memory ModelInfo store
-    ├── __init__.py                # public facade: get / list / register
-    ├── _store.py                  # dict + load-on-first-access; vendored
-    │                              #   records, then the refresh cache over them
-    ├── _source.py                 # models.dev -> ModelInfo: the routable-provider
-    │                              #   map, the agent-usability filter, the mapping
-    ├── refresh.py                 # python -m luca.client.catalog.refresh [--vendor]
-    └── _data/                     # models.json (generated) + its loader
+├── catalog/                       # in-memory ModelInfo store
+│   ├── __init__.py                # public facade: get / list / register
+│   ├── _store.py                  # dict + load-on-first-access; vendored
+│   │                              #   records, then the refresh cache over them
+│   ├── _source.py                 # models.dev -> ModelInfo: the routable-provider
+│   │                              #   map, the agent-usability filter, the mapping
+│   ├── refresh.py                 # python -m luca.client.catalog.refresh [--vendor]
+│   └── _data/                     # models.json (generated) + its loader
+│
+└── native/                        # OPT-IN caller-side handlers for the native
+    │                              #   file-editing tools. Leaf: stdlib only,
+    │                              #   imports no other client package, and
+    │                              #   nothing in the client imports it.
+    ├── __init__.py                # apply_diff, execute_apply_patch,
+    │                              #   execute_text_editor, NativeToolError
+    ├── errors.py                  # NativeToolError — NOT a ClientError
+    ├── v4a.py                     # pure: the V4A diff grammar (apply_diff)
+    ├── text_editor.py             # pure view/str_replace/insert + executor
+    ├── apply_patch.py             # executor for one apply_patch operation
+    └── _fs.py                     # path resolution against a root + utf-8 IO
 
 tests/client/                      # mirrors luca/client/ layout exactly
 api_prd.md                         # client public API contract

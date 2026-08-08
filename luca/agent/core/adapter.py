@@ -14,7 +14,11 @@ and there is no general bidirectional adapter object.
 
 from __future__ import annotations
 
-from luca.client.types import AssistantMessage as LucaAssistantMessage, Tool as LucaTool
+from luca.client.types import (
+    AssistantMessage as LucaAssistantMessage,
+    Tool as LucaTool,
+    ToolCall as LucaToolCall,
+)
 
 from .models import TextContent, ThinkingContent, ToolCall, ToolSpec
 
@@ -37,9 +41,22 @@ def message_to_parts(
             )
         elif block.type in ("text", "refusal"):
             parts.append(TextContent(text=block.text))
-        elif block.type == "tool_call":
+        elif isinstance(block, LucaToolCall):
+            # isinstance, never `block.type == "tool_call"`: a provider-native
+            # call is a ToolCall SUBCLASS whose `type` is its own wire literal
+            # ("apply_patch_call"), and the default conversion must keep it
+            # even with no adoption middleware installed. `as_generic()` folds
+            # the native identity into `extras` losslessly (and is identity
+            # for the ordinary base-class call), so the stored part carries
+            # everything the client parsed.
+            generic = block.as_generic()
             parts.append(
-                ToolCall(id=block.id, name=block.name, arguments=block.arguments),
+                ToolCall(
+                    id=generic.id,
+                    name=generic.name,
+                    arguments=generic.arguments,
+                    extras=generic.extras,
+                ),
             )
     return parts
 

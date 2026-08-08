@@ -31,12 +31,18 @@ from luca.agent.core.events import (
     TextStart,
     ToolExecuted,
 )
-from luca.agent.core.exceptions import AgentError, InvalidToolArguments, ToolNotFound
+from luca.agent.core.exceptions import (
+    AgentError,
+    IncompleteResponseError,
+    InvalidToolArguments,
+    ToolNotFound,
+)
 from luca.agent.core.models import (
     AgentSession,
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
+    AssistantMessage,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -1732,6 +1738,129 @@ async def test_streaming_llm_error_closes_the_turn_after_the_deltas():
         error="boom mid-stream",
     )
     assert runner.idle()  # closed bracket; the partial assistant message was dropped
+
+
+# ── the model stopped without answering ────────────────────────────────────────
+# `NON_ANSWER_FINISH_REASONS`. The round keys off `tool_calls`, which settles
+# "stop" vs "tool_use" and says nothing about a model that produced neither an
+# answer nor a call — so `length` and `error` used to close the turn COMPLETED,
+# and a sentence cut off mid-word or a refused request was indistinguishable
+# from a finished one.
+
+
+async def test_a_length_truncation_errors_the_turn_and_keeps_what_was_produced():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Here is the first half of the ans")], finish_reason="length"),
+        ]
+    )
+    session = make_session(
+        id="s_len",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Write something long")]),
+        },
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "tf"], now=1000)
+
+    with pytest.raises(IncompleteResponseError, match="finish_reason 'length'"):
+        await runner.run()
+
+    # THE PARTIAL SURVIVES. A transport failure drops its partial because
+    # nothing was really produced; here the model produced these tokens and on
+    # a truncation they are the useful half.
+    assert runner.session.entries["a1"] == AssistantMessage(
+        id="a1",
+        parent_id="ts",
+        created_at=1000,
+        context_tokens=8,
+        parts=[TextContent(text="Here is the first half of the ans")],
+        llm_config=MODEL,
+        stop_reason="length",
+    )
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="a1",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="the model stopped with finish_reason 'length'",
+    )
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "tf"]
+    assert runner.idle()  # resumable: the recovery is another post_message ("continue")
+
+
+async def test_a_refused_answer_errors_the_turn_under_the_providers_own_message():
+    """Every transport canonicalizes a refusal / safety filter / guardrail to
+    finish_reason "error" WITH an `error_message`. The runner reads it rather
+    than inventing prose."""
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("I can't")], finish_reason="error"),
+        ]
+    )
+    session = make_session(
+        id="s_refused",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="do the thing")]),
+        },
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "tf"], now=1000)
+
+    with pytest.raises(IncompleteResponseError, match="Faux error terminal"):
+        await runner.run()
+
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="a1",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="Faux error terminal",
+    )
+    assert runner.idle()
+
+
+async def test_a_truncated_round_that_still_produced_tool_calls_runs_them():
+    """`tool_calls` wins over the finish reason, unchanged. A response the cap
+    cut off AFTER a complete call is not a failure — the call parsed, so it is
+    dispatched and the turn goes on."""
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="length",
+            ),
+            faux_assistant_message([faux_text("3.")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_len_calls",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="add them")]),
+        },
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "te1", "a2", "tf"],
+        now=1000,
+    )
+
+    await runner.run()
+
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "a2", "tf"]
+    assert runner.session.entries["tf"].outcome == TurnOutcome.COMPLETED
 
 
 async def test_post_failure_session_reloads_cold_and_a_new_turn_reanswers():

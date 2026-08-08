@@ -20,7 +20,8 @@ from luca.agent.core import ToolKind, ToolSpec
 
 | Field | Meaning |
 |---|---|
-| `name` | the name the model calls |
+| `name` | the name the model calls — and the identity everything else keys on |
+| `title` | optional — the label a UI shows instead of `name`; read through `display_name` (§2) |
 | `description` | required — the client's wire tool type rejects null |
 | `input_schema` | required — the arguments as a JSON Schema dict |
 | `output_schema` | optional — the shape of the result the tool can produce, as a JSON Schema dict. Read by the application, never sent to the model — and by the framework in exactly one case (§6) |
@@ -93,6 +94,12 @@ reads that before the model call to decide whether spawning is allowed at all
 
 The deadline is read from the spec **recorded at birth**, so redefining the
 tool mid-run never moves an in-flight call's deadline.
+
+`title` is presentation and nothing else. `spec.display_name` is `title` when
+one is set and `name` otherwise, so a UI can render "Apply patch" for a tool
+whose identity is `openai_apply_patch` while resolution, approvals, doom-loop
+detection and middleware all keep keying on `name`. It is the one field
+excluded from `spec_id()` — retitling a tool never invalidates a stored id.
 
 > ⚠️ **`timeout_in_ms` bounds the BODY only.** A tool configured with
 > `timeout_in_ms=5000` is not bounded end to end: listing tools, minting the

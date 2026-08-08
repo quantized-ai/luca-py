@@ -1,6 +1,8 @@
-"""CLI argument parsing and session building."""
+"""CLI argument parsing, session building, and the session log."""
 
 import json
+import logging
+from pathlib import Path
 
 import pytest
 
@@ -8,11 +10,13 @@ from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.cli import (
     arg_parser,
     build_session,
+    log_path,
     main,
     resume_id,
     resume_picker,
+    setup_logging,
 )
-from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
+from luca.agent.contrib.tui.config import ENV_CONFIG_PATH, LucaConfig, LucaConfigError
 from luca.agent.contrib.tui.sessions import (
     encode_project_path,
     resolve_session_directory,
@@ -133,6 +137,29 @@ def test_the_gallery_flag_parses_bare_or_with_a_fixture_name():
     # names one fixture (bundled name or path)
     assert arg_parser().parse_args(["--gallery"]).gallery == "all"
     assert arg_parser().parse_args(["--gallery", "1a_agent_loop"]).gallery == "1a_agent_loop"
+
+
+def test_provider_native_tools_are_on_by_default_and_no_use_native_turns_them_off():
+    on = build_session(arg_parser().parse_args([]))
+    off = build_session(arg_parser().parse_args(["--no-use-native"]))
+
+    assert on.session_config.use_native_tools is True
+    assert off.session_config.use_native_tools is False
+
+
+def test_the_config_can_turn_provider_native_tools_off():
+    session = build_session(arg_parser().parse_args([]), LucaConfig(use_native_tools=False))
+
+    assert session.session_config.use_native_tools is False
+
+
+def test_the_use_native_flag_beats_the_config():
+    session = build_session(
+        arg_parser().parse_args(["--use-native"]),
+        LucaConfig(use_native_tools=False),
+    )
+
+    assert session.session_config.use_native_tools is True
 
 
 def test_subagents_are_on_by_default_and_no_subagents_turns_them_off():
@@ -437,6 +464,9 @@ def test_resume_and_fork(tmp_path, monkeypatch):
     # subagents on at depth 3 — the defaults every session the CLI builds
     # gets, resumed ones included: the flags describe the run being started
     session = fresh_session(RuntimeConfig(subagents_enabled=True, subagents_max_depth=3))
+    # …and provider-native tools on: the other capability flag every launch
+    # stamps onto the session it is about to drive.
+    session.session_config.use_native_tools = True
     save_session(session)
 
     resumed = build_session(
@@ -480,3 +510,85 @@ def test_a_failing_refresh_exits_non_zero(monkeypatch):
         main(["--refresh-models"])
 
     assert exit_info.value.code == 1
+
+
+# ── logging ──────────────────────────────────────────────────────────────────
+
+
+def test_logging_flags_default_to_unset():
+    args = arg_parser().parse_args([])
+
+    assert (args.log_level, args.log_file) == (None, None)
+
+
+def test_the_log_lands_beside_the_session_it_belongs_to(tmp_path):
+    assert log_path("abc123", tmp_path) == tmp_path / "logs" / "abc123.log"
+
+
+def test_a_configured_log_file_replaces_the_default_path(tmp_path):
+    assert log_path("abc123", tmp_path, "~/elsewhere/luca.log") == Path.home() / "elsewhere" / "luca.log"
+
+
+def test_setup_logging_writes_luca_records_to_the_file(tmp_path):
+    path = tmp_path / "logs" / "s1.log"
+
+    setup_logging(path, "INFO")
+    logging.getLogger("luca.agent.core.runner").info("conv=c1 hello")
+    logging.getLogger("luca").handlers[-1].flush()
+
+    assert path.read_text().endswith("INFO     luca.agent.core.runner conv=c1 hello\n")
+
+
+def test_setup_logging_keeps_luca_records_off_the_root_logger(tmp_path):
+    # stderr is the TUI's canvas: a root handler must never see luca's records.
+    setup_logging(tmp_path / "s1.log", "INFO")
+
+    assert logging.getLogger("luca").propagate is False
+
+
+def test_setup_logging_off_writes_no_file(tmp_path):
+    path = tmp_path / "logs" / "s1.log"
+
+    setup_logging(path, "OFF")
+
+    assert path.parent.exists() is False
+
+
+def test_an_unknown_log_level_is_a_readable_config_error(tmp_path):
+    with pytest.raises(LucaConfigError, match="unknown log level 'LOUD'"):
+        setup_logging(tmp_path / "s1.log", "LOUD")
+
+
+def test_main_logs_the_session_beside_its_own_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"sessions": {"directory": str(tmp_path / "store")}}))
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(id=self.runner.session.id))
+
+    main(["--faux"])
+    logging.getLogger("luca").warning("conv=c1 something happened")
+
+    store = tmp_path / "store" / encode_project_path(tmp_path)
+    assert (store / "logs" / f"{seen['id']}.log").read_text().endswith("conv=c1 something happened\n")
+
+
+def test_the_log_level_flag_beats_the_env_var_and_the_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"logging": {"level": "ERROR"}}))
+    monkeypatch.setenv("LUCA_LOG_LEVEL", "WARNING")
+    monkeypatch.setattr(AgentApp, "run", lambda self: None)
+
+    main(["--faux", "--log-level", "DEBUG"])
+
+    assert logging.getLogger("luca").level == logging.DEBUG
+
+
+def test_the_env_var_beats_the_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"logging": {"level": "ERROR"}}))
+    monkeypatch.setenv("LUCA_LOG_LEVEL", "WARNING")
+    monkeypatch.setattr(AgentApp, "run", lambda self: None)
+
+    main(["--faux"])
+
+    assert logging.getLogger("luca").level == logging.WARNING

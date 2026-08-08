@@ -799,6 +799,34 @@ class ChatCompletionStream(BaseStream):
     def usage(self) -> Usage | None:
         return self._acc._usage
 
+    def _open(self) -> None:
+        """Map a rejected request to a `ClientError`, exactly as the
+        non-streaming path does.
+
+        `BaseStream._open` ends in `raise_for_status()`, and it runs BEFORE the
+        `try` that routes httpx failures through the transport's mapper — so
+        without this the caller gets a bare `httpx.HTTPStatusError` ("Client
+        error '402 Payment Required' … see MDN") and the body OpenRouter
+        actually sent ("This request requires more credits, or fewer
+        max_tokens…") would be discarded. Every pre-stream status code rides
+        on this: 401, 402, 429 (and its `retry_after`), 400, 404.
+
+        It RAISES rather than yielding a terminal `ErrorEvent`: nothing has
+        been streamed yet, so there is no stream to terminate, and the same
+        rejection must not change shape just because `stream=True` — the
+        non-streaming path raises the same mapped error
+        (`transports/base.py`). Mid-stream failures keep their `ErrorEvent`
+        (`_handle_iter_exception`), where a partial message exists to carry.
+
+        Here and not in `BaseStream`, because `_transport` — and therefore a
+        mapper — only exists from this class down."""
+        import httpx as _httpx  # deferred, as everywhere else in this module
+
+        try:
+            super()._open()
+        except _httpx.HTTPError as exc:
+            raise self._transport._map_chat_completion_http_error(exc) from exc
+
     def __iter__(self) -> Iterator[Any]:
         if self._consumed:
             raise StreamError(f"{type(self).__name__} has already been consumed")
@@ -904,6 +932,16 @@ class AsyncChatCompletionStream(AsyncBaseStream):
     @property
     def usage(self) -> Usage | None:
         return self._acc._usage
+
+    async def _aopen(self) -> None:
+        """Async twin of `ChatCompletionStream._open` — see it for why the
+        mapping lives on this class and why this raises."""
+        import httpx as _httpx  # deferred, as everywhere else in this module
+
+        try:
+            await super()._aopen()
+        except _httpx.HTTPError as exc:
+            raise self._transport._map_chat_completion_http_error(exc) from exc
 
     async def __aiter__(self) -> AsyncIterator[Any]:
         if self._consumed:

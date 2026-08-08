@@ -9,9 +9,11 @@
     uv run python -m luca.agent.contrib.tui --resume            # pick a past session
     uv run python -m luca.agent.contrib.tui --resume <id>       # resume it by id
     uv run python -m luca.agent.contrib.tui --resume <id> --fork
+    uv run python -m luca.agent.contrib.tui --no-use-native     # no provider-native tools
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
+    uv run python -m luca.agent.contrib.tui --log-level DEBUG   # verbose session log
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
     uv run python -m luca.agent.contrib.tui --no-instructions   # ignore AGENTS.md
     uv run python -m luca.agent.contrib.tui \
@@ -35,6 +37,12 @@ the model's family, an environment block, and the project's instruction files
 (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`, one per directory from the git root down
 to the workspace). `--no-instructions` withholds the last of those.
 
+luca logs to `<session dir>/logs/<session-id>.log` at INFO — errors carry the
+traceback the session file cannot keep. `--log-level` (or `LUCA_LOG_LEVEL`, or
+`logging.level` in the config) changes it, `OFF` writes nothing, and
+`--log-file` moves it. Nothing is ever logged to stderr: the TUI is drawing
+there.
+
 Sessions persist to `~/.luca/projects/<encoded-project-path>/<session-id>.json`
 after every run — one directory per project, so nothing lands next to your code.
 `sessions.directory` in the config moves that root; the per-project
@@ -48,7 +56,10 @@ conversation (one turn: a gated `multiply` call, then the wrap-up).
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import get_args
 
@@ -79,6 +90,20 @@ from .wiring import build_faux_provider, default_model, faux_model
 
 PICKER = ""
 """`--resume` given without an id: open the picker instead of loading one session."""
+
+ENV_LOG_LEVEL = "LUCA_LOG_LEVEL"
+"""Level for the session log, below `--log-level` and above `luca.json`."""
+
+DEFAULT_LOG_LEVEL = "INFO"
+
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
+
+LOG_MAX_BYTES = 5_000_000
+LOG_BACKUPS = 3
+
+LOG_HANDLER_NAME = "luca-session-log"
+"""Marks the handler this module owns, so re-running `setup_logging` replaces
+its own and never a handler the embedding program installed."""
 
 
 def resume_id(args: argparse.Namespace) -> str | None:
@@ -120,6 +145,20 @@ def arg_parser() -> argparse.ArgumentParser:
         help="Fork the loaded session into a new id.",
     )
     parser.add_argument(
+        "--log-level",
+        default=None,
+        metavar="LEVEL",
+        help=f"How much luca writes to the session log: DEBUG, INFO, WARNING, ERROR, "
+        f"or OFF for no log file (default {DEFAULT_LOG_LEVEL}). Also settable as "
+        f"{ENV_LOG_LEVEL}; the flag wins.",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="Write the log HERE instead of <session dir>/logs/<session-id>.log.",
+    )
+    parser.add_argument(
         "--pretty-print",
         action="store_true",
         help="Print the loaded conversation as a text transcript and exit "
@@ -141,6 +180,14 @@ def arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Live token deltas (--no-streaming for block-level events).",
+    )
+    parser.add_argument(
+        "--use-native",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Offer the provider's own native tools where the model supports them "
+        "(apply_patch + shell on OpenAI, text_editor + bash on Anthropic). On by "
+        "default; --no-use-native keeps every model on the generic shell tools.",
     )
     parser.add_argument(
         "--no-subagents",
@@ -238,6 +285,55 @@ def arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def log_path(session_id: str, session_dir: Path, configured: str | None = None) -> Path:
+    """Where this session's log goes: `<session dir>/logs/<session-id>.log`,
+    beside the `<session-id>.json` it belongs to, or the configured path."""
+    if configured is not None:
+        return Path(configured).expanduser()
+    return session_dir / "logs" / f"{session_id}.log"
+
+
+def setup_logging(path: Path, level: str) -> None:
+    """Point the `luca` logger at one rotating file.
+
+    The TUI OWNS the stderr the app is drawing on, so nothing may log to it: the
+    handler is attached to `luca` alone and `propagate` is turned off, which
+    keeps luca's records away from a root handler the embedding program may have
+    installed. `level="OFF"` writes no file at all.
+
+    Idempotent — a second call REPLACES the handler the first one installed
+    rather than stacking a second file on the logger."""
+    _remove_log_handlers()
+    if level.upper() == "OFF":
+        return
+    levels = logging.getLevelNamesMapping()
+    if level.upper() not in levels:
+        raise LucaConfigError(
+            f"unknown log level {level!r}; expected one of {', '.join(sorted(levels))} or OFF.",
+        )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS)
+    except OSError as exc:
+        raise LucaConfigError(f"cannot write the log to {path}: {exc}") from exc
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.set_name(LOG_HANDLER_NAME)
+    log = logging.getLogger("luca")
+    log.setLevel(levels[level.upper()])
+    log.addHandler(handler)
+    log.propagate = False
+
+
+def _remove_log_handlers() -> None:
+    """Detach and close the handlers THIS module installed, leaving the
+    `NullHandler` and anything an embedding program added in place."""
+    log = logging.getLogger("luca")
+    for handler in [h for h in log.handlers if h.get_name() == LOG_HANDLER_NAME]:
+        log.removeHandler(handler)
+        handler.close()
+    log.propagate = True
+
+
 def build_session(
     args: argparse.Namespace,
     config: LucaConfig | None = None,
@@ -270,6 +366,15 @@ def build_session(
     # `model_validate` rather than attribute assignment: an invalid flag value
     # (`--subagents-max-workers 0`) must fail loudly here, not wedge the first
     # spawn and poison the saved session file.
+    # Native tools are the same kind of durable capability flag: every launch
+    # writes it, so `--no-use-native` turns a resumed session that had them on.
+    # It is read fresh at the top of every drive iteration, so it also decides
+    # each individual call — a session can be flipped mid-run.
+    session.session_config.use_native_tools = pick(
+        getattr(args, "use_native", None),
+        config.use_native_tools,
+        True,
+    )
     per_turn = getattr(args, "subagents_max_per_turn", None)
     max_workers = getattr(args, "subagents_max_workers", None)
     try:
@@ -321,6 +426,16 @@ def main(argv: list[str] | None = None) -> None:
             return
         register_config_providers(config)
         session = build_session(args, config, store)
+        # After build_session: the filename is the session's, and a resumed
+        # session appends to the log it already has.
+        setup_logging(
+            log_path(session.id, store, pick(args.log_file, config.logging.file, None)),
+            pick(
+                args.log_level,
+                os.environ.get(ENV_LOG_LEVEL) or config.logging.level,
+                DEFAULT_LOG_LEVEL,
+            ),
+        )
         provider = build_faux_provider() if args.faux else None
         config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
         app = AgentApp(

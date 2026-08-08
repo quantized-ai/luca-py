@@ -55,6 +55,38 @@
       "title": "CompactionSettings",
       "type": "object"
     },
+    "LoggingSettings": {
+      "additionalProperties": false,
+      "description": "Where the session log goes and how loud it is. `file` overrides the\ndefault `<session dir>/logs/<session-id>.log`; a level of `\"OFF\"` writes\nnothing at all.",
+      "properties": {
+        "level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Level"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        }
+      },
+      "title": "LoggingSettings",
+      "type": "object"
+    },
     "ModelConfig": {
       "additionalProperties": false,
       "properties": {
@@ -463,6 +495,9 @@
     "sessions": {
       "$ref": "#/$defs/SessionSettings"
     },
+    "logging": {
+      "$ref": "#/$defs/LoggingSettings"
+    },
     "runtime": {
       "$ref": "#/$defs/RuntimeSettings"
     },
@@ -533,6 +568,19 @@
       ],
       "default": null,
       "title": "Streaming"
+    },
+    "use_native_tools": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Offer the provider's own native tools where the active model supports them (apply_patch + shell on OpenAI, text_editor + bash on Anthropic). Defaults to true.",
+      "title": "Use Native Tools"
     }
   },
   "title": "LucaConfig",

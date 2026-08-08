@@ -13,6 +13,7 @@ to work out where that is.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +23,8 @@ from uuid import uuid4
 from luca.agent.core.models import AgentSession, UserMessage
 
 from .render import user_transcript_text
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_STORE = "~/.luca/projects"
 
@@ -154,7 +157,10 @@ def summarize_session(path: Path) -> SessionSummary | None:
     be read. One unloadable file must never stop the screen opening."""
     try:
         session = AgentSession.model_validate_json(path.read_text())
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # Deliberately swallowed so the picker still opens; the log is the only
+        # place the reason for a missing row is ever recorded.
+        logger.warning("session %s could not be read: %s", path, exc)
         return None
     stat = path.stat()
     return summarize(

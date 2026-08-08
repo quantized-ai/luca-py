@@ -104,6 +104,13 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict = Field(default_factory=dict)
+    # The client's generic-form native payload (`custom_type`, `item_id`,
+    # `status`, …), captured verbatim when a provider-native call arrives —
+    # empty for the ordinary function call. Opaque: the core stores it and
+    # copies it, never interprets it; only the middleware that owns the native
+    # tool reads it back at projection time. Excluded from doom-loop
+    # comparison for free — `_is_doom_loop` compares name + arguments only.
+    extras: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -228,6 +235,14 @@ class ExecutionResult(BaseModel):
     structured_content: dict | None = None
     metadata: dict = Field(default_factory=dict)  # e.g. {"exit_code": 0}
     is_error: bool = False  # the tool's verdict about the returned result
+    # The client's generic-form RESULT payload — the mirror of
+    # `ToolCall.extras`, written once by the tool's `execute()` when the
+    # result has a provider-native shape (`custom_type`, `results`, …) and
+    # empty otherwise. Opaque to the core; read back only by the middleware
+    # that owns the native tool. Distinct from `metadata` (free-form
+    # bookkeeping): this is model-facing data a projection middleware puts
+    # back on the wire.
+    extras: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -305,6 +320,12 @@ class ToolSpec(BaseModel):
     defeats the normalization, with no error and no warning."""
 
     name: str
+    # Presentation ONLY: the human-facing label a UI renders (reach it through
+    # `display_name`). `name` stays the stable internal identity every
+    # framework lookup keys on — resolution, approvals, doom-loop, middleware.
+    # Excluded from `spec_id()`, so giving a tool a title (or rewording one)
+    # never invalidates stored spec ids.
+    title: str | None = None
     description: str  # required: the client's wire tool type rejects null
     # The tool's arguments as a JSON Schema dict. Never a Pydantic model class
     # and never a TypeAdapter — the whole point is that it survives a round
@@ -373,14 +394,23 @@ class ToolSpec(BaseModel):
         added to `ToolSpec` later all mint a NEW id. All three heal the same
         way: one redundant stored row, with the old row still resolvable by the
         executions that point at it. A content hash's only failure mode is a
-        redundant row, never a wrong lookup."""
+        redundant row, never a wrong lookup.
+
+        `title` is excluded: it is presentation, not identity, and a UI
+        relabeling a tool must not mint a new row."""
         payload = json.dumps(
-            self.model_dump(mode="json"),
+            self.model_dump(mode="json", exclude={"title"}),
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @property
+    def display_name(self) -> str:
+        """What a UI shows for this tool: `title` when one exists, the
+        internal `name` otherwise."""
+        return self.title or self.name
 
 
 # ── approval decision (produced by the tool registry's decide()) ────────────
@@ -1349,6 +1379,13 @@ class SessionConfig(BaseConfigModel):
 
     llm_config: LLMConfig
     runtime_config: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    # CONFIGURED native-tools switch: does the application want provider-native
+    # tool declarations where the provider has them? Purely an adaptation input
+    # read by application/plugin middleware — the core itself has no concept of
+    # a native tool. The runner re-stamps the session's ACTIVE
+    # `use_native_tools` from this at the top of every drive iteration, which
+    # is what makes a mid-session flip take effect on the next LLM call.
+    use_native_tools: bool = False
 
 
 # ── traversal + container ──────────────────────────────────────────────────────
@@ -1483,6 +1520,18 @@ class AgentSession(BaseModel):
     # re-points it at the successor it installed.
     main_conversation_id: str
     session_config: SessionConfig
+    # ── the ACTIVE llm config — what the NEXT call will use ─────────────────
+    # `session_config.llm_config` is the CONFIGURED value (durable, what the
+    # user set); this pair is the ACTIVE one, stamped by the runner via
+    # `update_llm_config()` at the top of every drive iteration — after any
+    # `build_model_string` middleware routed the turn. Everything handed the
+    # session (`get_tools`, every middleware, provenance recording) reads what
+    # the next call will use from here, so no `llm_cfg` parameter threading
+    # exists anywhere. Derived state: recomputed every iteration from the
+    # configured values, so persistence carries no authority — construction
+    # defaults both from `session_config` when absent.
+    llm_config: LLMConfig | None = None
+    use_native_tools: bool | None = None
     # Free-form application state, stored verbatim and never interpreted by
     # the core — the session-level twin of `ToolExecution.extras`. It exists so
     # a tool, a registry or a plugin can keep state that outlives the process
@@ -1493,6 +1542,18 @@ class AgentSession(BaseModel):
     extras: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _default_active_llm_config(self) -> AgentSession:
+        """Default the ACTIVE pair from the CONFIGURED values. Before any
+        drive stamps them, "what the next call will use" IS the configured
+        config — so a freshly built or freshly loaded session always answers
+        `session.llm_config` / `session.use_native_tools` honestly."""
+        if self.llm_config is None:
+            self.llm_config = self.session_config.llm_config.model_copy(deep=True)
+        if self.use_native_tools is None:
+            self.use_native_tools = self.session_config.use_native_tools
+        return self
 
     @model_validator(mode="after")
     def _check_main_conversation(self) -> AgentSession:
@@ -1617,6 +1678,47 @@ class AgentSession(BaseModel):
             turn_count=conversational_turn_count(nodes, entries),
             step_count=open_turn_step_count(nodes, entries),
         )
+
+    def update_llm_config(self, model_string: str, use_native_tools: bool) -> None:
+        """Stamp the ACTIVE llm config + native-tools flag for the next call.
+
+        The runner calls this at the top of every drive iteration, with the
+        model string any `build_model_string` middleware produced. The
+        derivation always starts from the CONFIGURED config
+        (`session_config.llm_config`) — a middleware routing one turn to a
+        cheaper model must not drift the session — splitting at the FIRST
+        colon, the rule the client uses, so a model id containing one
+        survives; `reasoning` and `extras` are preserved. A string with no
+        prefix is a bare model id: the configured provider stands.
+
+        Recording the active config here rather than in a drive-local is what
+        makes it visible to everything handed the session; the transports
+        compare an assistant message's recorded provenance against the model
+        being called to decide whether a thinking signature may be replayed,
+        so a routed turn recording the configured config would make
+        provenance lie."""
+        configured = self.session_config.llm_config
+        provider, _, model = model_string.partition(":")
+        if not model:  # no prefix — middleware returned a bare model id
+            self.llm_config = configured.model_copy(update={"model": model_string})
+        else:
+            self.llm_config = configured.model_copy(update={"provider": provider, "model": model})
+        self.use_native_tools = use_native_tools
+
+    def get_tool_execution(self, tool_call_id: str) -> ToolExecution | None:
+        """The `ToolExecution` correlated to one tool call id (its
+        `tool_call_id` field), or None when no execution answers it.
+
+        The read an adaptation middleware uses to reach the stored native
+        payload back from a projected message: `raw_tool_call.extras` for a
+        call, `result.extras` for a result (`result is None` is the
+        derived-outcome signal — REJECTED / FAILED / awaiting approval). A
+        linear scan over `entries`; index later if projection-time scans ever
+        show up in profiles."""
+        for entry in self.entries.values():
+            if isinstance(entry, ToolExecution) and entry.tool_call_id == tool_call_id:
+                return entry
+        return None
 
     def _derive_status(
         self,

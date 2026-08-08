@@ -105,6 +105,12 @@ class Tool:
     """
 
     name: ClassVar[str]
+    # Presentation only: the label a UI shows instead of `name` (reached
+    # through `ToolSpec.display_name`). `name` stays the internal identity —
+    # a tool called `openai_apply_patch` renders as "Apply patch" and is still
+    # resolved, approved and doom-loop-compared under its name. Excluded from
+    # `spec_id()`, so adding one never invalidates a stored spec id.
+    title: ClassVar[str | None] = None
     description: ClassVar[str]
     Args: ClassVar[type[BaseModel]]
     # Optional: the Pydantic MODEL CLASS describing the machine-readable result
@@ -154,6 +160,7 @@ class Tool:
         would mint a new stored row on every call."""
         return ToolSpec(
             name=self.name,
+            title=self.title,
             description=self.description,
             input_schema=self.Args.model_json_schema(),
             output_schema=(self.output_schema.model_json_schema() if self.output_schema is not None else None),

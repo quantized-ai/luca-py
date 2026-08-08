@@ -3,39 +3,61 @@ Guidance for `luca.agent.contrib.shell`. Read this whenever you're working in
 
 ## What this package is
 
-The shell tool suite: seven filesystem/process tools (`read`, `glob`, `grep`,
-`edit`, `write`, `apply_patch`, `bash`) modeled on Claude Code / OpenCode
-behavior. The behavioral contract — exact output formats, error strings,
-scenario cases — is pinned by the tests in `tests/agent/contrib/shell/`,
-which assert the strings verbatim; the LLM-facing descriptions live on the
-tool classes.
+The shell tool suite: eight generic filesystem/process tools (`read`, `glob`,
+`grep`, `edit`, `write`, `apply_patch`, `delete_file`, `bash`) modeled on
+Claude Code / OpenCode behavior, plus four PROVIDER-NATIVE ones in `native/`
+(`openai_apply_patch`, `openai_shell`, `anthropic_text_editor_20250728`,
+`anthropic_bash_20250124`) and the middleware that projects them. The
+behavioral contract — exact output formats, error strings, scenario cases — is
+pinned by the tests in `tests/agent/contrib/shell/`, which assert the strings
+verbatim; the LLM-facing descriptions live on the tool classes.
 
-`ShellAccessPlugin` (`plugin.py`) bundles the seven tools behind one
-workspace: absolute roots fixed at construction, ONE shared
-`FileReadTracker`, and one seeded `PermissionStrategy` exposed as
-`permission_strategy` (the app's approval prompt feeds
-`pending_requests()` / `apply_answer()` on it). ASK mode seeds ALLOW rules
-for the read tier (`access_directory`, `read`, `glob`, `grep`) over the
-workspace and each additional directory; YOLO allows everything. It is a
-permission gate, not a sandbox — approval is the only containment.
+`ShellAccessPlugin` (`plugin.py`) bundles all twelve behind one workspace:
+absolute roots fixed at construction, ONE shared `FileReadTracker`, and one
+seeded `PermissionStrategy` exposed as `permission_strategy` (the app's
+approval prompt feeds `pending_requests()` / `apply_answer()` on it). ASK mode
+seeds ALLOW rules for the read tier (`access_directory`, `read`, `glob`,
+`grep`) over the workspace and each additional directory; YOLO allows
+everything. It is a permission gate, not a sandbox — approval is the only
+containment.
+
+The registry always holds all twelve — a call born under one provider must
+still resolve, validate and execute after a switch — and
+`ShellNativeMiddleware` (registered through `get_middleware`) decides which of
+them each REQUEST advertises. See the "Provider-native tools" section below.
 
 ## File layout
 
 ```
 luca/agent/contrib/shell/
-├── __init__.py   # public surface: the 7 tools, ShellTool, ShellToolError,
-│                 #   FileReadTracker, ShellAccessPlugin
-├── tools.py      # ALL tool classes + shared machinery (base class, tracker, locks, constants)
+├── __init__.py   # public surface: the 8 generic tools, the 4 natives, the
+│                 #   middleware, ShellTool, ShellToolError, FileReadTracker,
+│                 #   ShellAccessPlugin
+├── tools.py      # ALL generic tool classes + shared machinery (base class, tracker, locks, constants)
 ├── plugin.py     # ShellAccessPlugin: workspace/additional dirs, shared tracker,
-│                 #   seeded PermissionStrategy, registry + system-prompt hooks
+│                 #   seeded PermissionStrategy, registry + middleware +
+│                 #   system-prompt hooks
 ├── replace.py    # edit's 9 replacement-candidate strategies + the replace() driver (pure, no IO)
-└── patch.py      # apply_patch's parser + hunk applier (pure, no IO — the tool owns all filesystem access)
+├── patch.py      # apply_patch's parser + hunk applier (pure, no IO — the tool owns all filesystem access)
+└── native/       # the provider-native tools — see the section below
+    ├── __init__.py    # the 4 tools, ShellNativeMiddleware, active_natives,
+    │                  #   supported_native_tools
+    ├── support.py     # WHICH (provider, model) pairs support which native — a
+    │                  #   dated, hardcoded table
+    ├── openai.py      # OpenAIApplyPatchTool, OpenAIShellTool
+    ├── anthropic.py   # AnthropicTextEditorTool, AnthropicBashTool
+    ├── middleware.py  # ShellNativeMiddleware: the four adaptation slots
+    └── _files.py      # BOM/CRLF-preserving read/write + the metadata diff
 
 tests/agent/contrib/shell/
 ├── conftest.py           # `run` / `perm` fixtures: validate args through Args like the registry would
 ├── test_plugin.py        # ShellAccessPlugin wiring, seeded rules, decide/pending flows
-└── tools/test_<name>.py  # one file per tool, one section per behavior scenario
+├── tools/test_<name>.py  # one file per generic tool, one section per behavior scenario
+└── native/               # test_support.py, test_tools.py, test_middleware.py
 ```
+
+The runner-level story — what `acompletion()` actually receives across
+provider switches — is a separate battery at `tests/agent/test_native_tools/`.
 
 ## Shared machinery (tools.py)
 
@@ -75,6 +97,7 @@ tests/agent/contrib/shell/
 | `EditTool` | EDIT | Unique exact replacement; `replace_all` for every occurrence; `old_string=""` creates a missing file (fails against an existing one). Fuzzy correction via `replace.py`'s strategy chain — a candidate is only applied if it literally occurs in the file. Preserves BOM and LF/CRLF convention (normalizes to LF internally, restores on write). Read-first enforced. Exact error strings for identical/not-found/ambiguous (asserted verbatim in tests). Returns unified diff + replacement count in metadata. |
 | `WriteTool` | EDIT | Full-content write, creates parents. Read-first enforced for existing targets. Exactly one BOM preserved (existing file's or content's, never duplicated). Content round-trips exactly (empty, NUL, CRLF, no-final-newline). `metadata={"existed": bool}`. |
 | `ApplyPatchTool` | EDIT | `*** Begin/End Patch` envelope with Add/Delete/Update(+Move) ops; heredoc wrapper accepted. Verify-everything-then-commit: a failing op leaves ALL files untouched (no rollback once commit starts — deliberate). Four line-matching passes (exact → rstrip → strip → unicode-punctuation), `@@ context` seek, `*** End of File` tail anchor. Kept context lines are copied from the original file. Updated files end with a newline; BOM preserved. Output `Success. Updated the following files:` + `A/M/D <path>` (moves show the destination); per-file diff/additions/deletions/move_to in `metadata["files"]`. |
+| `DeleteFileTool` | DELETE | Removes ONE file; refuses a missing path and a directory (a symlink to a directory is removed as the link it is). Deliberately OUTSIDE the read-first contract — `read` refuses binaries, so a guard would make a stray `.pyc` undeletable. Its `delete_file` verb is not in the seeded read tier, so every call prompts. |
 | `BashTool` | EXECUTE | Fresh `shell -c <command>` per call (shell from ctor/`$SHELL`/`/bin/bash`), stdin disabled, stderr merged into stdout, streamed. Tool-enforced timeout (default 120 000 ms) and cooperative cancellation both kill the process group and return partial output with a `<shell_metadata>` block; `metadata={"exit": int|None, "truncated", "output_path"}`. Output over 2000 lines / 50 KiB ⇒ tail preview + full output saved to a temp file (`output_dir=` ctor override). Non-zero exit is a result (`is_error=True`), not an exception. Description is a `.format` template rendered per instance with os/shell/tmp/limits. |
 
 ## Permission requests (what `build_permission_requests` returns)
@@ -102,6 +125,87 @@ The verb steps:
 - `bash`: `resources=[<stripped command string>]`, answer option `"<head> *"`
   (e.g. `git *`). Matching is the strategy's `fnmatch` — command globs are
   coarse by design.
+- `delete_file`: `resources=[<resolved abs path>]` under the `delete_file`
+  verb, answer option `<parent>/*`. Access scope is `_access_scope(path)`, so
+  a directory target scopes to itself.
+
+The natives deliberately reuse the GENERIC verbs, so a rule or an "always
+allow" answer keeps meaning across a provider switch: `openai_apply_patch` →
+`apply_patch`, `openai_shell` / `anthropic_bash_20250124` → `bash` (one
+resource per command for the shell's list), and
+`anthropic_text_editor_20250728` → the verb its COMMAND means: `view` → `read`
+(so it lands in the auto-allowed read tier, exactly like the generic `read`),
+`create` → `write`, `str_replace` / `insert` → `edit`. A bash `{"restart":
+true}` declares only the access step — it runs nothing.
+
+## Provider-native tools (`native/`)
+
+Four ordinary `Tool`s under stable internal names. Nothing about them is a
+special case in the core: they resolve, validate, gate and dispatch like any
+other tool, and `ToolSpec.name` stays the identity every lookup keys on.
+`title` (`"Apply patch"`, `"Shell"`, …) is presentation only, rendered by the
+TUI through `ToolSpec.display_name`.
+
+| Internal name | Wire | Replaces (generics dropped when active) |
+|---|---|---|
+| `openai_apply_patch` | `{"type": "apply_patch"}` | `edit` `write` `apply_patch` `delete_file` |
+| `openai_shell` | `{"type": "shell", "environment": {"type": "local"}}` | `bash` |
+| `anthropic_text_editor_20250728` | `{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"}` | `edit` `write` `apply_patch` |
+| `anthropic_bash_20250124` | `{"type": "bash_20250124", "name": "bash"}` | `bash` |
+
+`read`, `glob` and `grep` survive every mode (nothing native reads an image or
+searches a repo), and `delete_file` survives on Anthropic (`text_editor`
+cannot delete).
+
+**The `REPLACES` table is per NATIVE TOOL, never per provider**, because
+support is per MODEL: `gpt-5.5-pro` has the native shell and NO native
+`apply_patch`, so it keeps every generic editor. `support.py` is the dated,
+hardcoded capability table; `active_natives(session)` is where it meets the
+session's `use_native_tools` switch, and it is the ONLY thing every decision
+below reads.
+
+**The editors reuse `luca.client.native`'s PURE transforms** (`apply_diff`,
+`str_replace`, `insert`, `view`) and do their own IO in `_files.py`. That is
+deliberate and worth not undoing: the client's filesystem executors confine
+every path under one `root`, while here the APPROVAL is the containment (a
+path outside the workspace prompts, it is never refused), and `_files.py`
+preserves a BOM and CRLF endings exactly as `edit`/`write` do, so an edit made
+natively and one made generically leave the same bytes.
+
+**`openai_shell` is the only tool in the suite with a native RESULT shape.**
+Per-command stdout/stderr/outcome cannot ride prose, so `execute()` captures
+them into `ExecutionResult.extras` at birth — the only moment the per-command
+split exists — and the middleware puts that dict back on the wire. Every other
+native's result is plain text, which IS its native form.
+
+That has one consequence worth stating loudly, because it is easy to
+reintroduce: **on this tool the prose never reaches the model.** The projector
+builds the wire item from `extras["results"]` alone and never reads `content`,
+so any cap applied to the text is inert. `_cap` therefore clips the CAPTURED
+streams — `bash`'s own 2000-line / 50 KiB budget, tightened by the model's
+`max_output_length` when it set one — spills the rest to one temp file the
+clipped text names, and `_assemble` renders the prose from those same capped
+streams so both channels agree. `ContextManager` sizes an execution from
+`content`, so keeping them equal is also what keeps context accounting honest.
+
+**`ShellNativeMiddleware` owns all four adaptation slots** and is the only
+place a wire exists:
+
+| Slot | Vocabulary | Does |
+|---|---|---|
+| `build_tool_list` | `ToolSpec` | drops replaced generics and inactive natives |
+| `adapt_tool_declarations` | client tools | swaps the survivors for the native declaration items |
+| `before_llm_call` | client messages | upgrades MY active calls/results to their stored native payloads; synthesizes `shell_call_output` for a shell call that has no result (denied / failed / awaiting approval) |
+| `after_llm_response` | client message | adopts inbound native calls under their internal names, extras kept |
+
+Everything else projects VERBATIM — internal name, no extras, an ordinary
+function call, which both providers accept even undeclared. That is the
+fail-safe: uninstall the plugin and every session still projects.
+
+`visible_names(session, names)` is the drop rule as a classmethod, shared by
+`build_tool_list` and the plugin's system-prompt part (which is a CALLABLE, so
+the prompt names the tools the model is about to be shown — including their
+provider-facing names).
 
 ## Testing conventions
 
@@ -131,6 +235,11 @@ The verb steps:
 - Patch matching bugs → `patch.py` (`_PASSES`, `_find_sequence`, `apply_update`).
 - New tool → subclass `ShellTool`, implement `_run` + `build_permission_requests`,
   raise `ShellToolError` for domain failures, add `tests/agent/contrib/shell/tools/test_<name>.py`.
+  If it can be replaced by a native, add it to that native's `REPLACES` row.
+- A provider ships a NEW native, or a new model supports one → `native/support.py`
+  (the table plus a test in the same commit). A tool VERSION bump is a NEW tool
+  with a new internal name: the old one leaves the tables and its stored calls
+  project verbatim from then on — never rename one in place.
 - Plugin changes → `plugin.py` + `tests/agent/contrib/shell/test_plugin.py`.
   Keep the invariants: roots stored absolute with the same
   normpath-no-symlink convention as `ShellTool._resolve` (mixed conventions
