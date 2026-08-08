@@ -33,6 +33,7 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
+from luca.agent.core.runner import completion_options
 from luca.client import acompletion, catalog
 from luca.client.types import TextBlock, UserMessage as ClientUserMessage
 
@@ -169,6 +170,10 @@ class SummarizingContextManager(ContextManager):
             system_message=self.summary_prompt,
             provider=self.provider,
             reasoning=cfg.reasoning,
+            # Same model, same provider, so the same invocation settings: a
+            # max_tokens cap or a routing preference the session configured
+            # applies to the summary call too.
+            **completion_options(cfg),
         )
         return self.text_of(response.message), self.usage_of(response.message)
 

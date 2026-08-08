@@ -11,6 +11,7 @@ screen's `← →` intents.
 
 import os
 import time
+from functools import partial
 
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.app import AgentApp
@@ -24,13 +25,14 @@ from luca.agent.contrib.tui.commands import (
     recent_models,
     run_palette_choice,
 )
+from luca.agent.contrib.tui.config import LucaConfig, apply_model_options
 from luca.agent.contrib.tui.format import fmt_tokens, short_model
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.sessions import list_sessions, save_session
 from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
 from luca.agent.contrib.tui.wiring import default_model
-from luca.agent.core.models import LLMConfig, RuntimeConfig
+from luca.agent.core.models import LLMConfig, ModelOptions, RuntimeConfig
 from luca.client import catalog
 from luca.client.catalog._data import cache_path
 from luca.client.providers import PROVIDERS
@@ -231,6 +233,78 @@ async def test_escaping_the_model_menu_changes_nothing(tmp_path):
         await wait_until(pilot, lambda: not app.query(OverlayListView))
 
         assert _config(app) == before
+
+
+# ── /model + configured options ──────────────────────────────────────────────
+
+OPTIONS_CONFIG = LucaConfig.model_validate(
+    {
+        "providers": {
+            "anthropic": {
+                "models": {"claude-sonnet-5": {"options": {"max_tokens": 6000, "reasoning": "high"}}},
+            },
+        },
+    }
+)
+
+
+def options_app(tmp_path) -> AgentApp:
+    return AgentApp(
+        fresh_session(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+        model_options=partial(apply_model_options, config=OPTIONS_CONFIG),
+    )
+
+
+async def test_switching_to_a_configured_model_resolves_its_options(tmp_path):
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-sonnet-5",
+            provider="anthropic",
+            reasoning="high",
+            options=ModelOptions(max_tokens=6000),
+        )
+
+
+async def test_switching_away_again_clears_them(tmp_path):
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+        await submit(pilot, "/model anthropic:claude-opus-4-8")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-opus-4-8",
+            provider="anthropic",
+            reasoning="high",
+            options=None,
+        )
+
+
+async def test_reasoning_alone_does_not_re_resolve_the_model_block(tmp_path):
+    # `/reasoning` after a switch must stand: re-resolving on every _apply
+    # would silently put the configured level back.
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+        await submit(pilot, "/reasoning low")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-sonnet-5",
+            provider="anthropic",
+            reasoning="low",
+            options=ModelOptions(max_tokens=6000),
+        )
 
 
 # ── /reasoning ───────────────────────────────────────────────────────────────

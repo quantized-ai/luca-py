@@ -120,9 +120,17 @@ def model_context_note(provider: str, model: str) -> str | None:
 
 def _apply(app: AgentApp, **updates: str | None) -> None:
     """Reassign the session's next-turn config; the runner reads it fresh at
-    the top of each turn."""
+    the top of each turn.
+
+    The ONE mutation point for the session's llm_config, which is what lets a
+    model switch re-resolve that model's `options` in a single place. Only a
+    provider/model change re-resolves: doing it on a bare `/reasoning` would
+    undo the level the user just picked."""
     config = app.runner.session.session_config.llm_config
-    app.runner.session.session_config.llm_config = config.model_copy(update=updates)
+    updated = config.model_copy(update=updates)
+    if "provider" in updates or "model" in updates:
+        updated = app.resolve_model_options(updated)
+    app.runner.session.session_config.llm_config = updated
     app._refresh_status()
 
 

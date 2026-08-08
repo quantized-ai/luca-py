@@ -23,7 +23,7 @@ from luca.agent.contrib.tui.sessions import (
     save_session,
 )
 from luca.agent.contrib.tui.wiring import default_model
-from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
+from luca.agent.core.models import Inf, LLMConfig, ModelOptions, RuntimeConfig
 from luca.agent.core.utils import pretty_print
 
 from .helpers import fresh_session
@@ -354,6 +354,40 @@ def test_luca_json_theme_reaches_the_app(tmp_path, monkeypatch):
     main(["--faux"])
 
     assert seen == {"theme": "textual-light"}
+
+
+def test_luca_json_model_options_reach_the_session_and_survive_a_switch(tmp_path, monkeypatch):
+    # The whole chain in one: the issue's config resolves onto the launched
+    # session, and the resolver reaches the app so `/model` re-resolves too.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(
+        json.dumps(
+            {
+                "model": {"provider": "faux", "model": "configured-model"},
+                "providers": {
+                    "faux": {
+                        "options": {"temperature": 0.5},
+                        "models": {"configured-model": {"options": {"max_tokens": 6000}}},
+                    },
+                },
+            }
+        )
+    )
+    seen: dict[str, LLMConfig] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["launched"] = self.runner.session.session_config.llm_config
+        seen["switched"] = self.resolve_model_options(
+            seen["launched"].model_copy(update={"model": "another-model"}),
+        )
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    assert (seen["launched"].options, seen["switched"].options) == (
+        ModelOptions(max_tokens=6000, temperature=0.5),
+        ModelOptions(temperature=0.5),
+    )
 
 
 def test_theme_flag_overrides_luca_json(tmp_path, monkeypatch):

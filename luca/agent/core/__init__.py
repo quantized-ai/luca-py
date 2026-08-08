@@ -60,6 +60,7 @@ from .models import (
     Inf,
     LLMConfig,
     MilliSeconds,
+    ModelOptions,
     PrunedEntry,
     RuntimeConfig,
     Seconds,
@@ -96,6 +97,7 @@ from .runner import (
     AgentRun,
     AgentSessionRunner,
     RunResult,
+    completion_options,
 )
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import PreparedTool, ToolRegistry
@@ -145,6 +147,7 @@ __all__ = [
     "InvalidToolArguments",
     "LLMConfig",
     "MilliSeconds",
+    "ModelOptions",
     "PRUNED_TOOL_OUTPUT_MARKER",
     "ProjectionError",
     "PreparedTool",
@@ -171,6 +174,7 @@ __all__ = [
     "Usage",
     "UsageCounters",
     "UserMessage",
+    "completion_options",
     "declares_spawn",
     "open_turn_executions",
     "open_turn_index",

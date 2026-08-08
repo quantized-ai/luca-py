@@ -59,6 +59,7 @@ import argparse
 import logging
 import os
 import sys
+from functools import partial
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import get_args
@@ -75,10 +76,12 @@ from .app import DEFAULT_THEME, AgentApp
 from .config import (
     LucaConfig,
     LucaConfigError,
+    apply_model_options,
     build_context_manager,
     build_permission_rules,
     load_luca_config,
     pick,
+    picker_models,
     register_config_providers,
     resolve_config_path,
     resolve_llm_config,
@@ -457,7 +460,8 @@ def main(argv: list[str] | None = None) -> None:
             ),
             additional_directories=config.additional_directories or None,
             permission_rules=build_permission_rules(config) or None,
-            recommended_models=config.models or None,
+            recommended_models=picker_models(config) or None,
+            model_options=partial(apply_model_options, config=config),
             subagents=args.subagents,
             skills=args.skills,
             extra_skill_locations=config.extra_skill_locations or None,

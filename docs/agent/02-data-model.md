@@ -644,7 +644,21 @@ changing at all — which is exactly why nothing can cache it.
 > marker to go stale, because the entries were always the truth.
 
 `session_config` holds the `LLMConfig` for the *next* turn plus the
-`RuntimeConfig` knobs ([08](08-runtime-config.md)). What is **not** on the
+`RuntimeConfig` knobs ([08](08-runtime-config.md)).
+
+`LLMConfig` says which model runs (`model`, `provider`, `reasoning`) and, in an
+optional nested `options`, how it is invoked: `max_tokens`, `temperature`,
+`top_p`, and a raw `provider_options` keyed by provider name that goes to the
+client untouched. Unset means "send nothing", so the provider's own default
+stands. It is nested rather than flattened because an `LLMConfig` is copied onto
+every assistant entry as provenance, and one null key per entry is cheaper than
+one per knob. Keying `provider_options` by provider name is what makes a routed
+turn safe: a transport that finds nothing under its own name sends none of it,
+rather than one provider's wire fields to another. The TUI resolves the block
+from `luca.json` ([config](contrib/tui/config.md#model-options)); nothing in the
+core reads a config file.
+
+What is **not** on the
 session: the tool registry, the projector, system-prompt parts, the live
 cancellation token. Those are runtime collaborators you pass to the
 runner — which is exactly what keeps the session a pure, portable record.

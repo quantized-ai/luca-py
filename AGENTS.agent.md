@@ -511,6 +511,16 @@ All config rides on `SessionConfig.runtime_config` (a `RuntimeConfig`), which pe
 
 All int fields use -1 (Inf) or 0 to disable, except `subagents_max_per_turn` / `subagents_max_workers`, which reject 0 (that is `subagents_enabled=False` spelled incorrectly). Constructing a runner where `soft_max_steps == hard_max_steps > 0` emits a `UserWarning` (hard prevails). Timeout fields are milliseconds; limit fields are plain ints. `Seconds()` / `MilliSeconds()` convert durations. Seed config via `AgentSessionRunner.new_session(..., runtime_config=)`.
 
+### Model options
+
+`LLMConfig` says WHICH model runs; its optional nested `options` (a `ModelOptions`) says HOW it is invoked — `max_tokens`, `temperature`, `top_p`, and a raw `provider_options` handed to the client untouched. `runner.completion_options(llm_config)` is the one translation into client kwargs, and it drops every unset field, so an unconfigured session sends exactly what it sent before. Both drive call sites use it, and so does `SummarizingContextManager.summarize` — same model, same provider, so the same settings.
+
+Nested rather than flattened because an `LLMConfig` is copied onto every assistant entry as provenance (see **Reasoning durability**): one null key per entry beats one per knob in every saved session.
+
+`provider_options` is keyed by PROVIDER NAME, mirroring `luca.client`'s field exactly. That is what makes a routed turn safe. `update_llm_config` derives the ACTIVE config from the CONFIGURED one and preserves `options` untouched, so a `build_model_string` middleware that routes elsewhere carries the configured model's settings; the sampling params still apply, and the transport finds nothing under its own name and sends none of the raw block rather than sending one provider's wire fields to another. If routing ever needs its own settings, that is the second case a hook carrying the resolved config would exist for — do not add one before it shows up.
+
+Core reads no config file. Resolving a per-provider / per-model table into a `ModelOptions` is contrib's job (`contrib/tui/config.py`: `resolve_model_options` / `apply_model_options`).
+
 ### System prompt parts
 
 The runner takes no `system_prompt` string. Instead it takes `system_prompt_parts` — a list whose items are any of (machinery in `luca/agent/core/system_prompt.py`):

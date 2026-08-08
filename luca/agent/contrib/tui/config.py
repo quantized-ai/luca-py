@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from luca.agent.contrib.resource_permissions import (
     PermissionMatchMode,
@@ -33,8 +33,8 @@ from luca.agent.contrib.simple_context_manager import (
     DEFAULT_WINDOW,
     SummarizingContextManager,
 )
-from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
-from luca.client.providers import register_provider
+from luca.agent.core.models import ApprovalOption, LLMConfig, ModelOptions, RuntimeConfig, ToolKind
+from luca.client.providers import PROVIDERS, register_provider
 from luca.client.transports import TRANSPORTS
 from luca.client.types import Reasoning
 
@@ -116,10 +116,54 @@ class CompactionSettings(BaseModel):
     model_config = _STRICT
 
 
+class ModelOptionsBlock(BaseModel):
+    """One `options` block: how a model is invoked, on top of which model it is.
+
+    The ONE model in this file that is not `extra="forbid"`, deliberately.
+    Known keys are typed and validated; every unknown key falls through
+    verbatim into the provider's raw `provider_options`. That passthrough is
+    the point — a provider's own wire fields (OpenRouter's `provider.order`,
+    its `transforms`) move faster than this schema ever could, and forbidding
+    extras would leave no way to reach them. Nothing is renamed or normalized
+    on the way out: write the field the provider documents.
+    """
+
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    reasoning: Reasoning | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("max_tokens")
+    @classmethod
+    def _positive(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("must be >= 1")
+        return value
+
+    @property
+    def raw(self) -> dict:
+        """The unknown keys, verbatim — the provider's own wire fields."""
+        return dict(self.model_extra or {})
+
+
+class ModelDef(BaseModel):
+    options: ModelOptionsBlock = Field(default_factory=ModelOptionsBlock)
+    model_config = _STRICT
+
+
 class ProviderDef(BaseModel):
-    base_url: str
+    """A provider entry: host REGISTRATION (`base_url` and friends), invocation
+    SETTINGS (`options` / `models`), or both. `base_url` is what makes it a
+    registration, and only a registration may not name a built-in provider —
+    setting options on `openrouter` is the ordinary case."""
+
+    base_url: str | None = None
     api_key_env: str | None = None
     transport: str = "openai"
+    options: ModelOptionsBlock = Field(default_factory=ModelOptionsBlock)
+    models: dict[str, ModelDef] = Field(default_factory=dict)
     model_config = _STRICT
 
 
@@ -189,7 +233,13 @@ class LucaConfig(BaseModel):
     # them (`--use-native` / `--no-use-native`; default on). Purely an
     # adaptation input: the same session is valid either way, and the tool set
     # is re-derived before every call.
-    use_native_tools: bool | None = None
+    use_native_tools: bool | None = Field(
+        default=None,
+        description=(
+            "Offer the provider's own native tools where the active model supports them "
+            "(apply_patch + shell on OpenAI, text_editor + bash on Anthropic). Defaults to true."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -217,6 +267,27 @@ def resolve_config_path(cli_path: str | None = None) -> Path | None:
     return None
 
 
+# Accepted spellings for a canonical top-level key. `provider` reads naturally
+# for a file that configures one, and failing a whole config over the singular
+# helps nobody. Only the canonical name reaches the model, and only it is in the
+# JSON schema.
+_KEY_ALIASES = {"provider": "providers"}
+
+
+def _normalize_keys(data: dict, path: Path) -> dict:
+    """Rename accepted aliases to their canonical key. Applied per FILE, before
+    the merge: a home file spelling it one way and a project file the other must
+    still deep-merge into one map rather than land as two keys, one of which
+    silently loses."""
+    for alias, canonical in _KEY_ALIASES.items():
+        if alias not in data:
+            continue
+        if canonical in data:
+            raise LucaConfigError(f"{path}: has both {alias!r} and {canonical!r}; keep one (they are the same key)")
+        data = {(canonical if key == alias else key): value for key, value in data.items()}
+    return data
+
+
 def _read_json_object(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -226,7 +297,7 @@ def _read_json_object(path: Path) -> dict:
         raise LucaConfigError(f"{path}: not valid JSON ({exc})") from exc
     if not isinstance(data, dict):
         raise LucaConfigError(f"{path}: the top level must be a JSON object")
-    return data
+    return _normalize_keys(data, path)
 
 
 def find_project_config(start: Path) -> Path | None:
@@ -318,8 +389,16 @@ _FIRST_CLASS_PROVIDERS = frozenset({"openai", "anthropic", "openrouter", "bedroc
 
 
 def register_config_providers(config: LucaConfig) -> None:
-    """Register every custom provider so a call can route to it."""
+    """Register every custom HOST so a call can route to it.
+
+    An entry without `base_url` registers nothing: it only carries settings for
+    a provider that already exists. Those are checked after the loop, once every
+    registration in this file has landed, so the two can appear in either order."""
+    settings_only = []
     for name, defn in config.providers.items():
+        if defn.base_url is None:
+            settings_only.append(name)
+            continue
         if name in _FIRST_CLASS_PROVIDERS:
             raise LucaConfigError(
                 f"provider {name!r} is built in; give a custom host a distinct name and point model.provider at it",
@@ -337,17 +416,100 @@ def register_config_providers(config: LucaConfig) -> None:
                 "default_transport_class": transport,
             },
         )
+    for name in settings_only:
+        # A typo here would otherwise be silent: the options would resolve for
+        # a provider nothing ever selects, and the model would run unconfigured.
+        # `_FIRST_CLASS_PROVIDERS` as well as the registry, because `faux` is
+        # reachable by instance injection and never registered.
+        if name not in PROVIDERS and name not in _FIRST_CLASS_PROVIDERS:
+            raise LucaConfigError(
+                f"provider {name!r} has options but no base_url, and is not a known provider; "
+                "add base_url to register the host, or fix the name",
+            )
+
+
+def resolve_model_options(
+    config: LucaConfig,
+    provider: str,
+    model: str,
+) -> tuple[ModelOptions | None, str | None]:
+    """The `options` for one `(provider, model)` pair, as the two things it
+    lands on: the `ModelOptions` the client call takes, and the `reasoning`
+    that belongs on `LLMConfig` itself.
+
+    The provider-wide block resolves first and the model's own block wins over
+    it, per key — raw passthrough keys deep-merge (nested objects merge,
+    scalars and lists replace), so a provider-wide `provider.order` survives a
+    model that only sets `transforms`. `(None, None)` when nothing is
+    configured, which is what lets an unconfigured session stay untouched."""
+    defn = config.providers.get(provider)
+    if defn is None:
+        return None, None
+    blocks = [defn.options]
+    model_def = defn.models.get(model)
+    if model_def is not None:
+        blocks.append(model_def.options)
+
+    typed: dict = {}
+    raw: dict = {}
+    reasoning: str | None = None
+    for block in blocks:
+        raw = _deep_merge(raw, block.raw)
+        for field in ("max_tokens", "temperature", "top_p"):
+            value = getattr(block, field)
+            if value is not None:
+                typed[field] = value
+        if block.reasoning is not None:
+            reasoning = block.reasoning
+
+    if not typed and not raw:
+        return None, reasoning
+    # Keyed by provider name, the shape luca.client takes: a turn a middleware
+    # routed to another provider finds no entry under its own name and sends
+    # none of this, rather than one provider's wire fields to another.
+    return ModelOptions(**typed, provider_options={provider: raw} if raw else None), reasoning
+
+
+def apply_model_options(
+    llm_config: LLMConfig,
+    config: LucaConfig,
+    *,
+    cli_reasoning: str | None = None,
+) -> LLMConfig:
+    """Resolve `options` for whichever `(provider, model)` this config names.
+
+    `options` is always assigned, including to `None` — switching to a model
+    with no block has to CLEAR the previous model's settings, not inherit them.
+    `reasoning` is only taken when the CLI did not name one."""
+    options, reasoning = resolve_model_options(config, llm_config.provider, llm_config.model)
+    updates: dict = {"options": options}
+    if reasoning is not None and cli_reasoning is None:
+        updates["reasoning"] = reasoning
+    return llm_config.model_copy(update=updates)
 
 
 def resolve_llm_config(base: LLMConfig, config: LucaConfig, cli: dict) -> LLMConfig:
-    """`config.model` over `base`, then CLI over both."""
+    """`config.model` over `base`, then CLI over both, then the per-provider /
+    per-model `options` for whichever pair that lands on."""
     updates: dict = {}
     for field in ("provider", "model", "reasoning"):
         value = getattr(config.model, field)
         if value is not None:
             updates[field] = value
     updates.update({key: value for key, value in cli.items() if value is not None})
-    return base.model_copy(update=updates) if updates else base
+    resolved = base.model_copy(update=updates) if updates else base
+    return apply_model_options(resolved, config, cli_reasoning=cli.get("reasoning"))
+
+
+def picker_models(config: LucaConfig) -> dict[str, list[str]]:
+    """The `/model` picker's configured list: the top-level `models` map unioned
+    with every model carrying a settings block, so configuring a model never
+    means also listing it by hand."""
+    merged = {provider: list(ids) for provider, ids in config.models.items()}
+    for provider, defn in config.providers.items():
+        if defn.models:
+            merged[provider] = sorted(set(merged.get(provider, [])) | set(defn.models))
+    return merged
 
 
 def resolve_runtime_config(base: RuntimeConfig, config: LucaConfig) -> RuntimeConfig:

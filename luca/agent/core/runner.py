@@ -3195,6 +3195,7 @@ class AgentSessionRunner:
                         provider=self.provider,
                         timeout=request_timeout,
                         total_timeout=total_timeout,
+                        **completion_options(self.session.llm_config),
                     )
                     async with stream as s:
                         iterator = s.__aiter__()
@@ -3238,6 +3239,7 @@ class AgentSessionRunner:
                             provider=self.provider,
                             timeout=request_timeout,
                             total_timeout=total_timeout,
+                            **completion_options(self.session.llm_config),
                         )
                     )
                     completed, response, _ = await _race_cancellation(
@@ -4985,6 +4987,19 @@ def _now_ms() -> int:
 def _ms_to_seconds(ms: int) -> float | None:
     """RuntimeConfig duration → the float-seconds kwarg (Inf → not passed)."""
     return None if ms == Inf else ms / 1000.0
+
+
+def completion_options(llm_config: LLMConfig) -> dict:
+    """`LLMConfig.options` → the client completion kwargs it sets.
+
+    Only fields the application actually configured appear, so an unset knob
+    stays absent from the request and the provider's own default stands.
+    Public because the same translation is what a `ContextManager` making its
+    own model call needs."""
+    options = llm_config.options
+    if options is None:
+        return {}
+    return options.model_dump(exclude_none=True, exclude={"extras"})
 
 
 def _to_usage_counters(usage) -> dict[str, int]:

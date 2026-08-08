@@ -185,10 +185,29 @@ class BaseConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ModelOptions(BaseConfigModel):
+    """How the model is invoked, on top of WHICH model it is. Everything here
+    is optional and unset means "send nothing", so the provider's own default
+    stands.
+
+    `provider_options` mirrors the client field verbatim — keyed by PROVIDER
+    NAME, never a bare dict. That is what makes a routed turn safe: the
+    transport looks its own name up and finds nothing, rather than sending one
+    provider's wire fields to another."""
+
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    provider_options: dict[str, dict] | None = None
+
+
 class LLMConfig(BaseConfigModel):
     model: str  # e.g. "openai/gpt-5.4-mini"
     provider: str  # e.g. "openrouter"
     reasoning: str | None = None
+    # Nested, not flattened: an LLMConfig is copied onto every assistant entry,
+    # so one null key per entry beats one per knob in every saved session.
+    options: ModelOptions | None = None
 
 
 class Usage(BaseModel):

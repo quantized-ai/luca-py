@@ -28,6 +28,7 @@ import asyncio
 import base64
 import contextlib
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -66,6 +67,7 @@ from luca.agent.core.models import (
     ExecutionStatus,
     ImageBase64,
     ImageContent,
+    LLMConfig,
     ToolExecution,
     TurnOutcome,
 )
@@ -134,6 +136,7 @@ class AgentApp(LucaApp):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
+        model_options: Callable[[LLMConfig], LLMConfig] | None = None,
         subagents: bool = True,
         skills: bool = True,
         extra_skill_locations: list[str] | None = None,
@@ -153,6 +156,10 @@ class AgentApp(LucaApp):
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
+        # A callable, not the LucaConfig: the app needs "re-resolve options for
+        # this pair", not the file the answer came from. Identity when nothing
+        # configured any, so a plain app carries no options at all.
+        self._model_options = model_options or (lambda llm_config: llm_config)
         self._subagents = subagents
         self._skills = skills
         self._extra_skill_locations = extra_skill_locations
@@ -368,18 +375,22 @@ class AgentApp(LucaApp):
             self._retry_prompt_active = False
         await self.show_composer(vm.ComposerState(placeholder="working…"))
         if alternate is not None and choice == 1:
-            config = self.runner.session.session_config.llm_config
+            from .commands import _apply
+
             provider, model = alternate
-            self.runner.session.session_config.llm_config = config.model_copy(
-                update={"provider": provider, "model": model}
-            )
-            self._refresh_status()
+            _apply(self, provider=provider, model=model)
             return True
         if choice == len(options) - 1:
             with contextlib.suppress(AlreadyCancellingError):
                 self.runner.cancel(error="cancelled after a failure")
             return not self.runner.idle()
         return True
+
+    def resolve_model_options(self, llm_config: LLMConfig) -> LLMConfig:
+        """Re-resolve the configured `options` for this pair. Called by `_apply`
+        on every model switch, so a session never keeps the previous model's
+        settings."""
+        return self._model_options(llm_config)
 
     def _alternate_model(self) -> tuple[str, str] | None:
         """A sibling to offer after a turn fails — the newest model from the

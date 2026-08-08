@@ -1,5 +1,15 @@
 {
   "$defs": {
+    "ClientSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "file_read": {
+          "$ref": "#/$defs/FileReadSettings"
+        }
+      },
+      "title": "ClientSettings",
+      "type": "object"
+    },
     "CompactionSettings": {
       "additionalProperties": false,
       "properties": {
@@ -53,6 +63,38 @@
         }
       },
       "title": "CompactionSettings",
+      "type": "object"
+    },
+    "FileReadSettings": {
+      "additionalProperties": false,
+      "description": "The `@`-mention inline ceiling. The effective cap is the SMALLER of the\nhard limit and the model's context share, so a small-context model is never\nhanded a 25k-token file just because the hard limit permits it.",
+      "properties": {
+        "max_read_file_tokens_hard_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Read File Tokens Hard Limit"
+        },
+        "max_read_file_tokens_context_percentage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Read File Tokens Context Percentage"
+        }
+      },
+      "title": "FileReadSettings",
       "type": "object"
     },
     "LoggingSettings": {
@@ -137,6 +179,81 @@
         }
       },
       "title": "ModelConfig",
+      "type": "object"
+    },
+    "ModelDef": {
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "$ref": "#/$defs/ModelOptionsBlock"
+        }
+      },
+      "title": "ModelDef",
+      "type": "object"
+    },
+    "ModelOptionsBlock": {
+      "additionalProperties": true,
+      "description": "One `options` block: how a model is invoked, on top of which model it is.\n\nThe ONE model in this file that is not `extra=\"forbid\"`, deliberately.\nKnown keys are typed and validated; every unknown key falls through\nverbatim into the provider's raw `provider_options`. That passthrough is\nthe point \u2014 a provider's own wire fields (OpenRouter's `provider.order`,\nits `transforms`) move faster than this schema ever could, and forbidding\nextras would leave no way to reach them. Nothing is renamed or normalized\non the way out: write the field the provider documents.",
+      "properties": {
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "reasoning": {
+          "anyOf": [
+            {
+              "enum": [
+                "provider-default",
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning"
+        }
+      },
+      "title": "ModelOptionsBlock",
       "type": "object"
     },
     "PermissionMatchMode": {
@@ -260,10 +377,19 @@
     },
     "ProviderDef": {
       "additionalProperties": false,
+      "description": "A provider entry: host REGISTRATION (`base_url` and friends), invocation\nSETTINGS (`options` / `models`), or both. `base_url` is what makes it a\nregistration, and only a registration may not name a built-in provider \u2014\nsetting options on `openrouter` is the ordinary case.",
       "properties": {
         "base_url": {
-          "title": "Base Url",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
         },
         "api_key_env": {
           "anyOf": [
@@ -281,11 +407,18 @@
           "default": "openai",
           "title": "Transport",
           "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/ModelOptionsBlock"
+        },
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelDef"
+          },
+          "title": "Models",
+          "type": "object"
         }
       },
-      "required": [
-        "base_url"
-      ],
       "title": "ProviderDef",
       "type": "object"
     },
@@ -497,6 +630,9 @@
     },
     "logging": {
       "$ref": "#/$defs/LoggingSettings"
+    },
+    "client": {
+      "$ref": "#/$defs/ClientSettings"
     },
     "runtime": {
       "$ref": "#/$defs/RuntimeSettings"
