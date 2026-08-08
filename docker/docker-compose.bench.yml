@@ -1,0 +1,56 @@
+# Run Terminal-Bench without installing Harbor, uv or a Python 3.12 on the host.
+#
+#   docker compose -f docker/docker-compose.bench.yml run --rm bench   # oracle smoke test
+#   docker compose -f docker/docker-compose.bench.yml run --rm bench \
+#       harbor run -d terminal-bench/terminal-bench-2-1 \
+#           --agent-import-path luca_tb.agent:LucaAgent \
+#           -m openrouter/openai/gpt-5.4-mini --include-task-name hello-world
+#
+# RUN THIS FROM THE REPO ROOT. `${PWD}` below is the host's working directory,
+# and the whole arrangement depends on it being the repo.
+#
+# It lives in docker/ rather than at the repo root for one unglamorous reason:
+# Compose auto-loads a `.env` sitting next to the compose file for variable
+# interpolation, and the repo root's `.env` is the agent's runtime secrets
+# file, written for python-dotenv rather than for Compose. A single quoting
+# style Compose dislikes there would break every benchmark run with an error
+# that points at the wrong file. Keeping the two apart avoids the whole class.
+#
+# Why the repo is mounted at ${PWD}:${PWD} rather than somewhere tidy like
+# /workspace: the mounted Docker socket means Harbor's task containers are
+# spawned by the HOST daemon, so every bind mount Harbor requests is resolved
+# against host paths. Giving the repo the same absolute path on both sides is
+# what stops Harbor asking the host for a directory that only exists in here.
+#
+# The socket also means these task containers are NOT isolated from the host
+# daemon. That is the accepted trade for not running docker-in-docker; do not
+# point this at untrusted task definitions.
+
+services:
+  bench:
+    build:
+      context: ..
+      dockerfile: Dockerfile.harbor
+    image: luca-bench:latest
+    working_dir: ${PWD}
+    environment:
+      BENCH_DIR: ${PWD}/benchmarks/terminal-bench
+      # Whichever of these is set on the host is forwarded. LUCA_API_KEY is the
+      # single override the adapter accepts across providers.
+      LUCA_API_KEY: ${LUCA_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LUCA_WHEEL: ${LUCA_WHEEL:-}
+    volumes:
+      # The repo, at its host path. See the note above.
+      - ${PWD}:${PWD}
+      # Sibling containers, spawned through the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Downloaded task images and wheels survive between runs.
+      - bench-uv-cache:/opt/uv-cache
+      - bench-harbor-cache:/root/.cache/harbor
+
+volumes:
+  bench-uv-cache:
+  bench-harbor-cache:

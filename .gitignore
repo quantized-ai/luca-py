@@ -14,3 +14,7 @@ wheels/
 
 # TUI session files, for a store pointed at the project
 [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
+
+# Terminal-Bench output: Harbor's per-job trial directories and our run logs
+runs/
+benchmarks/terminal-bench/jobs/
