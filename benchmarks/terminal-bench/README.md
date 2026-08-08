@@ -36,7 +36,7 @@ uv run harbor run -d terminal-bench/terminal-bench-2-1 -a oracle -l 5      # exp
 # 3. does luca install into a task container?  a container, zero tokens
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
     -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
-    -i hello-world --install-only
+    -i terminal-bench/fix-git --install-only
 
 # 4. a real score over ten tasks
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
@@ -46,6 +46,10 @@ uv run harbor run -d terminal-bench/terminal-bench-2-1 \
 Step 2 is the one that takes real time: it pulls task images. Everything after
 it is fast. If step 2 is not 5/5, the problem is Docker or Harbor and debugging
 luca will waste your afternoon.
+
+Note the `terminal-bench/` prefix on the task name in step 3. It is required —
+`-i fix-git` matches nothing and aborts the job. See [task names are
+namespaced](#task-names-are-namespaced).
 
 ## How it fits together
 
@@ -130,7 +134,7 @@ they are not the ones in the tbench.ai docs, which describe a newer build):
 | `-a` | agent: a built-in name, or **our import path** `luca_tb.agent:LucaAgent` |
 | `-m` | model, `provider/model` |
 | `-l` | max tasks to run |
-| `-i` | run one named task (repeatable) |
+| `-i` | run one named task (repeatable, glob) — see the note below |
 | `-k` | attempts per task — this is what feeds `pass@k` |
 | `-n` | concurrent trials (default 4) |
 | `--ak` | agent kwarg, `key=value` |
@@ -138,17 +142,52 @@ they are not the ones in the tbench.ai docs, which describe a newer build):
 | `--install-only` | install the agent, then stop. No tokens spent |
 | `--print-config` | resolve and print the config, then stop. Nothing runs |
 
+### Task names are namespaced
+
+`-i` is an `fnmatch` glob against the **full** task name, and every task in this
+dataset is prefixed with its dataset org:
+
+```bash
+-i terminal-bench/fix-git     # matches
+-i '*/fix-git'                # matches
+-i fix-git                    # matches NOTHING, and fails the whole job
+```
+
+A bare name silently matches nothing and Harbor aborts with `No tasks matched
+the filter(s)`. There is no CLI command that lists a dataset's tasks, so:
+
+```bash
+uv run python -c "
+import asyncio
+from harbor.models.job.config import DatasetConfig
+async def main():
+    cfgs = await DatasetConfig(name='terminal-bench/terminal-bench-2-1').get_task_configs(
+        disable_verification=False)
+    for c in sorted(c.name for c in cfgs): print(c)
+asyncio.run(main())
+"
+```
+
+89 tasks, and none of them is a warm-up: the roster runs from `fix-git` and
+`regex-log` up through `compile-compcert`, `make-doom-for-mips` and
+`install-windows-3.11`. There is no `hello-world` here — that name belongs to
+Harbor's own `examples/` directory, not to this dataset.
+
 ### Stage 0 — does the command resolve (free, instant)
 
 ```bash
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
     -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
-    -i hello-world --print-config
+    -i terminal-bench/fix-git --print-config
 ```
 
-Prints the resolved job and exits. No Docker, no network, no tokens. If the
-agent import path is wrong or the dataset name is misspelled, you find out here
-in a second rather than after a dataset download.
+Prints the resolved job and exits. No Docker, no tokens. It catches a bad agent
+import path and a misspelled dataset name.
+
+It does **not** validate task names: `--print-config` echoes `-i` back verbatim
+without resolving the dataset's task list, so a name that matches nothing looks
+fine here and fails at job start instead. Check names against the listing above
+rather than trusting this stage for them.
 
 ### Stage 1 — is the harness sane
 
@@ -176,7 +215,7 @@ a number.
 ```bash
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
     -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
-    -i hello-world --install-only
+    -i terminal-bench/fix-git --install-only
 ```
 
 Runs `install()` and stops before the agent does any work, so it costs a
@@ -191,7 +230,7 @@ than in the agent.
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
     -a luca_tb.agent:LucaAgent \
     -m openrouter/openai/gpt-5.4-mini \
-    -i hello-world --ak max_steps=40
+    -i terminal-bench/fix-git --ak max_steps=40
 ```
 
 The reward is almost beside the point here. What you are checking:
