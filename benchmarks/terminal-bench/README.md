@@ -18,6 +18,35 @@ Two reasons it is its own project rather than a dependency group:
 - `luca-ai` ships with `httpx` and `pydantic` as its only runtime dependencies.
   A benchmark has no business anywhere near that list.
 
+## In a hurry
+
+Four commands, cheapest first, each one only worth running if the last passed.
+The full walkthrough is [below](#running-the-benchmark).
+
+```bash
+uv sync && export OPENROUTER_API_KEY=sk-or-...
+
+# 1. does luca work unattended at all?  ~30s, no Docker, a fraction of a cent
+uv run python -m luca_tb.runner --model openai/gpt-5.4-mini --provider openrouter \
+    --workspace /tmp/luca-scratch --max-steps 20 -- "create hello.py and run it"
+
+# 2. is Docker + Harbor healthy?  no luca involved.  slow once, images cache
+uv run harbor run -d terminal-bench/terminal-bench-2-1 -a oracle -l 5      # expect 5/5
+
+# 3. does luca install into a task container?  a container, zero tokens
+uv run harbor run -d terminal-bench/terminal-bench-2-1 \
+    -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
+    -i hello-world --install-only
+
+# 4. a real score over ten tasks
+uv run harbor run -d terminal-bench/terminal-bench-2-1 \
+    -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini -l 10 -n 4
+```
+
+Step 2 is the one that takes real time: it pulls task images. Everything after
+it is fast. If step 2 is not 5/5, the problem is Docker or Harbor and debugging
+luca will waste your afternoon.
+
 ## How it fits together
 
 [Terminal-Bench](https://www.tbench.ai) 2.x is no longer run by the old `tb`
@@ -38,31 +67,50 @@ into a venv at `/opt/luca/`.
 ## Setup
 
 ```bash
-uv sync                       # from this directory
-docker info                   # the daemon has to be reachable
-df -h                         # task images are large; budget ~30GB
-export OPENROUTER_API_KEY=...
+uv sync                            # from this directory; installs harbor, ~1 min
+docker info                        # the daemon has to be reachable
+df -h                              # task images are large; budget ~30GB
+export OPENROUTER_API_KEY=sk-or-...
 ```
+
+The key has to be **exported**, not merely present in the repo's `.env`. The
+driver reads no dotenv and no `luca.json` on purpose: a benchmark run should be
+a pure function of its arguments, and silently inheriting whichever config file
+happened to be lying around is the opposite of that. Harbor itself will take
+`--env-file ../../.env` if you would rather not export anything.
 
 ## The driver on its own
 
-Useful for debugging without any of the benchmark machinery:
+Start here. No Docker, about thirty seconds, a fraction of a cent, and it
+answers the only question that matters before any of the harness is involved:
+does luca work unattended?
 
 ```bash
-uv run python -m luca_tb.runner "create hello.py that prints hi, then run it" \
+mkdir -p /tmp/luca-scratch && cd /tmp/luca-scratch
+
+uv run --directory ~/path/to/luca-py/benchmarks/terminal-bench \
+    python -m luca_tb.runner \
     --model openai/gpt-5.4-mini --provider openrouter \
-    --workspace /tmp/scratch --max-steps 20 \
-    --session-out /tmp/session.json
+    --workspace /tmp/luca-scratch \
+    --session-out /tmp/luca-scratch/session.json \
+    --max-steps 20 \
+    -- "create fizzbuzz.py that prints 1 to 20 with fizzbuzz rules, then run it and show the output"
+```
+
+Tool calls stream to stdout as they happen (`→ write file_path=…`, `→ bash
+command=…`), then the final answer. Check it was real rather than described:
+
+```bash
+cat fizzbuzz.py && python3 fizzbuzz.py && echo "exit=$?"
 ```
 
 Exit codes: `0` completed, `1` the run aborted, `2` blocked on an approval gate
 (under the default yolo mode that means something is misconfigured, not that a
 human is wanted), `124` wall-clock timeout. The session is written after every
-drive, so a timeout or a crash still leaves a readable trajectory.
+drive, so a timeout or a crash still leaves a readable trajectory to look at.
 
-The driver reads **no** `luca.json`. A benchmark run has to be a pure function
-of its arguments, and silently inheriting a config file that happened to be in
-the task image is the opposite of that.
+The `--` before the instruction is not decoration: task text is arbitrary, and
+one starting with a dash would otherwise be parsed as a flag.
 
 ## Running the benchmark
 
@@ -189,18 +237,11 @@ Agent knobs go through `--ak`:
 
 ### Provider keys
 
-Harbor reads them from the environment, so either export the one your model
-needs or point `--env-file` at a file holding it:
-
-```bash
-export OPENROUTER_API_KEY=sk-...
-# or
-uv run harbor run ... --env-file ../../.env
-```
-
-`LUCA_API_KEY` works as a single override across providers: the adapter
-forwards it into the container under whichever variable name luca's provider
-actually reads. A missing key fails fast, before any container is started.
+Beyond the exported variable from [Setup](#setup), `LUCA_API_KEY` works as a
+single override across providers: the adapter forwards it into the container
+under whichever variable name luca's provider actually reads, so one gateway
+key covers several routes without renaming anything. A missing key fails fast,
+before any container is started.
 
 ### Through Docker
 
@@ -233,7 +274,29 @@ so a Linux build never lands in your checkout.
 
 ## Reading the results
 
-Harbor writes to `jobs/<job-name>/`.
+Harbor writes to `jobs/<job-name>/`. To pull apart the run you just did:
+
+```bash
+JOB=$(ls -t jobs | head -1)
+TRIAL=$(ls jobs/$JOB | grep -v '\.json$' | head -1)
+
+# the whole job
+jq '.stats.evals' jobs/$JOB/result.json
+jq '.stats | {n_completed_trials, n_errored_trials, cost_usd}' jobs/$JOB/result.json
+
+# one trial
+cat jobs/$JOB/$TRIAL/agent/luca.txt                  # what the agent actually did
+jq '.exception_info'   jobs/$JOB/$TRIAL/result.json  # null when nothing broke
+jq '.agent_result'     jobs/$JOB/$TRIAL/result.json  # tokens and cost
+jq '.verifier_result'  jobs/$JOB/$TRIAL/result.json  # the reward and why
+```
+
+Then browse the whole thing properly, including a side-by-side comparison
+matrix across jobs:
+
+```bash
+uv run harbor view jobs                              # http://127.0.0.1:8080
+```
 
 | Path | What it tells you |
 |---|---|
@@ -246,6 +309,31 @@ Harbor writes to `jobs/<job-name>/`.
 `uv run harbor view jobs` opens a local UI over all of it, including a
 side-by-side comparison matrix across jobs. Use it for triage; use `result.json`
 for anything you report.
+
+## What to expect from the first real run
+
+Probably not a good score, and that is fine. Terminal-Bench 2.x is hard, a
+cheap model makes it harder, and this is luca running unattended for the first
+time. The number is the least interesting output of the first few runs; the
+failure modes in `luca.txt` are the point, because they separate into three
+piles that want three different responses.
+
+**Failed** is an ordinary outcome. luca tried and did not get there. Nothing to
+file, it is what the benchmark is for.
+
+**Errored** is our bug. A non-null `exception_info`, or a `ProjectionError` or
+`ToolExecutionError` in `luca.txt`. These belong in the issue tracker with the
+trial's `session.json` attached, since it replays offline.
+
+**A core gap** is the valuable one: something that failed because of how the
+data model or the runner works rather than because the model was not good
+enough. Context overflow, a tool result that could not be represented, a turn
+that could not be resumed. Those go in the `core gaps` line of the results
+block and feed back into the spec, which is the whole reason for measuring.
+
+One deliberate decision worth knowing while reading numbers: a timeout is
+recorded as a failed task, not an errored trial, so the verifier still scores
+it and it does not inflate `n_errored_trials`. Same for an approval gate.
 
 ## Failure triage
 
