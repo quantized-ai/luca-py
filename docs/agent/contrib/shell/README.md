@@ -2,9 +2,10 @@
 
 `luca.agent.contrib.shell` is the filesystem/process tool suite — eight tools
 modeled on Claude Code behavior, plus four
-[provider-native ones](#6-provider-native-tools) — and `ShellAccessPlugin`,
-which bundles them behind one workspace directory with a seeded,
-resource-aware permission strategy (built on
+[provider-native ones](#6-provider-native-tools) (one of which keeps a
+[persistent shell](#7-the-persistent-shell-anthropic_bash_20250124)) — and
+`ShellAccessPlugin`, which bundles them behind one workspace directory with a
+seeded, resource-aware permission strategy (built on
 [`resource_permissions`](../resource_permissions/README.md)).
 
 ## 1. The plugin in 30 seconds
@@ -46,6 +47,11 @@ tools use), so grants keep their meaning across resumed sessions.
 | `apply_patch` | EDIT | `*** Begin/End Patch` envelope; verify-everything-then-commit |
 | `delete_file` | DELETE | Removes one file (a symlink, not its target); refuses directories |
 | `bash` | EXECUTE | Fresh shell per call, streamed, timeout + cancellation kill the process group |
+
+> ⚠️ **`bash` is stateless; the Anthropic native `bash` is not.** Each generic
+> `bash` call gets its own shell, so a `cd` or an `export` does not carry over —
+> use the `workdir` argument instead. `anthropic_bash_20250124` is the opposite,
+> because [its wire contract says so](#6-provider-native-tools).
 
 Domain failures (missing file, ambiguous edit, non-zero exit) come back as
 `ExecutionResult(is_error=True)` — never exceptions to the runner.
@@ -191,5 +197,50 @@ exactly as `edit` would leave them; overwriting a whole existing file still
 requires having read it first (`text_editor view` counts as the read); and
 shell output is still capped at 2000 lines / 50 KiB per command, with the rest
 spilled to a file the output names.
+
+## 7. The persistent shell (`anthropic_bash_20250124`)
+
+A native declaration has **no description field** — `{"type": "bash_20250124",
+"name": "bash"}` is the whole thing. The model therefore arrives knowing what
+Anthropic taught it, including the part we cannot argue with: one bash process
+stays alive across calls, and every command runs inside it.
+
+So it does. `ShellSession` keeps a `/bin/bash` per conversation and sources each
+command into it, which means `cd`, environment variables, shell functions and
+shell options all carry over:
+
+```python
+shell = ShellAccessPlugin(workspace=Path("."))
+runner = PluginAgentSessionRunner(session, plugins=[shell])
+
+# the model runs `cd src`, then `touch new.py`:
+#   new.py lands in ./src and `pwd` agrees — and so does the approval prompt,
+#   which asks for access_directory on ./src rather than on the workspace.
+
+await shell.aclose()   # kills the live shells; see the callout below
+```
+
+One shell per conversation, never one per session: subagents run concurrently
+and a shell is a serial pipe. Compaction is the exception it looks like — a new
+conversation id for the same agent — and the pool follows the lineage, so
+nothing restarts.
+
+**Nothing is serialized.** A restart is any of: `restart: true`, a timeout, a
+cancellation, a command that runs `exit`, or resuming a saved session. Each
+means a new process and therefore an empty shell — a snapshot would mostly
+restore the user's own environment, and would write whatever `source .env` put
+in scope into a long-lived session file. Instead the plugin adds a system-prompt
+part that says so, on every call until the model actually uses the new shell:
+
+```
+Your bash session was restarted and is empty. The working directory,
+environment variables, shell functions and background jobs from earlier in
+this conversation are gone.
+```
+
+> ⚠️ **Close the plugin.** `await shell.aclose()` kills the live processes.
+> There's no teardown hook on `Tool` or the plugin base, so call it wherever you
+> discard a runner (quit, clear, resume, fork). A hard process kill needs
+> nothing: the shell reads from a pipe only you hold, so it gets EOF and exits.
 
 Next: [`tui/README.md`](../tui/README.md).

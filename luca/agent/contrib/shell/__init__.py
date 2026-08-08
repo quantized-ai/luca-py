@@ -8,6 +8,10 @@ four PROVIDER-NATIVE tools in [`native/`](native/__init__.py) and the
 middleware that projects them; and `ShellAccessPlugin`, which bundles all
 twelve behind one workspace with a shared `FileReadTracker` and a seeded
 `PermissionStrategy`.
+
+`ShellSession` / `ShellSessionPool` ([`session.py`](session.py)) are the live
+bash process behind `anthropic_bash_20250124`, whose wire declaration promises
+one. The plugin owns the pool and `aclose()`s it.
 """
 
 from .native import (
@@ -20,6 +24,7 @@ from .native import (
     supported_native_tools,
 )
 from .plugin import ShellAccessPlugin
+from .session import ShellSession, ShellSessionPool
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -44,6 +49,8 @@ __all__ = [
     "GrepTool",
     "ReadTool",
     "ShellAccessPlugin",
+    "ShellSession",
+    "ShellSessionPool",
     "ShellTool",
     "ShellToolError",
     "WriteTool",

@@ -35,8 +35,10 @@ luca/agent/contrib/shell/
 │                 #   ShellAccessPlugin
 ├── tools.py      # ALL generic tool classes + shared machinery (base class, tracker, locks, constants)
 ├── plugin.py     # ShellAccessPlugin: workspace/additional dirs, shared tracker,
-│                 #   seeded PermissionStrategy, registry + middleware +
-│                 #   system-prompt hooks
+│                 #   seeded PermissionStrategy, the shell-session pool + aclose(),
+│                 #   registry + middleware + system-prompt hooks
+├── session.py    # ShellSession/ShellSessionPool: the LIVE bash process behind
+│                 #   anthropic_bash_20250124, one per conversation lineage
 ├── replace.py    # edit's 9 replacement-candidate strategies + the replace() driver (pure, no IO)
 ├── patch.py      # apply_patch's parser + hunk applier (pure, no IO — the tool owns all filesystem access)
 └── native/       # the provider-native tools — see the section below
@@ -98,7 +100,7 @@ provider switches — is a separate battery at `tests/agent/test_native_tools/`.
 | `WriteTool` | EDIT | Full-content write, creates parents. Read-first enforced for existing targets. Exactly one BOM preserved (existing file's or content's, never duplicated). Content round-trips exactly (empty, NUL, CRLF, no-final-newline). `metadata={"existed": bool}`. |
 | `ApplyPatchTool` | EDIT | `*** Begin/End Patch` envelope with Add/Delete/Update(+Move) ops; heredoc wrapper accepted. Verify-everything-then-commit: a failing op leaves ALL files untouched (no rollback once commit starts — deliberate). Four line-matching passes (exact → rstrip → strip → unicode-punctuation), `@@ context` seek, `*** End of File` tail anchor. Kept context lines are copied from the original file. Updated files end with a newline; BOM preserved. Output `Success. Updated the following files:` + `A/M/D <path>` (moves show the destination); per-file diff/additions/deletions/move_to in `metadata["files"]`. |
 | `DeleteFileTool` | DELETE | Removes ONE file; refuses a missing path and a directory (a symlink to a directory is removed as the link it is). Deliberately OUTSIDE the read-first contract — `read` refuses binaries, so a guard would make a stray `.pyc` undeletable. Its `delete_file` verb is not in the seeded read tier, so every call prompts. |
-| `BashTool` | EXECUTE | Fresh `shell -c <command>` per call (shell from ctor/`$SHELL`/`/bin/bash`), stdin disabled, stderr merged into stdout, streamed. Tool-enforced timeout (default 120 000 ms) and cooperative cancellation both kill the process group and return partial output with a `<shell_metadata>` block; `metadata={"exit": int|None, "truncated", "output_path"}`. Output over 2000 lines / 50 KiB ⇒ tail preview + full output saved to a temp file (`output_dir=` ctor override). Non-zero exit is a result (`is_error=True`), not an exception. Description is a `.format` template rendered per instance with os/shell/tmp/limits. |
+| `BashTool` | EXECUTE | Fresh `shell -c <command>` per call (shell from ctor/`$SHELL`/`/bin/bash`), stdin disabled, stderr merged into stdout, streamed. Tool-enforced timeout (default 120 000 ms) and cooperative cancellation both kill the process group and return partial output with a `<shell_metadata>` block (the note per outcome is `SHELL_METADATA_NOTES`); `metadata={"exit": int|None, "truncated", "output_path"}`. Output over 2000 lines / 50 KiB ⇒ tail preview + full output saved to a temp file (`output_dir=` ctor override). Non-zero exit is a result (`is_error=True`), not an exception. Description is a `.format` template rendered per instance with os/shell/tmp/limits. `_render` and `_truncate` are shared with the persistent native bash; `_effective_workdir` is the seam that one overrides. |
 
 ## Permission requests (what `build_permission_requests` returns)
 
@@ -156,6 +158,35 @@ TUI through `ToolSpec.display_name`.
 `read`, `glob` and `grep` survive every mode (nothing native reads an image or
 searches a repo), and `delete_file` survives on Anthropic (`text_editor`
 cannot delete).
+
+**`anthropic_bash_20250124` is STATEFUL, and that is not optional.** A native
+declaration has no description field, so the model cannot be told anything about
+the tool it does not already believe — and what Anthropic taught it is that one
+bash process stays alive across calls with every command running inside it.
+`session.py` is that process:
+
+- `ShellSession` — one `/bin/bash -s`, spawned on first use. Each command is
+  written to a temp FILE and SOURCED with `< /dev/null` (so `cd`/`export`
+  persist, heredocs survive verbatim, and a bare `cat` cannot eat the next
+  command off our pipe), followed by a per-command uuid sentinel carrying `$?`
+  and `$PWD`.
+- `ShellSessionPool` — one session per conversation LINEAGE (`lineage_root`
+  walks `previous_conversation_id`, so a compaction keeps its shell and a
+  subagent gets its own). Owned and closed by `ShellAccessPlugin`.
+- **Nothing is serialized.** A restart — `restart: true`, a timeout, a cancel,
+  a command that runs `exit`, a resumed session — means a new, empty shell, and
+  the plugin's `bash_restart_part` tells the model instead of rebuilding it.
+  That notice is spent by USE, not by being emitted (`ShellSession.fresh`): the
+  system prompt is re-sent whole every call, so a notice the model read and
+  never acted on has to still be there when it finally runs a command.
+- The permission scope follows the SHELL's cwd, not the workspace — otherwise
+  the approval prompt names the wrong directory for a command the model already
+  said it would run somewhere else.
+- `ShellAccessPlugin.aclose()` kills the live processes. There is no teardown
+  hook on `Tool`/`ToolRegistry`/`BasePlugin`, so the application calls it on its
+  graceful paths (the TUI's `_quit` / `_reset_session`). A hard kill needs
+  nothing: the shell's command pipe is held only by us, so it gets EOF and
+  exits.
 
 **The `REPLACES` table is per NATIVE TOOL, never per provider**, because
 support is per MODEL: `gpt-5.5-pro` has the native shell and NO native
@@ -219,6 +250,10 @@ provider-facing names).
   Ignore/hidden/.git behavior is asserted as argv flags, not real traversal.
 - read/edit/write/apply_patch use real `tmp_path` files; bash spawns real
   short-lived processes (the timeout/cancel tests sleep-and-kill, ~1s total).
+- **A test that starts a persistent shell must close it.** `test_session.py`'s
+  `shell` / `pool` fixtures and `test_tools.py`'s `bash` fixture are the only
+  doors; `-W error::ResourceWarning` turns a leaked process into a failure,
+  which is the point.
 - `filterwarnings = error` applies: close every file handle
   (`Path.read_text`, not bare `open()`), await every spawned task.
 - Every scenario with a distinct resource shape also asserts
@@ -244,4 +279,9 @@ provider-facing names).
   Keep the invariants: roots stored absolute with the same
   normpath-no-symlink convention as `ShellTool._resolve` (mixed conventions
   break rule matching), ONE `FileReadTracker` and one workdir across the
-  tools, seeded rules derived from the roots only.
+  tools, seeded rules derived from the roots only, and one `ShellSessionPool`
+  that `aclose()` releases.
+- Persistent-shell changes → `session.py` + `tests/agent/contrib/shell/test_session.py`.
+  The three load-bearing details are the sourced script (not stdin), the
+  `< /dev/null` on it, and the per-command random sentinel — each one exists
+  because dropping it silently corrupts a command's output rather than failing.

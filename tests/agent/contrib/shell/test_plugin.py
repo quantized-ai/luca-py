@@ -16,6 +16,7 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.core import (
     AgentSession,
     ApprovalOption,
+    CancellationToken,
     ExecutionStatus,
     LLMConfig,
     SessionConfig,
@@ -149,7 +150,7 @@ def test_system_prompt_part_names_the_permitted_directories(tmp_path):
         additional_directories=[tmp_path.parent / "sibling"],
     )
 
-    [part] = plugin.get_system_prompt_parts(SESSION)
+    [part, _notice] = plugin.get_system_prompt_parts(SESSION)
     text = part(SESSION, main_conversation(SESSION).id)
 
     assert str(tmp_path) in text
@@ -171,6 +172,75 @@ def test_system_prompt_part_names_the_provider_facing_tools_on_a_native_model(tm
     text = plugin.get_system_prompt_parts(session)[0](session, main_conversation(session).id)
 
     assert "(read, glob, grep, apply_patch, shell)" in text
+
+
+# ── the "your shell was restarted" notice ─────────────────────────────────────
+
+
+def bash_session(*, ran_bash: bool) -> AgentSession:
+    """A Claude session with natives on, whose conversation has (or has not)
+    called the native bash before."""
+    session = native_session("claude-opus-5", "anthropic")
+    if ran_bash:
+        session.entries["x_1"] = ToolExecution(
+            id="x_1",
+            created_at=500,
+            conversation_id="c1",
+            tool_call_id="c_1",
+            raw_tool_call=ToolCall(id="c_1", name="anthropic_bash_20250124", arguments={"command": "cd /tmp"}),
+            status=ExecutionStatus.COMPLETED,
+        )
+        session.conversations["c1"].nodes = ["x_1"]
+    return session
+
+
+def test_a_resumed_session_is_told_its_bash_session_is_empty(tmp_path):
+    plugin = make_plugin(tmp_path)
+    session = bash_session(ran_bash=True)
+
+    notice = plugin.bash_restart_part(session, "c1")
+
+    assert notice == (
+        "### Shell session\n"
+        "Your bash session was restarted and is empty. The working directory,"
+        " environment variables, shell functions and background jobs from"
+        " earlier in this conversation are gone."
+    )
+
+
+def test_a_brand_new_session_is_told_nothing(tmp_path):
+    # Nothing was restarted, and no history claims otherwise — announcing a
+    # restart here would invent one.
+    plugin = make_plugin(tmp_path)
+
+    assert plugin.bash_restart_part(bash_session(ran_bash=False), "c1") is None
+
+
+def test_the_notice_is_dropped_once_the_shell_has_actually_been_used(tmp_path):
+    plugin = make_plugin(tmp_path)
+    session = bash_session(ran_bash=True)
+    plugin.shells.get(session, "c1")._used = True
+
+    assert plugin.bash_restart_part(session, "c1") is None
+
+
+def test_no_notice_when_the_model_is_not_being_offered_the_native_bash(tmp_path):
+    # A generic-tools model never had a persistent shell to lose.
+    plugin = make_plugin(tmp_path)
+    session = bash_session(ran_bash=True)
+    session.use_native_tools = False  # the ACTIVE flag, restamped every drive
+
+    assert plugin.bash_restart_part(session, "c1") is None
+
+
+async def test_aclose_releases_the_live_shells(tmp_path):
+    plugin = make_plugin(tmp_path)
+    shell = plugin.shells.get(SESSION, "c1")
+    await shell.run("printf hi", timeout_ms=5_000, cancellation_token=CancellationToken())
+
+    await plugin.aclose()
+
+    assert shell.fresh is True
 
 
 def test_get_middleware_returns_the_native_middleware_bound_to_the_session(tmp_path):

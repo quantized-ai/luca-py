@@ -589,30 +589,77 @@ def test_text_editor_asks_for_the_verb_its_command_means(tmp_path, perm, command
 # ── anthropic_bash_20250124 ───────────────────────────────────────────────────
 
 
-async def test_anthropic_bash_runs_a_command(tmp_path, run):
-    result = await run(AnthropicBashTool(workdir=tmp_path), {"command": "printf hi"})
+@pytest.fixture
+async def bash(tmp_path):
+    """An `anthropic_bash_20250124` whose live shell dies with the test. The
+    suite runs with `-W error::ResourceWarning`, so a leaked one fails it."""
+    tool = AnthropicBashTool(workdir=tmp_path)
+    yield tool
+    await tool.pool.aclose()
+
+
+async def test_anthropic_bash_runs_a_command(bash, run):
+    result = await run(bash, {"command": "printf hi"})
 
     assert result.is_error is False
     assert body(result) == "hi"
     assert result.metadata["exit"] == 0
 
 
-async def test_anthropic_bash_reports_a_non_zero_exit(tmp_path, run):
-    result = await run(AnthropicBashTool(workdir=tmp_path), {"command": "exit 2"})
+async def test_anthropic_bash_reports_a_non_zero_exit(bash, run):
+    result = await run(bash, {"command": "(exit 2)"})
 
     assert result.is_error is True
     assert result.metadata["exit"] == 2
 
 
-async def test_anthropic_bash_answers_a_restart_without_running_anything(tmp_path, run):
-    result = await run(AnthropicBashTool(workdir=tmp_path), {"restart": True})
+async def test_anthropic_bash_survives_a_command_that_exits_the_shell(bash, run):
+    # A bare `exit` ends a persistent session, exactly as it does in a
+    # terminal. The tool says so and the next command opens a new shell.
+    ended = await run(bash, {"command": "exit 2"})
 
-    assert result.is_error is False
-    assert body(result) == RESTART_OUTPUT
+    assert ended.is_error is True
+    assert ended.metadata["exit"] is None
+    assert "the shell session exited" in body(ended)
+    assert body(await run(bash, {"command": "printf alive"})) == "alive"
 
 
-async def test_anthropic_bash_needs_a_command_or_a_restart(tmp_path, run):
-    result = await run(AnthropicBashTool(workdir=tmp_path), {})
+async def test_anthropic_bash_keeps_the_working_directory_between_calls(tmp_path, bash, run):
+    # THE bug this tool's wire declaration always promised away: `bash_20250124`
+    # is a persistent session, so a relative path after a `cd` belongs to the
+    # directory the model changed to, not to the workspace.
+    (tmp_path / "sub").mkdir()
+
+    await run(bash, {"command": "cd sub"})
+    await run(bash, {"command": "printf hello > notes.txt"})
+    result = await run(bash, {"command": "pwd"})
+
+    assert body(result) == f"{tmp_path / 'sub'}\n"
+    assert (tmp_path / "sub" / "notes.txt").read_text() == "hello"
+
+
+async def test_anthropic_bash_keeps_environment_and_shell_functions_between_calls(bash, run):
+    await run(bash, {"command": "export GREETING=hi; greet() { printf '%s there' \"$GREETING\"; }"})
+
+    result = await run(bash, {"command": "greet"})
+
+    assert body(result) == "hi there"
+
+
+async def test_anthropic_bash_restart_empties_the_session(tmp_path, bash, run):
+    (tmp_path / "sub").mkdir()
+    await run(bash, {"command": "cd sub; export GREETING=hi"})
+
+    restart = await run(bash, {"restart": True})
+    result = await run(bash, {"command": 'printf \'%s[%s]\' "$PWD" "$GREETING"'})
+
+    assert restart.is_error is False
+    assert body(restart) == RESTART_OUTPUT
+    assert body(result) == f"{tmp_path}[]"
+
+
+async def test_anthropic_bash_needs_a_command_or_a_restart(bash, run):
+    result = await run(bash, {})
 
     assert result.is_error is True
     assert body(result) == "Provide a command, or restart: true."
@@ -626,13 +673,25 @@ def test_anthropic_bash_rejects_a_blank_command():
         AnthropicBashTool.Args.model_validate({"command": "   "})
 
 
-def test_anthropic_bash_restart_declares_only_the_directory_step(tmp_path, perm):
-    assert perm(AnthropicBashTool(workdir=tmp_path), {"restart": True}) == [
-        AnthropicBashTool(workdir=tmp_path)._access_request(tmp_path),
-    ]
+def test_anthropic_bash_restart_declares_only_the_directory_step(tmp_path, bash, perm):
+    assert perm(bash, {"restart": True}) == [bash._access_request(tmp_path)]
 
 
-def test_anthropic_bash_declares_the_same_verb_as_the_generic_bash(tmp_path, perm):
-    [_access, run_step] = perm(AnthropicBashTool(workdir=tmp_path), {"command": "git status"})
+def test_anthropic_bash_declares_the_same_verb_as_the_generic_bash(bash, perm):
+    [_access, run_step] = perm(bash, {"command": "git status"})
 
     assert run_step.resources == [ResourcePermission(permission="bash", resource="git status")]
+
+
+async def test_anthropic_bash_asks_for_the_directory_the_shell_is_actually_in(tmp_path, bash, run, perm):
+    # Without this the approval prompt shows the workspace for a command the
+    # model already said it would run somewhere else — the user is asked about
+    # `rm -rf *` in the wrong directory.
+    (tmp_path / "sub").mkdir()
+    await run(bash, {"command": "cd sub"})
+
+    [access, _run_step] = perm(bash, {"command": "rm -rf *"})
+
+    assert access.resources == [
+        ResourcePermission(permission="access_directory", resource=str(tmp_path / "sub")),
+    ]
