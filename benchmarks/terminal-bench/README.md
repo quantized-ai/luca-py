@@ -67,10 +67,40 @@ the task image is the opposite of that.
 ## Running the benchmark
 
 Run these in order. Each stage rules out one class of failure, so that when
-stage 5 gives a bad score you already know it is luca's fault and not Docker's.
+stage 6 gives a bad score you already know it is luca's fault and not Docker's.
+The first three cost nothing.
 
-Flags worth knowing before you spend money: `-l` limits how many tasks run,
-`-k` is attempts per task (this is what feeds `pass_at_k`), `-n` is concurrency.
+Every command below runs from **this directory**. From the repo root, prefix
+them with `uv run --directory benchmarks/terminal-bench` instead of `uv run`.
+
+Flags worth knowing before you spend money (these are harbor 0.20's names, and
+they are not the ones in the tbench.ai docs, which describe a newer build):
+
+| Flag | Means |
+|---|---|
+| `-d` | dataset, `name@version` |
+| `-a` | agent: a built-in name, or **our import path** `luca_tb.agent:LucaAgent` |
+| `-m` | model, `provider/model` |
+| `-l` | max tasks to run |
+| `-i` | run one named task (repeatable) |
+| `-k` | attempts per task — this is what feeds `pass@k` |
+| `-n` | concurrent trials (default 4) |
+| `--ak` | agent kwarg, `key=value` |
+| `--env-file` | load a `.env` for provider keys |
+| `--install-only` | install the agent, then stop. No tokens spent |
+| `--print-config` | resolve and print the config, then stop. Nothing runs |
+
+### Stage 0 — does the command resolve (free, instant)
+
+```bash
+uv run harbor run -d terminal-bench/terminal-bench-2-1 \
+    -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
+    -i hello-world --print-config
+```
+
+Prints the resolved job and exits. No Docker, no network, no tokens. If the
+agent import path is wrong or the dataset name is misspelled, you find out here
+in a second rather than after a dataset download.
 
 ### Stage 1 — is the harness sane
 
@@ -79,8 +109,9 @@ uv run harbor run -d terminal-bench/terminal-bench-2-1 -a oracle -l 5
 ```
 
 Expect 5/5 at reward `1.0`. The oracle runs each task's own reference solution,
-so anything less is Docker, disk, the dataset download or Harbor itself. Do not
-touch the adapter until this is green.
+so anything less is Docker, disk, the dataset download or Harbor itself. This
+is the first stage that pulls task images, so it is slow once and fast after.
+Do not touch the adapter until it is green.
 
 ### Stage 2 — do the tests actually fail
 
@@ -92,19 +123,32 @@ Expect 0/5. This catches tasks that pass with no agent at all, which would
 inflate our score for free. Skipping this stage is how people end up retracting
 a number.
 
-### Stage 3 — one task, our agent
+### Stage 3 — does luca install (free of tokens)
 
 ```bash
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
-    --agent-import-path luca_tb.agent:LucaAgent \
+    -a luca_tb.agent:LucaAgent -m openrouter/openai/gpt-5.4-mini \
+    -i hello-world --install-only
+```
+
+Runs `install()` and stops before the agent does any work, so it costs a
+container and no model calls. This is the stage that shakes out the whole setup
+path: system packages, the uv install, the wheel upload, the venv, and the
+`import luca` smoke check. Almost every first-time failure lives here rather
+than in the agent.
+
+### Stage 4 — one task, end to end
+
+```bash
+uv run harbor run -d terminal-bench/terminal-bench-2-1 \
+    -a luca_tb.agent:LucaAgent \
     -m openrouter/openai/gpt-5.4-mini \
-    --include-task-name hello-world
+    -i hello-world --ak max_steps=40
 ```
 
 The reward is almost beside the point here. What you are checking:
 
-- `<trial>/result.json` shows `agent_setup` finishing with no `exception_info`,
-  meaning the install worked (uv, wheel, venv, `--help` smoke check).
+- `<trial>/result.json` shows `agent_setup` finishing with no `exception_info`.
 - `<trial>/agent/session.json` exists and is non-empty, meaning the
   `/logs/agent/` mount worked.
 - `agent_result.n_input_tokens` and `n_output_tokens` are non-zero, meaning
@@ -113,22 +157,23 @@ The reward is almost beside the point here. What you are checking:
 - `<trial>/agent/luca.txt` shows real tool calls, not approval prompts. Prompts
   would mean yolo did not take.
 
-### Stage 4 — ten-task pilot
+### Stage 5 — ten-task pilot
 
 ```bash
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
-    --agent-import-path luca_tb.agent:LucaAgent \
+    -a luca_tb.agent:LucaAgent \
     -m openrouter/openai/gpt-5.4-mini -l 10 -n 4
 ```
 
 The pilot exists to find systematic failures cheaply. Read every failing
 trial's `luca.txt` against the triage table below before scaling up.
 
-### Stage 5 — the real run
+### Stage 6 — the real run
 
 ```bash
+mkdir -p ../../runs
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
-    --agent-import-path luca_tb.agent:LucaAgent \
+    -a luca_tb.agent:LucaAgent \
     -m <model> -k 3 -n 8 2>&1 | tee ../../runs/full-$(date +%F).log
 ```
 
@@ -141,6 +186,21 @@ Agent knobs go through `--ak`:
 ```bash
 --ak max_steps=300 --ak timeout=1200 --ak reasoning=high --ak subagents=true
 ```
+
+### Provider keys
+
+Harbor reads them from the environment, so either export the one your model
+needs or point `--env-file` at a file holding it:
+
+```bash
+export OPENROUTER_API_KEY=sk-...
+# or
+uv run harbor run ... --env-file ../../.env
+```
+
+`LUCA_API_KEY` works as a single override across providers: the adapter
+forwards it into the container under whichever variable name luca's provider
+actually reads. A missing key fails fast, before any container is started.
 
 ### Through Docker
 

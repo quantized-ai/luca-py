@@ -5,7 +5,7 @@ in there, invokes it once with the task instruction, and reads the trajectory
 back afterwards.
 
     harbor run -d terminal-bench/terminal-bench-2-1 \\
-        --agent-import-path luca_tb.agent:LucaAgent \\
+        -a luca_tb.agent:LucaAgent \\
         -m openrouter/openai/gpt-5.4-mini
 
 Because `luca-ai` is not published and the repo is private, installation goes
