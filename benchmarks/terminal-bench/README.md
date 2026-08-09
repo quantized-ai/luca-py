@@ -10,27 +10,30 @@ A separate uv project, outside the `luca` package, composing an agent from core
 
 ## Results
 
-**2026-08-09 · gpt-5.4-mini via OpenRouter · 10 tasks, k=1**
+**2026-08-10 · gpt-5.4-mini via OpenRouter · 10 tasks, k=1, `-n 4`**
 
 ```
-scored:    6 trials -> 2 passed, 4 failed        mean reward 0.200
-errored:   4 trials (count as reward 0)
-             AgentSetupTimeoutError       2   ours, fixed below
-             VerifierTimeoutError         1   slow verifier, also fails for nop
-             EnvironmentStartTimeoutError 1   image pull
-passed:    openssl-selfsigned-cert, pypi-server
-cost:      ~$0.04 per solved task, 19m wall clock at -n 4
+mean reward  0.100      1 passed (openssl-selfsigned-cert), 7 failed
+errored      2 trials   count as reward 0
+               AgentSetupTimeoutError      torch-pipeline-parallelism
+               NonZeroAgentExitCodeError   qemu-alpine-ssh
+cost         $0.45 over 8 scored trials    16m wall clock
 ```
 
-Baselines on the same setup: oracle 5/5, nop 0/5. So the harness is sound and
-no task passes for free.
+Baselines on the same host: oracle 5/5, nop 0/5, so the harness is sound and no
+task passes for free.
 
-**Fixed since:** `uv venv --python 3.11` downloaded a managed CPython on heavy
-ML images and blew the 360s agent-setup budget. Now prefers an interpreter the
-image already has. `torch-pipeline-parallelism` setup went from timeout to
-121s.
+At k=1 over 10 tasks a single task flipping moves the score 10 points, so treat
+this as a smoke test rather than a measurement. All 89 tasks at `-k 5` is the
+first number worth quoting.
 
-Not yet run: all 89 tasks, or `-k 5`.
+### On Apple Silicon
+
+Task images are `linux/amd64`, so every container runs under QEMU and
+`apt-get update` alone costs ~55s. Agent setup has a 360s budget and four
+concurrent containers can exceed it on the heavier images, which is what the
+`AgentSetupTimeoutError` above is. Use a low `-n` locally, or x86 / a cloud
+sandbox for a real run.
 
 ## Setup
 
