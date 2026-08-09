@@ -48,9 +48,16 @@ after every run — one directory per project, so nothing lands next to your cod
 `sessions.directory` in the config moves that root; the per-project
 subdirectory is always applied under it. A bare `--resume` opens the picker on
 start, `/resume` opens it mid-session, and `--resume <id>` goes straight to
-one. A real session needs a provider key (OPENROUTER_API_KEY by default) in
-the environment; `--faux` needs nothing — it plays back the scripted demo
-conversation (one turn: a gated `multiply` call, then the wrap-up).
+one.
+
+A real session needs a key for its provider. `~/.local/share/luca/auth.json`
+(`$XDG_DATA_HOME` honored, `LUCA_AUTH_PATH` overrides) names one per provider:
+`{"openrouter": {"type": "api", "key": "sk-or-…"}}`. It is read at boot, passed
+to the runner, and never written to the session. A provider with no entry gets
+no key and falls back to whatever env var `luca.client` knows for it
+(OPENROUTER_API_KEY by default). `--faux` needs nothing — it plays back the
+scripted demo conversation (one turn: a gated `multiply` call, then the
+wrap-up).
 """
 
 from __future__ import annotations
@@ -73,6 +80,7 @@ from luca.client.catalog.refresh import main as refresh_catalog
 from luca.client.types import Reasoning
 
 from .app import DEFAULT_THEME, AgentApp
+from .auth import api_key_for, load_auth, resolve_auth_path
 from .config import (
     LucaConfig,
     LucaConfigError,
@@ -82,11 +90,11 @@ from .config import (
     load_luca_config,
     pick,
     picker_models,
-    register_config_providers,
     resolve_config_path,
     resolve_llm_config,
     resolve_read_limits,
     resolve_runtime_config,
+    validate_provider,
 )
 from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
@@ -427,8 +435,15 @@ def main(argv: list[str] | None = None) -> None:
         if args.pretty_print:
             print(pretty_print(load_session(resume_id(args), store)))
             return
-        register_config_providers(config)
         session = build_session(args, config, store)
+        # `--faux` injects a provider INSTANCE and never resolves a name, so it
+        # needs neither a credential nor the reachability check. Otherwise both
+        # run against the provider this launch will actually call — `--provider`,
+        # the file and the resumed session are all folded in by `build_session`.
+        auth: dict = {}
+        if not args.faux:
+            auth = load_auth(resolve_auth_path())
+            validate_provider(config, session.session_config.llm_config.provider)
         # After build_session: the filename is the session's, and a resumed
         # session appends to the log it already has.
         setup_logging(
@@ -444,6 +459,7 @@ def main(argv: list[str] | None = None) -> None:
         app = AgentApp(
             session,
             provider=provider,
+            auth=auth,
             session_dir=store,
             resume=resume_picker(args),
             read_limits=resolve_read_limits(config),
@@ -454,6 +470,7 @@ def main(argv: list[str] | None = None) -> None:
             context_manager=build_context_manager(
                 config,
                 provider=provider,
+                api_key=api_key_for(auth, session.session_config.llm_config.provider),
                 enabled=args.autocompact,
                 threshold=args.compact_threshold,
                 keep_turns=args.compact_keep_turns,

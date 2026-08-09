@@ -127,6 +127,7 @@ class AgentApp(LucaApp):
         session: AgentSession,
         *,
         provider=None,
+        auth: dict | None = None,
         theme: str = DEFAULT_THEME,
         workspace: str | Path = ".",
         session_dir: str | Path = ".",
@@ -151,6 +152,10 @@ class AgentApp(LucaApp):
         self._streaming = streaming
         self._workspace = workspace
         self._provider = provider
+        # `auth.json`, read once at boot. Kept as the whole map rather than as
+        # one resolved key because `/model` can move the session to another
+        # provider mid-run, and the key has to follow it.
+        self._auth = dict(auth or {})
         self._mode = mode
         self._context_manager = context_manager
         self._additional_directories = additional_directories
@@ -387,10 +392,27 @@ class AgentApp(LucaApp):
         return True
 
     def resolve_model_options(self, llm_config: LLMConfig) -> LLMConfig:
-        """Re-resolve the configured `options` for this pair. Called by `_apply`
+        """Re-resolve the configured options for this pair. Called by `_apply`
         on every model switch, so a session never keeps the previous model's
         settings."""
         return self._model_options(llm_config)
+
+    def api_key_for(self, provider: str) -> str | None:
+        """This provider's key from `auth.json`, or None to let the client fall
+        back to its own environment variable."""
+        from .auth import api_key_for
+
+        return api_key_for(self._auth, provider)
+
+    def repoint_api_key(self, provider: str) -> None:
+        """Move the live runner (and its context manager) onto another
+        provider's credential. Called by `_apply` alongside the option
+        re-resolution: a `/model openai:…` on a session configured for
+        openrouter must stop sending openrouter's key."""
+        key = self.api_key_for(provider)
+        self.runner.api_key = key
+        if self._context_manager is not None:
+            self._context_manager.api_key = key
 
     def _alternate_model(self) -> tuple[str, str] | None:
         """A sibling to offer after a turn fails — the newest model from the
@@ -901,6 +923,7 @@ class AgentApp(LucaApp):
             session,
             workspace=self._workspace,
             provider=self._provider,
+            api_key=self.api_key_for(session.session_config.llm_config.provider),
             mode=self._mode,
             context_manager=self._context_manager,
             additional_directories=self._additional_directories,

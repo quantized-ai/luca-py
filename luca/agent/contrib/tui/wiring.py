@@ -103,7 +103,7 @@ def default_model() -> LLMConfig:
     return LLMConfig(
         model="openai/gpt-5.4-mini",
         provider="openrouter",
-        reasoning="medium",
+        model_options={"reasoning": "medium"},
     )
 
 
@@ -116,6 +116,7 @@ def build_runner(
     *,
     workspace: str | os.PathLike[str] = ".",
     provider=None,
+    api_key: str | None = None,
     mode: str = "ask",
     context_manager=None,
     additional_directories: list | None = None,
@@ -128,7 +129,8 @@ def build_runner(
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
     """The full demo composition: shell + memory plugins, the math tools, one
     shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
-    to inject a `FauxProvider`; `context_manager=` is the same for context
+    to inject a `FauxProvider`, and `api_key=` the credential the app resolved
+    for the session's provider (None = let the client read its env var); `context_manager=` is the same for context
     accounting and compaction — `None` falls back to core's default, which
     accounts but never compacts, so `/compact` fails until one that implements
     `compact()` is passed here."""
@@ -178,6 +180,7 @@ def build_runner(
         tool_registry=registry,
         plugins=plugins,
         provider=provider,
+        api_key=api_key,
         context_manager=context_manager,
     )
     return runner, strategy

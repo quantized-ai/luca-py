@@ -185,29 +185,36 @@ class BaseConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ModelOptions(BaseConfigModel):
-    """How the model is invoked, on top of WHICH model it is. Everything here
-    is optional and unset means "send nothing", so the provider's own default
-    stands.
-
-    `provider_options` mirrors the client field verbatim — keyed by PROVIDER
-    NAME, never a bare dict. That is what makes a routed turn safe: the
-    transport looks its own name up and finds nothing, rather than sending one
-    provider's wire fields to another."""
-
-    max_tokens: int | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    provider_options: dict[str, dict] | None = None
-
-
 class LLMConfig(BaseConfigModel):
+    """WHICH model answers, and everything about HOW it is invoked.
+
+    Only `model` and `provider` mean anything to the core. The two dicts are
+    FLAT, opaque and forwarded: the core stores what it is handed and hands it
+    to the client, and never reads a key out of either — the one exception is
+    `runner.completion_options`, which lifts `base_url` and `transport` out of
+    `provider_options` because those are how the client is REACHED rather than
+    what it is asked for. Assembling them is the application's job (in the
+    demo, `contrib/tui/config.py` resolving `luca.json`).
+
+    - `model_options` are `luca.client.acompletion` keyword arguments —
+      `max_tokens`, `temperature`, `reasoning`, `seed`, … Splatted into the
+      call as-is, so an unknown name is a `TypeError` there, not a validation
+      error here.
+    - `provider_options` are `base_url`, `transport` (a dotted path to a
+      transport class), and any raw wire fields the provider itself
+      documents. Everything after the first two is passed to the client as
+      `provider_options={<provider name>: {...}}`, the shape its transports
+      merge into the request payload.
+
+    NO CREDENTIALS. An `LLMConfig` is persisted with the session and copied
+    onto every assistant entry as provenance, so an api key placed here would
+    be written to disk once per message. The key travels the runner's
+    runtime-only `api_key`, alongside `provider`."""
+
     model: str  # e.g. "openai/gpt-5.4-mini"
     provider: str  # e.g. "openrouter"
-    reasoning: str | None = None
-    # Nested, not flattened: an LLMConfig is copied onto every assistant entry,
-    # so one null key per entry beats one per knob in every saved session.
-    options: ModelOptions | None = None
+    model_options: dict = Field(default_factory=dict)
+    provider_options: dict = Field(default_factory=dict)
 
 
 class Usage(BaseModel):
@@ -1707,8 +1714,8 @@ class AgentSession(BaseModel):
         (`session_config.llm_config`) — a middleware routing one turn to a
         cheaper model must not drift the session — splitting at the FIRST
         colon, the rule the client uses, so a model id containing one
-        survives; `reasoning` and `extras` are preserved. A string with no
-        prefix is a bare model id: the configured provider stands.
+        survives; the option dicts and `extras` are preserved. A string with
+        no prefix is a bare model id: the configured provider stands.
 
         Recording the active config here rather than in a drive-local is what
         makes it visible to everything handed the session; the transports

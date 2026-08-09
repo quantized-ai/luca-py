@@ -183,9 +183,15 @@
     },
     "ModelDef": {
       "additionalProperties": false,
+      "description": "One model's settings, mirroring `LLMConfig`'s two dicts exactly: what\nthe model is asked (`options`) and what the provider is told\n(`provider_options`). No key is inspected on the way out of either \u2014 which\nblock a key is written in IS the routing.",
       "properties": {
         "options": {
           "$ref": "#/$defs/ModelOptionsBlock"
+        },
+        "provider_options": {
+          "additionalProperties": true,
+          "title": "Provider Options",
+          "type": "object"
         }
       },
       "title": "ModelDef",
@@ -193,7 +199,7 @@
     },
     "ModelOptionsBlock": {
       "additionalProperties": true,
-      "description": "One `options` block: how a model is invoked, on top of which model it is.\n\nThe ONE model in this file that is not `extra=\"forbid\"`, deliberately.\nKnown keys are typed and validated; every unknown key falls through\nverbatim into the provider's raw `provider_options`. That passthrough is\nthe point \u2014 a provider's own wire fields (OpenRouter's `provider.order`,\nits `transforms`) move faster than this schema ever could, and forbidding\nextras would leave no way to reach them. Nothing is renamed or normalized\non the way out: write the field the provider documents.",
+      "description": "One `options` block: the `luca.client.acompletion` keyword arguments a\ncall is made with, on top of WHICH model it is.\n\nThe ONE model in this file that is not `extra=\"forbid\"`, deliberately.\nThe four knobs almost everyone sets are typed and validated here, because\n`max_tokens: 0` and `reasoning: \"huge\"` are worth catching by name at boot\nrather than as a provider 400 mid-turn. Every other key falls through\nverbatim: the client takes a dozen more (`seed`, `stop`, `top_k`,\n`presence_penalty`, \u2026) and enumerating them would only mean this file\nrefusing a legitimate argument every time the client gains one.\n\nA key here that is NOT an `acompletion` argument is a `TypeError` on the\nfirst turn. Raw fields the PROVIDER documents belong in the sibling\n`provider_options` block, which is the one with no schema at all.",
       "properties": {
         "max_tokens": {
           "anyOf": [
@@ -377,7 +383,7 @@
     },
     "ProviderDef": {
       "additionalProperties": false,
-      "description": "A provider entry: host REGISTRATION (`base_url` and friends), invocation\nSETTINGS (`options` / `models`), or both. `base_url` is what makes it a\nregistration, and only a registration may not name a built-in provider \u2014\nsetting options on `openrouter` is the ordinary case.",
+      "description": "A provider entry: where the host is (`base_url` / `transport`), the\ndefaults every model on it is invoked with (`options` /\n`provider_options`), and per-model overrides (`models`). Any subset \u2014 an\nentry that only sets `options` on `openrouter` is the ordinary case.\n\n`base_url` and `transport` are passed PER CALL, never registered globally,\nso pointing a built-in provider at a proxy is as ordinary as configuring a\nhost luca has never heard of. A name `luca.client` does not know needs\nboth: they are what let it build a generic provider for it.\n\n`transport` is a dotted path to the transport CLASS\n(`\"luca.client.transports.OpenAITransport\"`), resolved by the runner at\ncall time \u2014 an import path survives the round trip through the session\nfile that a class object could not.\n\nNo api key here. Credentials live in `auth.json`; see `auth.py`.",
       "properties": {
         "base_url": {
           "anyOf": [
@@ -391,7 +397,7 @@
           "default": null,
           "title": "Base Url"
         },
-        "api_key_env": {
+        "transport": {
           "anyOf": [
             {
               "type": "string"
@@ -401,15 +407,15 @@
             }
           ],
           "default": null,
-          "title": "Api Key Env"
-        },
-        "transport": {
-          "default": "openai",
-          "title": "Transport",
-          "type": "string"
+          "title": "Transport"
         },
         "options": {
           "$ref": "#/$defs/ModelOptionsBlock"
+        },
+        "provider_options": {
+          "additionalProperties": true,
+          "title": "Provider Options",
+          "type": "object"
         },
         "models": {
           "additionalProperties": {

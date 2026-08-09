@@ -5,8 +5,11 @@ or two, a **tool registry** that owns them (resolution + approval), and the
 **`AgentSessionRunner`** that drives it all. This page builds one, then shows
 the loop that powers a real app.
 
-Needs a provider key in the environment (`OPENROUTER_API_KEY` by default) — see
-[`../client/01-installation.md`](../client/01-installation.md).
+Needs a provider key: either in the environment (`OPENROUTER_API_KEY` by
+default — see [`../client/01-installation.md`](../client/01-installation.md)),
+or passed explicitly as `AgentSessionRunner(..., api_key=...)`. It is a runner
+argument and not an `LLMConfig` field, because the config is persisted with the
+session ([02](02-data-model.md)).
 
 ## 1. One tool, one turn
 

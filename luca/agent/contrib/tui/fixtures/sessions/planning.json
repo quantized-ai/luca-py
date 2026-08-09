@@ -52,7 +52,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "tool_use"
     },
@@ -254,7 +255,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     },
@@ -413,7 +415,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     },
@@ -459,7 +462,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "tool_use"
     },
@@ -593,7 +597,7 @@
       "parts": [
         {
           "type": "text",
-          "text": "`append`, `flush`, `_rotate` and `close` are the write path — all four live in `reader.py` today.",
+          "text": "`append`, `flush`, `_rotate` and `close` are the write path \u2014 all four live in `reader.py` today.",
           "metadata": {}
         }
       ],
@@ -601,7 +605,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     },
@@ -638,7 +643,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "tool_use"
     },
@@ -801,7 +807,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     }
@@ -1002,7 +1009,8 @@
       "extras": {},
       "model": "claude-sonnet-5",
       "provider": "anthropic",
-      "reasoning": null
+      "model_options": {},
+      "provider_options": {}
     },
     "runtime_config": {
       "extras": {},

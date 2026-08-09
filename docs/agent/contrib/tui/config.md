@@ -16,6 +16,9 @@ CLI flags: it overrides a resumed session's model, and a `--model` flag still
 overrides the file. Every field is optional; unknown keys are rejected, and a
 malformed file exits with a one-line error.
 
+API keys are deliberately NOT here — they live in
+[`auth.json`](#credentials), one user-global file that never touches a repo.
+
 ## Naming a file directly
 
 `--config <path>` uses that file and **replaces both locations above** — neither
@@ -88,25 +91,26 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     ]
   },
 
-  "providers": {                 // register hosts, configure how models are called
-    "mycompany": {               // base_url = a host registration
+  "providers": {                 // where hosts are, and how models on them are called
+    "mycompany": {               // base_url + transport = a host luca does not know
       "base_url": "https://llm.mycompany.com/v1",
-      "api_key_env": "MYCOMPANY_API_KEY",
-      "transport": "openai",     // openai | anthropic | openrouter | bedrock
+      "transport": "luca.client.transports.OpenAITransport",
       "options": { "temperature": 0 }
     },
-    "openrouter": {              // no base_url = settings for a provider that exists
-      "options": { "max_tokens": 8000 },        // every model on this provider
+    "openrouter": {              // a provider that already exists: settings only
+      "options": { "max_tokens": 8000 },        // → LLMConfig.model_options
+      "provider_options": {                     // → LLMConfig.provider_options
+        "mycustom_param": 1
+      },
       "models": {
-        "moonshotai/kimi-k2:free": {
+        "moonshotai/kimi-k2:free": {            // wins per key over the two above
           "options": {
-            "max_tokens": 6000,                 // known keys: typed + validated
+            "max_tokens": 6000,
             "temperature": 0.2,
-            "reasoning": "high",
-            "provider": {                       // unknown keys: raw, to the provider
-              "order": ["baseten", "together"],
-              "allow_fallbacks": true
-            },
+            "reasoning": "high"
+          },
+          "provider_options": {                 // raw, straight to the provider
+            "provider": { "order": ["baseten", "together"] },
             "transforms": ["middle-out"]
           }
         }
@@ -143,16 +147,20 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 
 - A `runtime` block sets those fields over the session's persisted runtime; the
   rest of the session's runtime is untouched.
-- A `providers` entry does one or both of two jobs. With `base_url` it
-  REGISTERS a host in the client's provider registry
-  ([providers](../../../client/09-providers-and-transports.md)); set
-  `model.provider` to the key to route through it. Without one it only carries
-  settings for a provider that already exists, which is how you configure a
-  built-in like `openrouter` — registering over a built-in is still refused, so
-  a custom host needs a distinct name. A settings-only entry naming a provider
-  luca cannot reach is an error rather than a silent no-op.
-- `options` is per provider and per model, and the model's own block wins per
-  key over the provider-wide one. See [Model options](#model-options).
+- A `providers` entry says where a host is and how models on it are called.
+  Nothing is registered globally: `base_url` and `transport` are passed on
+  every call, so pointing a built-in like `openai` at a proxy is as ordinary as
+  configuring a host luca has never heard of. A provider the client does not
+  know needs BOTH — they are what let it build a generic provider for that name
+  ([providers](../../../client/09-providers-and-transports.md)) — and naming an
+  unreachable provider fails at startup rather than on the first turn.
+  `transport` is a dotted path to the transport CLASS, e.g.
+  `"luca.client.transports.OpenAITransport"`.
+- `options` and `provider_options` are both per provider and per model, and the
+  model's own block wins per key over the provider-wide one. See
+  [Model options](#model-options).
+- There is no api key in this file. Credentials live in
+  [`auth.json`](#credentials), which is a separate file for a reason.
 - `provider` (singular) is accepted as an alias for `providers`, since that
   reads naturally in a file that configures one. The two are the same key: a
   file carrying both is an error. `providers` is canonical and the only
@@ -191,13 +199,27 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 
 ## Model options
 
-`model` picks WHICH model runs. An `options` block says HOW it is invoked.
+`model` picks WHICH model runs. Two blocks say HOW it is invoked, and they
+mirror the two dicts on the session's `LLMConfig`
+([data model](../../02-data-model.md)) exactly:
 
-Four keys are known and validated: `max_tokens`, `temperature`, `top_p` and
-`reasoning`. Every other key is passed to the provider verbatim as its own wire
-field. That split is why this is the one block in the file that accepts unknown
-keys: a provider's options move faster than a schema does, and OpenRouter's
-`provider.order` has no portable equivalent to be typed as.
+| Block | Becomes | Holds |
+|---|---|---|
+| `options` | `LLMConfig.model_options` | arguments `luca.client.acompletion` takes — `max_tokens`, `temperature`, `top_p`, `reasoning`, `seed`, `stop`, … |
+| `provider_options` | `LLMConfig.provider_options` | `base_url`, `transport`, and any raw wire field the provider itself documents |
+
+**Which block a key is written in IS the routing.** Nothing inspects a key
+name, nothing is renamed, and nothing guesses: `"provider": {"order": [...]}`
+belongs in `provider_options` because it is OpenRouter's wire field, and
+`"max_tokens"` belongs in `options` because it is the client's argument.
+
+Inside `options`, four keys are typed and validated — `max_tokens`,
+`temperature`, `top_p`, `reasoning` — because `max_tokens: 0` and
+`reasoning: "huge"` are worth catching at startup. Every other key passes
+through, since the client takes a dozen more and refusing them would mean a
+luca release for every client one. The cost is that a key that is NOT an
+`acompletion` argument (a typo like `"max_token"`) is a `TypeError` on the
+first turn rather than a startup error.
 
 Resolution for the model you are running, lowest precedence first:
 
@@ -205,16 +227,17 @@ Resolution for the model you are running, lowest precedence first:
 built-in default
   < ~/.config/luca/luca.json
   < ./luca.json
-  < providers.<provider>.options
-  < providers.<provider>.models.<model>.options
+  < model.reasoning
+  < providers.<provider>.options / .provider_options
+  < providers.<provider>.models.<model>.options / .provider_options
   < CLI flag (--reasoning)
 ```
 
-The two `options` levels merge per key rather than replacing wholesale, and raw
-passthrough keys merge deeply (nested objects merge, scalars and lists replace).
-So a provider-wide `provider.order` survives a model that only sets
-`transforms`. Switching model with `/model` re-resolves from scratch: a model
-with no block of its own runs with none of the previous model's settings.
+Both levels merge per key rather than replacing wholesale, and nested objects
+merge deeply (scalars and lists replace). So a provider-wide `provider.order`
+survives a model that only sets `transforms`. Switching model with `/model`
+re-resolves from scratch: a model with no block of its own runs with none of
+the previous model's settings.
 
 Nothing is renamed on the way out. Write the field the provider documents, not
 an approximation of it: OpenRouter's is `"transforms": ["middle-out"]`, plural
@@ -222,18 +245,44 @@ and an array. A near miss like `"transform": "middle-out"` is sent exactly as
 you wrote it and the provider ignores it, which is the cost of a passthrough
 that does not pretend to know the field.
 
-Two things worth knowing before you reach for the raw keys.
+One thing worth knowing before you reach for `provider_options`: its raw keys
+are merged into the request LAST and beat everything luca derived, including
+`messages`, `tools`, `model` and `stream`. A stray `"tools"` key in your config
+will silently turn off tool calling. That is the deal with an escape hatch — it
+is not validated because validating it would close it.
 
-They are merged into the request LAST and beat everything luca derived,
-including `messages`, `tools`, `model` and `stream`. A stray `"tools"` key in
-your config will silently turn off tool calling. That is the deal with an
-escape hatch: it is not validated because validating it would close it.
+## Credentials
 
-A middleware that routes a turn to a different model (`build_model_string`,
-see [middleware](../../07-middleware.md)) carries the configured model's
-settings. `max_tokens` and friends still apply; the raw block does not, because
-it is keyed by provider name and the transport finds nothing under its own. It
-is dropped rather than sent to the wrong provider.
+API keys are not in `luca.json`. They live in one user-global file:
+
+```
+$XDG_DATA_HOME/luca/auth.json      # default: ~/.local/share/luca/auth.json
+```
+
+```jsonc
+{
+  "openrouter":         { "type": "api", "key": "sk-or-..." },
+  "my_custom_provider": { "type": "api", "key": "sk-..." }
+}
+```
+
+Any provider name works, including one the client has never heard of — pair it
+with a `providers` entry giving `base_url` and `transport` and the host is
+reachable. `type` is `"api"` today; `"oauth"` is coming.
+
+A separate file because a config is the kind of thing you commit to a repo or
+paste into an issue and a key is not, and because nothing in the file ever
+reaches the session: it is read once at startup and handed to the runner as a
+runtime argument, so no key is written to `~/.luca/projects/…`.
+
+A provider with **no entry** is not an error. No key is passed for it and the
+client falls back to whatever environment variable it knows for that provider
+(`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, …) — which is how luca worked
+before this file existed, and still the shortest path to a running agent. The
+TUI never knows which variable that is; that is the client's business, and a
+missing one surfaces as the provider's own authentication error.
+
+`LUCA_AUTH_PATH` names a different file, for a sandbox or a test.
 
 ## Logging
 

@@ -129,6 +129,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import inspect
 import json
 import logging
@@ -1025,6 +1026,9 @@ class AgentSessionRunner:
         system_prompt_assembler: SystemPromptAssembler | None = None,
         *,
         provider=None,
+        api_key: str | None = None,
+        model_options: dict | None = None,
+        provider_options: dict | None = None,
         conversation_projector: ConversationProjector | None = None,
         context_manager: ContextManager | None = None,
         middleware: list | None = None,
@@ -1051,6 +1055,16 @@ class AgentSessionRunner:
         ]
         self.system_prompt_assembler = system_prompt_assembler or DefaultSystemPromptAssembler()
         self.provider = provider
+        # RUNTIME-ONLY invocation state, never serialized — the same class as
+        # `provider` and a `CancellationToken`. `api_key` is here and NOT on
+        # `LLMConfig` because the config is persisted with the session and
+        # copied onto every assistant entry: a key stored there would be
+        # written to disk once per message. The two option dicts win per key
+        # over the session's, so a process can bound or reroute its own calls
+        # without rewriting what the session records.
+        self.api_key = api_key
+        self.model_options = dict(model_options or {})
+        self.provider_options = dict(provider_options or {})
         self.middleware = list(middleware or [])
         self.ledger = SessionLedger(session, self.now_ms, self.generate_id)
         # ── runtime-only, never serialized (the same class of state as a
@@ -1121,8 +1135,8 @@ class AgentSessionRunner:
     def __eq__(self, other: object) -> bool:
         """Configuration equivalence: two runners are equal when they would
         drive a session the same way — equal session state and equivalent
-        tool registry, prompt parts, assembler, provider, context manager,
-        and middleware.
+        tool registry, prompt parts, assembler, provider, invocation settings
+        (key + option overrides), context manager, and middleware.
         Collaborators without their own `__eq__` (registries, assemblers,
         middleware) compare by class + instance state rather than
         identity."""
@@ -1142,6 +1156,9 @@ class AgentSessionRunner:
             )
             and _equivalent(self.context_manager, other.context_manager)
             and self.provider == other.provider
+            and self.api_key == other.api_key
+            and self.model_options == other.model_options
+            and self.provider_options == other.provider_options
             and _all_equivalent(self.middleware, other.middleware)
         )
 
@@ -2226,6 +2243,21 @@ class AgentSessionRunner:
         model_string = f"{llm_cfg.provider}:{llm_cfg.model}"
         return self._run_middlewares("build_model_string", conversation_id, model_string, llm_cfg)
 
+    def completion_options(self) -> dict:
+        """The client kwargs for THIS runner's next call: the ACTIVE config's
+        options with this runner's runtime overrides and key applied.
+
+        Reads `session.llm_config`, not `session_config.llm_config` — the
+        active config is re-stamped at the top of every drive iteration, so a
+        turn a middleware routed to another provider keys its raw options
+        under the provider actually being called."""
+        return completion_options(
+            self.session.llm_config,
+            model_options=self.model_options,
+            provider_options=self.provider_options,
+            api_key=self.api_key,
+        )
+
     async def resolve_tool_specs(self, conversation_id: str) -> list[ToolSpec]:
         """The registry's answer for this conversation — the RUNTIME's view of
         what tools exist, private ones included.
@@ -3191,11 +3223,10 @@ class AgentSessionRunner:
                         system_message=system_message,
                         tools=tool_list or None,
                         tool_choice=tool_choice,
-                        reasoning=self.session.llm_config.reasoning,
                         provider=self.provider,
                         timeout=request_timeout,
                         total_timeout=total_timeout,
-                        **completion_options(self.session.llm_config),
+                        **self.completion_options(),
                     )
                     async with stream as s:
                         iterator = s.__aiter__()
@@ -3235,11 +3266,10 @@ class AgentSessionRunner:
                             system_message=system_message,
                             tools=tool_list or None,
                             tool_choice=tool_choice,
-                            reasoning=self.session.llm_config.reasoning,
                             provider=self.provider,
                             timeout=request_timeout,
                             total_timeout=total_timeout,
-                            **completion_options(self.session.llm_config),
+                            **self.completion_options(),
                         )
                     )
                     completed, response, _ = await _race_cancellation(
@@ -4989,17 +5019,70 @@ def _ms_to_seconds(ms: int) -> float | None:
     return None if ms == Inf else ms / 1000.0
 
 
-def completion_options(llm_config: LLMConfig) -> dict:
-    """`LLMConfig.options` → the client completion kwargs it sets.
+def _import_transport(path: str) -> type:
+    """A dotted path to a transport CLASS → the class itself.
 
-    Only fields the application actually configured appear, so an unset knob
-    stays absent from the request and the provider's own default stands.
-    Public because the same translation is what a `ContextManager` making its
-    own model call needs."""
-    options = llm_config.options
-    if options is None:
-        return {}
-    return options.model_dump(exclude_none=True, exclude={"extras"})
+    The one interpretation the runner performs on an option value, and it
+    exists because `LLMConfig` has to survive a round trip through JSON: a
+    class cannot be persisted, so the config carries its import path and this
+    resolves it at call time. Fails with the path in the message — an
+    `ImportError` traceback from inside a turn says nothing about which config
+    key produced it."""
+    module_name, _, class_name = path.rpartition(".")
+    if not module_name:
+        raise ValueError(
+            f"transport {path!r} is not a dotted path to a class (e.g. 'luca.client.transports.OpenAITransport')"
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(f"transport {path!r}: cannot import {module_name!r} ({exc})") from exc
+    try:
+        return getattr(module, class_name)
+    except AttributeError as exc:
+        raise ValueError(f"transport {path!r}: {module_name!r} has no {class_name!r}") from exc
+
+
+def completion_options(
+    llm_config: LLMConfig,
+    *,
+    model_options: dict | None = None,
+    provider_options: dict | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """`LLMConfig` → the client completion kwargs it sets.
+
+    The single translation from the durable config to a `luca.client` call,
+    public because a `ContextManager` making its own model call needs exactly
+    the same one.
+
+    `model_options` are already client kwargs and pass straight through.
+    `provider_options` is where the interpretation happens, and it is the
+    minimum the client's signature forces: `base_url` and `transport` say how
+    the provider is REACHED and are named parameters there, while everything
+    else is what the provider is ASKED for and goes under the provider's own
+    name — the shape `ChatCompletionRequest.provider_options` takes and every
+    transport merges into its payload. Keyed by the config's provider, so a
+    turn routed elsewhere never sends one provider's wire fields to another.
+
+    The keyword arguments are RUNTIME overrides that win per key over the
+    stored config: the session records what the application configured, and a
+    caller can still bound one process without rewriting the session. `api_key`
+    is only ever a runtime value — passing none leaves the kwarg off entirely
+    so the client falls back to the provider's environment variable."""
+    kwargs = {**llm_config.model_options, **(model_options or {})}
+    options = {**llm_config.provider_options, **(provider_options or {})}
+    base_url = options.pop("base_url", None)
+    transport = options.pop("transport", None)
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if transport is not None:
+        kwargs["transport_class"] = _import_transport(transport)
+    if options:
+        kwargs["provider_options"] = {llm_config.provider: options}
+    if api_key is not None:
+        kwargs["api_key"] = api_key
+    return kwargs
 
 
 def _to_usage_counters(usage) -> dict[str, int]:

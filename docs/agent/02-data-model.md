@@ -646,17 +646,26 @@ changing at all — which is exactly why nothing can cache it.
 `session_config` holds the `LLMConfig` for the *next* turn plus the
 `RuntimeConfig` knobs ([08](08-runtime-config.md)).
 
-`LLMConfig` says which model runs (`model`, `provider`, `reasoning`) and, in an
-optional nested `options`, how it is invoked: `max_tokens`, `temperature`,
-`top_p`, and a raw `provider_options` keyed by provider name that goes to the
-client untouched. Unset means "send nothing", so the provider's own default
-stands. It is nested rather than flattened because an `LLMConfig` is copied onto
-every assistant entry as provenance, and one null key per entry is cheaper than
-one per knob. Keying `provider_options` by provider name is what makes a routed
-turn safe: a transport that finds nothing under its own name sends none of it,
-rather than one provider's wire fields to another. The TUI resolves the block
-from `luca.json` ([config](contrib/tui/config.md#model-options)); nothing in the
-core reads a config file.
+`LLMConfig` says which model runs (`model`, `provider`) and carries two flat,
+opaque dicts saying how. `model_options` holds `luca.client.acompletion`
+keyword arguments — `max_tokens`, `temperature`, `reasoning`, `seed` — and is
+splatted into the call verbatim. `provider_options` holds `base_url`,
+`transport` (a dotted path to a transport class) and any raw wire fields the
+provider itself documents; the runner passes the first two as named client
+arguments and hands the rest over keyed by the provider's name, which is the
+shape its transports merge into the payload. Empty means "send nothing", so
+the provider's own defaults stand.
+
+The core never reads a key out of either dict — assembling them is the
+application's job, and the TUI does it from `luca.json`
+([config](contrib/tui/config.md#model-options)). Nothing in the core reads a
+config file.
+
+There is deliberately **no api key here**. An `LLMConfig` is persisted with the
+session and copied onto every assistant entry as provenance, so a key stored on
+it would be written to disk once per message. Credentials are a runner
+constructor argument (`api_key=`), in the same runtime-only class as
+`provider=` ([04](04-runner.md)).
 
 What is **not** on the
 session: the tool registry, the projector, system-prompt parts, the live

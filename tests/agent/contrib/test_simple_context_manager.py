@@ -21,7 +21,6 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     LLMConfig,
-    ModelOptions,
     SessionConfig,
     TextContent,
     TurnFinish,
@@ -281,7 +280,7 @@ async def test_the_summary_call_carries_the_sessions_model_options():
     # cap the session configured has to bound the summary call too.
     session = two_turn_session()
     session.session_config.llm_config = MODEL.model_copy(
-        update={"options": ModelOptions(max_tokens=6000, provider_options={"faux": {"transforms": ["middle-out"]}})},
+        update={"model_options": {"max_tokens": 6000}, "provider_options": {"transforms": ["middle-out"]}},
     )
     provider = _faux("SUMMARY")
     manager = SummarizingContextManager(provider=provider)

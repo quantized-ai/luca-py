@@ -41,7 +41,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "tool_use"
     },
@@ -120,7 +121,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     },
@@ -216,7 +218,8 @@
         "extras": {},
         "model": "claude-sonnet-5",
         "provider": "anthropic",
-        "reasoning": null
+        "model_options": {},
+        "provider_options": {}
       },
       "stop_reason": "end_turn"
     },
@@ -287,7 +290,8 @@
       "extras": {},
       "model": "claude-sonnet-5",
       "provider": "anthropic",
-      "reasoning": null
+      "model_options": {},
+      "provider_options": {}
     },
     "runtime_config": {
       "extras": {},
