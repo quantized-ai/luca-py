@@ -356,7 +356,8 @@ jq '.stats | {n_completed_trials, n_errored_trials, cost_usd}' jobs/$JOB/result.
 cat jobs/$JOB/$TRIAL/agent/luca.txt                  # what the agent actually did
 jq '.exception_info'   jobs/$JOB/$TRIAL/result.json  # null when nothing broke
 jq '.agent_result'     jobs/$JOB/$TRIAL/result.json  # tokens and cost
-jq '.verifier_result'  jobs/$JOB/$TRIAL/result.json  # the reward and why
+jq '.verifier_result.rewards.reward' jobs/$JOB/$TRIAL/result.json   # 1.0 or 0.0
+cat jobs/$JOB/$TRIAL/verifier/reward.txt             # the same, one line
 ```
 
 Then browse the whole thing properly, including a side-by-side comparison
@@ -371,6 +372,7 @@ uv run harbor view jobs                              # http://127.0.0.1:8080
 | `result.json` (job) | `stats.evals[<key>].pass_at_k`, `reward_stats`, `n_errored_trials`, aggregate tokens and `cost_usd` |
 | `<trial>/result.json` | per-task `verifier_result`, `agent_result` (our `AgentContext`), `exception_info`, timings for `environment_setup` / `agent_setup` / `agent_execution` / `verifier` |
 | `<trial>/verifier/test-stdout.txt`, `reward.txt` | what the graders ran and why they failed |
+| `<trial>/trial.log` | every command the adapter ran in the container, in order |
 | `<trial>/agent/luca.txt` | the driver's stdout |
 | `<trial>/agent/session.json` | the full `AgentSession` — replay it offline with `pretty_print` |
 
@@ -515,7 +517,22 @@ failures:     <top 3 recurring causes, with task names>
 core gaps:    <anything that looked like a data-model or runner limitation>
 ```
 
-_No runs recorded yet. The first full run is the baseline._
+_No scored run yet. What has been verified so far, on 2026-08-09:_
+
+```
+harness:      oracle,  5 tasks -> 5/5 reward 1.0     (Docker + Harbor healthy)
+baseline:     nop,     5 tasks -> 0/5 reward 0.0     (no free passes)
+                       1 trial errored: VerifierTimeoutError on
+                       torch-tensor-parallelism, a slow verifier rather than
+                       anything of ours
+install:      luca,    terminal-bench/fix-git --install-only -> agent_setup
+                       finished in 35s with no exception. apt packages, uv,
+                       wheel upload, venv and `import luca` all returned 0.
+```
+
+The install path is proven in a real task container. What is still unproven is
+everything after it: luca has not yet been asked to solve a task, so there is
+no reward, no token count and no cost recorded here.
 
 ## Tests
 
