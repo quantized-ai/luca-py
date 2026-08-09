@@ -1,25 +1,12 @@
-# A box with Harbor, uv and a Docker client in it, for running Terminal-Bench
-# without installing any of that on the host.
+# Harbor, uv and a Docker client, for running Terminal-Bench without installing
+# any of it on the host. See docker/docker-compose.bench.yml.
 #
-# It deliberately does NOT contain the repo. Harbor spawns each task container
-# by talking to the HOST's Docker daemon over the mounted socket, which makes
-# those containers siblings rather than children: every bind mount Harbor asks
-# for is resolved by the host, against host paths. So the repo is bind-mounted
-# at the same absolute path inside and out (see docker/docker-compose.bench.yml) and
-# the two namespaces agree on what a path means. Baking a copy of the repo in
-# here would both break that and quietly benchmark whatever the code looked
-# like at build time.
-#
-#   docker compose -f docker/docker-compose.bench.yml run --rm bench \
-#       harbor run -d terminal-bench/terminal-bench-2-1 -a oracle -l 5
-#
-# Python 3.12 because harbor requires >= 3.12. The agent itself runs on
-# whatever uv provisions inside each task container, not on this interpreter.
+# Deliberately does NOT contain the repo: that is bind-mounted at its host path
+# so Harbor's sibling containers resolve mounts the same way we do.
+
 FROM python:3.12-slim
 
-# ca-certificates for TLS to the model provider and the dataset registry; git
-# because harbor resolves some datasets from git; docker.io for the CLI only,
-# which talks to the mounted socket (no daemon runs in here).
+# docker.io is the CLI only; it talks to the mounted socket.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -29,22 +16,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/cache/apt/*
 
-# Pinned: an installer that moves under us turns one benchmark run into a
-# different benchmark run.
 COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /uvx /usr/local/bin/
 
-# The project's virtualenv lives in the image, NOT in the bind-mounted repo:
-# otherwise `uv sync` would write a Linux venv over the contributor's macOS one
-# on every run. The cache is a named volume in the compose file, so the second
-# run does not re-download harbor.
+# The venv lives in the image, not the bind-mounted repo, so `uv sync` does not
+# write a Linux venv over the contributor's own.
 ENV UV_PROJECT_ENVIRONMENT=/opt/bench-venv \
     UV_CACHE_DIR=/opt/uv-cache \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
 
-# Warm the cache at build time so the first `uv sync` inside the container is
-# near-instant. Nothing here is the real environment — the entrypoint syncs the
-# mounted project, which is what actually gets used.
+# Warm the cache; the entrypoint syncs the mounted project for real.
 RUN uv venv "$UV_PROJECT_ENVIRONMENT" \
     && uv pip install --python "$UV_PROJECT_ENVIRONMENT" "harbor>=0.20" pytest pytest-asyncio
 

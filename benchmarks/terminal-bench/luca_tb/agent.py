@@ -1,20 +1,8 @@
-"""`LucaAgent` — luca as a Harbor installed agent.
+"""`LucaAgent` — luca as a Harbor installed agent, written against harbor 0.20.
 
-Runs on the HOST. Harbor gives it a container per task; it installs the driver
-in there, invokes it once with the task instruction, and reads the trajectory
-back afterwards.
-
-    harbor run -d terminal-bench/terminal-bench-2-1 \\
-        -a luca_tb.agent:LucaAgent \\
-        -m openrouter/openai/gpt-5.4-mini
-
-Because `luca-ai` is not published and the repo is private, installation goes
-through a wheel built on the host and uploaded, rather than `pip install`.
-
-Written against harbor 0.20. Note that harbor's `main` has since grown
-`ensure_system_dependencies` and `ModelConnectionSpec`, neither of which exists
-in 0.20 — the system-package block and the key resolution below are the
-long-hand versions, and can be swapped for those helpers when the pin moves.
+Runs on the host: installs the driver into the task container, invokes it once,
+reads the trajectory back. `luca-ai` is unpublished, so install goes through a
+wheel built here and uploaded.
 """
 
 from __future__ import annotations
@@ -34,33 +22,19 @@ from harbor.models.trial.paths import EnvironmentPaths
 from luca_tb.mapping import api_key_env_names, context_from_session, parse_model
 from luca_tb.runner import EXIT_BLOCKED, EXIT_TIMEOUT
 
-#: Where the driver and its virtualenv live inside the task container. Under
-#: /opt rather than the agent's home, so it survives a task that resets HOME
-#: and never collides with files the task itself owns.
 INSTALL_DIR = PurePosixPath("/opt/luca")
 VENV_PYTHON = INSTALL_DIR / "venv" / "bin" / "python"
 
-#: Harbor mounts /logs/agent back to the trial directory on the host, so
-#: anything written here is what `populate_context_post_run` can read.
+# /logs/agent is mounted back to the trial directory on the host.
 SESSION_FILENAME = "session.json"
 STDOUT_FILENAME = "luca.txt"
 
-#: Pinned rather than floating: an installer that changes under us turns one
-#: benchmark run into a different benchmark run.
 UV_INSTALL_URL = "https://astral.sh/uv/0.7.13/install.sh"
 
-#: The interpreter uv provisions for the venv. luca needs >= 3.11 and task
-#: images routinely ship less, so uv fetches a managed CPython when the image's
-#: own python is too old.
+# luca needs >= 3.11; uv fetches a managed CPython when the image ships less.
 VENV_PYTHON_VERSION = "3.11"
 
-#: Driver exit codes that mean "did not finish", as opposed to "broke". These
-#: are recorded and allowed through so the verifier still scores the task; see
-#: `_interpret_exit_code`.
-#:
-#: Imported from the driver rather than restated, so the two cannot drift. The
-#: driver runs in the container and this runs on the host, but they ship
-#: together and both sides import cleanly here.
+# "Did not finish" rather than "broke" — see _interpret_exit_code.
 INCOMPLETE_EXIT_CODES = {
     EXIT_BLOCKED: "blocked on an approval gate",
     EXIT_TIMEOUT: "wall-clock timeout",
@@ -73,24 +47,16 @@ REPO_ROOT = HERE.parent.parent.parent
 class LucaAgent(BaseInstalledAgent):
     """luca driven headlessly inside the task container."""
 
-    # The driver writes an AgentSession, not Harbor's trajectory format. Token
-    # counts and cost still come back through populate_context_post_run.
+    # We write an AgentSession, not Harbor's trajectory format.
     SUPPORTS_ATIF: bool = False
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
         CliFlag("max_steps", cli="--max-steps", type="int", default=200),
-        # The kwarg is named `reasoning_effort`, not `reasoning`, and that is
-        # not cosmetic: the leaderboard groups trials by
-        # `(agent, version, model, kwargs["reasoning_effort"])` and renders the
-        # Effort column from it. Under any other name the effort silently
-        # records as "none" and two runs at different efforts merge into one
-        # row. See terminal-bench-2-1 leaderboard/ci/static_analysis.py.
+        # Named `reasoning_effort` because the leaderboard keys rows on that
+        # exact kwarg; any other name records the effort as "none".
         CliFlag("reasoning_effort", cli="--reasoning", type="str"),
-        # 0 disables the driver's own clock, which is what a benchmark wants.
-        # Every task declares its own `agent.timeout_sec` and Harbor enforces
-        # it; a second ceiling here could only ever be the smaller of the two,
-        # so it would hand back failures the task's own budget allowed. Set it
-        # for local debugging, never for a scored run.
+        # 0 = no driver clock. Each task declares its own agent.timeout_sec and
+        # Harbor enforces it; a second ceiling could only ever be smaller.
         CliFlag("timeout", cli="--timeout", type="int", default=0),
         CliFlag("subagents", cli="--subagents", type="bool", default=False),
         CliFlag("permission_mode", cli="--permission-mode", type="str", default="yolo"),
@@ -115,12 +81,8 @@ class LucaAgent(BaseInstalledAgent):
 
     @property
     def wheel_path(self) -> Path:
-        """The luca wheel to install, built on demand.
-
-        `LUCA_WHEEL` wins when set (the Docker image bakes one in), otherwise
-        the repo is built here. Built rather than resolved from an existing
-        `dist/`: a stale wheel silently benchmarks last week's code, and that
-        is the kind of mistake you only notice after the run."""
+        """`LUCA_WHEEL` when set, else built now — a stale `dist/` would
+        silently benchmark last week's code."""
         if self._wheel is not None:
             return self._wheel
         configured = os.environ.get("LUCA_WHEEL")
@@ -151,12 +113,7 @@ class LucaAgent(BaseInstalledAgent):
         await self._create_venv(environment)
 
     async def _install_system_packages(self, environment: BaseEnvironment) -> None:
-        """curl and git for the install itself, ripgrep for the agent.
-
-        ripgrep is not optional: luca's `glob` and `grep` tools shell out to
-        `rg` and raise `ripgrep (rg) was not found on PATH` without it, so an
-        image missing it costs the agent two of its seven tools and looks like
-        a model failure rather than a setup one."""
+        """ripgrep is not optional: luca's `glob` and `grep` shell out to `rg`."""
         await self.exec_as_root(
             environment,
             command=(
@@ -189,8 +146,7 @@ class LucaAgent(BaseInstalledAgent):
 
     @staticmethod
     def _uv_on_path() -> str:
-        """uv's installer drops it in ~/.local/bin, which is not on PATH in a
-        non-login shell. Prefix any command that needs uv with this."""
+        """uv lands in ~/.local/bin, off PATH in a non-login shell."""
         return (
             'if [ -f "$HOME/.local/bin/env" ]; then . "$HOME/.local/bin/env"; '
             'else export PATH="$HOME/.local/bin:$PATH"; fi;'
@@ -198,16 +154,14 @@ class LucaAgent(BaseInstalledAgent):
 
     async def _upload_driver(self, environment: BaseEnvironment) -> None:
         install_dir = shlex.quote(str(INSTALL_DIR))
-        # Created as root because /opt is root-owned, then handed to the agent
-        # user so the venv can be built without sudo.
+        # root owns /opt; hand it over so the venv builds without sudo.
         owner = environment.default_user
         chown = f" && chown -R {shlex.quote(str(owner))} {install_dir}" if owner is not None else ""
         await self.exec_as_root(environment, command=f"mkdir -p {install_dir}{chown}")
 
         wheel = self.wheel_path
         await environment.upload_file(wheel, str(INSTALL_DIR / wheel.name))
-        # `runner.py` imports only luca and the standard library, so it runs as
-        # a loose file — no need to ship the rest of `luca_tb` with it.
+        # runner.py imports only luca + stdlib, so it ships as a loose file.
         await environment.upload_file(HERE / "runner.py", str(INSTALL_DIR / "runner.py"))
         await environment.upload_file(HERE / "prompt_template.md", str(INSTALL_DIR / "prompt_template.md"))
 
@@ -220,10 +174,13 @@ class LucaAgent(BaseInstalledAgent):
             command=(
                 "set -euo pipefail; "
                 f"{self._uv_on_path()} "
-                f"uv venv --python {VENV_PYTHON_VERSION} {venv} && "
+                # Prefer an interpreter the image already has. Asking uv for a
+                # bare version downloads a managed CPython, which blew the 360s
+                # agent-setup budget on heavy ML images.
+                "PY=; for c in python3.13 python3.12 python3.11; do "
+                'if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi; done; '
+                f'uv venv --python "${{PY:-{VENV_PYTHON_VERSION}}}" {venv} && '
                 f"uv pip install --python {python} {wheel} pyyaml && "
-                # Smoke check: prove the interpreter can actually import the
-                # agent before a task's worth of tokens is spent finding out.
                 f'{python} -c "import luca; print(luca.__version__)"'
             ),
         )
@@ -242,9 +199,7 @@ class LucaAgent(BaseInstalledAgent):
         provider, model = parse_model(self.model_name)
         command = self._runner_command(instruction, provider, model, await self._workspace(environment))
 
-        # `environment.exec` rather than `exec_as_agent`, because the exit code
-        # carries meaning here and `exec_as_agent` raises on anything non-zero.
-        # `set -o pipefail` so the `| tee` below cannot mask it.
+        # Not exec_as_agent: the exit code carries meaning and that raises.
         result = await environment.exec(
             command=f"set -o pipefail; {command}",
             env=self._model_env(provider),
@@ -264,27 +219,18 @@ class LucaAgent(BaseInstalledAgent):
                 f"--session-out {shlex.quote(str(session_out))}",
                 f"--append-system-prompt-file {shlex.quote(str(INSTALL_DIR / 'prompt_template.md'))}",
                 self.build_cli_flags(),
-                # `--` before the instruction: task instructions are arbitrary
-                # text and one starting with a dash would otherwise be read as
-                # a flag. Quoting alone does not prevent that; this does.
-                "--",
+                "--",  # an instruction starting with a dash is not a flag
                 shlex.quote(instruction),
-                # stdout is the human-readable trace, and /logs/agent is mounted
-                # back to the host, so this is what triage reads first.
                 f"2>&1 | tee {shlex.quote(str(stdout_log))}",
             ]
         )
 
     def _interpret_exit_code(self, result: Any, command: str, context: AgentContext) -> None:
-        """Decide whether the driver's exit code is a failed task or a broken run.
+        """A failed task or a broken run?
 
-        This distinction is the whole reason `run()` does not use
-        `exec_as_agent`. An agent that ran out of time or parked on an approval
-        gate did not *break* — it just did not finish, which is an ordinary
-        benchmark outcome that the verifier should still get to score as a zero.
-        Raising instead would skip verification and inflate `n_errored_trials`
-        with tasks luca simply lost. A genuine crash does raise, so it lands in
-        the error count where it belongs and `--retry-include` can act on it."""
+        Not finishing is an ordinary outcome the verifier should still score as
+        zero; raising would skip verification and inflate `n_errored_trials`.
+        A genuine crash does raise, so `--retry-include` can act on it."""
         code = result.return_code
         if code == 0:
             return
@@ -295,12 +241,8 @@ class LucaAgent(BaseInstalledAgent):
         context.metadata = {**(context.metadata or {}), "luca_outcome": outcome}
 
     def _model_env(self, provider: str) -> dict[str, str]:
-        """The provider's API key, forwarded into the container.
-
-        Whichever variable holds it on the host, it goes in under the name
-        luca's provider actually reads (`OPENROUTER_API_KEY` and so on), which
-        is the last name in the list. That is what makes `LUCA_API_KEY` usable
-        as a single override across providers."""
+        """The key, forwarded under the name luca's provider reads (the last
+        candidate), which is what makes `LUCA_API_KEY` a cross-provider override."""
         candidates = api_key_env_names(provider)
         target = candidates[-1]
         env = dict(self.resolve_env_vars())
@@ -310,14 +252,11 @@ class LucaAgent(BaseInstalledAgent):
                 env[target] = value
                 return env
         if target == "LUCA_API_KEY":
-            # A provider luca knows but that needs no key — a local Ollama, say.
-            return env
+            return env  # a provider needing no key, e.g. local Ollama
         raise ValueError(f"No API key for provider {provider!r}. Set one of: {', '.join(candidates)}")
 
     async def _workspace(self, environment: BaseEnvironment) -> str:
-        """The task's own working directory, so the agent's tools are rooted
-        where the verifier will look. Falls back to `/app`, harbor's
-        convention, when the image declares no WORKDIR."""
+        """The task's WORKDIR, so tools are rooted where the verifier looks."""
         result = await environment.exec(command="pwd")
         found = (result.stdout or "").strip()
         return found or "/app"
@@ -325,10 +264,7 @@ class LucaAgent(BaseInstalledAgent):
     # ── after the run ────────────────────────────────────────────────────────
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        """Read the trajectory harbor synced back and fill in the numbers.
-
-        Best-effort by design: a trial that produced a real reward must not be
-        recorded as an error because its accounting could not be parsed."""
+        """Best-effort: a real reward must not be lost to unparseable accounting."""
         path = self.logs_dir / SESSION_FILENAME
         if not path.exists():
             self.logger.debug(f"No luca session at {path}; leaving usage unset")

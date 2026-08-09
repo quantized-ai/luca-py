@@ -1,34 +1,18 @@
 """The headless driver: one instruction in, an exit code and a session out.
 
-This file is UPLOADED INTO the task's container and run there, so it may
-import `luca` and the standard library and nothing else. In particular it must
-not import `luca.agent.contrib.tui`, whose package root pulls in Textual.
+Uploaded into the task container and run there, so it imports `luca` and the
+standard library only — notably not `luca.agent.contrib.tui`, whose package
+root pulls in Textual. It composes the agent through core + contrib's public
+surface, exactly as any application would.
 
-It is also deliberately ordinary. Everything below composes the agent through
-core + contrib's public surface, the same way any application would — no
-private imports, no monkeypatching, nothing that only works because it lives
-in this repo. If that ever stops being possible, the fix belongs in the
-framework, not here.
+    python runner.py --model openai/gpt-5.4-mini --provider openrouter \\
+        --workspace /app --session-out /logs/agent/session.json -- "<task>"
 
-    python runner.py "fix the failing test" \\
-        --model openai/gpt-5.4-mini --provider openrouter \\
-        --workspace /app --session-out /logs/agent/session.json \\
-        --max-steps 200 --timeout 900
+Exit codes: 0 completed, 1 aborted, 2 blocked on an approval gate, 124 timeout.
+The session is written after every drive, so a crash still leaves a trajectory.
 
-Exit codes:
-
-    0    the turn completed
-    1    the run aborted (LLM or tool failure); the message goes to stderr
-    2    the agent blocked on an approval gate — under the default yolo mode
-         that means something is misconfigured, not that a human is wanted
-    124  wall-clock timeout
-
-The session is written after every drive, so a timeout or a crash still leaves
-a readable trajectory behind for triage.
-
-No `luca.json` is read. A benchmark run has to be a pure function of its
-arguments, and silently inheriting a config file that happened to be in the
-task image is the opposite of that.
+No `luca.json` is read: a benchmark run should be a pure function of its
+arguments.
 """
 
 from __future__ import annotations
@@ -55,22 +39,15 @@ EXIT_ERROR = 1
 EXIT_BLOCKED = 2
 EXIT_TIMEOUT = 124
 
-# After the project's own instruction files (priority 100), so a task that
-# ships an AGENTS.md still gets read but the benchmark's rules close the
-# prompt.
-ADDENDUM_PRIORITY = 110
+ADDENDUM_PRIORITY = 110  # after the project's own instruction files (100)
 
-# The memory plugin's two stores, keyed on the session so they survive a
-# reload. The names are the application's choice; nothing in luca looks them up.
 TODO_STORE_KEY = "todos"
 SCRATCHPAD_STORE_KEY = "scratchpad"
 
 
 class PromptAddendumPlugin:
-    """One extra system-prompt part, appended last.
-
-    A plain class: plugin hooks are duck-typed, so this is a complete plugin
-    without subclassing anything."""
+    """One extra system-prompt part, appended last. Plugin hooks are
+    duck-typed, so a plain class is a complete plugin."""
 
     def __init__(self, text: str) -> None:
         self.text = text
@@ -90,12 +67,8 @@ def build_runner(
     addendum: str | None = None,
     compaction: bool = True,
 ) -> PluginAgentSessionRunner:
-    """Compose the agent: shell tools, memory, the system prompt, and one
-    permission strategy shared by every registry.
-
-    `ShellAccessPlugin` both supplies the seven terminal tools and builds the
-    `PermissionStrategy`; handing that same strategy to the tool registry is
-    what makes a single gate serve everything."""
+    """Shell tools, memory, the system prompt, and one permission strategy
+    shared by every registry so a single gate serves everything."""
     shell = ShellAccessPlugin(workspace=Path(workspace), mode=mode)
     registry = SimpleToolRegistry(tools=[], permission_policy=shell.permission_strategy)
     memory = MemoryPlugin(
@@ -109,9 +82,8 @@ def build_runner(
         plugins.append(SubagentsPlugin())
     if addendum:
         plugins.append(PromptAddendumPlugin(addendum))
-    # Long autonomous runs fill the window; core's default context manager
-    # accounts but never compacts, so without this a task that talks for long
-    # enough dies on context overflow rather than on its own merits.
+    # Core's default accounts but never compacts, so a long task would die on
+    # context overflow rather than on its own merits.
     context_manager = SummarizingContextManager(enabled=compaction, provider=provider) if compaction else None
     return PluginAgentSessionRunner(
         session,
@@ -123,11 +95,8 @@ def build_runner(
 
 
 async def drive(runner: PluginAgentSessionRunner, on_save) -> int:
-    """Advance until the turn is done, narrating to stdout as it goes.
-
-    Each `run()` stops at the next thing that needs a caller: the turn ended,
-    or nothing can advance until a gate is answered. Headless, a gate is
-    terminal."""
+    """Advance until the turn is done, narrating to stdout. Headless, an
+    approval gate is terminal."""
     final = ""
     while not runner.idle():
         async with runner.run() as run:
@@ -237,16 +206,12 @@ async def run(args: argparse.Namespace, provider=None) -> int:
         print(f"timed out after {args.timeout}s", file=sys.stderr, flush=True)
         return EXIT_TIMEOUT
     except Exception:
-        # Broad on purpose. A provider failure, a tool bug and a framework bug
-        # all surface here, and for triage the traceback plus the saved
-        # trajectory is worth far more than letting it crash the process and
-        # lose which of the three it was.
+        # Broad on purpose: the traceback plus the saved trajectory is worth
+        # more than letting it crash and lose which layer failed.
         traceback.print_exc()
         return EXIT_ERROR
     finally:
-        # The runner mutates the session in place, so this captures whatever
-        # state it reached — including a turn that was cut off mid-flight.
-        save()
+        save()  # the runner mutates the session in place
 
 
 def main(argv: list[str] | None = None) -> int:

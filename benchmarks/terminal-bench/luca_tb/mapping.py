@@ -1,13 +1,8 @@
-"""The two translations between Harbor's vocabulary and luca's.
+"""Translations between Harbor's vocabulary and luca's.
 
-Kept free of any `harbor` import so it can be unit-tested on its own, with no
-Docker, no container and no benchmark run.
-
-`luca.agent.contrib.tui.usage` already does the usage arithmetic, but importing
-it executes the TUI package root and pulls in Textual. Rather than reach around
-that (or refactor the TUI to suit a benchmark), the ~20 lines are reimplemented
-here against `luca.client.catalog`. It is duplication, and it is the cheaper
-of the two mistakes.
+No `harbor` import, so it unit-tests on its own. The usage arithmetic
+duplicates `luca.agent.contrib.tui.usage`, which cannot be imported here
+without pulling in Textual.
 """
 
 from __future__ import annotations
@@ -23,20 +18,15 @@ DEFAULT_PROVIDER = "openrouter"
 def parse_model(spec: str, default_provider: str = DEFAULT_PROVIDER) -> tuple[str, str]:
     """Harbor's `-m` value as luca's `(provider, model)`.
 
-    Harbor writes `provider/model`, but a luca model id can itself contain a
-    slash: OpenRouter names models `openai/gpt-5.4-mini`. So the leading
-    segment only counts as a provider when luca actually knows a host by that
-    name, and everything else is passed through whole:
+    A luca model id can itself contain a slash (`openai/gpt-5.4-mini`), so the
+    leading segment counts as a provider only when luca knows that host:
 
-        openrouter/openai/gpt-5.4-mini  → ("openrouter", "openai/gpt-5.4-mini")
-        anthropic/claude-opus-4-5       → ("anthropic",  "claude-opus-4-5")
-        openai/gpt-5.4-mini             → (default,      "openai/gpt-5.4-mini")
+        openrouter/openai/gpt-5.4-mini  -> ("openrouter", "openai/gpt-5.4-mini")
+        anthropic/claude-opus-4-5       -> ("anthropic",  "claude-opus-4-5")
+        moonshotai/kimi-k2.7-code       -> (default,      "moonshotai/kimi-k2.7-code")
 
-    The third case is the one worth staring at: `openai` IS a known host, so it
-    would be read as a provider — which is right if you meant the OpenAI API
-    directly and wrong if you meant that model through OpenRouter. There is no
-    way to tell from the string alone, so the registry answer wins and you name
-    the route explicitly when you want the other one.
+    `openai/...` therefore routes to the OpenAI API, not OpenRouter. Name the
+    route explicitly when you want the other one.
     """
     if not spec:
         raise ValueError("model must not be empty")
@@ -49,14 +39,10 @@ def parse_model(spec: str, default_provider: str = DEFAULT_PROVIDER) -> tuple[st
 
 
 def api_key_env_names(provider: str) -> list[str]:
-    """Which environment variables could hold the key for this provider, in
-    precedence order.
+    """Candidate env vars for this provider's key, in precedence order.
 
-    Read off `PROVIDERS` rather than hardcoded, so a host added to luca (or
-    registered by an application) is picked up without editing this file.
-    `LUCA_API_KEY` comes first as a deliberate override: the benchmark often
-    routes several providers through one gateway key, and demanding the
-    provider's own variable name for that is friction with no upside."""
+    Read off `PROVIDERS`, so a newly registered host needs no edit here.
+    `LUCA_API_KEY` comes first as a cross-provider override."""
     entry = PROVIDERS.get(provider)
     if isinstance(entry, dict):
         configured = entry.get("default_api_key_env_var")
@@ -67,10 +53,8 @@ def api_key_env_names(provider: str) -> list[str]:
 
 @dataclass(frozen=True)
 class UsageTotals:
-    """Summed `AgentSession.usages`, in Harbor's vocabulary.
-
-    `n_input_tokens` includes cache reads, matching harbor's own field
-    description ("the number of input tokens used including cache")."""
+    """Summed `AgentSession.usages`. `n_input_tokens` includes cache reads,
+    matching harbor's field description."""
 
     n_input_tokens: int = 0
     n_output_tokens: int = 0
@@ -81,10 +65,8 @@ class UsageTotals:
 def context_from_session(session: dict) -> UsageTotals:
     """A serialized `AgentSession` as the numbers `AgentContext` wants.
 
-    Takes the parsed JSON rather than an `AgentSession` so a trajectory from a
-    different luca version still reports its tokens instead of failing
-    validation over some unrelated field — on the host, after the run, a strict
-    parse buys nothing and can only lose data."""
+    Parsed JSON rather than an `AgentSession`, so a trajectory from a different
+    luca version still reports its tokens instead of failing validation."""
     raw_input = raw_output = cache_read = cache_write = 0
     for per_entry in (session.get("usages") or {}).values():
         for usage in (per_entry or {}).values():
@@ -118,13 +100,10 @@ def estimate_cost(
     cache_read: int,
     cache_write: int,
 ) -> float | None:
-    """Dollars from the vendored models.dev catalog, or None when it does not
-    price this `(provider, model)`.
+    """Dollars from the vendored models.dev catalog, or None when unpriced.
 
-    None means unknown, never zero: reporting $0.00 for a model the catalog has
-    never heard of would quietly understate a whole run. A rate the catalog
-    leaves unset within a known model does count as zero, so a model priced for
-    input and output but not for cache still reports what it can."""
+    None means unknown, never zero. A rate left unset within a KNOWN model does
+    count as zero, so a partially priced model still reports what it can."""
     if not provider or not model:
         return None
     record = catalog.get(provider, model)
