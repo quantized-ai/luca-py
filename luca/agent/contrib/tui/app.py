@@ -28,6 +28,7 @@ import asyncio
 import base64
 import contextlib
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -66,6 +67,7 @@ from luca.agent.core.models import (
     ExecutionStatus,
     ImageBase64,
     ImageContent,
+    LLMConfig,
     ToolExecution,
     TurnOutcome,
 )
@@ -135,6 +137,7 @@ class AgentApp(LucaApp):
         session: AgentSession,
         *,
         provider=None,
+        auth: dict | None = None,
         theme: str = DEFAULT_THEME,
         workspace: str | Path = ".",
         session_dir: str | Path = ".",
@@ -144,6 +147,7 @@ class AgentApp(LucaApp):
         additional_directories: list | None = None,
         permission_rules: list | None = None,
         recommended_models: dict | None = None,
+        model_options: Callable[[LLMConfig], LLMConfig] | None = None,
         subagents: bool = True,
         skills: bool = True,
         extra_skill_locations: list[str] | None = None,
@@ -158,11 +162,19 @@ class AgentApp(LucaApp):
         self._streaming = streaming
         self._workspace = workspace
         self._provider = provider
+        # `auth.json`, read once at boot. Kept as the whole map rather than as
+        # one resolved key because `/model` can move the session to another
+        # provider mid-run, and the key has to follow it.
+        self._auth = dict(auth or {})
         self._mode = mode
         self._context_manager = context_manager
         self._additional_directories = additional_directories
         self._permission_rules = permission_rules
         self.recommended_models = recommended_models
+        # A callable, not the LucaConfig: the app needs "re-resolve options for
+        # this pair", not the file the answer came from. Identity when nothing
+        # configured any, so a plain app carries no options at all.
+        self._model_options = model_options or (lambda llm_config: llm_config)
         self._subagents = subagents
         self._skills = skills
         self._extra_skill_locations = extra_skill_locations
@@ -426,18 +438,39 @@ class AgentApp(LucaApp):
             self._retry_prompt_active = False
         await self.show_composer(vm.ComposerState(placeholder="working…"))
         if alternate is not None and choice == 1:
-            config = self.runner.session.session_config.llm_config
+            from .commands import _apply
+
             provider, model = alternate
-            self.runner.session.session_config.llm_config = config.model_copy(
-                update={"provider": provider, "model": model}
-            )
-            self._refresh_status()
+            _apply(self, provider=provider, model=model)
             return True
         if choice == len(options) - 1:
             with contextlib.suppress(AlreadyCancellingError):
                 self.runner.cancel(error="cancelled after a failure")
             return not self.runner.idle()
         return True
+
+    def resolve_model_options(self, llm_config: LLMConfig) -> LLMConfig:
+        """Re-resolve the configured options for this pair. Called by `_apply`
+        on every model switch, so a session never keeps the previous model's
+        settings."""
+        return self._model_options(llm_config)
+
+    def api_key_for(self, provider: str) -> str | None:
+        """This provider's key from `auth.json`, or None to let the client fall
+        back to its own environment variable."""
+        from .auth import api_key_for
+
+        return api_key_for(self._auth, provider)
+
+    def repoint_api_key(self, provider: str) -> None:
+        """Move the live runner (and its context manager) onto another
+        provider's credential. Called by `_apply` alongside the option
+        re-resolution: a `/model openai:…` on a session configured for
+        openrouter must stop sending openrouter's key."""
+        key = self.api_key_for(provider)
+        self.runner.api_key = key
+        if self._context_manager is not None:
+            self._context_manager.api_key = key
 
     def _alternate_model(self) -> tuple[str, str] | None:
         """A sibling to offer after a turn fails — the newest model from the
@@ -1230,6 +1263,7 @@ class AgentApp(LucaApp):
             session,
             workspace=self._workspace,
             provider=self._provider,
+            api_key=self.api_key_for(session.session_config.llm_config.provider),
             mode=self._mode,
             context_manager=self._context_manager,
             additional_directories=self._additional_directories,

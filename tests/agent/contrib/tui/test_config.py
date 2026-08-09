@@ -24,19 +24,21 @@ from luca.agent.contrib.tui.config import (
     RuntimeSettings,
     ThemeSettings,
     _deep_merge,
+    apply_model_options,
     build_context_manager,
     build_permission_rules,
     load_luca_config,
     pick,
-    register_config_providers,
+    picker_models,
     resolve_config_path,
     resolve_llm_config,
+    resolve_model_options,
     resolve_read_limits,
     resolve_runtime_config,
+    validate_provider,
 )
 from luca.agent.contrib.tui.prompt_files import ReadLimits
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
-from luca.client.providers import PROVIDERS
 
 
 def _write(directory, payload):
@@ -390,7 +392,7 @@ def test_llm_precedence_is_cli_over_config_over_base():
     assert resolve_llm_config(base, config, {"model": "from-cli"}) == LLMConfig(
         model="from-cli",
         provider="openrouter",
-        reasoning="high",
+        model_options={"reasoning": "high"},
     )
 
 
@@ -469,41 +471,263 @@ def test_a_bad_rule_in_a_file_surfaces_as_a_config_error(tmp_path):
         load_luca_config(cwd=tmp_path, home=tmp_path / "none")
 
 
-def test_shadowing_a_first_class_provider_is_rejected():
-    config = LucaConfig.model_validate(
-        {
-            "providers": {"anthropic": {"base_url": "https://proxy"}},
-        }
-    )
-    with pytest.raises(LucaConfigError, match="built in"):
-        register_config_providers(config)
+def test_a_provider_the_client_knows_needs_no_entry_at_all():
+    assert validate_provider(LucaConfig(), "openrouter") is None
 
 
-def test_register_config_providers_adds_a_custom_host():
+def test_an_unknown_provider_with_a_base_url_and_transport_is_reachable():
     config = LucaConfig.model_validate(
         {
-            "providers": {"lc-test-host": {"base_url": "https://x/v1", "api_key_env": "X_KEY"}},
+            "providers": {
+                "my_host": {
+                    "base_url": "https://x/v1",
+                    "transport": "luca.client.transports.OpenAITransport",
+                },
+            },
         }
     )
-    register_config_providers(config)
-    assert PROVIDERS["lc-test-host"] == {
-        "default_base_url": "https://x/v1",
-        "default_api_key_env_var": "X_KEY",
-        "default_transport_class": __import__(
-            "luca.client.transports",
-            fromlist=["OpenAITransport"],
-        ).OpenAITransport,
+    assert validate_provider(config, "my_host") is None
+
+
+def test_an_unknown_provider_with_no_way_to_reach_it_is_rejected_at_boot():
+    # The `--provider my_host --model x` case with an auth.json entry but no
+    # host: without the boot check this is a ProviderNotFoundError on the first
+    # turn, which reads as an agent failure rather than a config typo.
+    config = LucaConfig.model_validate({"providers": {"my_host": {"models": {"some/model": {}}}}})
+    with pytest.raises(LucaConfigError, match="cannot be reached"):
+        validate_provider(config, "my_host")
+
+
+def test_an_unknown_provider_with_a_base_url_but_no_transport_is_rejected():
+    config = LucaConfig.model_validate({"providers": {"my_host": {"base_url": "https://x/v1"}}})
+    with pytest.raises(LucaConfigError, match="cannot be reached"):
+        validate_provider(config, "my_host")
+
+
+def test_pointing_a_built_in_provider_at_a_proxy_is_allowed():
+    # It was refused while a base_url meant a GLOBAL registration that would
+    # swap the provider's wire format. Carried per call, it is just a base_url.
+    config = LucaConfig.model_validate({"providers": {"anthropic": {"base_url": "https://proxy"}}})
+
+    assert validate_provider(config, "anthropic") is None
+    assert resolve_model_options(config, "anthropic", "claude-sonnet-5") == (
+        {},
+        {"base_url": "https://proxy"},
+    )
+
+
+# ── model options ────────────────────────────────────────────────────────────
+
+# The config from the issue that asked for this, verbatim in our shape: a
+# provider-wide default, one model overriding it, and raw keys OpenRouter owns
+# in the sibling block that maps to `LLMConfig.provider_options`.
+OPTIONS_CONFIG = LucaConfig.model_validate(
+    {
+        "providers": {
+            "openrouter": {
+                "options": {"max_tokens": 8000, "top_p": 0.9},
+                "provider_options": {
+                    "provider": {"order": ["baseten", "together"], "allow_fallbacks": True},
+                },
+                "models": {
+                    "moonshotai/kimi-k2:free": {
+                        "options": {"max_tokens": 6000, "reasoning": "high"},
+                        "provider_options": {"transforms": ["middle-out"]},
+                    },
+                },
+            },
+        },
+    }
+)
+
+
+def test_a_model_block_wins_per_key_over_the_provider_wide_one():
+    # max_tokens is overridden, top_p is inherited, and both blocks MERGE
+    # rather than replace — the provider-wide routing survives a model that
+    # only sets `transforms`.
+    assert resolve_model_options(OPTIONS_CONFIG, "openrouter", "moonshotai/kimi-k2:free") == (
+        {"max_tokens": 6000, "top_p": 0.9, "reasoning": "high"},
+        {
+            "provider": {"order": ["baseten", "together"], "allow_fallbacks": True},
+            "transforms": ["middle-out"],
+        },
+    )
+
+
+def test_a_model_with_no_block_of_its_own_gets_the_provider_wide_options():
+    assert resolve_model_options(OPTIONS_CONFIG, "openrouter", "some/other-model") == (
+        {"max_tokens": 8000, "top_p": 0.9},
+        {"provider": {"order": ["baseten", "together"], "allow_fallbacks": True}},
+    )
+
+
+def test_an_unconfigured_provider_resolves_to_nothing():
+    assert resolve_model_options(OPTIONS_CONFIG, "anthropic", "claude-sonnet-5") == ({}, {})
+
+
+def test_base_url_and_transport_land_in_provider_options():
+    # Where the runner looks for them — nothing is registered globally.
+    config = LucaConfig.model_validate(
+        {
+            "providers": {
+                "my_host": {
+                    "base_url": "https://x/v1",
+                    "transport": "luca.client.transports.OpenAITransport",
+                    "provider_options": {"mycustom_param": 1},
+                },
+            },
+        }
+    )
+    assert resolve_model_options(config, "my_host", "some/model") == (
+        {},
+        {
+            "mycustom_param": 1,
+            "base_url": "https://x/v1",
+            "transport": "luca.client.transports.OpenAITransport",
+        },
+    )
+
+
+def test_applying_options_sets_reasoning_from_the_model_block():
+    base = LLMConfig(provider="openrouter", model="moonshotai/kimi-k2:free")
+    assert apply_model_options(base, OPTIONS_CONFIG).model_options["reasoning"] == "high"
+
+
+def test_a_cli_reasoning_beats_the_model_block():
+    base = LLMConfig(provider="openrouter", model="moonshotai/kimi-k2:free")
+    assert apply_model_options(base, OPTIONS_CONFIG, cli_reasoning="low").model_options["reasoning"] == "low"
+
+
+def test_the_top_level_model_reasoning_is_a_default_under_the_blocks():
+    config = LucaConfig.model_validate(
+        {
+            "model": {"reasoning": "minimal"},
+            "providers": OPTIONS_CONFIG.model_dump()["providers"],
+        }
+    )
+    blocked = LLMConfig(provider="openrouter", model="moonshotai/kimi-k2:free")
+    unblocked = LLMConfig(provider="openrouter", model="some/other-model")
+
+    assert (
+        apply_model_options(blocked, config).model_options["reasoning"],
+        apply_model_options(unblocked, config).model_options["reasoning"],
+    ) == ("high", "minimal")
+
+
+def test_switching_to_an_unconfigured_model_clears_the_previous_options():
+    # The reason both dicts are always assigned: inheriting the last model's
+    # max_tokens after a switch would be silent and wrong.
+    configured = apply_model_options(
+        LLMConfig(provider="openrouter", model="moonshotai/kimi-k2:free"),
+        OPTIONS_CONFIG,
+    )
+    assert apply_model_options(configured.model_copy(update={"provider": "anthropic"}), OPTIONS_CONFIG) == LLMConfig(
+        provider="anthropic",
+        model="moonshotai/kimi-k2:free",
+    )
+
+
+def test_resolve_llm_config_resolves_options_for_the_pair_it_lands_on():
+    base = LLMConfig(model="base", provider="faux")
+    config = LucaConfig.model_validate(
+        {
+            "model": {"provider": "openrouter", "model": "moonshotai/kimi-k2:free"},
+            "providers": OPTIONS_CONFIG.model_dump(exclude_none=True)["providers"],
+        }
+    )
+    assert resolve_llm_config(base, config, {"model": None, "provider": None, "reasoning": None}) == LLMConfig(
+        provider="openrouter",
+        model="moonshotai/kimi-k2:free",
+        model_options={"max_tokens": 6000, "top_p": 0.9, "reasoning": "high"},
+        provider_options={
+            "provider": {"order": ["baseten", "together"], "allow_fallbacks": True},
+            "transforms": ["middle-out"],
+        },
+    )
+
+
+def test_a_max_tokens_below_one_is_rejected():
+    with pytest.raises(ValidationError):
+        LucaConfig.model_validate({"providers": {"openrouter": {"options": {"max_tokens": 0}}}})
+
+
+def test_an_unknown_reasoning_level_is_rejected():
+    with pytest.raises(ValidationError):
+        LucaConfig.model_validate({"providers": {"openrouter": {"options": {"reasoning": "huge"}}}})
+
+
+def test_an_unknown_option_key_passes_through_to_the_client_untouched():
+    # The escape hatch: `seed` is a real acompletion kwarg this file does not
+    # type, and refusing it would mean a config release for every client one.
+    config = LucaConfig.model_validate({"providers": {"openrouter": {"options": {"seed": 42}}}})
+
+    assert resolve_model_options(config, "openrouter", "any/model") == ({"seed": 42}, {})
+
+
+def test_picker_models_unions_the_settings_table_with_the_models_list():
+    config = LucaConfig.model_validate(
+        {
+            "models": {"openrouter": ["z/listed"], "anthropic": ["claude-sonnet-5"]},
+            "providers": {"openrouter": {"models": {"a/configured": {}}}},
+        }
+    )
+    assert picker_models(config) == {
+        "openrouter": ["a/configured", "z/listed"],
+        "anthropic": ["claude-sonnet-5"],
     }
 
 
-def test_an_unknown_transport_is_rejected():
-    config = LucaConfig.model_validate(
-        {
-            "providers": {"bad": {"base_url": "https://x", "transport": "nope"}},
-        }
+def test_the_singular_provider_key_is_accepted_as_an_alias(tmp_path):
+    # The singular reads naturally for a file configuring one provider, and
+    # only the canonical key survives onto the model.
+    _write(tmp_path, {"provider": {"openrouter": {"options": {"max_tokens": 6000}}}})
+
+    config = load_luca_config(cwd=tmp_path, home=tmp_path / "none")
+
+    assert config.providers["openrouter"].options.max_tokens == 6000
+
+
+def test_both_spellings_in_one_file_are_rejected(tmp_path):
+    _write(tmp_path, {"provider": {"a": {"base_url": "x"}}, "providers": {"b": {"base_url": "y"}}})
+
+    with pytest.raises(LucaConfigError, match="keep one"):
+        load_luca_config(cwd=tmp_path, home=tmp_path / "none")
+
+
+def test_the_two_spellings_merge_across_files_instead_of_shadowing(tmp_path):
+    # Normalizing per file, before the merge, is what makes this one map: with
+    # the rename after the merge, whichever key lost would vanish silently.
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    _write(home, {"provider": {"openrouter": {"options": {"max_tokens": 6000}}}})
+    _write(project, {"providers": {"anthropic": {"options": {"temperature": 0.5}}}})
+
+    config = load_luca_config(cwd=project, home=home)
+
+    assert sorted(config.providers) == ["anthropic", "openrouter"]
+
+
+def test_luca_schema_describes_the_provider_options():
+    schema = json.loads((Path(__file__).parents[4] / "luca.schema.json").read_text())
+
+    assert (
+        schema["$defs"]["ProviderDef"]["properties"]["models"],
+        # The two blocks mirror LLMConfig's two dicts, at BOTH levels.
+        sorted(schema["$defs"]["ModelDef"]["properties"]),
+        sorted(schema["$defs"]["ProviderDef"]["properties"]),
+        # additionalProperties true is the raw escape hatch, and the whole
+        # reason this one block is not extra="forbid".
+        schema["$defs"]["ModelOptionsBlock"]["additionalProperties"],
+        sorted(schema["$defs"]["ModelOptionsBlock"]["properties"]),
+    ) == (
+        {"additionalProperties": {"$ref": "#/$defs/ModelDef"}, "title": "Models", "type": "object"},
+        ["options", "provider_options"],
+        ["base_url", "models", "options", "provider_options", "transport"],
+        True,
+        ["max_tokens", "reasoning", "temperature", "top_p"],
     )
-    with pytest.raises(LucaConfigError, match="unknown transport"):
-        register_config_providers(config)
 
 
 # ── malformed files ──────────────────────────────────────────────────────────
@@ -582,7 +806,7 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
             llm_config=LLMConfig(
                 provider="anthropic",
                 model="claude-sonnet-5",
-                reasoning="low",
+                model_options={"reasoning": "low"},
             ),
             runtime_config=RuntimeConfig(hard_max_steps=42),
         )

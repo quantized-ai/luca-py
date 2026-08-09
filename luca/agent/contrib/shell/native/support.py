@@ -24,11 +24,10 @@ Two facts shape the tables:
 
    The table is keyed on the PROVIDER NAME, and the two names below are the
    built-in ones that run those two transports. That is a proxy, not an
-   identity: `luca/client/transports/__init__.py` publishes `openai-responses`
-   in `TRANSPORTS`, and a `luca.json` can point a custom provider at it
-   (`tui/config.py:register_config_providers`, necessarily under a name of its
-   own — the first-class names are reserved). Such a host speaks the native
-   wire and still gets nothing from this table. The failure is fail-safe: the
+   identity: a `luca.json` can point any provider at any transport by dotted
+   path (`providers.<name>.transport`, resolved per call — see
+   `tui/config.py`), so a custom host can speak the OpenAI Responses wire and
+   still get nothing from this table. The failure is fail-safe: the
    natives are lost, never wrongly advertised, and the session downgrades to
    the generic tools. Registering the custom name here is the fix if it ever
    matters.

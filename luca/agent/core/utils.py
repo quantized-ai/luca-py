@@ -148,11 +148,12 @@ def _resolve(node_id: str, entries: Mapping[str, AnyEntry]) -> AnyEntry | str:
 
 
 def _model_label(session: AgentSession) -> str:
+    """Who answered. Deliberately just the pair: how it was invoked lives in
+    `LLMConfig`'s opaque option dicts, and core does not name keys inside
+    them — a transcript that printed `reasoning` but not `temperature` would
+    be picking favorites out of a bag it does not own."""
     config = session.session_config.llm_config
-    label = f"{config.provider}/{config.model}"
-    if config.reasoning:
-        label = f"{label} · reasoning {config.reasoning}"
-    return label
+    return f"{config.provider}/{config.model}"
 
 
 def _split_turns(entries: Sequence[AnyEntry | str]) -> list[list[AnyEntry | str]]:

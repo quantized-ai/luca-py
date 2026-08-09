@@ -43,8 +43,10 @@ def _restore_luca_logger():
 
 @pytest.fixture(autouse=True)
 def _restore_providers():
-    """`register_config_providers` writes into the global `PROVIDERS`, so a
-    config with a `providers` block would leak a host into later tests."""
+    """Nothing in the TUI registers a host any more — provider settings are
+    carried per call. The guard stays because `PROVIDERS` is a module-level
+    dict `luca.client` exposes for registration, and a test that reaches for
+    `register_provider` must not leak a host into every test after it."""
     saved = dict(PROVIDERS)
     yield
     PROVIDERS.clear()

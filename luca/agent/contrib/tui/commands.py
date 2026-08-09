@@ -118,11 +118,43 @@ def model_context_note(provider: str, model: str) -> str | None:
 # ── handlers ──────────────────────────────────────────────────────────────────
 
 
-def _apply(app: AgentApp, **updates: str | None) -> None:
+_UNSET = object()
+"""`reasoning` is nullable, so "leave it alone" and "clear it" need different
+values and `None` is already taken by the second."""
+
+
+def _apply(
+    app: AgentApp,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    reasoning: str | object | None = _UNSET,
+) -> None:
     """Reassign the session's next-turn config; the runner reads it fresh at
-    the top of each turn."""
+    the top of each turn.
+
+    The ONE mutation point for the session's llm_config, which is what lets a
+    model switch re-resolve that model's options and re-point its credential in
+    a single place. Only a provider/model change does either: re-resolving on a
+    bare `/reasoning` would undo the level the user just picked.
+
+    `reasoning` is written into `model_options`, where it now lives — the level
+    is an ordinary client kwarg like `max_tokens`, and the core has no field for
+    it."""
     config = app.runner.session.session_config.llm_config
-    app.runner.session.session_config.llm_config = config.model_copy(update=updates)
+    updates = {key: value for key, value in (("provider", provider), ("model", model)) if value is not None}
+    updated = config.model_copy(update=updates) if updates else config
+    if updates:
+        updated = app.resolve_model_options(updated)
+        app.repoint_api_key(updated.provider)
+    if reasoning is not _UNSET:
+        options = {**updated.model_options}
+        if reasoning is None:
+            options.pop("reasoning", None)
+        else:
+            options["reasoning"] = reasoning
+        updated = updated.model_copy(update={"model_options": options})
+    app.runner.session.session_config.llm_config = updated
     app._refresh_status()
 
 
@@ -409,7 +441,10 @@ def build_settings_state(
                 rows=[
                     vm.SettingRow(name="model", value=short_model(config.model)),
                     vm.SettingRow(name="provider", value=config.provider),
-                    vm.SettingRow(name="reasoning", value=config.reasoning or "provider-default"),
+                    vm.SettingRow(
+                        name="reasoning",
+                        value=config.model_options.get("reasoning") or "provider-default",
+                    ),
                     vm.SettingRow(name="streaming", value="on" if streaming else "off"),
                 ],
             ),
@@ -451,7 +486,8 @@ def adjust_setting(app: AgentApp, screen: SettingsScreen, row: vm.SettingRow, de
     elif row.name == "reasoning":
         levels = [None, *get_args(Reasoning)]
         config = app.runner.session.session_config.llm_config
-        current = levels.index(config.reasoning) if config.reasoning in levels else 0
+        reasoning = config.model_options.get("reasoning")
+        current = levels.index(reasoning) if reasoning in levels else 0
         _apply(app, reasoning=levels[(current + delta) % len(levels)])
     elif row.name == "streaming":
         app._streaming = not app._streaming

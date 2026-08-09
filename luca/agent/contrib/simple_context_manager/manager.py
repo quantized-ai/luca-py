@@ -33,6 +33,7 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
+from luca.agent.core.runner import completion_options
 from luca.client import acompletion, catalog
 from luca.client.types import TextBlock, UserMessage as ClientUserMessage
 
@@ -115,6 +116,7 @@ class SummarizingContextManager(ContextManager):
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         enabled: bool = True,
         provider=None,
+        api_key: str | None = None,
     ) -> None:
         self.keep_turns = keep_turns
         self.threshold = threshold
@@ -122,6 +124,12 @@ class SummarizingContextManager(ContextManager):
         self.summary_prompt = summary_prompt
         self.enabled = enabled
         self.provider = provider
+        # The summary call is a real call to the session's own model, so it
+        # needs the same credential the runner was given. A manager is
+        # constructed by the application, exactly like the runner, so the
+        # application hands it the same key — it is never read off the
+        # session, which deliberately stores none.
+        self.api_key = api_key
 
     def should_compact(self, session: AgentSession, conversation_id: str) -> bool:
         return self.enabled and (
@@ -168,7 +176,12 @@ class SummarizingContextManager(ContextManager):
             messages=messages,
             system_message=self.summary_prompt,
             provider=self.provider,
-            reasoning=cfg.reasoning,
+            # Same model, same provider, so the same invocation settings: a
+            # max_tokens cap or a routing preference the session configured
+            # applies to the summary call too. The runner's own ctor-level
+            # overrides are NOT visible here — this is a separate collaborator
+            # the application builds, so it configures both.
+            **completion_options(cfg, api_key=self.api_key),
         )
         return self.text_of(response.message), self.usage_of(response.message)
 

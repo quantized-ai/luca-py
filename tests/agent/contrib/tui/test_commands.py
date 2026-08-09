@@ -11,9 +11,11 @@ screen's `← →` intents.
 
 import os
 import time
+from functools import partial
 
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.app import AgentApp
+from luca.agent.contrib.tui.auth import AuthEntry
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, UserTurn
 from luca.agent.contrib.tui.commands import (
     COMMANDS,
@@ -24,6 +26,7 @@ from luca.agent.contrib.tui.commands import (
     recent_models,
     run_palette_choice,
 )
+from luca.agent.contrib.tui.config import LucaConfig, apply_model_options
 from luca.agent.contrib.tui.format import fmt_tokens, short_model
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
@@ -125,7 +128,7 @@ async def test_dispatch_splits_the_name_from_the_arg_and_strips_it(tmp_path):
     async with app.run_test(size=(105, 35)):
         assert await dispatch(app, "/reasoning   high  ") is True
 
-        assert _config(app) == LLMConfig(model="fake-model", provider="faux", reasoning="high")
+        assert _config(app) == LLMConfig(model="fake-model", provider="faux", model_options={"reasoning": "high"})
 
 
 async def test_an_unknown_command_is_sent_as_a_normal_message(tmp_path):
@@ -233,6 +236,112 @@ async def test_escaping_the_model_menu_changes_nothing(tmp_path):
         assert _config(app) == before
 
 
+# ── /model + configured options ──────────────────────────────────────────────
+
+OPTIONS_CONFIG = LucaConfig.model_validate(
+    {
+        "providers": {
+            "anthropic": {
+                "models": {"claude-sonnet-5": {"options": {"max_tokens": 6000, "reasoning": "high"}}},
+            },
+        },
+    }
+)
+
+
+def options_app(tmp_path) -> AgentApp:
+    return AgentApp(
+        fresh_session(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+        model_options=partial(apply_model_options, config=OPTIONS_CONFIG),
+    )
+
+
+async def test_switching_to_a_configured_model_resolves_its_options(tmp_path):
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-sonnet-5",
+            provider="anthropic",
+            model_options={"max_tokens": 6000, "reasoning": "high"},
+        )
+
+
+async def test_switching_away_again_clears_them(tmp_path):
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+        await submit(pilot, "/model anthropic:claude-opus-4-8")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-opus-4-8",
+            provider="anthropic",
+        )
+
+
+async def test_switching_provider_re_points_the_credential(tmp_path):
+    # A key is per PROVIDER, so a switch that leaves it behind would send
+    # openrouter's key to anthropic.
+    app = AgentApp(
+        fresh_session(),
+        auth={
+            "faux": AuthEntry(type="api", key="sk-faux"),
+            "anthropic": AuthEntry(type="api", key="sk-ant"),
+        },
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        before = app.runner.api_key
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+
+        assert (before, app.runner.api_key) == ("sk-faux", "sk-ant")
+
+
+async def test_switching_to_a_provider_with_no_entry_clears_the_credential(tmp_path):
+    app = AgentApp(
+        fresh_session(),
+        auth={"faux": AuthEntry(type="api", key="sk-faux")},
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+
+        assert app.runner.api_key is None
+
+
+async def test_reasoning_alone_does_not_re_resolve_the_model_block(tmp_path):
+    # `/reasoning` after a switch must stand: re-resolving on every _apply
+    # would silently put the configured level back.
+    app = options_app(tmp_path)
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+        await submit(pilot, "/reasoning low")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(
+            model="claude-sonnet-5",
+            provider="anthropic",
+            model_options={"max_tokens": 6000, "reasoning": "low"},
+        )
+
+
 # ── /reasoning ───────────────────────────────────────────────────────────────
 
 
@@ -246,7 +355,7 @@ async def test_reasoning_menu_sets_the_level(tmp_path):
         await pilot.press("enter")
         await wait_until(pilot, lambda: not app.query(OverlayListView))
 
-        assert _config(app) == LLMConfig(model="fake-model", provider="faux", reasoning="none")
+        assert _config(app) == LLMConfig(model="fake-model", provider="faux", model_options={"reasoning": "none"})
 
 
 async def test_reasoning_arg_rejects_an_unknown_level(tmp_path):
@@ -451,11 +560,13 @@ async def test_settings_right_on_reasoning_cycles_through_the_levels(tmp_path):
         await pilot.press("down")  # row 2: reasoning
         await pilot.press("right")
         await pilot.pause()
-        assert _config(app) == LLMConfig(model="fake-model", provider="faux", reasoning="provider-default")
+        assert _config(app) == LLMConfig(
+            model="fake-model", provider="faux", model_options={"reasoning": "provider-default"}
+        )
 
         await pilot.press("right")
         await pilot.pause()
-        assert _config(app) == LLMConfig(model="fake-model", provider="faux", reasoning="none")
+        assert _config(app) == LLMConfig(model="fake-model", provider="faux", model_options={"reasoning": "none"})
 
 
 async def test_settings_right_on_streaming_toggles_it(tmp_path):

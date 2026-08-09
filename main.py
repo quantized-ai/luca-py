@@ -48,11 +48,7 @@ The system prompt is picked for the model's family and carries the project's
 `LUCA.md` / `AGENTS.md` / `CLAUDE.md`; `--no-instructions` drops the latter.
 """
 
-from dotenv import load_dotenv
-
 from luca.agent.contrib.tui import main
-
-load_dotenv()
 
 if __name__ == "__main__":
     main()

@@ -275,6 +275,25 @@ async def test_a_tool_bearing_span_folds_through_the_projected_summary_call():
     )
 
 
+async def test_the_summary_call_carries_the_sessions_model_options():
+    # Same model, same provider, so the same invocation settings: a max_tokens
+    # cap the session configured has to bound the summary call too.
+    session = two_turn_session()
+    session.session_config.llm_config = MODEL.model_copy(
+        update={"model_options": {"max_tokens": 6000}, "provider_options": {"transforms": ["middle-out"]}},
+    )
+    provider = _faux("SUMMARY")
+    manager = SummarizingContextManager(provider=provider)
+
+    await manager.compact(session, "c1", _offered(session), _entry())
+
+    request = provider.requests[0]
+    assert (request.max_tokens, request.provider_options) == (
+        6000,
+        {"faux": {"transforms": ["middle-out"]}},
+    )
+
+
 async def test_compact_returns_none_when_nothing_is_older_than_the_kept_tail():
     session = two_turn_session()
     manager = SummarizingContextManager(keep_turns=5, provider=_faux("x"))

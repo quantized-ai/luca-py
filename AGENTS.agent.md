@@ -531,6 +531,25 @@ All config rides on `SessionConfig.runtime_config` (a `RuntimeConfig`), which pe
 
 All int fields use -1 (Inf) or 0 to disable, except `subagents_max_per_turn` / `subagents_max_workers`, which reject 0 (that is `subagents_enabled=False` spelled incorrectly). Constructing a runner where `soft_max_steps == hard_max_steps > 0` emits a `UserWarning` (hard prevails). Timeout fields are milliseconds; limit fields are plain ints. `Seconds()` / `MilliSeconds()` convert durations. Seed config via `AgentSessionRunner.new_session(..., runtime_config=)`.
 
+### Model options and credentials
+
+`LLMConfig` says WHICH model runs (`model`, `provider`) and carries two FLAT, OPAQUE dicts saying how:
+
+| Field | Holds | Reaches the client as |
+|---|---|---|
+| `model_options` | `luca.client.acompletion` keyword arguments — `max_tokens`, `temperature`, `reasoning`, `seed`, … | splatted verbatim |
+| `provider_options` | `base_url`, `transport` (a dotted path to a transport class), plus any raw wire fields the provider documents | `base_url=` / `transport_class=`, remainder as `provider_options={<provider>: {...}}` |
+
+Core never reads a key out of either. The single exception is `runner.completion_options()`, which lifts `base_url` and `transport` out of `provider_options` because those say how the client is REACHED rather than what it is asked for, and the client takes them as named parameters. `transport` is a dotted path rather than a class because an `LLMConfig` has to survive a round trip through JSON. Everything else is forwarded, so an unknown key is a `TypeError` from `acompletion`, not a validation error here — assembling a valid pair of dicts is the application's job.
+
+**No credentials in the data model.** An `LLMConfig` is persisted with the session AND copied onto every assistant entry as provenance (see **Reasoning durability**), so a key stored there would be written to disk once per message. `api_key` is a runner constructor argument, in the same runtime-only class as `provider` — never serialized. `SummarizingContextManager` takes its own, because it makes its own model call and the application builds both.
+
+`AgentSessionRunner(model_options=…, provider_options=…)` are runtime OVERRIDES that win per key over the session's, so a process can bound or reroute its own calls without rewriting what the session records.
+
+`update_llm_config` derives the ACTIVE config from the CONFIGURED one and preserves both dicts untouched, and `completion_options` keys the raw block by the ACTIVE provider — so a `build_model_string` middleware that routes elsewhere carries the configured model's settings to the provider it chose. Routing to a provider that does not understand them is the routing middleware's business.
+
+Core reads no config file. Resolving a per-provider / per-model table into those two dicts is contrib's job (`contrib/tui/config.py`: `resolve_model_options` / `apply_model_options`), and reading credentials is `contrib/tui/auth.py`.
+
 ### System prompt parts
 
 The runner takes no `system_prompt` string. Instead it takes `system_prompt_parts` — a list whose items are any of (machinery in `luca/agent/core/system_prompt.py`):

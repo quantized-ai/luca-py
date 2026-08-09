@@ -223,7 +223,7 @@ TOOLS_SESSION = make_session(
     },
     main_conversation_id="c1",
     session_config=SessionConfig(
-        llm_config=MODEL.model_copy(update={"reasoning": "medium"}),
+        llm_config=MODEL,
     ),
 )
 
@@ -746,7 +746,7 @@ def test_tool_calls_render_as_a_tree_of_approvals_and_outcomes():
         == f"""\
 LUCA SESSION s_tools
 Conversation c1 · idle · 1 turn
-Default: faux/test-model · reasoning medium
+Default: faux/test-model
 {RULE}
 
 TURN 1 · {STAMP}

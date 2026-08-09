@@ -16,8 +16,19 @@ runner = AgentSessionRunner(
     conversation_projector=None,    # optional — see 10
     context_manager=None,           # optional — see 11 (context) and 12 (compaction)
     provider=None,                  # optional — a prebuilt luca.client provider instance
+    api_key=None,                   # optional — the credential for this session's provider
+    model_options=None,             # optional — client kwargs, over the session's
+    provider_options=None,          # optional — base_url / transport / raw, over the session's
 )
 ```
+
+The last four are RUNTIME state: they are never serialized, and a reloaded
+session does not carry them. `api_key` is here rather than on `LLMConfig`
+precisely because the config is persisted and copied onto every assistant
+message; passing none leaves the argument off the client call entirely, so it
+falls back to the provider's own environment variable. The two option dicts
+win per key over `LLMConfig`'s ([02](02-data-model.md)), which lets one process
+cap or reroute its calls without rewriting what the session records.
 
 `runner.recalculate_context_tokens()` re-derives every entry's
 `context_tokens` through that context manager; nothing in the framework calls

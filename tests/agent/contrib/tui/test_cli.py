@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from luca.agent.contrib.tui.app import AgentApp
+from luca.agent.contrib.tui.auth import ENV_AUTH_PATH
 from luca.agent.contrib.tui.cli import (
     arg_parser,
     build_session,
@@ -113,7 +114,10 @@ def test_a_conversation_is_loaded_from_the_store_not_the_launch_directory(tmp_pa
         lambda self: seen.update(id=self.runner.session.id, picker=self._resume),
     )
 
-    main(["--resume", session.id])
+    # `--faux` because the stored session names the faux provider, which is
+    # only reachable as an injected INSTANCE — without the flag the boot check
+    # correctly refuses a provider nothing can build.
+    main(["--faux", "--resume", session.id])
 
     # named outright, so the app opens on it instead of on the picker
     assert seen == {"id": session.id, "picker": False}
@@ -228,7 +232,7 @@ def test_model_and_reasoning_override_the_fresh_session():
     assert session.session_config.llm_config == LLMConfig(
         model="moonshotai/kimi-k2.7-code",
         provider="openrouter",
-        reasoning="high",
+        model_options={"reasoning": "high"},
     )
 
 
@@ -342,6 +346,82 @@ def test_theme_defaults_to_luca_dark_during_app_construction(tmp_path, monkeypat
     assert seen == {"theme": "luca-dark"}
 
 
+def test_the_auth_file_key_reaches_the_runner_and_the_context_manager(tmp_path, monkeypatch):
+    # A real (non-faux) launch: `openrouter` is a provider the client knows, so
+    # nothing is registered and no call is made — `run` is replaced.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "auth.json").write_text(json.dumps({"openrouter": {"type": "api", "key": "sk-or-live"}}))
+    monkeypatch.setenv(ENV_AUTH_PATH, str(tmp_path / "auth.json"))
+    seen: dict[str, object] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["runner"] = self.runner.api_key
+        seen["context_manager"] = self._context_manager.api_key
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main([])
+
+    assert seen == {"runner": "sk-or-live", "context_manager": "sk-or-live"}
+
+
+def test_a_provider_with_no_auth_entry_passes_no_key_at_all(tmp_path, monkeypatch):
+    # Absent, not empty: the client falls back to OPENROUTER_API_KEY.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "auth.json").write_text(json.dumps({"anthropic": {"type": "api", "key": "sk-ant"}}))
+    monkeypatch.setenv(ENV_AUTH_PATH, str(tmp_path / "auth.json"))
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(key=self.runner.api_key))
+    main([])
+
+    assert seen == {"key": None}
+
+
+def test_an_unreachable_provider_fails_at_boot_with_a_readable_message(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(json.dumps({"model": {"provider": "my_host", "model": "some/model"}}))
+
+    with pytest.raises(SystemExit):
+        main([])
+
+    assert "cannot be reached" in capsys.readouterr().err
+
+
+def test_a_custom_host_with_a_base_url_and_transport_boots(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(
+        json.dumps(
+            {
+                "model": {"provider": "my_host", "model": "some/model"},
+                "providers": {
+                    "my_host": {
+                        "base_url": "https://custom.api.example/v1",
+                        "transport": "luca.client.transports.OpenAITransport",
+                    },
+                },
+            }
+        )
+    )
+    (tmp_path / "auth.json").write_text(json.dumps({"my_host": {"type": "api", "key": "sk-custom"}}))
+    monkeypatch.setenv(ENV_AUTH_PATH, str(tmp_path / "auth.json"))
+    seen: dict[str, object] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["key"] = self.runner.api_key
+        seen["options"] = self.runner.session.session_config.llm_config.provider_options
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main([])
+
+    assert seen == {
+        "key": "sk-custom",
+        "options": {
+            "base_url": "https://custom.api.example/v1",
+            "transport": "luca.client.transports.OpenAITransport",
+        },
+    }
+
+
 def test_luca_json_theme_reaches_the_app(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "luca.json").write_text(json.dumps({"theme": {"name": "textual-light"}}))
@@ -354,6 +434,40 @@ def test_luca_json_theme_reaches_the_app(tmp_path, monkeypatch):
     main(["--faux"])
 
     assert seen == {"theme": "textual-light"}
+
+
+def test_luca_json_model_options_reach_the_session_and_survive_a_switch(tmp_path, monkeypatch):
+    # The whole chain in one: the issue's config resolves onto the launched
+    # session, and the resolver reaches the app so `/model` re-resolves too.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "luca.json").write_text(
+        json.dumps(
+            {
+                "model": {"provider": "faux", "model": "configured-model"},
+                "providers": {
+                    "faux": {
+                        "options": {"temperature": 0.5},
+                        "models": {"configured-model": {"options": {"max_tokens": 6000}}},
+                    },
+                },
+            }
+        )
+    )
+    seen: dict[str, LLMConfig] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["launched"] = self.runner.session.session_config.llm_config
+        seen["switched"] = self.resolve_model_options(
+            seen["launched"].model_copy(update={"model": "another-model"}),
+        )
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--faux"])
+
+    assert (seen["launched"].model_options, seen["switched"].model_options) == (
+        {"max_tokens": 6000, "temperature": 0.5},
+        {"temperature": 0.5},
+    )
 
 
 def test_theme_flag_overrides_luca_json(tmp_path, monkeypatch):

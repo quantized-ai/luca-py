@@ -58,7 +58,7 @@ CAPTURES = Path(__file__).parent / "captures"
 # matters: `openrouter` is absent from the native-tools capability table, so
 # `ShellNativeMiddleware` is inert for the whole run and no native item is on
 # the wire. This failure has nothing to do with provider-native tools.
-MODEL = LLMConfig(model="openai/gpt-5.4-mini", provider="openrouter", reasoning="medium")
+MODEL = LLMConfig(model="openai/gpt-5.4-mini", provider="openrouter", model_options={"reasoning": "medium"})
 
 DEAD_STREAM = (CAPTURES / "openrouter_midstream_502.sse").read_bytes()
 

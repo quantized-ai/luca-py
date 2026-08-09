@@ -22,7 +22,7 @@ from luca.agent.contrib.tui import AgentApp, GalleryApp, LucaApp, build_runner, 
 ## 1. Run it
 
 ```bash
-uv run python main.py                     # fresh session (needs OPENROUTER_API_KEY)
+uv run python main.py                     # fresh session (needs auth.json or OPENROUTER_API_KEY)
 uv run python main.py --faux              # offline scripted demo — no key, no network
 uv run python main.py --resume            # pick a past session for this project
 uv run python main.py --resume <id>       # resume that session (--fork to branch)
@@ -34,8 +34,11 @@ uv run python main.py --config ./ci.json  # use THIS config file, skip discovery
 uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 ```
 
-`--model` / `--provider` / `--reasoning` update the session's `LLMConfig`;
-they persist with the session and override the stored values on a resume.
+`--model` / `--provider` / `--reasoning` update the session's `LLMConfig`
+(`--reasoning` lands in its `model_options`); they persist with the session and
+override the stored values on a resume. The provider's api key does not — it is
+read from `auth.json` at every boot and handed to the runner
+([config.md](config.md#credentials)).
 Subagent flags (`--subagents-max-depth`, `--subagents-max-per-turn`,
 `--subagents-max-workers`) and `--pretty-print` behave as before — see
 [`08-runtime-config.md`](../../08-runtime-config.md) and

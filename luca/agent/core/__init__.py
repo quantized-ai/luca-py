@@ -100,6 +100,7 @@ from .runner import (
     AgentRun,
     AgentSessionRunner,
     RunResult,
+    completion_options,
 )
 from .system_prompt import DefaultSystemPromptAssembler, SystemPromptAssembler
 from .tool_registry import PreparedTool, ToolRegistry
@@ -179,6 +180,7 @@ __all__ = [
     "Usage",
     "UsageCounters",
     "UserMessage",
+    "completion_options",
     "declares_spawn",
     "open_turn_executions",
     "open_turn_index",
