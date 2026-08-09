@@ -82,7 +82,12 @@ SUBAGENT's gate with siblings still working leaves the conversation `BUSY`,
 so mid-orchestration steering posts keep working. `esc` interrupts a run,
 backs out of a modal, and
 selects Cancel turn at an approval prompt — it never quits (`ctrl+q` does,
-saving first). `^p` palette, `^s` skills, `^o` expand
+saving first). `↑`/`↓` at the top/bottom of the composer walk the messages
+already sent — read straight off the session's main conversation (the
+compaction lineage included), so there is no history file and `/clear` or a
+resume simply changes which history there is; what was half-typed is stashed
+and handed back on the way down. Inside a multiline draft the arrows still
+move the cursor. `^p` palette, `^s` skills, `^o` expand
 the last clipped output, `ctrl+v` attach a clipboard image. A drive failure
 renders as a `▸ model` error block plus a recovery prompt (retry / switch
 model / cancel turn; `^r` retries).

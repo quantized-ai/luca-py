@@ -120,6 +120,7 @@ class Composer(Horizontal):
         yield PromptInput(
             placeholder=self.model.placeholder,
             commands=self._commands,
+            history=True,
         )
 
     def on_mount(self) -> None:

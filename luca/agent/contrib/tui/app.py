@@ -104,6 +104,7 @@ from .render import (
     session_todos,
     subagent_task,
     tool_block,
+    user_prompts,
     user_transcript_text,
     was_auto_approved,
 )
@@ -202,6 +203,13 @@ class AgentApp(LucaApp):
         # the dock, so the half-typed message has to be carried across and put
         # back — with the `@` picker's paths inlined, or unchanged on esc.
         self._composer_prefix = ""
+        # Where ↑/↓ has walked back to in the messages already sent, and the
+        # draft that was in the box when the walk started. On the APP because
+        # every overlay, approval prompt and question set destroys the composer
+        # and mounts a fresh one — widget-local state would not survive a
+        # picker opening mid-browse.
+        self._history_offset = 0
+        self._history_draft = ""
         self._menu_handler = None
         self._menu_rows: list[vm.OverlayRow] = []
         self._menu_all_rows: list[vm.OverlayRow] = []
@@ -240,6 +248,9 @@ class AgentApp(LucaApp):
     # ── input ─────────────────────────────────────────────────────────────────
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        # ANY enter ends the walk, including the paths that refuse the submit
+        # below — what is in the box is the draft again from here on.
+        self._history_offset = 0
         text = event.value.strip()
         if text.startswith("/"):
             from .commands import dispatch
@@ -307,6 +318,24 @@ class AgentApp(LucaApp):
             limits=self._read_limits,
             context_window=get_context_window_size(self.runner.session),
         )
+
+    async def on_prompt_input_history_requested(self, message: PromptInput.HistoryRequested) -> None:
+        """↑/↓ off the edge of the composer walks the messages already sent.
+
+        Offset 0 is the DRAFT — stashed on the way in and handed back on the
+        way out, so browsing never eats what was half-typed. The list is
+        re-derived from the session on every press: it is the only copy, and
+        nothing else has to be kept in step with `/clear`, resume or a fork."""
+        prompts = user_prompts(self.runner.session)
+        offset = self._history_offset - message.delta
+        if not prompts or not 0 <= offset <= len(prompts):
+            return
+        if self._history_offset == 0:
+            self._history_draft = message.prompt_input.text
+        self._history_offset = offset
+        field = message.prompt_input
+        field.load_text(prompts[-offset] if offset else self._history_draft)
+        field.move_cursor(field.document.end)
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """`/` in an empty composer opens the palette; `@` opens the context
@@ -1247,6 +1276,7 @@ class AgentApp(LucaApp):
         self._pending_images.clear()
         self._answered.clear()
         self._denied_by_user.clear()
+        self._history_offset = 0
         await self._replay_history()
         self._refresh_status()
         self._settle()
@@ -1367,6 +1397,12 @@ class AgentApp(LucaApp):
         await self._notice("compacting the conversation…")
         if not self._driving:
             self._start_drive()
+
+    def action_clear_prompt(self) -> None:
+        # Throwing the text away ends the walk with it: what `↓` would hand
+        # back is a draft the user has just discarded.
+        self._history_offset = 0
+        super().action_clear_prompt()
 
     async def on_key(self, event) -> None:
         # ^r at the retry prompt = "Retry now" (option 1).

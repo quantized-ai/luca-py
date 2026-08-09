@@ -27,6 +27,7 @@ from luca.agent.contrib.tui.render import (
     tool_arg,
     tool_block,
     transcript_blocks,
+    user_prompts,
     user_transcript_text,
     was_auto_approved,
 )
@@ -835,6 +836,64 @@ def test_user_transcript_text_falls_back_to_the_media_type():
         )
         == "[image: image/png]"
     )
+
+
+def test_user_prompts_are_what_was_typed_oldest_first():
+    # The composer's history. The mention part is the harness's expansion of
+    # the `@` in the text, the image is not something to retype, and the
+    # repeat of "again" collapses the way a shell's history does.
+    session = make_session(
+        id="s_history",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="first")]),
+            "a1": AssistantMessage(
+                id="a1",
+                created_at=510,
+                parts=[TextContent(text="on it")],
+                llm_config=MODEL,
+                stop_reason="stop",
+            ),
+            "u2": UserMessage(
+                id="u2",
+                created_at=520,
+                parts=[
+                    TextContent(text="read @notes.md"),
+                    TextContent(text="# notes", metadata={"mention": {"path": "/w/notes.md", "success": True}}),
+                    ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                ],
+            ),
+            "u3": UserMessage(id="u3", created_at=530, parts=[TextContent(text="again")]),
+            "u4": UserMessage(id="u4", created_at=540, parts=[TextContent(text="again")]),
+        },
+        conversations={"c1": conversation("c1", ["u1", "a1", "u2", "u3", "u4"])},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert user_prompts(session) == ["first", "read @notes.md", "again"]
+
+
+def test_user_prompts_walk_back_past_a_compaction():
+    # A compaction archives one conversation and installs another over a
+    # rewritten path: "first" is no longer ON the main path, but the entry is
+    # still in the store and the predecessor still lists it. The tail the
+    # successor kept ("second") is listed by both and must appear once.
+    session = make_session(
+        id="s_history_compacted",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="first")]),
+            "u2": UserMessage(id="u2", created_at=510, parts=[TextContent(text="second")]),
+            "u3": UserMessage(id="u3", created_at=520, parts=[TextContent(text="third")]),
+        },
+        conversations={
+            "c1": conversation("c1", ["u1", "u2"]),
+            "c2": conversation("c2", ["u2", "u3"], previous_conversation_id="c1"),
+        },
+        main_conversation_id="c2",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert user_prompts(session) == ["first", "second", "third"]
 
 
 # ── entry_blocks / transcript_blocks ──────────────────────────────────────────

@@ -31,6 +31,7 @@ from luca.agent.core.models import (
     ChildConversation,
     CompactionEntry,
     ContentPart,
+    Conversation,
     Entry,
     ExecutionStatus,
     ImageContent,
@@ -99,6 +100,42 @@ def mention_blocks(parts: Iterable[ContentPart]) -> list[vm.ToolBlock]:
             )
         )
     return blocks
+
+
+def user_prompts(session: AgentSession, conversation_id: str | None = None) -> list[str]:
+    """Every message the user TYPED on one conversation, oldest first — the
+    composer's history, and nothing the app has to keep a second copy of.
+
+    TEXT parts only: an `@`-mention part is the harness's expansion of what was
+    typed, and an image is not something to retype. Consecutive duplicates
+    collapse, shell-style.
+
+    Walks the compaction lineage, so `/compact` does not eat the history — the
+    entries survive in the store, only the PATH to them is rewritten, and the
+    predecessor still holds the one the successor dropped. Nodes are deduped
+    because the successor's path re-lists the tail it kept."""
+    chain: list[Conversation] = []
+    conversation = session.conversations.get(conversation_id or session.main_conversation_id)
+    while conversation is not None:
+        chain.append(conversation)
+        conversation = session.conversations.get(conversation.previous_conversation_id)
+
+    prompts: list[str] = []
+    seen: set[str] = set()
+    for link in reversed(chain):
+        for node_id in link.nodes:
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            entry = session.entries.get(node_id)
+            if not isinstance(entry, UserMessage):
+                continue
+            text = "\n".join(
+                part.text for part in entry.parts if isinstance(part, TextContent) and mention_of(part) is None
+            ).strip()
+            if text and text != (prompts[-1] if prompts else None):
+                prompts.append(text)
+    return prompts
 
 
 def mention_summary(mention: dict) -> str:
