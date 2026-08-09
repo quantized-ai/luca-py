@@ -108,40 +108,28 @@ class LucaAgent(BaseInstalledAgent):
 
     async def install(self, environment: BaseEnvironment) -> None:
         await self._install_system_packages(environment)
-        await self._install_uv(environment)
         await self._upload_driver(environment)
         await self._create_venv(environment)
 
     async def _install_system_packages(self, environment: BaseEnvironment) -> None:
-        """ripgrep is not optional: luca's `glob` and `grep` shell out to `rg`."""
+        """ripgrep because luca's `glob` and `grep` shell out to `rg`; python3
+        so the venv below needs no downloaded interpreter."""
         await self.exec_as_root(
             environment,
             command=(
                 "if command -v apt-get >/dev/null 2>&1; then"
-                "  apt-get update && apt-get install -y curl ca-certificates git ripgrep procps;"
+                "  apt-get update && apt-get install -y ca-certificates curl ripgrep python3 python3-venv;"
                 " elif command -v apk >/dev/null 2>&1; then"
-                "  apk add --no-cache curl ca-certificates bash git ripgrep procps;"
+                "  apk add --no-cache ca-certificates curl bash ripgrep python3;"
                 " elif command -v dnf >/dev/null 2>&1; then"
-                "  dnf install -y curl ca-certificates git ripgrep procps-ng;"
+                "  dnf install -y ca-certificates curl ripgrep python3;"
                 " elif command -v yum >/dev/null 2>&1; then"
-                "  yum install -y curl ca-certificates git ripgrep procps-ng;"
+                "  yum install -y ca-certificates curl ripgrep python3;"
                 " else"
-                '  echo "no known package manager; assuming curl/git/ripgrep are present" >&2;'
+                '  echo "no known package manager; assuming python3/ripgrep are present" >&2;'
                 " fi"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
-        )
-
-    async def _install_uv(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                "if ! command -v uv >/dev/null 2>&1; then"
-                f"  curl -LsSf {UV_INSTALL_URL} | sh;"
-                " fi && "
-                f"{self._uv_on_path()} uv --version"
-            ),
         )
 
     @staticmethod
@@ -166,6 +154,10 @@ class LucaAgent(BaseInstalledAgent):
         await environment.upload_file(HERE / "prompt_template.md", str(INSTALL_DIR / "prompt_template.md"))
 
     async def _create_venv(self, environment: BaseEnvironment) -> None:
+        """Build the venv from an interpreter the image already has.
+
+        The fallback asks uv for a managed CPython, which on an emulated image
+        costs minutes rather than seconds — see the README on Apple Silicon."""
         wheel = shlex.quote(str(INSTALL_DIR / self.wheel_path.name))
         venv = shlex.quote(str(INSTALL_DIR / "venv"))
         python = shlex.quote(str(VENV_PYTHON))
@@ -173,14 +165,23 @@ class LucaAgent(BaseInstalledAgent):
             environment,
             command=(
                 "set -euo pipefail; "
-                f"{self._uv_on_path()} "
-                # Prefer an interpreter the image already has. Asking uv for a
-                # bare version downloads a managed CPython, which blew the 360s
-                # agent-setup budget on heavy ML images.
-                "PY=; for c in python3.13 python3.12 python3.11; do "
-                'if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi; done; '
-                f'uv venv --python "${{PY:-{VENV_PYTHON_VERSION}}}" {venv} && '
-                f"uv pip install --python {python} {wheel} pyyaml && "
+                "PY=; "
+                "for c in python3.13 python3.12 python3.11 python3; do "
+                '  if command -v "$c" >/dev/null 2>&1 && '
+                '     "$c" -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; '
+                '  then PY="$c"; break; fi; '
+                "done; "
+                'if [ -n "$PY" ]; then '
+                f'  "$PY" -m venv {venv} && {python} -m pip install --no-cache-dir --quiet {wheel}; '
+                "else "
+                f"  {self._uv_on_path()} "
+                "  if ! command -v uv >/dev/null 2>&1; then "
+                f"    curl -LsSf {UV_INSTALL_URL} | sh; "
+                f"    {self._uv_on_path()} "
+                "  fi; "
+                f"  uv venv --python {VENV_PYTHON_VERSION} {venv} && "
+                f"  uv pip install --python {python} {wheel}; "
+                "fi; "
                 f'{python} -c "import luca; print(luca.__version__)"'
             ),
         )
