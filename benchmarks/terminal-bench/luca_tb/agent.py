@@ -7,10 +7,10 @@ wheel built here and uploaded.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
-import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
@@ -42,6 +42,9 @@ INCOMPLETE_EXIT_CODES = {
 
 HERE = Path(__file__).parent
 REPO_ROOT = HERE.parent.parent.parent
+
+_WHEEL_BUILD_LOCK = asyncio.Lock()
+_BUILT_WHEEL: Path | None = None
 
 
 class LucaAgent(BaseInstalledAgent):
@@ -79,34 +82,49 @@ class LucaAgent(BaseInstalledAgent):
 
     # ── install ──────────────────────────────────────────────────────────────
 
-    @property
-    def wheel_path(self) -> Path:
-        """`LUCA_WHEEL` when set, else built now — a stale `dist/` would
-        silently benchmark last week's code."""
+    async def resolve_wheel(self) -> Path:
+        """`LUCA_WHEEL` when set, else built once per process.
+
+        Harbor constructs an agent per trial, so without the module-level cache
+        a 445-trial job rebuilds the same wheel 445 times. Built rather than
+        picked out of `dist/`, since a stale wheel silently benchmarks old code.
+        """
         if self._wheel is not None:
             return self._wheel
         configured = os.environ.get("LUCA_WHEEL")
         if configured:
             self._wheel = Path(configured).expanduser()
             return self._wheel
-        self._wheel = self._build_wheel()
+        global _BUILT_WHEEL
+        async with _WHEEL_BUILD_LOCK:
+            if _BUILT_WHEEL is None:
+                _BUILT_WHEEL = await self._build_wheel()
+        self._wheel = _BUILT_WHEEL
         return self._wheel
 
-    def _build_wheel(self) -> Path:
+    async def _build_wheel(self) -> Path:
         out_dir = REPO_ROOT / "dist"
         self.logger.debug(f"Building the luca wheel from {REPO_ROOT}")
-        subprocess.run(
-            ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+        process = await asyncio.create_subprocess_exec(
+            "uv",
+            "build",
+            "--wheel",
+            "--out-dir",
+            str(out_dir),
             cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(f"uv build failed: {stderr.decode(errors='replace')[:500]}")
         wheels = sorted(out_dir.glob("luca_ai-*.whl"), key=lambda path: path.stat().st_mtime)
         if not wheels:
             raise RuntimeError(f"uv build produced no wheel in {out_dir}")
         return wheels[-1]
 
     async def install(self, environment: BaseEnvironment) -> None:
+        await self.resolve_wheel()
         await self._install_system_packages(environment)
         await self._upload_driver(environment)
         await self._create_venv(environment)
@@ -147,7 +165,7 @@ class LucaAgent(BaseInstalledAgent):
         chown = f" && chown -R {shlex.quote(str(owner))} {install_dir}" if owner is not None else ""
         await self.exec_as_root(environment, command=f"mkdir -p {install_dir}{chown}")
 
-        wheel = self.wheel_path
+        wheel = await self.resolve_wheel()
         await environment.upload_file(wheel, str(INSTALL_DIR / wheel.name))
         # runner.py imports only luca + stdlib, so it ships as a loose file.
         await environment.upload_file(HERE / "runner.py", str(INSTALL_DIR / "runner.py"))
@@ -158,7 +176,7 @@ class LucaAgent(BaseInstalledAgent):
 
         The fallback asks uv for a managed CPython, which on an emulated image
         costs minutes rather than seconds — see the README on Apple Silicon."""
-        wheel = shlex.quote(str(INSTALL_DIR / self.wheel_path.name))
+        wheel = shlex.quote(str(INSTALL_DIR / (await self.resolve_wheel()).name))
         venv = shlex.quote(str(INSTALL_DIR / "venv"))
         python = shlex.quote(str(VENV_PYTHON))
         await self.exec_as_agent(
