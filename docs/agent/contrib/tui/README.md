@@ -139,6 +139,11 @@ per question.
 meanings and the legend that states which — so the panel and the hint row can
 never disagree.
 
+To see all four states without a model, browse them in the gallery (§4.1):
+`--gallery dock/questions`, `dock/questions-answered`,
+`dock/questions-confirming`, and `chat/questions-answered` for the collapsed
+block the set leaves behind.
+
 ### 2.3 The docked plan panel
 
 The todo list is not a transcript block. It sits in its own region between the
@@ -241,8 +246,8 @@ involved — nothing here talks to a model.
 Two tiers, both browsable and both snapshot-tested.
 
 **Derived (`fixtures/catalog.yaml`).** `screen × world`. A **screen** is a pure
-projection in `catalog.SCREENS` (`chat`, `approval`, `palette`, `picker`,
-`cost`, `settings`, `sessions`); a **world** is a committed `AgentSession`
+projection in `catalog.SCREENS` (`chat`, `approval`, `questions`, `palette`,
+`picker`, `cost`, `settings`, `sessions`); a **world** is a committed `AgentSession`
 under `fixtures/sessions/` plus a `catalog.World` of the ambient state no
 session holds (branch, theme, approval mode, a typed query, ticked boxes).
 Every `World` field has the ordinary default, so an entry names only what makes
@@ -255,9 +260,11 @@ it different:
 
 The projections call the same functions the live app calls — `transcript_blocks`,
 `cost_state`, `build_settings_state`, `build_sessions_state`,
-`build_approval_prompts`. That is the point: a derived state cannot depict a
-feature that no longer exists, because deleting it changes the screen or breaks
-the build.
+`build_approval_prompts`, `question_set_state`. That is the point: a derived
+state cannot depict a feature that no longer exists, because deleting it
+changes the screen or breaks the build. `questions` goes further and rebuilds
+the dock through `QuestionsTool.pending()` itself, seeded from the parked
+call's own arguments — the same three steps the live app takes.
 
 | To add… | Do this |
 |---|---|

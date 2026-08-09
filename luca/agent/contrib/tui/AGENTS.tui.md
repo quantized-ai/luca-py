@@ -23,7 +23,7 @@ frame.py      LucaApp — the global frame; apply_state(ScreenState) renders any
 catalog.py    the DERIVED catalog: screen × world → ScreenState (see below)
 gallery.py    GalleryApp (`--gallery`) over both tiers; fixture loading
 fixtures/     catalog.yaml (the grid) + sessions/ (the worlds)
-              + 1a–1k and components/ (hand-authored screen states)
+              + 1a–1l and components/ (hand-authored screen states)
 app.py        AgentApp(LucaApp) — the live agent wiring (drive worker, events)
 ```
 
@@ -53,7 +53,7 @@ Two tiers, both browsable and both snapshot-tested (`tests/agent/contrib/tui/tes
 
 **Tier 1 — the catalog (`fixtures/catalog.yaml`).** Two axes:
 
-- **Screens** are projections, one per screen of the app: `catalog.SCREENS` maps a name to a pure `Scene → ScreenState` function. They call the SAME code the live app calls (`transcript_blocks`, `cost_state`, `build_settings_state`, `build_sessions_state`, `build_approval_prompts`), which is the whole point — a catalogued screen cannot depict a feature that no longer exists, because deleting it changes the screen or breaks the build.
+- **Screens** are projections, one per screen of the app: `catalog.SCREENS` maps a name to a pure `Scene → ScreenState` function. They call the SAME code the live app calls (`transcript_blocks`, `cost_state`, `build_settings_state`, `build_sessions_state`, `build_approval_prompts`, `question_set_state`), which is the whole point — a catalogued screen cannot depict a feature that no longer exists, because deleting it changes the screen or breaks the build.
 - **Worlds** are data: a committed `AgentSession` under `fixtures/sessions/` plus a `catalog.World` of the ambient state no session holds (branch, theme, approval mode, a typed query, the boxes ticked in a picker). Every `World` field has the ordinary default, so an entry names only what makes it different.
 
 ```yaml
@@ -69,7 +69,7 @@ Two tiers, both browsable and both snapshot-tested (`tests/agent/contrib/tui/tes
 
 Worlds are **authored, never captured**. A recorded real session is a 100KB diff nobody reviews, full of absolute paths; the builders are a dozen lines each. Everything is fixed — ids, timestamps, token counts, and `catalog.NOW` — so the built screens are byte-stable. `test_catalog.py` fails if the committed JSON and the builders disagree.
 
-**Tier 2 — fixtures (`fixtures/*.yaml`).** Hand-authored `ScreenState` documents: the eleven handoff screens `1a`–`1k` plus `components/` sheets. These are for states with no producer yet ("what does 90% context look like?") — specifications, not records. A fixture cannot notice drift, so prefer a catalog entry whenever the agent can actually produce the state.
+**Tier 2 — fixtures (`fixtures/*.yaml`).** Hand-authored `ScreenState` documents: the handoff screens `1a`–`1l` plus `components/` sheets. These are for states with no producer yet ("what does 90% context look like?") — specifications, not records. A fixture cannot notice drift, so prefer a catalog entry whenever the agent can actually produce the state.
 
 YAML gotchas: quote strings containing commas inside `{...}` flow mappings, and diff line numbers use the key `num` (`no` is a YAML boolean).
 

@@ -45,6 +45,8 @@ def test_the_library_covers_the_states_that_matter():
         "empty",
         "failures",
         "planning",
+        "questions",
+        "questions-answered",
         "subagents",
         "todos",
         "todos-done",
@@ -141,6 +143,89 @@ def test_the_approval_screen_needs_a_gated_call():
         SCREENS["approval"](scene("conversation"))
 
 
+def test_the_question_set_is_rebuilt_from_the_parked_calls_own_arguments():
+    """The tabs, the custom row and the chat row are all DERIVED — the model
+    authors four questions and three options, and the dock shows what the
+    producer makes of them."""
+    state = SCREENS["questions"](scene("questions")).questions
+    assert [(q.tab, q.mode, len(q.options), q.answered) for q in state.questions] == [
+        ("Where should", "single", 5, False),
+        ("Keep the", "single", 4, False),
+        ("How should", "single", 6, False),
+        ("Which", "multi", 6, False),
+    ]
+
+
+def test_the_last_two_rows_of_every_question_are_the_custom_and_chat_rows():
+    question = SCREENS["questions"](scene("questions")).questions.questions[1]
+    assert question.options[-2:] == [
+        vm.QuestionOption(label="Custom answer:", kind="custom"),
+        vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+    ]
+
+
+def test_a_long_body_is_pre_wrapped_at_the_panels_measure():
+    """The producer wraps; the widget never reflows prose."""
+    body = SCREENS["questions"](scene("questions")).questions.questions[2].body
+    assert (len(body), max(len(line) for line in body), "" in body) == (6, 97, True)
+
+
+def test_the_worlds_answers_land_on_the_questions_they_name():
+    state = SCREENS["questions"](scene("questions", active=2, answers={0: [0], 1: [0]})).questions
+    assert [(q.answered, q.answer) for q in state.questions] == [
+        (True, 0),
+        (True, 0),
+        (False, None),
+        (False, None),
+    ]
+    assert (state.active, state.phase, state.settled) == (2, "asking", False)
+
+
+def test_a_multi_select_answer_lands_on_the_options_not_on_the_pick():
+    question = SCREENS["questions"](scene("questions", answers={3: [0, 1]})).questions.questions[3]
+    assert (question.answer, [option.checked for option in question.options]) == (
+        None,
+        [True, True, False, False, False, False],
+    )
+
+
+def test_answering_every_question_settles_the_set_and_the_hints_say_submit():
+    state = SCREENS["questions"](scene("questions", phase="confirming", answers={0: [0], 1: [0], 2: [1], 3: [0]}))
+    assert (state.questions.settled, state.hints) == (True, ["enter submit", "esc back to questions"])
+
+
+def test_the_questions_screen_needs_a_parked_call():
+    with pytest.raises(CatalogError, match="parked ask_user call"):
+        SCREENS["questions"](scene("questions-answered"))
+
+
+def test_a_parked_set_renders_nothing_in_the_transcript_behind_it():
+    """It is holding the dock; a header row under it would say it is over."""
+    state = SCREENS["questions"](scene("questions"))
+    assert [block.kind for block in state.transcript] == ["user", "thinking", "text"]
+
+
+def test_an_answered_set_collapses_into_one_tool_block_and_a_row_per_question():
+    blocks = SCREENS["chat"](scene("questions-answered")).transcript
+    assert blocks[3:5] == [
+        vm.ToolBlock(tool="Ask the user", arg="4 questions", status="ok", note_right="4 answered"),
+        vm.ListBlock(
+            column=28,
+            rows=[
+                vm.ListRow(glyph="done", text="Where should", annotation="→  ~/.luca/projects/<project>/events.db"),
+                vm.ListRow(glyph="done", text="Keep the", annotation="→  Keep it, version-gated on session.format"),
+                vm.ListRow(
+                    glyph="done",
+                    text="How should",
+                    annotation="→  custom · only sessions touched since the 0.8 tag",
+                ),
+                vm.ListRow(glyph="done", text="Which", annotation="→  the sessions screen, resume / replay"),
+                vm.ListRow(glyph="none", text="", annotation="added · in-process is fine if it is scoped"),
+            ],
+        ),
+    ]
+
+
 def test_the_palette_filters_and_counts():
     overlay = SCREENS["palette"](scene(query="se")).overlay
     assert (overlay.query, overlay.counter, [row.primary for row in overlay.rows]) == (
@@ -198,7 +283,9 @@ def test_the_settings_world_drives_the_rows():
 def test_the_sessions_screen_lists_the_whole_library_against_a_fixed_clock():
     sessions = SCREENS["sessions"](scene()).modal.sessions
     assert [(row.when, row.first_message) for row in sessions.rows] == [
+        ("7m ago", "port the event store to sqlite — ask before big calls"),
         ("18m ago", "migrate the event store to sqlite"),
+        ("25m ago", "port the event store to sqlite — ask before big calls"),
         ("42m ago", "split @luca/store/reader.py into a reader and a writer"),
         ("55m ago", "plan the whole sqlite migration, step by step"),
         ("2h ago", "add a --json flag to the events command"),

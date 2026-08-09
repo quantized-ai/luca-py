@@ -17,6 +17,8 @@ assertions.
 
 import json
 
+from textual.events import Key
+
 from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, ToolBlockView
 from luca.agent.contrib.tui.prompt import PromptInput
@@ -395,6 +397,55 @@ async def test_an_empty_custom_answer_is_not_an_answer(tmp_path):
         # is exactly as it was
         assert app.query_one(QuestionSetView).model == vm.QuestionSetState(
             questions=[storage(selected=2), readers()],
+        )
+
+
+async def test_a_word_typed_faster_than_the_panel_settles_arrives_whole(tmp_path):
+    # THE REGRESSION: every keystroke is a read-modify-write on the character
+    # before it, so the widget has to hold the in-flight text itself. While the
+    # app owned it, a key pressed before the previous one had come back read
+    # the same stale string, and `vendored` typed at speed arrived as `d`.
+    # `pilot.press` settles after every key and a human does not — hence the
+    # raw posts with one pause at the end.
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+        await pilot.press("3")
+
+        for character in "vendored":
+            app.screen.post_message(Key(character, character))
+        await pilot.pause()
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert app._questions_state == vm.QuestionSetState(
+            questions=[storage(selected=2, custom="vendored"), readers()],
+            editing_custom=True,
+        )
+
+
+async def test_typing_redraws_the_row_instead_of_remounting_the_set(tmp_path):
+    # A rebuild per character flickers and swallows whatever is typed during
+    # it. The panel the user is looking at must be the SAME widget it was
+    # before the word, with the text in it.
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+        await pilot.press("3")
+        view = app.query_one(QuestionSetView)
+
+        await pilot.press(*"vendored")
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert app.query_one(QuestionSetView) is view
+        assert view.model == vm.QuestionSetState(
+            questions=[storage(selected=2, custom="vendored"), readers()],
+            editing_custom=True,
         )
 
 

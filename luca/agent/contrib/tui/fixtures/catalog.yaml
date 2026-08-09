@@ -57,10 +57,41 @@
   screen: chat
   session: failures
 
+# The other half of the deferred call: the answers came back, the set collapsed
+# into one tool block with a row per question, and the turn carried on.
+- name: chat/questions-answered
+  screen: chat
+  session: questions-answered
+
 # ── the dock: what replaces the composer ─────────────────────────────────────
 - name: dock/approval
   screen: approval
   session: approval
+
+# The agent's own questions. The turn is PARKED — `ask_user` deferred and the
+# runner is waiting — so there is no composer to type into, only the set.
+- name: dock/questions
+  screen: questions
+  session: questions
+
+# Two answered, the caret on the third: the long body wraps at the panel's
+# measure and the tabs above show how far there is to go.
+- name: dock/questions-answered
+  screen: questions
+  session: questions
+  world:
+    active: 2
+    answers: {0: [0], 1: [0]}
+
+# Every question answered, so the dock flips to the confirmation: read-only,
+# one row per question, plus the optional note. Two deliberate presses to send.
+- name: dock/questions-confirming
+  screen: questions
+  session: questions
+  world:
+    phase: confirming
+    answers: {0: [0], 1: [0], 2: [1], 3: [0, 1]}
+    extra: in-process is fine if it is scoped
 
 - name: dock/palette
   screen: palette

@@ -396,4 +396,9 @@ attempts.** Approval is asked once per *call*, never once per dispatch.
 | `DESCRIPTION` | the model-facing instruction text (§2) |
 | `QUESTIONS_NAMESPACE` | `"contrib.questions"` |
 
+The TUI's rendering of all of this is in
+[`tui/README.md` §2.2](../tui/README.md#22-the-question-set--the-fourth-dock),
+and every state of it is browsable without a model or a key:
+`uv run python main.py --gallery dock/questions`.
+
 Next: [`plugins/README.md`](../plugins/README.md).

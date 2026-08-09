@@ -20,6 +20,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from luca.agent.contrib.questions import (
+    QUESTIONS_NAMESPACE,
+    OptionsType,
+    Question,
+    QuestionsTool,
+)
 from luca.agent.contrib.resource_permissions import (
     AnswerOption,
     PermissionRequest,
@@ -91,7 +97,12 @@ _ATTEMPT_OUTCOMES: dict[ExecutionStatus, ExecutionAttemptOutcome] = {
     ExecutionStatus.FAILED: ExecutionAttemptOutcome.FAILED,
     ExecutionStatus.TIMED_OUT: ExecutionAttemptOutcome.TIMED_OUT,
     ExecutionStatus.INTERRUPTED: ExecutionAttemptOutcome.INTERRUPTED,
+    ExecutionStatus.AWAITING_RESULT: ExecutionAttemptOutcome.DEFERRED,
 }
+
+# Dispatched but not finished: the body ran and said "not yet". PENDING never
+# dispatched at all. Both carry no `finished_at`, for different reasons.
+_UNFINISHED = (ExecutionStatus.PENDING, ExecutionStatus.AWAITING_RESULT)
 
 
 def call(
@@ -129,7 +140,7 @@ def call(
         id=entry_id,
         created_at=at(minutes),
         attempts=attempts,
-        finished_at=ended if status not in (ExecutionStatus.PENDING,) else None,
+        finished_at=ended if status not in _UNFINISHED else None,
         tool_call_id=f"tc_{entry_id}",
         raw_tool_call=ToolCall(id=f"tc_{entry_id}", name=name, arguments=arguments),
         tool_spec=spec(name),
@@ -180,6 +191,63 @@ def todo_call(
         context_tokens=context_tokens if context_tokens is not None else 20 + 12 * len(todos),
     )
     execution.tool_spec = spec("update_todos", namespace="contrib.memory")
+    return execution
+
+
+def ask_call(
+    entry_id: str,
+    questions: list[Question],
+    minutes: float,
+    *,
+    answer: dict | None = None,
+    answered_after: float = 1.5,
+    context_tokens: int = 260,
+) -> ToolExecution:
+    """An `ask_user` execution, written the way `QuestionsTool` writes one: the
+    model's questions verbatim on the call, and — once answered — the tool's
+    own job dict (`{questions, answer}`) on `structured_content`, with the
+    prose the tool generates as the content the model reads.
+
+    ATTEMPTS ARE THE DEFERRAL'S RECORD, and that is the shape worth committing.
+    A parked call carries ONE attempt, closed as DEFERRED, and no
+    `finished_at`; an answered call carries that attempt AND the re-dispatch
+    that found the answer, because the runner re-dispatches a parked call from
+    scratch rather than resuming it."""
+    stored = [question.model_dump(mode="json") for question in questions]
+    parked = answer is None
+    execution = call(
+        entry_id,
+        QuestionsTool.name,
+        {"questions": stored},
+        minutes,
+        status=ExecutionStatus.AWAITING_RESULT if parked else ExecutionStatus.COMPLETED,
+        result=None
+        if parked
+        else ExecutionResult(
+            content=[
+                TextContent(
+                    text=QuestionsTool().generate_content_string_from_answers(questions, answer),
+                )
+            ],
+            structured_content={"questions": stored, "answer": answer},
+        ),
+        seconds=0,
+        context_tokens=0 if parked else context_tokens,
+    )
+    execution.tool_spec = spec(
+        QuestionsTool.name,
+        namespace=QUESTIONS_NAMESPACE,
+        title=QuestionsTool.title,
+    )
+    if parked:
+        return execution
+    # The first dispatch deferred; the one after the answers landed completed.
+    settled = at(minutes + answered_after)
+    execution.attempts = [
+        ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=at(minutes), ended_at=at(minutes)),
+        ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=settled, ended_at=settled),
+    ]
+    execution.finished_at = settled
     return execution
 
 
@@ -404,6 +472,180 @@ def approval_session() -> AgentSession:
         session_config=SessionConfig(llm_config=MODEL),
     )
     session.usages = {"c1": {"a2": usage("c1", "a2", input=7_400, output=260, cache_read=18_000)}}
+    return session
+
+
+# The four questions the migration turn parks on. One constant, shared by the
+# parked world and the answered one, so the two cannot disagree about what was
+# asked — which is the only thing that separates them.
+#
+# Titles are the MODEL'S words, not tab labels: `render.question_tab` derives
+# every tab from the title, and a world that pre-shortened them would hide what
+# that derivation actually produces.
+MIGRATION_QUESTIONS: list[Question] = [
+    Question(
+        title="Where should the sqlite file live?",
+        options_type=OptionsType.SINGLE_SELECT,
+        options=[
+            "~/.luca/projects/<project>/events.db",
+            "Beside the jsonl files, same directory",
+            "One database per workspace, at the repo root",
+        ],
+    ),
+    Question(
+        title="Keep the jsonl reader?",
+        body=(
+            "Old sessions are only readable through it. Keeping it costs one version gate on "
+            "`session.format`; dropping it means every stored session has to be converted before "
+            "it can be opened at all."
+        ),
+        options_type=OptionsType.SINGLE_SELECT,
+        options=[
+            "Keep it, version-gated on session.format",
+            "Drop it — convert everything up front",
+        ],
+    ),
+    Question(
+        title="How should existing `.jsonl` sessions be backfilled?",
+        body=(
+            "~4,100 stored sessions across nine projects, 380MB on disk. Conversion runs at ~40ms "
+            "per session, single-threaded, and is idempotent.\n"
+            "\n"
+            "In-process costs a one-off ~2.7min stall on the next `luca` you run and leaves nothing "
+            "half-migrated. Lazily is invisible, but two readers then live in the tree forever and "
+            "`/session` has to parse both formats to list rows."
+        ),
+        options_type=OptionsType.SINGLE_SELECT,
+        options=[
+            "On first launch, in-process",
+            "A separate `luca migrate` command",
+            "Lazily, when a session resumes",
+            "Don't backfill at all",
+        ],
+    ),
+    Question(
+        title="Which surfaces should read sqlite first?",
+        body=(
+            "Every surface below parses each stored session on open (~3ms per 500KB), so the "
+            "sessions screen is where the win is largest and the blast radius smallest. Anything "
+            "left unticked keeps the jsonl path until it is ported."
+        ),
+        options_type=OptionsType.MULTIPLE_SELECT,
+        options=[
+            "the sessions screen",
+            "resume / replay",
+            "the cost screen",
+            "the gallery",
+        ],
+    ),
+]
+
+# What the dock submitted, in `render.answer_payload`'s shape: two picks, one
+# typed answer, one multi-select, and a note on the confirmation.
+MIGRATION_ANSWERS: dict = {
+    "answers": [
+        {
+            "question": "Where should the sqlite file live?",
+            "chat_about_this": False,
+            "answers": ["~/.luca/projects/<project>/events.db"],
+            "custom_answer": None,
+        },
+        {
+            "question": "Keep the jsonl reader?",
+            "chat_about_this": False,
+            "answers": ["Keep it, version-gated on session.format"],
+            "custom_answer": None,
+        },
+        {
+            "question": "How should existing `.jsonl` sessions be backfilled?",
+            "chat_about_this": False,
+            "answers": [],
+            "custom_answer": "only sessions touched since the 0.8 tag",
+        },
+        {
+            "question": "Which surfaces should read sqlite first?",
+            "chat_about_this": False,
+            "answers": ["the sessions screen", "resume / replay"],
+            "custom_answer": None,
+        },
+    ],
+    "custom_notes": "in-process is fine if it is scoped",
+}
+
+QUESTIONS_OPENER = "port the event store to sqlite — ask before big calls"
+
+
+def questions_session() -> AgentSession:
+    """A turn parked on the user: `ask_user` deferred, four questions
+    outstanding, the dock holding them and no composer to type into.
+
+    The turn has no `TurnFinish` on purpose — this is the open turn, waiting.
+    The parked call renders NOTHING in the transcript (the set is on screen),
+    which is why the world ends on the assistant's line."""
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": user("u1", QUESTIONS_OPENER, 0),
+        "a1": assistant("a1", 0.2, thinking="weighing what only the user can decide"),
+        "a2": assistant("a2", 0.6, text="Four things I'd rather not guess at before I start."),
+        "te1": ask_call("te1", MIGRATION_QUESTIONS, 0.8),
+    }
+    session = make_session(
+        id="questions",
+        entries=entries,
+        conversations={"c1": conversation("c1", list(entries), created_at=T0, updated_at=at(0.8))},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {"c1": {"a2": usage("c1", "a2", input=8_900, output=470, cache_read=19_000, cache_write=1_100)}}
+    return session
+
+
+def questions_answered_session() -> AgentSession:
+    """The same turn after the answers came back: the set collapses into one
+    tool block with a row per question, and the agent carries on.
+
+    The COMPLETED half of the world above — the two together are the whole
+    life of a deferred call, and neither says anything about the other."""
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": user("u1", QUESTIONS_OPENER, 0),
+        "a1": assistant("a1", 0.2, thinking="weighing what only the user can decide"),
+        "a2": assistant("a2", 0.6, text="Four things I'd rather not guess at before I start."),
+        "te1": ask_call("te1", MIGRATION_QUESTIONS, 0.8, answer=MIGRATION_ANSWERS, answered_after=2.4),
+        "a3": assistant(
+            "a3",
+            3.4,
+            text="Good — in-process it is, scoped to sessions touched since `0.8`. Writing the schema first.",
+        ),
+        "te2": call(
+            "te2",
+            "write",
+            {"path": "luca/store/schema.sql"},
+            3.6,
+            result=text_result(
+                "created luca/store/schema.sql",
+                diff="--- /dev/null\n+++ b\n+CREATE TABLE events (\n+    id INTEGER PRIMARY KEY,\n"
+                "+    session TEXT NOT NULL,\n+    payload BLOB NOT NULL\n+);\n",
+            ),
+            seconds=0.2,
+            context_tokens=180,
+        ),
+        "a4": assistant("a4", 5.1, text="Schema is in. Next: the writer, behind the version gate."),
+        "tf1": finish(1, 5.2),
+    }
+    session = make_session(
+        id="questions-answered",
+        entries=entries,
+        conversations={"c1": conversation("c1", list(entries), created_at=T0, updated_at=at(5.2))},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {
+        "c1": {
+            "a2": usage("c1", "a2", input=8_900, output=470, cache_read=19_000, cache_write=1_100),
+            "a4": usage("c1", "a4", input=11_400, output=520, cache_read=24_000, cache_write=200),
+        }
+    }
     return session
 
 
@@ -845,6 +1087,8 @@ BUILDERS = {
     "empty": empty_session,
     "conversation": conversation_session,
     "approval": approval_session,
+    "questions": questions_session,
+    "questions-answered": questions_answered_session,
     "failures": failures_session,
     "subagents": subagents_session,
     "planning": planning_session,

@@ -421,6 +421,26 @@ class QuestionSetView(Vertical, can_focus=True):
         return None
 
     def _set_custom(self, text: str) -> None:
+        """Write the in-flight text into the widget's OWN model and redraw the
+        one row it changed, then report it.
+
+        THE WIDGET HAS TO HOLD THIS ONE THING. Every keystroke is a
+        read-modify-write on the character before it (`current + character`),
+        and the app's copy of the text only comes back on the next rebuild — so
+        a widget that read the app's value would see the same stale string for
+        every key pressed inside one settle, and a word typed at speed would
+        collapse to its last character. It still DECIDES nothing: whether the
+        text is an answer is the app's call, on `enter`."""
+        index = self.question.selected
+        options = list(self.question.options)
+        options[index] = options[index].model_copy(update={"text": text or None})
+        questions = list(self.model.questions)
+        questions[self.model.active] = self.question.model_copy(update={"options": options})
+        self.model = self.model.model_copy(update={"questions": questions})
+        for row in self.query(QuestionOptionRow):
+            if row.index == index:
+                row.option = options[index]
+                row.refresh()
         self.post_message(self.CustomChanged(self, text))
 
     def _editing_custom(self) -> bool:

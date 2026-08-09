@@ -612,6 +612,12 @@ class AgentApp(LucaApp):
         await self._show_questions()
 
     async def on_question_set_view_custom_changed(self, message: QuestionSetView.CustomChanged) -> None:
+        """The typed text, one keystroke at a time.
+
+        THE PANEL IS NOT REBUILT. The widget has already redrawn the row it
+        owns, and nothing else on screen depends on the text; remounting the
+        whole set per character would flicker, and every keystroke that landed
+        during the remount would be lost."""
         question = self._question()
         options = list(question.options)
         for index, option in enumerate(options):
@@ -619,7 +625,7 @@ class AgentApp(LucaApp):
                 options[index] = option.model_copy(update={"text": message.text or None})
                 break
         self._replace_question(question.model_copy(update={"options": options}), editing_custom=True)
-        await self._show_questions()
+        self.set_hints(question_hints_for(self._questions_state))
 
     async def on_question_set_view_chat_requested(self, message: QuestionSetView.ChatRequested) -> None:
         """THE ONE WAY OUT. It ends the set immediately — no confirmation —

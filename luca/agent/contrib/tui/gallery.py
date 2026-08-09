@@ -12,7 +12,7 @@ Two tiers, both browsable here and both snapshot-tested:
   no longer exists: delete it and they change or stop building. See
   `catalog.py`.
 - **Fixtures** (`fixtures/*.yaml`) — hand-authored `ScreenState` documents, for
-  states no producer exists for yet (the eleven handoff screens `1a`–`1k` plus
+  states no producer exists for yet (the handoff screens `1a`–`1l` plus
   component sheets). These are specifications, not records.
 
 A path is also accepted directly, including a stored `AgentSession`, which is
