@@ -73,6 +73,7 @@ STATUS_LABELS: dict[ExecutionStatus, str] = {
     ExecutionStatus.RECEIVED: "RECEIVED",
     ExecutionStatus.PENDING: "PENDING",
     ExecutionStatus.RUNNING: "RUNNING",
+    ExecutionStatus.AWAITING_RESULT: "AWAITING RESULT",
     ExecutionStatus.COMPLETED: "OK",
     ExecutionStatus.FAILED: "FAILED",
     ExecutionStatus.NOT_FOUND: "NOT FOUND",
@@ -387,10 +388,16 @@ def _approval_line(execution: ToolExecution) -> str | None:
 
 
 def _outcome_line(execution: ToolExecution) -> str:
+    """The outcome and how long the call was OUTSTANDING — `duration_ms` is
+    total time (the approval wait and any parked time included), not body
+    wall-clock, which is now per-attempt. A call dispatched more than once says
+    so, because the count is the only visible trace of a deferral."""
     label = STATUS_LABELS[execution.status]
     result = execution.result
     if execution.status == ExecutionStatus.COMPLETED and result is not None:
         label = "ERROR" if result.is_error else "OK"
+    if len(execution.attempts) > 1:
+        label = f"{label} · {len(execution.attempts)} attempts"
     duration = execution.duration_ms
     return label if duration is None else f"{label} · {duration:,} ms"
 

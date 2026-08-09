@@ -204,8 +204,8 @@ back a draft with `tool_spec` populated and the framework files it.
 
 **Every tool call produces exactly one tool execution, and exactly one tool
 output.** A call that never reaches its body is born or made terminal, and
-`started_at` / `dispatched` say so — they mean "the body was dispatched",
-always:
+`execution.dispatched` says so — it is `bool(execution.attempts)`, one attempt
+per body invocation ([02](02-data-model.md) §3):
 
 | Where it ended | `status` | `dispatched` |
 |---|---|---|
@@ -221,6 +221,10 @@ always:
 | the body raised (any exception type) | `FAILED` | `True` |
 | the deadline expired | `TIMED_OUT` | `True` |
 | the cancel grace expired, or the process died mid-body | `INTERRUPTED` | `True` |
+
+A body that returns `ExecutionDeferred` is not in the table: a deferral is not
+an ending. The call parks at `AWAITING_RESULT`, produces no output yet, and is
+dispatched again later (§7).
 
 `FAILED` / `NOT_FOUND` / `INVALID` / `REFUSED` carry a structured `ToolExecutionError`;
 the other terminal statuses are complete facts on their own (resultless,
@@ -265,5 +269,113 @@ filter is the runner's job, at the wire boundary only.
 This exists for one shape today: the framework needs to run a tool the model
 never asked for — the one that turns a finished subagent into its parent's
 answer ([13](13-subagents.md)).
+
+## 7. Deferred tools — "not yet"
+
+Some tools cannot answer in one invocation: `ask_user` needs a human,
+`render_video` hands work to another process, and a tool whose body lives in a
+browser can only be asked and then waited for. For those, the prepared callable
+returns `ExecutionDeferred()` instead of a result:
+
+```python
+PreparedTool = Callable[..., Awaitable[ExecutionResult | ExecutionDeferred]]
+```
+
+`ExecutionDeferred` is an **empty marker** — the core learns exactly one new
+fact, *not yet*. The execution parks at `AWAITING_RESULT`, the drive returns,
+and the application resolves whatever the tool is waiting on before driving
+again ([04](04-runner.md) §9).
+
+**There is no resume, only re-dispatch.** Nothing about a parked call stays
+alive: no callable, no coroutine, no runner state, and after a restart it never
+existed. The next drive runs the identical dispatch path from scratch —
+`before_tool_execution` → `prepare()` → a brand-new callable → invoke. So
+`prepare()` runs again on every poll (it was always required to be re-callable
+and idempotent, so no registry changes), and each invocation appends its own
+`ExecutionAttempt` ([02](02-data-model.md) §3).
+
+That is why the body must be a **pure predicate**: read state, answer *ready /
+not yet*, never wait. Whatever state that requires belongs to the tool, keyed by
+`tool_call_id` — one job per call, and several can be outstanding at once
+(siblings in one assistant response, one per subagent). `AgentSession.extras` is
+where it goes if it must survive a restart, handed to the tool at construction
+exactly like `MemoryPlugin`'s todo store ([02](02-data-model.md) §7):
+
+```python
+from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry, YoloPermissionPolicy
+
+store = session.extras.setdefault("render_jobs", {})     # rides every save
+registry = SimpleToolRegistry([RenderVideo(store=store)], YoloPermissionPolicy())
+```
+
+The tool itself, written with contrib's `Tool`
+([contrib/tools/](contrib/tools/README.md)):
+
+```python
+from pydantic import BaseModel
+
+from luca.agent.contrib.tools import Tool
+from luca.agent.core import (
+    AgentSession, CancellationToken, ExecutionDeferred, ExecutionResult,
+    TextContent, ToolKind,
+)
+
+class RenderVideo(Tool):
+    name = "render_video"
+    description = "Render a video and return its URL."
+    tool_kind = ToolKind.EXECUTE
+
+    class Args(BaseModel):
+        clip_id: str
+
+    def __init__(self, store: dict) -> None:
+        self.store = store                       # session.extras["render_jobs"]
+
+    async def execute(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+        *,
+        tool_name: str,
+        tool_call_id: str,
+        cancellation_token: CancellationToken,
+    ) -> ExecutionResult | ExecutionDeferred:
+        job = self.store.get(tool_call_id)
+        if job is None:
+            job = self.store[tool_call_id] = await submit_render(args["clip_id"])
+        if not await finished(job):
+            return ExecutionDeferred()                      # "not yet" — the call parks
+        return ExecutionResult(content=[TextContent(text=job["url"])])
+
+    async def resolve(self, tool_call_id: str, url: str) -> None:
+        ...                                      # the app-facing half: your driver calls this
+```
+
+`tool_name` and `tool_call_id` are keyword-only, sit before
+`cancellation_token`, and are new on both `execute` and `_execute` — without the
+id a body cannot tell one of its own invocations from another, which is what
+makes per-call state impossible to key. `tool_name` is the **effective** name
+the registry resolved this call under, not necessarily the class's `name`.
+`SimpleToolRegistry.prepare` binds both into the closure it returns, so
+`PreparedTool` still takes only the cancellation token and the core still
+depends on no Python tool class.
+
+The two halves are deliberately separate: `execute()` is framework-facing, and
+`resolve()` — or `answer()`, or whatever your tool calls it — is ordinary Python
+the framework has never heard of. The driver knows how to interact with the
+tools it installed; the core does not, and must not. The reference case is
+`ask_user` in [contrib/questions/](contrib/questions/README.md).
+
+> ⚠️ **A poll that raises or times out is terminal.** The deadline
+> (`ToolSpec.timeout_in_ms`, else `RuntimeConfig.tool_execution_timeout_in_ms`)
+> bounds ONE invocation; the parked period between invocations is unbounded. A
+> tool that wants to survive a transient failure catches it and returns
+> `ExecutionDeferred()` — retry belongs to the tool.
+
+> ⚠️ **Nothing cleans up an abandoned call.** A cancelled or crashed deferral
+> leaves its `session.extras` entry behind for the life of the session, and
+> whatever it started outside the process keeps going. There is no cleanup hook:
+> the driver owns resolution, so it owns abandonment.
 
 Next: [`04-runner.md`](04-runner.md).

@@ -42,14 +42,15 @@ Projection is deterministic, read-only derivation:
 
 Tool executions project by `ExecutionStatus`:
 
-- nonterminal executions (`RECEIVED` / `PENDING` / `RUNNING`) are not
-  projectable as tool outputs — raising here is the fail-loud guard against
-  calling the model mid-execution — with EXACTLY ONE carve-out: a GATED
-  execution (`PENDING` with `approval_status=PENDING`) projects the
-  `AWAITING_APPROVAL_OUTPUT` placeholder. It is the one nonterminal state
-  that is a durable resting point only the application can move, not a
-  runtime in flight, and the placeholder is what lets a message posted while
-  the gate is open reach the model at all (0008);
+- nonterminal executions (`RECEIVED` / `PENDING` / `RUNNING` /
+  `AWAITING_RESULT`) are not projectable as tool outputs — raising here is the
+  fail-loud guard against calling the model mid-execution — with EXACTLY TWO
+  carve-outs, both the same kind of state: a GATED execution (`PENDING` with
+  `approval_status=PENDING`) projects the `AWAITING_APPROVAL_OUTPUT`
+  placeholder, and a PARKED one (`AWAITING_RESULT`) projects
+  `AWAITING_RESULT_OUTPUT`. Both are durable resting points only the
+  application can move rather than runtimes in flight, and the placeholder is
+  what lets a message posted while one is open reach the model at all (0008);
 - `COMPLETED` projects `result.content` and preserves `result.is_error`
   (an `is_error=True` result is still a completed execution);
 - every other terminal status projects derived error content with
@@ -158,6 +159,25 @@ class ConversationProjector:
     # it has not run, and an error result is exactly what makes a model retry.
     AWAITING_APPROVAL_OUTPUT: ClassVar[str] = (
         "[tool execution is awaiting approval — it has not run, and this is not its result]"
+    )
+
+    # Derived tool output for a PARKED execution — dispatched, deferred, and
+    # only the application can move it. The SECOND projectable nonterminal
+    # state, for the same reason as the gate's: a durable resting point, not a
+    # runtime in flight, and the placeholder is what lets a message posted
+    # while the call is out reach the model at all. `is_error` stays False for
+    # the same documented reason — the call has not failed, and an error result
+    # is exactly what makes a model retry.
+    #
+    # HEAVIER WORDING THAN THE GATE'S, deliberately. A gate can be terse
+    # because the model has no available action — it cannot approve itself.
+    # Here it does: a bare "still executing" invites a re-call, and a re-call
+    # mints a NEW ToolExecution under a new tool_call_id, leaving the tool
+    # holding two open calls for one job. This sentence is the framework's one
+    # chance to discourage that.
+    AWAITING_RESULT_OUTPUT: ClassVar[str] = (
+        "[tool execution has not finished — this is not its result; do not call "
+        "it again, the result will follow when it completes]"
     )
 
     # Derived tool output for the terminal statuses that are complete
@@ -372,16 +392,29 @@ class ConversationProjector:
         mutated into projectability."""
         status = entry.status
         if status == ExecutionStatus.PENDING and entry.approval_status == ApprovalStatus.PENDING:
-            # THE ONE PROJECTABLE NONTERMINAL STATE. A gated execution is not a
-            # runtime bug the way RECEIVED / RUNNING / undecided-PENDING are: it
-            # is a durable resting state only the application can move, and the
-            # placeholder is what lets a message posted while the gate is open
-            # reach the model at all (0008). Replaced by the real result at this
-            # same path position once the approval is answered — the one
-            # projected tool message that is not final.
+            # THE FIRST PROJECTABLE NONTERMINAL STATE. A gated execution is not
+            # a runtime bug the way RECEIVED / RUNNING / undecided-PENDING are:
+            # it is a durable resting state only the application can move, and
+            # the placeholder is what lets a message posted while the gate is
+            # open reach the model at all (0008). Replaced by the real result at
+            # this same path position once the approval is answered.
             return ToolMessage(
                 tool_call_id=entry.tool_call_id,
                 content=[TextBlock(text=self.AWAITING_APPROVAL_OUTPUT)],
+                is_error=False,
+            )
+        if status == ExecutionStatus.AWAITING_RESULT:
+            # THE SECOND, and the same kind of state: the tool was dispatched
+            # and answered "not yet", so only the application can move it.
+            # Replaced by the real result at this same path position once the
+            # tool finally returns one. Nothing else in the framework calls the
+            # model with a nonterminal execution on the path — compaction skips
+            # any conversation with an open turn, pruning refuses, the context
+            # manager leaves it at zero tokens — so only a POST ever forces
+            # this, plus `build_messages()` being public.
+            return ToolMessage(
+                tool_call_id=entry.tool_call_id,
+                content=[TextBlock(text=self.AWAITING_RESULT_OUTPUT)],
                 is_error=False,
             )
         if status in NONTERMINAL_STATUSES:
@@ -499,7 +532,7 @@ class ConversationProjector:
         orchestration is still running."""
         if link.execution_result is None:  # unreachable: stamped atomically
             return None
-        return self._child_task_message(link, entries, completed_at_ms=execution.ended_at)
+        return self._child_task_message(link, entries, completed_at_ms=execution.finished_at)
 
     def _child_task_message(
         self,

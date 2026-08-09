@@ -1,7 +1,8 @@
 """`LucaApp` — the global frame, with no agent attached.
 
 Status bar, the single rule, the scrolling transcript, one dock slot
-(composer / approval prompt / overlay list), the hint legend. Everything a
+(composer / approval prompt / question set / overlay list), the hint legend.
+Everything a
 screen can show is applied from `state.ScreenState` view-models, which is
 what the gallery and the snapshot tests boot against; `AgentApp` subclasses
 this and feeds the same APIs from live agent events.
@@ -24,9 +25,15 @@ from textual.widgets import Static
 from . import state as vm
 from .blocks import ListBlockView, TaskBlockView, build_block
 from .chrome import Composer, HintLegend, StatusBar
-from .format import HINTS, MIN_COLUMNS
+from .format import HINTS, MIN_COLUMNS, question_hints_for
 from .modals import CostScreen, SessionsScreen, SettingsScreen
-from .shells import ApprovalPromptView, LucaModalScreen, OverlayListView
+from .shells import (
+    ApprovalPromptView,
+    LucaModalScreen,
+    OverlayListView,
+    QuestionConfirmView,
+    QuestionSetView,
+)
 from .theme import LUCA_DARK
 
 DEFAULT_THEME = LUCA_DARK.name
@@ -178,6 +185,33 @@ class LucaApp(App):
             prompt.focus()
         return prompt
 
+    async def show_questions(
+        self,
+        state: vm.QuestionSetState,
+        *,
+        focus: bool = True,
+    ) -> QuestionSetView | QuestionConfirmView:
+        """The fourth dock. `phase` is the ONLY thing that decides which of the
+        two views renders, so they can never both be up."""
+        await self.dock_slot.remove_children()
+        self.dim_transcript(False)
+        view: QuestionSetView | QuestionConfirmView
+        confirming = state.phase == "confirming"
+        view = QuestionConfirmView(state) if confirming else QuestionSetView(state)
+        await self.dock_slot.mount(view)
+        # The CONFIRMATION focuses its own optional field on mount — it is a
+        # real `PromptInput` doing the composer's job, and it has the keyboard
+        # by default. Focusing the view here would steal it straight back.
+        #
+        # The custom-answer row is the same story mid-set: while it is being
+        # edited the keyboard belongs to ITS field, and this rebuild must hand
+        # it back there rather than to the panel around it — otherwise entering
+        # the field is the very thing that kicks you out of it.
+        if focus and not confirming:
+            field = view.custom_field() if state.editing_custom else None
+            (field or view).focus()
+        return view
+
     async def show_overlay(self, state: vm.OverlayState, *, focus: bool = True) -> OverlayListView:
         await self.dock_slot.remove_children()
         self.dim_transcript(True)
@@ -200,6 +234,8 @@ class LucaApp(App):
         dock = state.dock()
         if dock == "approval":
             await self.show_approval(state.approval)
+        elif dock == "questions":
+            await self.show_questions(state.questions)
         elif dock == "overlay":
             await self.show_overlay(state.overlay)
         else:
@@ -221,6 +257,8 @@ class LucaApp(App):
         if dock == "approval":
             count = len(state.approval.options)
             return ["↑↓ move", "enter confirm", f"1–{count} pick"]
+        if dock == "questions":
+            return question_hints_for(state.questions)
         if dock == "overlay":
             return HINTS[state.overlay.mode]
         return HINTS["idle"]

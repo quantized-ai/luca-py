@@ -136,7 +136,7 @@ def build(workspace: Path, transport: FauxTransport, **runtime):
         conversation_id="main",
         runtime_config=RuntimeConfig(subagents_enabled=True, **runtime),
     )
-    runner, strategy = build_runner(
+    runner, strategy, _questions = build_runner(
         session,
         workspace=workspace,
         provider=FauxProvider(transport=transport),
@@ -791,7 +791,7 @@ async def test_a_reloaded_session_keeps_driving_the_same_tree(workspace: Path):
 
     # cold reload into a fresh runner — the durable graph is the whole truth
     reloaded = AgentSession.model_validate_json(session.model_dump_json())
-    fresh, _ = build_runner(
+    fresh, _, _ = build_runner(
         reloaded,
         workspace=workspace,
         provider=FauxProvider(transport=transport),
@@ -830,7 +830,16 @@ async def test_the_subagents_really_run_at_the_same_time(workspace: Path):
 
             label: str
 
-        async def _execute(self, args, session, conversation_id, *, cancellation_token: CancellationToken) -> str:
+        async def _execute(
+            self,
+            args,
+            session,
+            conversation_id,
+            *,
+            tool_name: str,
+            tool_call_id: str,
+            cancellation_token: CancellationToken,
+        ) -> str:
             order.append(f"enter:{args['label']}")
             await asyncio.sleep(0.05)
             order.append(f"exit:{args['label']}")

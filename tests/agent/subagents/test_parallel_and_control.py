@@ -18,6 +18,8 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionStatus,
     TurnOutcome,
 )
@@ -38,7 +40,7 @@ class SlowTool(FakeTool):
     class Args(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         await asyncio.sleep(0.05)
         return "slow done"
 
@@ -698,7 +700,10 @@ async def test_the_private_result_execution_is_an_ordinary_durable_entry(faux):
     assert result_execution.conversation_id == "c1"
     assert result_execution.tool_spec.is_private is True
     assert result_execution.tool_spec_id in session.tool_specs
-    assert result_execution.started_at is not None
+    assert result_execution.attempts == [
+        ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)
+    ]
+    assert result_execution.finished_at == 1000
 
 
 @pytest.mark.parametrize("streaming", [False, True])

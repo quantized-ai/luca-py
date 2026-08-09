@@ -21,6 +21,8 @@ from luca.agent.core.events import FinishReason, TextBlock, ToolCallReceived, To
 from luca.agent.core.models import (
     AgentSession,
     ApprovalStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     SessionConfig,
@@ -192,7 +194,7 @@ async def test_a_model_call_naming_a_private_tool_records_not_found():
             error_message="Unknown tool: 'secret'.",
             details={"phase": "create_execution"},
         ),
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
         context_tokens=5,
     )
@@ -217,8 +219,8 @@ def test_a_private_execution_projects_nothing():
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="ran privately")]),
         approval_status=ApprovalStatus.ALLOWED,
-        started_at=500,
-        ended_at=500,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+        finished_at=500,
     )
 
     assert PROJECTOR.project(["te1"], {"te1": execution}) == []
@@ -235,8 +237,8 @@ def test_a_public_execution_beside_it_still_projects():
             tool_spec=SECRET_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="ran privately")]),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
         ),
         "te2": ToolExecution(
             id="te2",
@@ -247,8 +249,8 @@ def test_a_public_execution_beside_it_still_projects():
             tool_spec=ADD_SPEC,
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
         ),
     }
 
@@ -273,8 +275,8 @@ def test_a_subclass_can_surface_private_work_some_other_way():
         tool_spec=SECRET_SPEC,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="ran privately")]),
-        started_at=500,
-        ended_at=500,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+        finished_at=500,
     )
 
     [message] = Surfacing().project(["te1"], {"te1": execution})

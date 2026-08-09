@@ -44,6 +44,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     CancelRequested,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
@@ -93,6 +95,8 @@ class InlineTool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         raise NotImplementedError
@@ -103,12 +107,16 @@ class InlineTool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         output = await self._execute(
             args,
             session,
             conversation_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -131,6 +139,8 @@ class AddTool(InlineTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -154,6 +164,8 @@ class SleepForeverTool(InlineTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         await asyncio.sleep(30)
@@ -174,6 +186,8 @@ class SlowTool(InlineTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         await asyncio.sleep(30)
@@ -197,6 +211,8 @@ class CooperativeSleepTool(InlineTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         await cancellation_token.wait_cancelled()
@@ -225,6 +241,8 @@ class LoudTool(InlineTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return "line 1\nline 2\nline 3"
@@ -293,11 +311,16 @@ class InlineToolRegistry(ToolRegistry):
         args = tool.Args.model_validate(tool_execution.raw_tool_call.arguments)
         payload = args.model_dump()
 
+        name = tool_execution.raw_tool_call.name
+        tool_call_id = tool_execution.tool_call_id
+
         async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
             return await tool.execute(
                 payload,
                 session,
                 conversation_id,
+                tool_name=name,
+                tool_call_id=tool_call_id,
                 cancellation_token=cancellation_token,
             )
 
@@ -407,8 +430,8 @@ async def test_successful_tool_call_full_session_shape():
                 status=ExecutionStatus.PENDING,
                 result=None,
                 error=None,
-                started_at=None,
-                ended_at=None,
+                attempts=[],
+                finished_at=None,
                 cancel_signalled_at=None,
                 updated_at=None,
                 is_doom_loop_flagged=False,
@@ -435,8 +458,8 @@ async def test_successful_tool_call_full_session_shape():
                 status=ExecutionStatus.RUNNING,
                 result=None,
                 error=None,
-                started_at=1000,
-                ended_at=None,
+                attempts=[ExecutionAttempt(started_at=1000)],
+                finished_at=None,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -467,8 +490,8 @@ async def test_successful_tool_call_full_session_shape():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -521,8 +544,8 @@ async def test_successful_tool_call_full_session_shape():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -629,8 +652,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 status=ExecutionStatus.PENDING,
                 result=None,
                 error=None,
-                started_at=None,
-                ended_at=None,
+                attempts=[],
+                finished_at=None,
                 cancel_signalled_at=None,
                 updated_at=None,
                 is_doom_loop_flagged=False,
@@ -657,8 +680,8 @@ async def test_interrupted_tool_call_full_session_shape():
                 status=ExecutionStatus.RUNNING,
                 result=None,
                 error=None,
-                started_at=1000,
-                ended_at=None,
+                attempts=[ExecutionAttempt(started_at=1000)],
+                finished_at=None,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -685,8 +708,10 @@ async def test_interrupted_tool_call_full_session_shape():
                 status=ExecutionStatus.INTERRUPTED,
                 result=None,
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[
+                    ExecutionAttempt(outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1000, ended_at=1000)
+                ],
+                finished_at=1000,
                 cancel_signalled_at=1000,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -733,8 +758,10 @@ async def test_interrupted_tool_call_full_session_shape():
                 status=ExecutionStatus.INTERRUPTED,
                 result=None,
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[
+                    ExecutionAttempt(outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1000, ended_at=1000)
+                ],
+                finished_at=1000,
                 cancel_signalled_at=1000,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -849,8 +876,8 @@ async def test_cooperative_cancellation_returns_a_real_result():
                 is_error=False,
             ),
             error=None,
-            started_at=1000,
-            ended_at=1000,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            finished_at=1000,
             cancel_signalled_at=1000,
             updated_at=1000,
             is_doom_loop_flagged=False,
@@ -900,8 +927,8 @@ async def test_cooperative_cancellation_returns_a_real_result():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=1000,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -1008,8 +1035,8 @@ async def test_timed_out_tool_call_full_session_shape():
             status=ExecutionStatus.TIMED_OUT,
             result=None,
             error=None,
-            started_at=1000,
-            ended_at=1000,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1000)],
+            finished_at=1000,
             cancel_signalled_at=None,
             updated_at=1000,
             is_doom_loop_flagged=False,
@@ -1057,8 +1084,8 @@ async def test_timed_out_tool_call_full_session_shape():
                 status=ExecutionStatus.TIMED_OUT,
                 result=None,
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -1192,8 +1219,8 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -1220,8 +1247,8 @@ async def test_context_manager_processes_one_tools_output_and_not_the_other():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,

@@ -79,6 +79,8 @@ class AddTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -96,6 +98,8 @@ class MultiplyTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
@@ -122,6 +126,8 @@ class ReadFileTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return f"contents of {args['path']}"
@@ -150,6 +156,8 @@ class CapturingTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.calls.append((args, session, cancellation_token))

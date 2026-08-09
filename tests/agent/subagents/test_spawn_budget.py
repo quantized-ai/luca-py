@@ -42,7 +42,7 @@ class DecliningSpawnTool(FakeTool):
     Args = _NoArgs
     output_schema: ClassVar[dict] = {"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}}
 
-    async def execute(self, args, session, conversation_id, *, cancellation_token):
+    async def execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         return ExecutionResult(
             content=[TextContent(text="declined")],
             structured_content={"is_subagent_spawn": False},
@@ -58,7 +58,7 @@ class FailingSpawnTool(FakeTool):
     Args = _NoArgs
     output_schema: ClassVar[dict] = {"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}}
 
-    async def execute(self, args, session, conversation_id, *, cancellation_token):
+    async def execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         raise RuntimeError("boom")
 
 
@@ -122,7 +122,7 @@ async def test_the_overflow_spawn_in_one_message_is_born_refused(faux):
     assert refused.error.error_type == "SpawnLimitReached"
     assert refused.error.details == {"limit": 1, "committed": 1}
     assert refused.approval_status is None  # born terminal — no decision ran
-    assert refused.started_at is None  # the body never dispatched
+    assert refused.attempts == []  # the body never dispatched
     # the model was told twice: the refusal text as tc2's tool result…
     final = faux.requests[-1].messages
     refusal_text = next(m.content[0].text for m in final if getattr(m, "tool_call_id", None) == "tc2")

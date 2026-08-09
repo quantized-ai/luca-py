@@ -8,16 +8,20 @@ from pydantic_core import PydanticSerializationError
 
 from luca.agent.contrib.tui.sessions import (
     DEFAULT_STORE,
+    QUESTIONS_STORE_KEY,
     SessionSummary,
     delete_session,
     encode_project_path,
     fork_session,
     list_sessions,
     load_session,
+    load_tui_state,
     resolve_session_directory,
     save_session,
+    save_tui_state,
     session_path,
     summarize_session,
+    tui_state_path,
 )
 from tests.agent.scenarios import (
     main_conversation,
@@ -228,3 +232,81 @@ def test_deleting_a_session_that_was_never_stored_is_a_no_op(tmp_path):
     delete_session("missing", tmp_path)  # must not raise
 
     assert list_sessions(tmp_path) == []
+
+
+# ── the TUI's sidecar ────────────────────────────────────────────────────────
+
+# The one thing the sidecar carries today: `QuestionsTool`'s job store, keyed
+# by `tool_call_id` and JSON-shaped all the way down.
+QUESTION_STORE = {
+    QUESTIONS_STORE_KEY: {
+        "tc1": {
+            "questions": [
+                {
+                    "title": "Where should the sqlite file live?",
+                    "options_type": "single_select",
+                    "options": ["~/.luca/projects/<project>/events.db", "Beside the jsonl files"],
+                }
+            ],
+            "answer": None,
+        }
+    }
+}
+
+
+def test_the_sidecar_sits_beside_the_session_it_describes(tmp_path):
+    assert tui_state_path("abc", tmp_path) == tmp_path / "abc.tui.json"
+
+
+def test_tui_state_round_trips_through_the_sidecar(tmp_path):
+    save_tui_state("abc", QUESTION_STORE, tmp_path)
+
+    assert load_tui_state("abc", tmp_path) == QUESTION_STORE
+
+
+def test_an_absent_sidecar_reads_as_an_empty_state(tmp_path):
+    assert load_tui_state("abc", tmp_path) == {}
+
+
+def test_a_corrupt_sidecar_reads_as_an_empty_state_rather_than_raising(tmp_path):
+    # Losing this file is COSMETIC — a parked `ask_user` re-seeds itself from
+    # the stored call and simply asks again — so it must never take a session
+    # down with it.
+    tui_state_path("abc", tmp_path).write_text("{not json")
+
+    assert load_tui_state("abc", tmp_path) == {}
+
+
+def test_a_sidecar_holding_something_other_than_an_object_reads_as_empty(tmp_path):
+    tui_state_path("abc", tmp_path).write_text("[1, 2]")
+
+    assert load_tui_state("abc", tmp_path) == {}
+
+
+def test_an_empty_state_writes_no_sidecar_at_all(tmp_path):
+    assert save_tui_state("abc", {}, tmp_path) is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_delete_session_removes_the_sidecar_too(tmp_path):
+    # The two files are one artifact to the user; an orphaned `.tui.json` would
+    # outlive the conversation it describes forever.
+    session = fresh_session()
+    save_session(session, tmp_path)
+    save_tui_state(session.id, QUESTION_STORE, tmp_path)
+
+    delete_session(session.id, tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_listing_skips_the_sidecars(tmp_path):
+    # A sidecar lives in the same directory and matches the same `*.json` glob
+    # as a session; letting it through would log a warning per session on
+    # every open of the resume picker.
+    session = with_user_message("fix the parser")
+    save_session(session, tmp_path)
+    save_tui_state(session.id, QUESTION_STORE, tmp_path)
+
+    assert [summary.title for summary in list_sessions(tmp_path)] == ["fix the parser"]
+    assert [summary.path for summary in list_sessions(tmp_path)] == [session_path(session.id, tmp_path)]

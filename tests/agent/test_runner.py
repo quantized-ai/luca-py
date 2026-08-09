@@ -64,6 +64,8 @@ from luca.agent.core.models import (
     AssistantMessage,
     Conversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -207,6 +209,8 @@ class LookupTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         raise ToolNotFound("no such record: 7")
@@ -412,7 +416,7 @@ async def test_reasoning_plus_tool_call_then_text():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -420,7 +424,8 @@ async def test_reasoning_plus_tool_call_then_text():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -544,7 +549,7 @@ async def test_multi_turn_two_tool_rounds_then_text():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -552,7 +557,8 @@ async def test_multi_turn_two_tool_rounds_then_text():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     multiply_birth = ToolExecution(
@@ -571,7 +577,7 @@ async def test_multi_turn_two_tool_rounds_then_text():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -579,7 +585,8 @@ async def test_multi_turn_two_tool_rounds_then_text():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="12")], is_error=False),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -868,8 +875,8 @@ async def test_streaming_produces_same_session_as_run():
                 ),
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ALLOW_1000],
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 updated_at=1000,
             ),
             "a2": AssistantMessage(
@@ -949,7 +956,7 @@ async def test_streaming_emits_delta_then_block_events_in_order():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -957,7 +964,8 @@ async def test_streaming_emits_delta_then_block_events_in_order():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -1031,7 +1039,7 @@ async def test_unknown_tool_records_not_found_and_skips_strategy():
             error_type="ToolNotFound",
             error_message="Unknown tool: 'nope'.",
         ),  # the registry authored this one — no runner phase
-        ended_at=1000,
+        finished_at=1000,
         context_tokens=5,  # the structured error message // 4
     )
     final = birth.model_copy(update={"updated_at": 1000})
@@ -1102,7 +1110,7 @@ async def test_invalid_arguments_record_invalid_and_skip_strategy():
             error_message="Arguments for tool 'add' are invalid.",
             details={"errors": MISSING_B},  # the registry's own payload
         ),
-        ended_at=1000,
+        finished_at=1000,
         context_tokens=9,  # the structured error message // 4
     )
     final = birth.model_copy(update={"updated_at": 1000})
@@ -1173,7 +1181,7 @@ async def test_create_execution_failure_records_failed_with_its_phase():
             error_message="registry unavailable",
             details={"phase": "create_execution"},
         ),
-        ended_at=1000,
+        finished_at=1000,
         context_tokens=5,  # the structured error message // 4
     )
     final = birth.model_copy(update={"updated_at": 1000})
@@ -1201,7 +1209,7 @@ async def test_create_execution_failure_records_failed_with_its_phase():
 
 async def test_prepare_resolution_failure_records_not_found_undispatched():
     # the call resolved at birth and vanished before dispatch: NOT_FOUND with
-    # started_at=None and dispatched=False, and NO ToolExecutionStarted — the
+    # attempts=[] and dispatched=False, and NO ToolExecutionStarted — the
     # event fires if and only if the body was dispatched
     faux = FauxProvider()
     faux.set_responses(
@@ -1254,7 +1262,7 @@ async def test_prepare_resolution_failure_records_not_found_undispatched():
             ),
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
             "context_tokens": 5,  # the structured error message // 4
         }
@@ -1330,7 +1338,7 @@ async def test_prepare_validation_failure_records_invalid_with_phase_and_errors(
             ),
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
             "context_tokens": 9,  # the structured error message // 4
         }
@@ -1406,7 +1414,7 @@ async def test_prepare_returning_a_non_callable_records_failed():
             ),
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
             "context_tokens": 16,  # the structured error message // 4
         }
@@ -1480,7 +1488,7 @@ async def test_raising_tool_records_failed_with_structured_error():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -1492,7 +1500,8 @@ async def test_raising_tool_records_failed_with_structured_error():
                 error_message="kaboom",
                 details={"phase": "execution"},
             ),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
             "context_tokens": 1,  # len("kaboom") // 4
         }
     )
@@ -1564,7 +1573,7 @@ async def test_tool_body_raising_tool_not_found_records_failed():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -1576,7 +1585,8 @@ async def test_tool_body_raising_tool_not_found_records_failed():
                 error_message="no such record: 7",
                 details={"phase": "execution"},
             ),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
             "context_tokens": 4,  # the structured error message // 4
         }
     )
@@ -1647,7 +1657,7 @@ async def test_rich_is_error_result_is_still_completed():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -1660,7 +1670,8 @@ async def test_rich_is_error_result_is_still_completed():
                 is_error=True,
             ),
             "error": None,  # a result exists: nothing to record as a failure
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
             "context_tokens": 2,  # len("disk full") // 4
         }
     )
@@ -2027,7 +2038,7 @@ async def test_event_snapshots_do_not_track_later_ledger_updates():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -2037,7 +2048,8 @@ async def test_event_snapshots_do_not_track_later_ledger_updates():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
 

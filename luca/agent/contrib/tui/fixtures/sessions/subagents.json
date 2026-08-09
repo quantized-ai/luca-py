@@ -58,7 +58,8 @@
         "arguments": {
           "description": "audit the docs",
           "prompt": "Read every page under docs/ and list stale references."
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
       "extras": {},
@@ -81,11 +82,18 @@
           "process_subagent_result_tool_name": "task_result"
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000018000,
-      "ended_at": 1700000018400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000018000,
+          "ended_at": 1700000018400
+        }
+      ],
+      "finished_at": 1700000018400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -108,7 +116,8 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "result_execution_id": null
     },
@@ -127,7 +136,8 @@
         "arguments": {
           "description": "audit the tests",
           "prompt": "Find tests referencing the jsonl store."
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
       "extras": {},
@@ -150,11 +160,18 @@
           "process_subagent_result_tool_name": "task_result"
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000018000,
-      "ended_at": 1700000018400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000018000,
+          "ended_at": 1700000018400
+        }
+      ],
+      "finished_at": 1700000018400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -177,7 +194,8 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": true
+        "is_error": true,
+        "extras": {}
       },
       "result_execution_id": null
     },
@@ -262,7 +280,8 @@
         "name": "glob",
         "arguments": {
           "pattern": "docs/**/*.md"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24",
       "extras": {},
@@ -279,11 +298,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000042000,
-      "ended_at": 1700000042400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000042000,
+          "ended_at": 1700000042400
+        }
+      ],
+      "finished_at": 1700000042400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -303,7 +329,8 @@
         "arguments": {
           "pattern": "jsonl",
           "path": "docs"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
       "extras": {},
@@ -320,11 +347,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000084000,
-      "ended_at": 1700000084400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000084000,
+          "ended_at": 1700000084400
+        }
+      ],
+      "finished_at": 1700000084400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -402,7 +436,8 @@
         "arguments": {
           "pattern": "jsonl",
           "path": "tests"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
       "extras": {},
@@ -415,8 +450,14 @@
         "error_message": "the tool exceeded its 30s budget",
         "details": {}
       },
-      "started_at": 1700000048000,
-      "ended_at": 1700000078000,
+      "attempts": [
+        {
+          "outcome": "timed_out",
+          "started_at": 1700000048000,
+          "ended_at": 1700000078000
+        }
+      ],
+      "finished_at": 1700000078000,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -425,6 +466,7 @@
   "tool_specs": {
     "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
       "name": "task",
+      "title": null,
       "description": "task tool.",
       "input_schema": {
         "type": "object",
@@ -450,6 +492,7 @@
     },
     "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24": {
       "name": "glob",
+      "title": null,
       "description": "glob tool.",
       "input_schema": {
         "type": "object",
@@ -465,6 +508,7 @@
     },
     "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
       "name": "grep",
+      "title": null,
       "description": "grep tool.",
       "input_schema": {
         "type": "object",
@@ -588,7 +632,15 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "reasoning": null
+  },
+  "use_native_tools": false,
   "extras": {}
 }

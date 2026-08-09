@@ -41,7 +41,7 @@ async def test_d1_a_pending_approval_executes_after_a_provider_switch(llm, monke
     policy.mode = "allow_all"  # approve
     seen_args: list[dict] = []
 
-    async def record_execute(self, args, session, conversation_id, *, cancellation_token):
+    async def record_execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         seen_args.append(args)
         return ExecutionResult(content=[TextContent(text="shell executed")])
 

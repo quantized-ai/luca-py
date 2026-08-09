@@ -40,7 +40,7 @@ class ProbeTool(FakeTool):
     description = "Probe."
     Args = _NoArgs
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         return "probed"
 
 

@@ -76,8 +76,15 @@ Execution vocabulary (over `status` + `approval_status`):
 - RUNNING — body started, no terminal outcome. Any RUNNING execution seen at
   the start of a drive is an orphan (its live task is gone) and is recovered
   to INTERRUPTED.
+- PARKED (AWAITING_RESULT) — the body was dispatched and returned
+  `ExecutionDeferred`. Nonterminal, never advanceable by the drive alone, and
+  re-selected for dispatch by READY: there is no resume, only re-dispatch from
+  scratch through the same `prepare()`.
 - UNDISPATCHED (RECEIVED or PENDING) — nonterminal and never started; what a
-  cancel wind-down settles.
+  cancel wind-down settles. A PARKED execution is deliberately NOT here — it
+  WAS dispatched, and the close-side settle gives it INTERRUPTED rather than
+  CANCELLED.
+- READY (PENDING or AWAITING_RESULT, approval ALLOWED) — dispatchable now.
 Approval state is always read from `approval_status` — never reconstructed
 from the `approval_decisions` audit log.
 """
@@ -422,7 +429,11 @@ class SessionLedger:
         wind-down's input: a cancel landing mid-birth must settle the unborn
         too, or the turn closes over an execution no drive will ever finish.
         RUNNING is deliberately excluded — a started body belongs to the grace
-        machinery, and an orphaned one to drive-start recovery."""
+        machinery, and an orphaned one to drive-start recovery. So is
+        AWAITING_RESULT: a parked call WAS dispatched, folding it in here would
+        make the name lie, and it would settle as CANCELLED ("cancellation
+        prevented the body from starting") when the body demonstrably started.
+        `_settle_open_executions` reads both lists."""
         return [
             execution
             for execution in self.open_turn_executions(conversation_id)
@@ -440,7 +451,12 @@ class SessionLedger:
 
     def open_turn_undecided_executions(self, conversation_id: str) -> list[ToolExecution]:
         """PENDING executions the permission policy should be offered:
-        `approval_status` is None (never processed) or PENDING (deferred)."""
+        `approval_status` is None (never processed) or PENDING (deferred).
+
+        Filtered from PENDING, so a PARKED execution is never re-decided:
+        approval is asked once per CALL, not once per dispatch attempt, and a
+        call approved before its first deferral stays approved for every
+        re-dispatch. It is one tool call."""
         return [
             execution
             for execution in self.open_turn_pending_executions(conversation_id)
@@ -458,15 +474,35 @@ class SessionLedger:
         ]
 
     def open_turn_ready_executions(self, conversation_id: str) -> list[ToolExecution]:
-        """PENDING executions cleared for dispatch: `approval_status` ALLOWED."""
+        """Executions cleared for dispatch: `approval_status` ALLOWED and
+        either PENDING (never dispatched) or AWAITING_RESULT (dispatched,
+        deferred, and re-dispatched FROM SCRATCH — there is no resume).
+
+        Approval is NOT re-asked per poll: `decide()` only ever sees PENDING
+        executions, so a call approved once stays approved for every
+        re-dispatch. It is one tool call."""
         return [
             execution
-            for execution in self.open_turn_pending_executions(conversation_id)
-            if execution.approval_status == ApprovalStatus.ALLOWED
+            for execution in self.open_turn_executions(conversation_id)
+            if execution.status in (ExecutionStatus.PENDING, ExecutionStatus.AWAITING_RESULT)
+            and execution.approval_status == ApprovalStatus.ALLOWED
+        ]
+
+    def open_turn_parked_executions(self, conversation_id: str) -> list[ToolExecution]:
+        """Status AWAITING_RESULT — the body was dispatched and returned
+        `ExecutionDeferred`. Feeds the drive's park branch, the close-side
+        settle, and `AgentSessionRunner.pending_deferred_tool_executions()`."""
+        return [
+            execution
+            for execution in self.open_turn_executions(conversation_id)
+            if execution.status == ExecutionStatus.AWAITING_RESULT
         ]
 
     def has_awaiting_approval(self, conversation_id: str) -> bool:
         return bool(self.open_turn_awaiting_executions(conversation_id))
+
+    def has_parked_executions(self, conversation_id: str) -> bool:
+        return bool(self.open_turn_parked_executions(conversation_id))
 
     def open_turn_has_doom_loop_flagged(self, conversation_id: str) -> bool:
         """True if any ToolExecution in the open turn is doom-loop-flagged."""

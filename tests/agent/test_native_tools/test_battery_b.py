@@ -73,7 +73,7 @@ async def test_b1_an_openai_apply_patch_call_is_adopted_gated_and_executed(llm, 
 
     seen_args: list[dict] = []
 
-    async def record_execute(self, args, session, conversation_id, *, cancellation_token):
+    async def record_execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         seen_args.append(args)
         return ExecutionResult(content=[TextContent(text="openai_apply_patch executed")])
 

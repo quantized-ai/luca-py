@@ -5,16 +5,23 @@ on the resulting view-model. `execution()` is the module-level literal factory
 (the `spec()` idiom): identity fields are never what a test is about.
 """
 
+from luca.agent.contrib.questions import QUESTIONS_NAMESPACE, OptionsType, Question
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.render import (
+    QUESTION_MEASURE,
+    answer_payload,
     child_links,
     diff_stat,
     entry_blocks,
+    is_questions_tool,
     is_runtime_plumbing,
     plan_block,
     plan_dismissed,
     plan_from_session,
     preview_rows,
+    question_blocks,
+    question_set_state,
+    question_tab,
     subagent_task,
     task_status,
     tool_arg,
@@ -27,6 +34,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     ChildConversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -45,10 +54,21 @@ from tests.agent.scenarios import MODEL, conversation, make_session, spec
 
 # ── literal factory ───────────────────────────────────────────────────────────
 
+_ATTEMPT_OUTCOMES: dict[ExecutionStatus, ExecutionAttemptOutcome] = {
+    ExecutionStatus.COMPLETED: ExecutionAttemptOutcome.COMPLETED,
+    ExecutionStatus.FAILED: ExecutionAttemptOutcome.FAILED,
+    ExecutionStatus.TIMED_OUT: ExecutionAttemptOutcome.TIMED_OUT,
+    ExecutionStatus.INTERRUPTED: ExecutionAttemptOutcome.INTERRUPTED,
+}
+
 
 def execution(name: str, status: ExecutionStatus, arguments: dict | None = None, **over) -> ToolExecution:
     """A standalone `ToolExecution` literal; identity fields filled, any field
-    overridable (`started_at`, `result`, `tool_spec`, …)."""
+    overridable (`attempts`, `result`, `tool_spec`, …).
+
+    `body=(started, ended)` is the shorthand for "one dispatched attempt",
+    which is what the transcript's duration note reads — body wall-clock, not
+    `duration_ms` (total time outstanding)."""
     fields: dict = {
         "id": "te1",
         "created_at": 500,
@@ -57,7 +77,18 @@ def execution(name: str, status: ExecutionStatus, arguments: dict | None = None,
         "tool_spec": spec(name),
         "status": status,
     }
+    body = fields.pop("body", None) or over.pop("body", None)
     fields.update(over)
+    if body is not None:
+        started, ended = body
+        fields["attempts"] = [
+            ExecutionAttempt(
+                outcome=_ATTEMPT_OUTCOMES.get(status),
+                started_at=started,
+                ended_at=ended,
+            )
+        ]
+        fields.setdefault("finished_at", ended)
     return ToolExecution(**fields)
 
 
@@ -180,7 +211,7 @@ def test_every_failure_status_names_itself():
 
 def test_failure_summary_carries_the_error_text_and_duration():
     block = tool_block(
-        execution("bash", ExecutionStatus.FAILED, {"command": "make"}, started_at=1000, ended_at=3000),
+        execution("bash", ExecutionStatus.FAILED, {"command": "make"}, body=(1000, 3000)),
         "make: *** [all] Error 2",
     )
     assert block == vm.ToolBlock(
@@ -192,7 +223,7 @@ def test_failure_summary_carries_the_error_text_and_duration():
 
 
 def test_sub_second_duration_keeps_one_decimal():
-    block = tool_block(execution("bash", ExecutionStatus.FAILED, {"command": "make"}, started_at=1000, ended_at=1500))
+    block = tool_block(execution("bash", ExecutionStatus.FAILED, {"command": "make"}, body=(1000, 1500)))
     assert block == vm.ToolBlock(
         tool="bash",
         arg="make",
@@ -202,9 +233,7 @@ def test_sub_second_duration_keeps_one_decimal():
 
 
 def test_negligible_duration_is_omitted():
-    block = tool_block(
-        execution("bash", ExecutionStatus.TIMED_OUT, {"command": "make"}, started_at=1000, ended_at=1040)
-    )
+    block = tool_block(execution("bash", ExecutionStatus.TIMED_OUT, {"command": "make"}, body=(1000, 1040)))
     assert block == vm.ToolBlock(
         tool="bash",
         arg="make",
@@ -290,8 +319,7 @@ def test_completed_shell_output_shows_exit_and_duration():
             ExecutionStatus.COMPLETED,
             {"command": "ls"},
             result=ExecutionResult(content=[TextContent(text="a\nb")], metadata={"exit": 0}),
-            started_at=1000,
-            ended_at=1900,
+            body=(1000, 1900),
         ),
         "a\nb",
     )
@@ -1015,4 +1043,346 @@ def test_transcript_blocks_nest_a_subagent_into_its_task_block():
             status="done",
             blocks=[vm.TextBlock(text="all pages read")],
         ),
+    ]
+
+
+# ── the agent's questions (`ask_user`) ────────────────────────────────────────
+
+ASK_SPEC = spec("ask_user", title="Ask the user", namespace=QUESTIONS_NAMESPACE)
+
+
+def ask_user(payload: dict | None) -> ToolExecution:
+    """A finished `ask_user` call carrying the tool's OWN record — the
+    questions it asked and the payload it was answered with. `None` is the call
+    whose result never landed."""
+    return execution(
+        "ask_user",
+        ExecutionStatus.COMPLETED,
+        tool_spec=ASK_SPEC,
+        result=(
+            ExecutionResult(content=[TextContent(text="answers")], structured_content=payload)
+            if payload is not None
+            else None
+        ),
+    )
+
+
+def test_the_ask_user_call_is_matched_by_namespace_and_name():
+    # An application's own `ask_user` is not this package's, so the dock never
+    # opens for a tool the questions plugin did not install.
+    ours = execution("ask_user", ExecutionStatus.AWAITING_RESULT, tool_spec=ASK_SPEC)
+    theirs = execution("ask_user", ExecutionStatus.AWAITING_RESULT, tool_spec=spec("ask_user", namespace="acme.forms"))
+    unresolved = execution("ask_user", ExecutionStatus.NOT_FOUND, tool_spec=None)
+
+    assert [is_questions_tool(ours), is_questions_tool(theirs), is_questions_tool(unresolved)] == [True, False, False]
+
+
+def test_a_tab_label_takes_whole_words_up_to_the_cell_limit():
+    assert question_tab("How should existing `.jsonl` sessions be backfilled?", 2) == "How should"
+
+
+def test_a_first_word_longer_than_the_limit_is_cut_to_it():
+    assert question_tab("internationalization first?", 0) == "internationa"
+
+
+def test_a_title_with_no_usable_words_falls_back_to_its_position():
+    assert question_tab("??? !!!", 3) == "question 4"
+
+
+def test_the_body_measure_is_the_panels_inner_width_at_the_design_geometry():
+    # 105 design columns − 2×2 margin − 2 border − 2 padding
+    assert QUESTION_MEASURE == 97
+
+
+def test_a_single_select_question_pre_wraps_its_body_and_ends_with_the_custom_and_chat_rows():
+    built = question_set_state(
+        [
+            Question(
+                title="How should existing sessions be backfilled?",
+                body=(
+                    "~4,100 stored sessions across nine projects, 380MB on disk. Conversion runs at ~40ms per "
+                    "session, single-threaded, and is idempotent.\n\n"
+                    "Lazily is invisible, but two readers then live in the tree forever."
+                ),
+                options_type=OptionsType.SINGLE_SELECT,
+                options=["On first launch, in-process", "Lazily, when a session resumes"],
+            )
+        ]
+    )
+
+    assert built == vm.QuestionSetState(
+        questions=[
+            vm.Question(
+                tab="How should",
+                title="How should existing sessions be backfilled?",
+                body=[
+                    # the first row is exactly the 97-column measure
+                    "~4,100 stored sessions across nine projects, 380MB on disk. Conversion runs at ~40ms per session,",
+                    "single-threaded, and is idempotent.",
+                    "",
+                    "Lazily is invisible, but two readers then live in the tree forever.",
+                ],
+                mode="single",
+                options=[
+                    vm.QuestionOption(label="On first launch, in-process"),
+                    vm.QuestionOption(label="Lazily, when a session resumes"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+                ],
+            )
+        ]
+    )
+
+
+def test_a_multiple_select_question_becomes_a_multi_mode_tab_with_no_body_rows():
+    built = question_set_state(
+        [
+            Question(
+                title="Read sqlite first where?",
+                options_type=OptionsType.MULTIPLE_SELECT,
+                options=["the sessions screen", "the cost screen"],
+            )
+        ]
+    )
+
+    assert built == vm.QuestionSetState(
+        questions=[
+            vm.Question(
+                tab="Read sqlite",
+                title="Read sqlite first where?",
+                body=[],
+                mode="multi",
+                options=[
+                    vm.QuestionOption(label="the sessions screen"),
+                    vm.QuestionOption(label="the cost screen"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+                ],
+            )
+        ]
+    )
+
+
+# One question, four rows, in the shape `question_set_state` builds.
+def dock_question(**over) -> vm.Question:
+    fields: dict = {
+        "tab": "storage",
+        "title": "Where should the sqlite file live?",
+        "options": [
+            vm.QuestionOption(label="~/.luca/projects/<project>/events.db"),
+            vm.QuestionOption(label="Beside the jsonl files"),
+            vm.QuestionOption(label="Custom answer:", kind="custom"),
+            vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+        ],
+    }
+    fields.update(over)
+    return vm.Question(**fields)
+
+
+def test_answer_payload_reports_the_option_a_single_select_question_settled_on():
+    # `answer` is the PICK and `selected` is the caret: the payload reads the
+    # pick, so arrowing over an answered question to re-read it cannot rewrite
+    # what the model is told.
+    state = vm.QuestionSetState(
+        questions=[dock_question(selected=0, answer=1, answered=True)],
+        extra="in-process is fine if it's scoped",
+    )
+
+    assert answer_payload(state) == {
+        "answers": [
+            {
+                "question": "Where should the sqlite file live?",
+                "chat_about_this": False,
+                "answers": ["Beside the jsonl files"],
+                "custom_answer": None,
+            }
+        ],
+        "custom_notes": "in-process is fine if it's scoped",
+    }
+
+
+def test_answer_payload_reports_nothing_picked_while_the_question_is_unanswered():
+    # The caret sits on a row, but a radio question has not chosen it until
+    # `answered` says so — and an empty `extra` is no note at all.
+    state = vm.QuestionSetState(questions=[dock_question(selected=1)], extra="")
+
+    assert answer_payload(state) == {
+        "answers": [
+            {
+                "question": "Where should the sqlite file live?",
+                "chat_about_this": False,
+                "answers": [],
+                "custom_answer": None,
+            }
+        ],
+        "custom_notes": None,
+    }
+
+
+def test_answer_payload_submits_every_tick_and_the_custom_text_together():
+    state = vm.QuestionSetState(
+        questions=[
+            dock_question(
+                mode="multi",
+                answered=True,
+                options=[
+                    vm.QuestionOption(label="~/.luca/projects/<project>/events.db", checked=True),
+                    vm.QuestionOption(label="Beside the jsonl files"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom", checked=True, text="one db per workspace"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+                ],
+            )
+        ]
+    )
+
+    assert answer_payload(state) == {
+        "answers": [
+            {
+                "question": "Where should the sqlite file live?",
+                "chat_about_this": False,
+                "answers": ["~/.luca/projects/<project>/events.db"],
+                "custom_answer": "one db per workspace",
+            }
+        ],
+        "custom_notes": None,
+    }
+
+
+def test_answer_payload_flags_the_question_the_user_wants_to_chat_about():
+    state = vm.QuestionSetState(
+        questions=[
+            dock_question(
+                options=[
+                    vm.QuestionOption(label="~/.luca/projects/<project>/events.db"),
+                    vm.QuestionOption(label="Beside the jsonl files"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter", checked=True),
+                ]
+            )
+        ]
+    )
+
+    assert answer_payload(state) == {
+        "answers": [
+            {
+                "question": "Where should the sqlite file live?",
+                "chat_about_this": True,
+                "answers": [],
+                "custom_answer": None,
+            }
+        ],
+        "custom_notes": None,
+    }
+
+
+ANSWERED_PAYLOAD = {
+    "questions": [
+        {
+            "title": "Where should the sqlite file live?",
+            "options_type": "single_select",
+            "options": ["~/.luca/projects/<project>/events.db", "Beside the jsonl files"],
+        },
+        {
+            "title": "Read sqlite first where?",
+            "options_type": "multiple_select",
+            "options": ["the sessions screen", "the cost screen"],
+        },
+    ],
+    "answer": {
+        "answers": [
+            {
+                "question": "Where should the sqlite file live?",
+                "chat_about_this": False,
+                "answers": ["~/.luca/projects/<project>/events.db"],
+                "custom_answer": None,
+            },
+            {
+                "question": "Read sqlite first where?",
+                "chat_about_this": False,
+                "answers": ["the sessions screen"],
+                "custom_answer": "the replay screen",
+            },
+        ],
+        "custom_notes": "in-process is fine if it's scoped",
+    },
+}
+
+
+def test_a_finished_question_set_collapses_into_a_header_and_one_row_per_answer():
+    assert question_blocks(ask_user(ANSWERED_PAYLOAD)) == [
+        vm.ToolBlock(tool="Ask the user", arg="2 questions", status="ok", note_right="2 answered"),
+        vm.ListBlock(
+            rows=[
+                vm.ListRow(glyph="done", text="Where should", annotation="→  ~/.luca/projects/<project>/events.db"),
+                vm.ListRow(
+                    glyph="done",
+                    text="Read sqlite",
+                    annotation="→  the sessions screen, custom · the replay screen",
+                ),
+                vm.ListRow(glyph="none", text="", annotation="added · in-process is fine if it's scoped"),
+            ],
+            column=28,
+        ),
+    ]
+
+
+def test_a_declined_question_names_itself_and_the_header_says_so():
+    payload = {
+        "questions": ANSWERED_PAYLOAD["questions"],
+        "answer": {
+            "answers": [
+                ANSWERED_PAYLOAD["answer"]["answers"][0],
+                {
+                    "question": "Read sqlite first where?",
+                    "chat_about_this": True,
+                    "answers": [],
+                    "custom_answer": None,
+                },
+            ],
+        },
+    }
+
+    assert question_blocks(ask_user(payload)) == [
+        vm.ToolBlock(tool="Ask the user", arg="2 questions", status="ok", note_right="1 answered · chat about this"),
+        vm.ListBlock(
+            rows=[
+                vm.ListRow(glyph="done", text="Where should", annotation="→  ~/.luca/projects/<project>/events.db"),
+                vm.ListRow(glyph="pending", text="Read sqlite", annotation="→  [accent]chat about this[/]"),
+            ],
+            column=28,
+        ),
+    ]
+
+
+def test_a_question_the_payload_never_answered_reads_as_no_answer():
+    payload = {
+        "questions": ANSWERED_PAYLOAD["questions"],
+        "answer": {"answers": [ANSWERED_PAYLOAD["answer"]["answers"][0]]},
+    }
+
+    assert question_blocks(ask_user(payload)) == [
+        vm.ToolBlock(tool="Ask the user", arg="2 questions", status="ok", note_right="1 answered"),
+        vm.ListBlock(
+            rows=[
+                vm.ListRow(glyph="done", text="Where should", annotation="→  ~/.luca/projects/<project>/events.db"),
+                vm.ListRow(glyph="pending", text="Read sqlite", annotation="→  no answer"),
+            ],
+            column=28,
+        ),
+    ]
+
+
+def test_a_call_whose_result_never_landed_renders_an_empty_set():
+    assert question_blocks(ask_user(None)) == [
+        vm.ToolBlock(tool="Ask the user", arg="0 questions", status="ok", note_right="0 answered"),
+        vm.ListBlock(rows=[], column=28),
+    ]
+
+
+def test_a_malformed_payload_renders_rather_than_raising():
+    # A hand-edited store, or one written by an older version: the collapsed
+    # block is a transcript row, and no transcript row is worth a crash.
+    assert question_blocks(ask_user({"questions": "not a list", "answer": "not a dict"})) == [
+        vm.ToolBlock(tool="Ask the user", arg="0 questions", status="ok", note_right="0 answered"),
+        vm.ListBlock(rows=[], column=28),
     ]

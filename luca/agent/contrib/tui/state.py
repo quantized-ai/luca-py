@@ -248,6 +248,86 @@ class OverlayState(BaseModel):
     model_config = _STRICT
 
 
+# ── the question set (the `ask_user` dock) ────────────────────────────────────
+
+
+class QuestionOption(BaseModel):
+    """One row of a question. `kind` is what makes the row's column treatment
+    differ:
+
+    - `"option"` — a normal answer. Tick column in multi mode.
+    - `"custom"` — the free-text row. Tick column in multi mode; `checked` is
+      derived, and is True exactly when `text` is non-empty.
+    - `"chat"`   — Chat about this. NO tick column, ever: the caret column and
+      the label only, so it cannot read as a tickable answer, and `space` is
+      inert on it. It is the way out, not an answer.
+    """
+
+    label: str
+    kind: Literal["option", "custom", "chat"] = "option"
+    checked: bool = False  # the multi-select tick; ignored when mode == "single"
+    text: str | None = None  # kind == "custom" only: what the user typed
+    key_hint: str | None = None  # right-aligned — `enter` on the chat row
+    model_config = _STRICT
+
+
+class Question(BaseModel):
+    """One tab of the set.
+
+    `body` is PRE-WRAPPED at the 99-column measure by the producer, the way
+    `ToolOutput.lines` are — the widget does not reflow prose.
+
+    `options` is the agent's list; the producer appends the custom and chat
+    rows, so a `Question` is never authored with them and they are always
+    last."""
+
+    tab: str  # the tab label, 1–2 words, ≤ 12 cells
+    title: str  # the question; code spans allowed
+    body: list[str] = Field(default_factory=list)
+    mode: Literal["single", "multi"] = "single"
+    options: list[QuestionOption] = Field(default_factory=list)
+    # THE CARET, and only the caret. `↑↓` move it and nothing else — moving it
+    # over an answered radio question must not silently re-answer, which is
+    # what conflating it with the pick would do.
+    selected: int = 0
+    # THE PICK, in single-select mode: the index of the option the user
+    # committed, or None while the question is open. Multi-select carries its
+    # answer on each option's `checked` instead, so this stays None there.
+    answer: int | None = None
+    answered: bool = False
+    model_config = _STRICT
+
+
+class QuestionSetState(BaseModel):
+    """The fourth dock: the agent's questions, replacing the composer exactly
+    as the approval prompt does.
+
+    `phase` is what the dock shows — the question panel, or the confirmation.
+    It is the ONLY thing that decides which, so the two can never both render.
+    `extra` is the confirmation's optional free-text field, which replaced
+    per-question notes once the custom-answer row made them redundant.
+
+    Deliberately absent, in the spirit of `ExecutionDeferred` being an empty
+    marker: no `skipped` state (every question is answered, and the custom row
+    means every question CAN be), no per-question `required` or `recommended`
+    flag (the body says which one the agent prefers, in prose), no per-question
+    notes, and no progress/percent field — the tabs are the progress
+    indicator."""
+
+    questions: list[Question] = Field(default_factory=list)
+    active: int = 0
+    phase: Literal["asking", "confirming"] = "asking"
+    editing_custom: bool = False  # the active question's custom field has the keyboard
+    extra: str | None = None
+    model_config = _STRICT
+
+    @property
+    def settled(self) -> bool:
+        """Every question answered — the predicate behind BOTH `enter`'s
+        meaning and the hint legend. One source, so they cannot disagree."""
+        return bool(self.questions) and all(question.answered for question in self.questions)
+
+
 # ── modal screens ─────────────────────────────────────────────────────────────
 
 
@@ -343,9 +423,10 @@ class ModalState(BaseModel):
 class ScreenState(BaseModel):
     """One renderable state of the app — the fixture schema.
 
-    The dock is exactly one of `composer` / `approval` / `overlay` (an overlay
-    dims the transcript). A `modal` covers the frame with its own screen; the
-    transcript and dock still describe what sits underneath it.
+    The dock is exactly one of `composer` / `approval` / `questions` /
+    `overlay` (an overlay dims the transcript). A `modal` covers the frame with
+    its own screen; the transcript and dock still describe what sits underneath
+    it.
 
     `plan` is the sticky todo panel, which sits BETWEEN the transcript and the
     dock and belongs to neither: it outlives the turn that wrote it and stays
@@ -358,14 +439,21 @@ class ScreenState(BaseModel):
     plan: ListBlock | None = None
     composer: ComposerState | None = None
     approval: ApprovalState | None = None
+    questions: QuestionSetState | None = None
     overlay: OverlayState | None = None
     modal: ModalState | None = None
     hints: list[str] = Field(default_factory=list)
     model_config = _STRICT
 
     def dock(self) -> str:
+        # A question set and an approval prompt cannot both hold the dock,
+        # because a deferred `ask_user` parks the turn before any other tool
+        # dispatches — but the order is fixed anyway rather than left to
+        # chance, so a hand-authored fixture cannot render an ambiguous state.
         if self.approval is not None:
             return "approval"
+        if self.questions is not None:
+            return "questions"
         if self.overlay is not None:
             return "overlay"
         return "composer"

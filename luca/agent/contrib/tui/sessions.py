@@ -9,10 +9,21 @@ into a conversation except copying its id by hand.
 `save_session` / `load_session` still take the directory, so the app and its
 tests point the store anywhere; `resolve_session_directory` is what the TUI uses
 to work out where that is.
+
+Beside each session sits an optional `<session-id>.tui.json` — THE TUI'S OWN
+STORE, for state that belongs to the interface rather than to the conversation.
+It is a separate file rather than a key under `AgentSession.extras` on purpose:
+`extras` is the SESSION's free-form state, read by anything that loads the
+session (another driver, a script, a server), and the TUI's private bookkeeping
+has no business travelling with it. Today it holds exactly one thing — the
+`ask_user` question store, which a deferred tool call needs back on resume so a
+parked question can be re-rendered rather than silently re-asked. See
+`load_tui_state` / `save_tui_state`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -30,9 +41,75 @@ DEFAULT_STORE = "~/.luca/projects"
 
 TITLE_LENGTH = 60
 
+# The one key the TUI store carries today: `QuestionsTool`'s job store, keyed by
+# `tool_call_id`, JSON-shaped all the way down.
+QUESTIONS_STORE_KEY = "questions"
+
 
 def session_path(session_id: str, directory: str | os.PathLike[str] = ".") -> Path:
     return Path(directory) / f"{session_id}.json"
+
+
+def tui_state_path(session_id: str, directory: str | os.PathLike[str] = ".") -> Path:
+    """The TUI's sidecar for one session: `<session-id>.tui.json`."""
+    return Path(directory) / f"{session_id}.tui.json"
+
+
+def load_tui_state(session_id: str, directory: str | os.PathLike[str] = ".") -> dict:
+    """The TUI's own state for one session, or an empty dict.
+
+    NEVER RAISES, and validates SHAPE rather than only syntax. This is an
+    interface convenience, not conversation data: a missing, unreadable or
+    hand-mangled sidecar must cost the user their outstanding questions, never
+    their session. A parked `ask_user` recovers from the loss on its own anyway
+    — `execute()` re-seeds the job from `raw_tool_call.arguments` and defers
+    again, so the user is simply asked a second time.
+
+    Shape matters because the store is handed straight to a tool that indexes
+    it: a top-level value of the wrong type would turn every `ask_user` call in
+    that session into a `FAILED` one, permanently, since the bad shape would be
+    written back on the next save. Anything that is not a mapping is dropped
+    here instead."""
+    path = tui_state_path(session_id, directory)
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        logger.warning("could not read the TUI state at %s; starting clean", path, exc_info=True)
+        return {}
+    if not isinstance(state, dict):
+        logger.warning("the TUI state at %s is not an object; starting clean", path)
+        return {}
+    store = state.get(QUESTIONS_STORE_KEY)
+    if store is not None and not isinstance(store, dict):
+        logger.warning("the question store at %s is not an object; dropping it", path)
+        state.pop(QUESTIONS_STORE_KEY, None)
+    return state
+
+
+def save_tui_state(session_id: str, state: dict, directory: str | os.PathLike[str] = ".") -> Path | None:
+    """Write the sidecar atomically, the way `save_session` writes the session.
+
+    Returns the path, or None when the state is empty (nothing to keep) or the
+    write failed — the same reasoning as the read: losing this file is a
+    cosmetic loss and must never take a turn down with it."""
+    path = tui_state_path(session_id, directory)
+    if not state:
+        return None
+    try:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex[:8]}.tmp")
+        try:
+            temporary.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    except (OSError, TypeError, ValueError):
+        logger.warning("could not write the TUI state at %s", path, exc_info=True)
+        return None
+    return path
 
 
 def load_session(session_id: str, directory: str | os.PathLike[str] = ".") -> AgentSession:
@@ -172,7 +249,11 @@ def summarize_session(path: Path) -> SessionSummary | None:
 
 
 def delete_session(session_id: str, directory: str | os.PathLike[str] = ".") -> None:
+    """Delete a session AND its TUI sidecar — the two are one artifact to the
+    user, and an orphaned `.tui.json` would outlive the conversation it
+    describes forever."""
     session_path(session_id, directory).unlink(missing_ok=True)
+    tui_state_path(session_id, directory).unlink(missing_ok=True)
 
 
 def list_sessions(directory: str | os.PathLike[str]) -> list[SessionSummary]:
@@ -180,11 +261,15 @@ def list_sessions(directory: str | os.PathLike[str]) -> list[SessionSummary]:
 
     Each row costs one parse (~3ms for a 500KB session), so no index file: the
     listing is built on demand when the picker opens, and there is nothing to
-    keep in sync or rebuild when it drifts."""
+    keep in sync or rebuild when it drifts.
+
+    `*.tui.json` sidecars are skipped by NAME rather than by failing to parse:
+    they live in the same directory and match the same glob, and letting them
+    through would log a warning per session on every open."""
     root = Path(directory)
     if not root.is_dir():
         return []
-    found = [summarize_session(path) for path in sorted(root.glob("*.json"))]
+    found = [summarize_session(path) for path in sorted(root.glob("*.json")) if not path.name.endswith(".tui.json")]
     return sorted(
         (summary for summary in found if summary is not None),
         key=lambda summary: summary.modified,

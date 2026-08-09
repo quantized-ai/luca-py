@@ -26,6 +26,8 @@ from luca.agent.core.models import (
     ApprovalOption,
     ApprovalStatus,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     SessionConfig,
@@ -88,7 +90,7 @@ ADD_RUNNING = ADD_BIRTH.model_copy(
         "status": ExecutionStatus.RUNNING,
         "approval_status": ApprovalStatus.ALLOWED,
         "approval_decisions": [ALLOW_1000],
-        "started_at": 1000,
+        "attempts": [ExecutionAttempt(started_at=1000)],  # one OPEN attempt
         "updated_at": 1000,
     }
 )
@@ -96,7 +98,14 @@ ADD_FINAL = ADD_RUNNING.model_copy(
     update={
         "status": ExecutionStatus.COMPLETED,
         "result": ExecutionResult(content=[TextContent(text="3")], is_error=False),
-        "ended_at": 1000,
+        "attempts": [
+            ExecutionAttempt(
+                outcome=ExecutionAttemptOutcome.COMPLETED,
+                started_at=1000,
+                ended_at=1000,
+            )
+        ],
+        "finished_at": 1000,
     }
 )
 # the fourth snapshot: the same birth after a registry that punted on approval

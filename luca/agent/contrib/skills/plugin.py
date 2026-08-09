@@ -57,6 +57,8 @@ class SkillTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         skill = self.skills.get(args["name"])

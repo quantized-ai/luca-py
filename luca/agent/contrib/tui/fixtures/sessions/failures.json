@@ -59,7 +59,8 @@
         "name": "bash",
         "arguments": {
           "command": "rm -rf build/ dist/"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
       "extras": {
@@ -97,8 +98,14 @@
       "status": "rejected",
       "result": null,
       "error": null,
-      "started_at": 1700000024000,
-      "ended_at": 1700000024000,
+      "attempts": [
+        {
+          "outcome": null,
+          "started_at": 1700000024000,
+          "ended_at": 1700000024000
+        }
+      ],
+      "finished_at": 1700000024000,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -138,7 +145,8 @@
         "name": "bash",
         "arguments": {
           "command": "git clean -fdx build/"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
       "extras": {},
@@ -157,11 +165,18 @@
         "metadata": {
           "exit": 0
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000054000,
-      "ended_at": 1700000054400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000054000,
+          "ended_at": 1700000054400
+        }
+      ],
+      "finished_at": 1700000054400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -180,7 +195,8 @@
         "name": "bash",
         "arguments": {
           "command": "uv run pytest -q"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
       "extras": {},
@@ -193,8 +209,14 @@
         "error_message": "the tool exceeded its 120s budget",
         "details": {}
       },
-      "started_at": 1700000084000,
-      "ended_at": 1700000204000,
+      "attempts": [
+        {
+          "outcome": "timed_out",
+          "started_at": 1700000084000,
+          "ended_at": 1700000204000
+        }
+      ],
+      "finished_at": 1700000204000,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -233,6 +255,7 @@
   "tool_specs": {
     "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b": {
       "name": "bash",
+      "title": null,
       "description": "bash tool.",
       "input_schema": {
         "type": "object",
@@ -308,7 +331,15 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "reasoning": null
+  },
+  "use_native_tools": false,
   "extras": {}
 }

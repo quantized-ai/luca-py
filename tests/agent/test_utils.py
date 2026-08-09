@@ -24,6 +24,8 @@ from luca.agent.core.models import (
     CancelRequested,
     CompactionEntry,
     CompactionSource,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -154,7 +156,7 @@ TOOLS_SESSION = make_session(
                     created_at=T,
                 ),
             ],
-            ended_at=T,
+            finished_at=T,
         ),
         "te2": ToolExecution(
             id="te2",
@@ -184,8 +186,8 @@ TOOLS_SESSION = make_session(
                     created_at=T,
                 ),
             ],
-            started_at=T,
-            ended_at=T + 2,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=T, ended_at=T + 2)],
+            finished_at=T + 2,
         ),
         "a2": AssistantMessage(
             id="a2",
@@ -226,8 +228,8 @@ TOOLS_SESSION = make_session(
 )
 
 # A tool BODY that raised: the structured ToolExecutionError is the outcome
-# payload, the call was dispatched (started_at stamped, so a duration renders)
-# and the error is stamped with the phase the runner observed it in.
+# payload, the call was dispatched (one ExecutionAttempt, closed FAILED) and
+# the error is stamped with the phase the runner observed it in.
 FAILED_SESSION = make_session(
     id="s_failed",
     entries={
@@ -256,8 +258,8 @@ FAILED_SESSION = make_session(
                 details={"phase": "execution"},
             ),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=T,
-            ended_at=T + 7,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=T, ended_at=T + 7)],
+            finished_at=T + 7,
         ),
         "tf": TurnFinish(
             id="tf",
@@ -284,8 +286,9 @@ FAILED_SESSION = make_session(
 
 # Two calls that never reached a tool body: one born NOT_FOUND (no policy ever
 # saw it, so no approval line and no spec) and one that cleared the gate and
-# then failed to resolve. Neither was dispatched — `started_at` is None on
-# both, so the outcome renders without a duration.
+# then failed inside `prepare()`. Neither was dispatched — `attempts` is empty
+# on both — but each terminal transition still stamped `finished_at`, and the
+# rendered duration is that total outstanding time, not body wall-clock.
 UNRESOLVED_SESSION = make_session(
     id="s_unresolved",
     entries={
@@ -319,7 +322,7 @@ UNRESOLVED_SESSION = make_session(
                 error_message="Unknown tool: 'chart'.",
                 details={"phase": "create_execution"},
             ),
-            ended_at=T,
+            finished_at=T,
         ),
         "te2": ToolExecution(
             id="te2",
@@ -347,7 +350,7 @@ UNRESOLVED_SESSION = make_session(
                     created_at=T,
                 ),
             ],
-            ended_at=T + 1,
+            finished_at=T + 1,
         ),
         "a2": AssistantMessage(
             id="a2",
@@ -415,8 +418,8 @@ CANCELLED_SESSION = make_session(
                 is_error=True,
             ),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=T,
-            ended_at=T + 3,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=T, ended_at=T + 3)],
+            finished_at=T + 3,
         ),
         "te2": ToolExecution(
             id="te2",
@@ -427,7 +430,7 @@ CANCELLED_SESSION = make_session(
             raw_tool_call=ToolCall(id="tc2", name="add", arguments={"a": 1, "b": 2}),
             tool_spec=spec("add"),
             status=ExecutionStatus.CANCELLED,
-            ended_at=T + 3,
+            finished_at=T + 3,
         ),
         "cr": CancelRequested(
             id="cr",
@@ -501,6 +504,70 @@ OPEN_SESSION = make_session(
     session_config=SessionConfig(llm_config=MODEL),
 )
 
+# Two calls that returned ExecutionDeferred: the first was re-dispatched and
+# answered on the second try, the second is still parked at AWAITING_RESULT —
+# which leaves the turn open with nothing runnable, so the conversation derives
+# BLOCKED. The attempt COUNT is the only visible trace of a deferral, so it
+# renders next to the outcome once there is more than one; a parked call has no
+# `finished_at` and so renders no duration at all.
+DEFERRED_SESSION = make_session(
+    id="s_deferred",
+    entries={
+        "u1": UserMessage(id="u1", created_at=T, parts=[TextContent(text="ask me")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=T),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=T,
+            parts=[
+                ToolCall(id="tc1", name="ask", arguments={"question": "your name?"}),
+                ToolCall(id="tc2", name="ask", arguments={"question": "your city?"}),
+            ],
+            llm_config=MODEL,
+            stop_reason="tool_use",
+        ),
+        "te1": ToolExecution(
+            id="te1",
+            conversation_id="c1",
+            parent_id="a1",
+            created_at=T,
+            tool_call_id="tc1",
+            raw_tool_call=ToolCall(id="tc1", name="ask", arguments={"question": "your name?"}),
+            tool_spec=spec("ask"),
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(content=[TextContent(text="Ada")]),
+            approval_status=ApprovalStatus.ALLOWED,
+            attempts=[
+                ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=T, ended_at=T),
+                ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=T + 9, ended_at=T + 9),
+            ],
+            finished_at=T + 9,
+        ),
+        "te2": ToolExecution(
+            id="te2",
+            conversation_id="c1",
+            parent_id="te1",
+            created_at=T,
+            tool_call_id="tc2",
+            raw_tool_call=ToolCall(id="tc2", name="ask", arguments={"question": "your city?"}),
+            tool_spec=spec("ask"),
+            status=ExecutionStatus.AWAITING_RESULT,
+            approval_status=ApprovalStatus.ALLOWED,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=T, ended_at=T)],
+        ),
+    },
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1", "te1", "te2"],
+            created_at=T,
+            updated_at=T,
+        )
+    },
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
 # Context bookkeeping in the path: a compaction that replaced two entries and a
 # pruned tool output standing in for the original execution, which stays in the
 # store untouched.
@@ -530,8 +597,8 @@ COMPACTED_SESSION = make_session(
             tool_spec=spec("read"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="a very long listing")]),
-            started_at=T,
-            ended_at=T + 1,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=T, ended_at=T + 1)],
+            finished_at=T + 1,
         ),
         "pr": PrunedEntry(
             id="pr",
@@ -583,8 +650,8 @@ BIG_OUTPUT_SESSION = make_session(
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text=LISTING)]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=T,
-            ended_at=T + 1,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=T, ended_at=T + 1)],
+            finished_at=T + 1,
         ),
     },
     conversations={
@@ -748,7 +815,7 @@ TOTAL · 1 turn · 1 model call · 1 tool call · 0 tokens"""
     )
 
 
-def test_calls_that_never_resolved_render_their_phase_and_no_duration():
+def test_calls_that_never_resolved_render_their_phase_and_time_outstanding():
     assert (
         pretty_print(UNRESOLVED_SESSION)
         == f"""\
@@ -764,13 +831,13 @@ User
 Assistant · step 1 · faux/test-model
   Tools
   ├─ chart(kind="pie")
-  │  └─ NOT FOUND
+  │  └─ NOT FOUND · 0 ms
   │     ToolNotFound: Unknown tool: 'chart'.
   │     {{"phase": "create_execution"}}
   │
   └─ read(file_path="/etc/hosts")
      ├─ ALLOWED · permission policy
-     └─ FAILED
+     └─ FAILED · 1 ms
         RuntimeError: the registry blew up
         {{"phase": "prepare"}}
 
@@ -806,7 +873,7 @@ Assistant · step 1 · faux/test-model
   │     disk full
   │
   └─ add(a=1, b=2)
-     └─ CANCELLED
+     └─ CANCELLED · 3 ms
 
 Cancel requested · cancelled · the user pressed esc twice
 
@@ -842,6 +909,37 @@ Cancel requested · cancelled
 
 {RULE}
 TOTAL · 1 turn · 1 model call · 1 tool call · 0 tokens"""
+    )
+
+
+def test_a_redispatched_call_counts_its_attempts_and_a_parked_one_has_no_duration():
+    assert (
+        pretty_print(DEFERRED_SESSION)
+        == f"""\
+LUCA SESSION s_deferred
+Conversation c1 · blocked · 1 turn
+Default: faux/test-model
+{RULE}
+
+TURN 1 · {STAMP}
+User
+  ask me
+
+Assistant · step 1 · faux/test-model
+  Tools
+  ├─ ask(question="your name?")
+  │  ├─ ALLOWED
+  │  └─ OK · 2 attempts · 9 ms
+  │     Ada
+  │
+  └─ ask(question="your city?")
+     ├─ ALLOWED
+     └─ AWAITING RESULT
+
+⋯ open · tool_use · 0 tokens
+
+{RULE}
+TOTAL · 1 turn · 1 model call · 2 tool calls · 0 tokens"""
     )
 
 
