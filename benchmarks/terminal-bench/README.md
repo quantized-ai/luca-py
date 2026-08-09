@@ -261,12 +261,17 @@ trial's `luca.txt` against the triage table below before scaling up.
 mkdir -p ../../runs
 uv run harbor run -d terminal-bench/terminal-bench-2-1 \
     -a luca_tb.agent:LucaAgent \
-    -m <model> -k 3 -n 8 2>&1 | tee ../../runs/full-$(date +%F).log
+    -m <model> -k 5 -n 8 2>&1 | tee ../../runs/full-$(date +%F).log
 ```
 
-Harbor prints the total trial count at job start; size the time and cost budget
-from that number rather than guessing. `-k 3` is what makes pass@1 against
-pass@3 meaningful and smooths out flaky tasks.
+All 89 tasks at `-k 5` is 445 trials, which is the leaderboard's minimum and
+therefore the number worth getting used to. Harbor prints the total at job
+start; size the time and cost budget from that rather than guessing. `-k 5` is
+also what puts a confidence interval on the accuracy instead of a single
+noisy number.
+
+If you only want a score for ourselves and not a submission, `-k 1` over all
+89 tasks is a fifth of the cost and still tells you most of what you need.
 
 Agent knobs go through `--ak`:
 
@@ -310,6 +315,30 @@ isolated from the host daemon, which is the accepted trade for avoiding
 docker-in-docker — do not point this at task definitions you do not trust. And
 the wheel is built inside the container rather than into the mounted `dist/`,
 so a Linux build never lands in your checkout.
+
+## What the benchmark actually produces
+
+Each task is a container plus a hidden test script. The agent gets one
+instruction and whatever time the task allows; afterwards the verifier runs the
+tests it never saw and emits a **reward**, normally `1.0` or `0.0`. Nothing
+about how the agent got there is scored: not the tokens, not the explanation,
+not the tool choices. Only the state it left the filesystem in.
+
+The headline number is **accuracy**: the mean reward over every trial. With
+`-k 5` that is 445 trials, which is what lets the leaderboard put a confidence
+interval on it (the current top entry reads `83.8% ± 1.2%`). A run at `-k 1`
+gives a single noisy number instead.
+
+Two things that surprise people:
+
+- **Errored trials count as reward 0.** A crash in our adapter is
+  indistinguishable from the agent failing, as far as the metric goes.
+- **Partial credit is rare.** Most tasks are all-or-nothing, so "nearly worked"
+  and "did nothing" score the same.
+
+Alongside the score you get the full trajectory for every trial, which is the
+part worth more than the number early on: the agent's stdout, its
+`AgentSession`, the verifier's own output, and per-phase timings.
 
 ## Reading the results
 
@@ -388,6 +417,79 @@ it and it does not inflate `n_errored_trials`. Same for an approval gate.
 | Trial passes but token counts are `null` | `context_from_session` could not read the trajectory | `<trial>/agent/` contents |
 | Host and Docker disagree | the sibling-container path problem above | compare mount paths in the two `<trial>/config.json` |
 
+## Submitting to the leaderboard
+
+A scored local run and a leaderboard row are not the same thing. The
+[terminal-bench-2-1](https://github.com/harbor-framework/terminal-bench-2-1)
+repo runs CI over every submission, and it rejects rather than warns. The rules
+below come from its `leaderboard/ci/static_analysis.py`, not from the prose.
+
+**Coverage.** All **89 tasks**, at least **5 trials each** (`-k 5`), so 445
+trials minimum. Partial runs are rejected.
+
+**Errored trials count as reward 0.** They are not dropped from the metric.
+Every crash in our adapter costs score directly, which is the strongest reason
+to get stage 3 clean before spending on a full run.
+
+**No knob-twiddling.** `timeout_multiplier` must be unset or `1.0`, and CI
+rejects any of `agent_timeout_multiplier`, `verifier_timeout_multiplier`,
+`agent_setup_timeout_multiplier`, `environment_build_timeout_multiplier`,
+`override_timeout_sec`, `override_setup_timeout_sec`, `max_timeout_sec`,
+`override_cpus`, `override_gpus`, `override_memory_mb`, `override_storage_mb`.
+The check runs against the job config *and* every per-trial config, so the two
+cannot diverge.
+
+This is also why the adapter passes `--timeout 0` by default. Every task
+declares its own `agent.timeout_sec` and Harbor enforces it; a second ceiling
+inside the driver could only ever be the smaller of the two, and would hand
+back failures the task's own budget allowed. Do not set `--ak timeout=` for a
+scored run.
+
+**Effort is keyed on the kwarg name.** CI groups trials by
+`(agent, agent version, model, kwargs["reasoning_effort"])`. Our flag is
+therefore named `reasoning_effort` rather than `reasoning`:
+
+```bash
+--ak reasoning_effort=high      # correct: fills the Effort column
+--ak reasoning=high             # wrong: records as "none", merges rows
+```
+
+**Public upload.** Trials have to be readable on Harbor Hub, because CI
+re-derives every number from there rather than trusting the submitted JSON.
+
+### The run
+
+```bash
+uv tool install "harbor[daytona]"      # a cloud sandbox; 445 trials locally is slow
+harbor auth login
+
+uv run harbor run -d terminal-bench/terminal-bench-2-1 \
+    -a luca_tb.agent:LucaAgent \
+    -m <provider/model> \
+    --ak reasoning_effort=<effort> \
+    -e daytona -k 5 -n <concurrency> \
+    --upload --public
+```
+
+Forgot `--upload`? `harbor upload <job-dir> --public` after the fact.
+
+### The PR
+
+```bash
+git clone https://github.com/harbor-framework/terminal-bench-2-1.git
+cd terminal-bench-2-1/leaderboard
+uv run lb submit https://hub.harborframework.com/jobs/<uuid>
+```
+
+That runs filter → metadata → open-prs in one go. It needs an authenticated
+`gh`, and it will prompt for display names and org URLs for luca the first time
+since we are not yet in its `display-names.json`. CI then runs static analysis,
+maintainers review the trajectories, and a merged PR becomes a leaderboard row.
+
+Budget for it before starting: the current top entry (Claude Code on Fable 5,
+83.8%) cost **$552** for its run. A cheap model over 445 trials is far less,
+but this is not a thing to start casually at the end of a day.
+
 ## Results log
 
 One block per run, appended newest first. Paste the same block in the PR and
@@ -401,11 +503,11 @@ the same model and the same `-k`.
 ```
 dataset:      terminal-bench/terminal-bench-2-1
 agent:        luca @ <git sha>
-model:        <provider/model>, reasoning=<level>
-config:       max_steps=<n>, timeout=<s>, subagents=<on|off>, compaction=<on|off>
-trials:       <completed>/<total>, errored=<n>
-pass@1:       <x.xx>
-pass@3:       <x.xx>
+model:        <provider/model>, reasoning_effort=<level>
+config:       max_steps=<n>, subagents=<on|off>, compaction=<on|off>
+tasks:        <n>/89 covered, k=<n>  ->  <total> trials
+accuracy:     <xx.x>% ± <x.x>          # mean reward; this is the headline number
+errored:      <n> trials               # these count as reward 0, not excluded
 tokens:       <in> in / <out> out / <cache> cached
 cost:         $<x.xx>
 wall clock:   <hh:mm>

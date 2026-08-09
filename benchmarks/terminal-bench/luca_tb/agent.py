@@ -79,8 +79,19 @@ class LucaAgent(BaseInstalledAgent):
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = [
         CliFlag("max_steps", cli="--max-steps", type="int", default=200),
-        CliFlag("timeout", cli="--timeout", type="int", default=900),
-        CliFlag("reasoning", cli="--reasoning", type="str"),
+        # The kwarg is named `reasoning_effort`, not `reasoning`, and that is
+        # not cosmetic: the leaderboard groups trials by
+        # `(agent, version, model, kwargs["reasoning_effort"])` and renders the
+        # Effort column from it. Under any other name the effort silently
+        # records as "none" and two runs at different efforts merge into one
+        # row. See terminal-bench-2-1 leaderboard/ci/static_analysis.py.
+        CliFlag("reasoning_effort", cli="--reasoning", type="str"),
+        # 0 disables the driver's own clock, which is what a benchmark wants.
+        # Every task declares its own `agent.timeout_sec` and Harbor enforces
+        # it; a second ceiling here could only ever be the smaller of the two,
+        # so it would hand back failures the task's own budget allowed. Set it
+        # for local debugging, never for a scored run.
+        CliFlag("timeout", cli="--timeout", type="int", default=0),
         CliFlag("subagents", cli="--subagents", type="bool", default=False),
         CliFlag("permission_mode", cli="--permission-mode", type="str", default="yolo"),
     ]

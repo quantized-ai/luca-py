@@ -43,10 +43,13 @@ def test_the_version_reported_is_lucas_own(agent):
 # ── the flags handed to the driver ───────────────────────────────────────────
 
 
-def test_the_defaults_bound_the_run_and_pin_yolo(agent):
-    # An unbounded run is how one task quietly eats the budget, and a
-    # non-yolo mode makes the driver exit 2 at the first tool call.
-    assert agent.build_cli_flags() == "--max-steps 200 --timeout 900 --permission-mode yolo"
+def test_the_defaults_are_leaderboard_legal(agent):
+    # `--timeout 0` disables the driver's own clock on purpose: every task
+    # declares its own agent.timeout_sec and Harbor enforces it, so a second
+    # ceiling here could only be the smaller of the two and would hand back
+    # failures the task's budget allowed. A non-yolo mode would make the
+    # driver exit 2 at the first tool call.
+    assert agent.build_cli_flags() == "--max-steps 200 --timeout 0 --permission-mode yolo"
 
 
 def test_every_knob_is_reachable_through_harbors_ak_kwargs(tmp_path):
@@ -55,13 +58,23 @@ def test_every_knob_is_reachable_through_harbors_ak_kwargs(tmp_path):
         model_name="anthropic/claude-opus-4-5",
         max_steps=300,
         timeout=1200,
-        reasoning="high",
+        reasoning_effort="high",
         subagents=True,
     )
 
     assert agent.build_cli_flags() == (
-        "--max-steps 300 --timeout 1200 --reasoning high --subagents --permission-mode yolo"
+        "--max-steps 300 --reasoning high --timeout 1200 --subagents --permission-mode yolo"
     )
+
+
+def test_the_effort_kwarg_is_named_the_way_the_leaderboard_reads_it(tmp_path):
+    # The leaderboard keys rows on kwargs["reasoning_effort"] and renders its
+    # Effort column from it. Under any other name the effort records as "none"
+    # and two runs at different efforts collapse into one row.
+    agent = LucaAgent(logs_dir=tmp_path, model_name="anthropic/claude-opus-4-5", reasoning_effort="high")
+
+    assert "reasoning_effort" in {flag.kwarg for flag in LucaAgent.CLI_FLAGS}
+    assert "--reasoning high" in agent.build_cli_flags()
 
 
 def test_subagents_stay_off_unless_asked_for(agent):
