@@ -8,5 +8,11 @@ the runtime `CancellationToken`, the informational event union
 JSON-serializable `ToolSpec`; the ergonomic Python `Tool` base class ships in
 `luca.agent.contrib.tools`. Optional packages built on that surface live in
 `luca.agent.contrib`. Import from `luca.agent.core` (or a specific contrib
-package); this package level intentionally exports nothing.
+package); the only name this package level exports is `SPEC_VERSION`, the
+revision of the serialized `AgentSession` shape, which a loader needs before
+it has any core type in hand.
 """
+
+from .core.models import SPEC_VERSION
+
+__all__ = ["SPEC_VERSION"]

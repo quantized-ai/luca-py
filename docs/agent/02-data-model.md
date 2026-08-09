@@ -488,6 +488,7 @@ The full container:
 | Field | What it holds |
 |---|---|
 | `id` | the session id |
+| `spec_version` | the revision of the serialized shape this session was written against — `luca.agent.SPEC_VERSION`, currently `"0.0.1"` |
 | `entries` | the append-only bag |
 | `tool_specs` | normalized spec store `spec_id → ToolSpec`, append-only: one row per distinct tool definition ever *called* |
 | `usages` | provider-usage records, `conversation_id → entry_id → Usage` ([11](11-context-and-usage.md)) |
@@ -495,6 +496,11 @@ The full container:
 | `main_conversation_id` | which one the user is talking to |
 | `session_config` | `LLMConfig` + `RuntimeConfig` (§10) |
 | `extras` | free-form application state, stored verbatim and never interpreted — the session-level twin of `ToolExecution.extras` |
+
+`spec_version` is stamped on every session and bumped only when a change to the
+data model breaks reading an older file, so a loader can tell an old session
+from a current one and migrate it before constructing it. A session loaded from
+disk keeps the version it was written with.
 
 `extras` exists so a tool, a registry or a plugin can keep state that outlives
 the process without the application inventing a second file for it. Whoever

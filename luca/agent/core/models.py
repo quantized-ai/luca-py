@@ -1575,6 +1575,13 @@ class ConversationRuntimeStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# The version of the SERIALIZED session shape. Stamped on every session as
+# `AgentSession.spec_version` and bumped only when a change to the data model
+# breaks reading an older file. A loader reads the field to decide whether the
+# session needs migrating before it can be constructed.
+SPEC_VERSION = "0.0.1"
+
+
 class AgentSession(BaseModel):
     """The whole durable session: one flat entry store, the CATALOG of
     conversations over it, and the normalized tool-spec store.
@@ -1599,6 +1606,11 @@ class AgentSession(BaseModel):
     stays self-describing."""
 
     id: str
+    # Which revision of the session shape this file was written against. A
+    # session built in-process gets the current `SPEC_VERSION`; one loaded from
+    # disk keeps whatever it was written with, so a loader can tell an old file
+    # from a current one and migrate it.
+    spec_version: str = SPEC_VERSION
     entries: dict[str, AnyEntry] = Field(default_factory=dict)  # append-only store
     # spec_id → ToolSpec. Append-only (never garbage-collected), written only
     # through `SessionLedger`'s write doors. Holds the specs referenced by an

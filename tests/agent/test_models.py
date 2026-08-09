@@ -19,11 +19,13 @@ shapes a session refuses to load.
 """
 
 import hashlib
+import json
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from luca.agent.core.models import (
+    SPEC_VERSION,
     AgentSession,
     AnyEntry,
     ApprovalDecision,
@@ -1094,6 +1096,36 @@ def test_pruned_entry_round_trips_inside_a_session():
     assert reloaded == session
     # the discriminated union deserializes the node to its concrete subclass
     assert type(reloaded.entries["p1"]) is PrunedEntry
+
+
+# ── spec version ───────────────────────────────────────────────────────────────
+
+
+def test_a_session_is_stamped_with_the_current_spec_version():
+    session = make_session(
+        id="s",
+        conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert session.spec_version == SPEC_VERSION == "0.0.1"
+
+
+def test_a_session_written_before_the_field_existed_loads_at_the_first_version():
+    payload = json.loads(
+        make_session(
+            id="s",
+            conversations={"c1": conversation("c1", [], created_at=0, updated_at=0)},
+            main_conversation_id="c1",
+            session_config=SessionConfig(llm_config=MODEL),
+        ).model_dump_json()
+    )
+    del payload["spec_version"]
+
+    session = AgentSession.model_validate(payload)
+
+    assert session.spec_version == "0.0.1"
 
 
 # ── image content ──────────────────────────────────────────────────────────────

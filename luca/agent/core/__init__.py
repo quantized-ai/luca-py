@@ -33,6 +33,7 @@ from .exceptions import (
 )
 from .middleware import AgentMiddlewareMixin
 from .models import (
+    SPEC_VERSION,
     AgentSession,
     AnyEntry,
     ApprovalDecision,
@@ -157,6 +158,7 @@ __all__ = [
     "PrunedEntry",
     "RunResult",
     "RuntimeConfig",
+    "SPEC_VERSION",
     "Seconds",
     "SessionConfig",
     "ConversationRuntimeStatus",
