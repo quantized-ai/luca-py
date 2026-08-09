@@ -257,7 +257,7 @@ def test_the_last_open_multi_select_question_keeps_both_toggles():
 def test_editing_a_custom_answer_advertises_only_the_keys_that_are_not_text():
     # While the field has the keyboard, digits and `space` are literal text —
     # advertising them would be actively wrong.
-    assert question_hints(6, editing_custom=True) == ["enter save", "esc clear"]
+    assert question_hints(6, editing_custom=True) == ["enter save", "esc back to options", "⇥ next"]
 
 
 def test_the_confirmation_has_exactly_two_keys():
@@ -302,7 +302,7 @@ def test_question_hints_for_the_last_open_question_of_a_state():
 def test_question_hints_for_a_custom_field_that_has_the_keyboard():
     state = vm.QuestionSetState(questions=[SINGLE_QUESTION], editing_custom=True)
 
-    assert question_hints_for(state) == ["enter save", "esc clear"]
+    assert question_hints_for(state) == ["enter save", "esc back to options", "⇥ next"]
 
 
 def test_question_hints_for_the_confirmation_never_reads_a_question():

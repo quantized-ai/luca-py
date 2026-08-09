@@ -202,8 +202,14 @@ class LucaApp(App):
         # The CONFIRMATION focuses its own optional field on mount — it is a
         # real `PromptInput` doing the composer's job, and it has the keyboard
         # by default. Focusing the view here would steal it straight back.
+        #
+        # The custom-answer row is the same story mid-set: while it is being
+        # edited the keyboard belongs to ITS field, and this rebuild must hand
+        # it back there rather than to the panel around it — otherwise entering
+        # the field is the very thing that kicks you out of it.
         if focus and not confirming:
-            view.focus()
+            field = view.custom_field() if state.editing_custom else None
+            (field or view).focus()
         return view
 
     async def show_overlay(self, state: vm.OverlayState, *, focus: bool = True) -> OverlayListView:

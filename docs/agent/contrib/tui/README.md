@@ -123,10 +123,21 @@ rows are what make every question answerable.
 | `enter` | confirm, then advance — or open the confirmation | **commit** the ticks (never toggles), then advance — or open the confirmation |
 | `⇥` `⇧⇥` | next / previous question | next / previous question |
 
-> ⚠️ **`esc` never leaves a question unanswered.** In this panel it has exactly
-> one job — clearing the custom-answer field while that field is being edited —
-> and is otherwise swallowed. It does not skip, does not close the set, and
-> does not reach the composer or the cancel binding.
+**The custom row holds a real editor.** Picking it hands the keyboard to a
+nested `PromptInput` (the same `TextArea` the composer uses), so everything you
+expect from a text field works: cursor movement, `home`/`end`, word-jump,
+selection, paste, undo. Digits and `space` become literal text there, which is
+why the legend changes while it has focus. The row stays exactly one line —
+`soft_wrap` is off, so an answer longer than the panel scrolls sideways under
+the cursor instead of growing the dock. `enter` commits the answer, `esc`
+hands the keyboard back to the option rows with the text intact, and `⇥` still
+moves between questions from inside the field. `↑`/`↓` belong to the editor
+while it has focus; leave the field to move the caret again.
+
+> ⚠️ **`esc` never leaves a question unanswered.** Its one job in this panel is
+> leaving the custom-answer field; everywhere else it is swallowed. It does not
+> skip, does not clear what you typed, does not close the set, and does not
+> reach the composer or the cancel binding.
 
 Nothing reaches the agent until a **confirmation** panel: one read-only line per
 question plus one optional free-text field. `enter` submits, `esc` goes back

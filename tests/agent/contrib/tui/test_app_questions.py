@@ -17,7 +17,7 @@ assertions.
 
 import json
 
-from textual.events import Key
+from textual.events import Key, Paste
 
 from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, ToolBlockView
@@ -26,6 +26,7 @@ from luca.agent.contrib.tui.sessions import load_session, session_path, tui_stat
 from luca.agent.contrib.tui.shells import (
     OverlayListView,
     QuestionConfirmView,
+    QuestionCustomRow,
     QuestionOptionRow,
     QuestionSetView,
     SpanLine,
@@ -400,22 +401,34 @@ async def test_an_empty_custom_answer_is_not_an_answer(tmp_path):
         )
 
 
-async def test_a_word_typed_faster_than_the_panel_settles_arrives_whole(tmp_path):
-    # THE REGRESSION: every keystroke is a read-modify-write on the character
-    # before it, so the widget has to hold the in-flight text itself. While the
-    # app owned it, a key pressed before the previous one had come back read
-    # the same stale string, and `vendored` typed at speed arrived as `d`.
-    # `pilot.press` settles after every key and a human does not — hence the
-    # raw posts with one pause at the end.
+async def test_entering_the_custom_row_hands_the_keyboard_to_its_field(tmp_path):
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+
+        await pilot.press("3")
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert app.focused is app.query_one(QuestionCustomRow).field
+
+
+async def test_a_word_typed_at_speed_arrives_whole(tmp_path):
+    # `pilot.press` settles after every key and a human does not, so the
+    # characters go in back-to-back with one pause at the end. The field owns
+    # its own buffer, which is what makes that safe.
     app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
 
     async with app.run_test(size=(105, 35)) as pilot:
         await submit(pilot, PROMPT)
         await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
         await pilot.press("3")
+        field = app.query_one(QuestionCustomRow).field
 
         for character in "vendored":
-            app.screen.post_message(Key(character, character))
+            field.post_message(Key(character, character))
         await pilot.pause()
 
         app.workers.cancel_group(app, "drive")
@@ -426,10 +439,47 @@ async def test_a_word_typed_faster_than_the_panel_settles_arrives_whole(tmp_path
         )
 
 
-async def test_typing_redraws_the_row_instead_of_remounting_the_set(tmp_path):
+async def test_pasted_text_lands_in_the_custom_answer(tmp_path):
+    # A bracketed paste is an event, not a run of keystrokes: the hand-rolled
+    # editor this replaced never saw one at all.
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+        await pilot.press("3")
+
+        app.post_message(Paste("vendored under the repo root"))
+        await pilot.pause()
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert app._questions_state == vm.QuestionSetState(
+            questions=[storage(selected=2, custom="vendored under the repo root"), readers()],
+            editing_custom=True,
+        )
+
+
+async def test_the_cursor_moves_inside_the_custom_answer(tmp_path):
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+
+        await pilot.press("3", *"vendored", "home", *"a ")
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert app._questions_state == vm.QuestionSetState(
+            questions=[storage(selected=2, custom="a vendored"), readers()],
+            editing_custom=True,
+        )
+
+
+async def test_typing_never_remounts_the_set(tmp_path):
     # A rebuild per character flickers and swallows whatever is typed during
-    # it. The panel the user is looking at must be the SAME widget it was
-    # before the word, with the text in it.
+    # it. The panel and the field must both be the SAME widgets after a word.
     app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
 
     async with app.run_test(size=(105, 35)) as pilot:
@@ -437,24 +487,41 @@ async def test_typing_redraws_the_row_instead_of_remounting_the_set(tmp_path):
         await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
         await pilot.press("3")
         view = app.query_one(QuestionSetView)
+        field = app.query_one(QuestionCustomRow).field
 
         await pilot.press(*"vendored")
 
         app.workers.cancel_group(app, "drive")
         await pilot.pause()
-        assert app.query_one(QuestionSetView) is view
-        assert view.model == vm.QuestionSetState(
-            questions=[storage(selected=2, custom="vendored"), readers()],
+        assert (app.query_one(QuestionSetView), app.query_one(QuestionCustomRow).field) == (view, field)
+
+
+async def test_a_custom_answer_opening_with_a_slash_is_text_and_not_a_command(tmp_path):
+    # The app binds `on_text_area_changed` to the composer's `/` palette and
+    # `@` picker triggers; the question panel has to stop that message or the
+    # first character of a path-shaped answer opens an overlay.
+    app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, PROMPT)
+        await wait_until(pilot, lambda: bool(app.query(QuestionSetView)))
+
+        await pilot.press("3", *"/srv/luca")
+
+        app.workers.cancel_group(app, "drive")
+        await pilot.pause()
+        assert not app.query(OverlayListView)
+        assert app._questions_state == vm.QuestionSetState(
+            questions=[storage(selected=2, custom="/srv/luca"), readers()],
             editing_custom=True,
         )
 
 
-async def test_esc_while_editing_clears_the_field_and_leaves_the_question_unanswered(tmp_path):
-    # `esc` posts `CustomChanged("")` and only THEN `Moved`, so the app sees
-    # the clear first and a widget snapshot that still holds the typed text
-    # second — the race `on_question_set_view_moved` merges rather than
-    # assigns. Both halves are asserted because they can drift apart: the
-    # state the payload is built from, and the panel the user is looking at.
+async def test_esc_leaves_the_field_with_the_text_intact(tmp_path):
+    # `esc` used to CLEAR the field. It no longer does: the row holds a real
+    # editor, deleting is the editor's job, and an `esc` that wiped the line
+    # would be the one keystroke in this panel that destroys work. It still
+    # never reaches the app's cancel binding.
     app = make_app(fresh_session(), scripted(*asks("Got it.")), tmp_path)
 
     async with app.run_test(size=(105, 35)) as pilot:
@@ -465,15 +532,13 @@ async def test_esc_while_editing_clears_the_field_and_leaves_the_question_unansw
 
         app.workers.cancel_group(app, "drive")
         await pilot.pause()
-        # the state the payload is built from — submitting must not carry text
-        # the user erased…
+        # the text survives, and the question is still unanswered — leaving the
+        # field is not committing it
         assert app._questions_state == vm.QuestionSetState(
-            questions=[storage(selected=2), readers()],
+            questions=[storage(selected=2, custom="vendored"), readers()],
         )
-        # …and the panel, which must agree with it
-        assert app.query_one(QuestionSetView).model == vm.QuestionSetState(
-            questions=[storage(selected=2), readers()],
-        )
+        # the keyboard is back on the panel, so the option rows answer again
+        assert app.focused is app.query_one(QuestionSetView)
         # `esc` never reaches the app's cancel binding: the set still holds the
         # dock and the turn is still parked
         assert app.runner.status is ConversationStatus.BLOCKED
@@ -516,7 +581,10 @@ async def test_tabbing_to_another_question_shows_that_question(tmp_path):
         await pilot.pause()
         view = app.query_one(QuestionSetView)
         assert [line.text_value for line in view.query(SpanLine)] == [READERS_TITLE]
-        assert [row.option.label for row in view.query(QuestionOptionRow)] == [
+        # the custom row is a composite widget, not a `QuestionOptionRow`, so
+        # the option list is read across both kinds — in index order
+        rows = sorted([*view.query(QuestionOptionRow), *view.query(QuestionCustomRow)], key=lambda row: row.index)
+        assert [row.option.label for row in rows] == [
             "the sessions screen",
             "resume / replay",
             "the cost screen",

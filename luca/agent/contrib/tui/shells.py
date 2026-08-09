@@ -233,10 +233,8 @@ class QuestionOptionRow(SelectRow):
       glyph — the label stays aligned with every other label, but there is
       nothing there to tick, because it is the way out and not an answer.
 
-    The custom row renders its own inline editor rather than nesting an
-    `Input`: the label is `Custom answer: ` + the text + the cursor block while
-    it holds the keyboard. One row, no reflow, no focus ring inside a focus
-    ring."""
+    The CUSTOM row is not one of these — it is `QuestionCustomRow`, which
+    nests a real text field."""
 
     def __init__(
         self,
@@ -245,42 +243,121 @@ class QuestionOptionRow(SelectRow):
         *,
         multi: bool,
         selected: bool,
-        editing: bool = False,
     ) -> None:
-        super().__init__(selected=selected)
+        super().__init__(selected=selected, classes="option-row")
         self.index = index
         self.option = option
         self.multi = multi
-        self.editing = editing
 
     def body(self, tokens: Tokens) -> Text:
         text = Text()
-        text.append(str(self.index + 1), style=Style(color=tokens.faint))
-        text.append("  ")
-        if self.multi:
-            if self.option.kind == "chat":
-                text.append("   ")  # blank cells: aligned, but nothing to tick
-            else:
-                ticked = self.option.checked or bool(self.option.text)
-                text.append(
-                    GLYPH_BOX_TICKED if ticked else GLYPH_BOX,
-                    style=Style(color=tokens.accent if ticked else tokens.faint),
-                )
-                text.append("  ")
+        text.append_text(option_columns(self.index, self.option, tokens, multi=self.multi))
         color = tokens.foreground if self.selected else tokens.muted
-        if self.option.kind == "custom":
-            text.append(self.option.label + " ", style=Style(color=tokens.faint))
-            text.append(self.option.text or "", style=Style(color=tokens.foreground))
-            if self.editing:
-                text.append(GLYPH_CURSOR, style=Style(color=tokens.foreground))
-        else:
-            text.append(self.option.label, style=Style(color=color))
+        text.append(self.option.label, style=Style(color=color))
         return text
 
     def trailing(self, tokens: Tokens) -> Text | None:
         if self.option.key_hint:
             return Text(self.option.key_hint, style=Style(color=tokens.faint))
         return None
+
+
+def option_columns(index: int, option: vm.QuestionOption, tokens: Tokens, *, multi: bool) -> Text:
+    """The columns every option row shares, before its label: `N  [☑/☐]  `.
+
+    ONE function, because the plain rows and the composite custom row have to
+    land on the same cell — two copies of this drift by a space and the labels
+    stop lining up. Two column rules, both standing:
+
+    - the tick column is ALWAYS allocated in multi mode and NEVER in single
+      mode, so toggling never reflows;
+    - a `kind == "chat"` row renders the tick column as BLANK CELLS, not as a
+      glyph — the label stays aligned with every other label, but there is
+      nothing there to tick, because it is the way out and not an answer."""
+    text = Text()
+    text.append(str(index + 1), style=Style(color=tokens.faint))
+    text.append("  ")
+    if multi:
+        if option.kind == "chat":
+            text.append("   ")  # blank cells: aligned, but nothing to tick
+        else:
+            # A typed custom answer IS a tick: the row counts as chosen the
+            # moment it holds text.
+            ticked = option.checked or bool(option.text)
+            text.append(
+                GLYPH_BOX_TICKED if ticked else GLYPH_BOX,
+                style=Style(color=tokens.accent if ticked else tokens.faint),
+            )
+            text.append("  ")
+    return text
+
+
+class QuestionCustomPrefix(SelectRow):
+    """The custom row's fixed columns — `[bar][caret]  N  [☑/☐]  Custom answer:`
+    — drawn by the same `SelectRow` machinery as every other option row, so the
+    two cannot drift apart by a cell."""
+
+    def __init__(self, index: int, option: vm.QuestionOption, *, multi: bool, selected: bool) -> None:
+        super().__init__(selected=selected, classes="custom-prefix")
+        self.index = index
+        self.option = option
+        self.multi = multi
+
+    def body(self, tokens: Tokens) -> Text:
+        text = option_columns(self.index, self.option, tokens, multi=self.multi)
+        text.append(self.option.label + " ", style=Style(color=tokens.faint))
+        return text
+
+
+class QuestionCustomRow(Horizontal):
+    """The custom-answer row: the shared column prefix, then a REAL text field.
+
+    A nested `PromptInput` rather than the hand-rolled inline editor this used
+    to be. The moment an answer runs past the panel's width the row has to
+    scroll to follow the cursor — and a scrolling single-line field with
+    selection, word-jump, paste and undo is precisely what `TextArea` already
+    is, correct about character widths in a way a hand-rolled one is not.
+
+    `enter` commits (`PromptInput.Submitted`), `escape` leaves the field with
+    the text intact, and `⇥` still moves between questions from inside it —
+    `TextArea` binds none of those three, so they reach `QuestionSetView`
+    exactly as they did before. `↑`/`↓` DO belong to the editor while it has
+    the keyboard; you leave the field to move the caret again."""
+
+    def __init__(self, index: int, option: vm.QuestionOption, *, multi: bool, selected: bool) -> None:
+        super().__init__(classes="select-row option-row question-custom")
+        self.index = index
+        self.option = option
+        self.multi = multi
+        self._selected = selected
+        self.set_class(selected, "-selected")
+
+    def compose(self) -> ComposeResult:
+        yield QuestionCustomPrefix(self.index, self.option, multi=self.multi, selected=self._selected)
+        # `soft_wrap` off is what keeps this ONE ROW: a long answer scrolls
+        # sideways under the cursor instead of wrapping the whole panel taller.
+        field = PromptInput()
+        field.soft_wrap = False
+        yield field
+
+    def on_mount(self) -> None:
+        field = self.field
+        if self.option.text:
+            field.load_text(self.option.text)
+            field.move_cursor(field.document.end)
+
+    @property
+    def field(self) -> PromptInput:
+        return self.query_one(PromptInput)
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self.set_class(selected, "-selected")
+        self.query_one(QuestionCustomPrefix).set_selected(selected)
 
 
 class QuestionSetView(Vertical, can_focus=True):
@@ -371,13 +448,8 @@ class QuestionSetView(Vertical, can_focus=True):
             # more answer, and the gap is what says so.
             if option.kind == "chat":
                 yield Static(classes="option-gap")
-            yield QuestionOptionRow(
-                index,
-                option,
-                multi=self._multi,
-                selected=index == question.selected,
-                editing=self.model.editing_custom and index == question.selected,
-            )
+            kind = QuestionCustomRow if option.kind == "custom" else QuestionOptionRow
+            yield kind(index, option, multi=self._multi, selected=index == question.selected)
 
     async def set_state(self, model: vm.QuestionSetState) -> None:
         """Swap in a fresh state. The panel is rebuilt wholesale because the
@@ -396,11 +468,21 @@ class QuestionSetView(Vertical, can_focus=True):
         questions = list(self.model.questions)
         questions[self.model.active] = question.model_copy(update={"selected": index})
         self.model = self.model.model_copy(update={"questions": questions, "editing_custom": False})
-        for row in self.query(QuestionOptionRow):
+        for row in self._rows():
             row.set_selected(row.index == index)
-            row.editing = False
-            row.refresh()
         self.post_message(self.Moved(self))
+
+    def _rows(self) -> list:
+        """Every option row, of BOTH kinds — selection treats the composite
+        custom row exactly like a plain one."""
+        return [*self.query(QuestionOptionRow), *self.query(QuestionCustomRow)]
+
+    def custom_field(self) -> PromptInput | None:
+        """The custom row's text field, once mounted. `frame.show_questions`
+        asks for it so a rebuild hands the keyboard back to the field the user
+        was typing in rather than to the panel around it."""
+        rows = list(self.query(QuestionCustomRow))
+        return rows[0].field if rows else None
 
     def _move(self, delta: int) -> None:
         self._select(self.question.selected + delta)
@@ -421,69 +503,91 @@ class QuestionSetView(Vertical, can_focus=True):
         return None
 
     def _set_custom(self, text: str) -> None:
-        """Write the in-flight text into the widget's OWN model and redraw the
-        one row it changed, then report it.
+        """Mirror the field's text into the widget's model and report it.
 
-        THE WIDGET HAS TO HOLD THIS ONE THING. Every keystroke is a
-        read-modify-write on the character before it (`current + character`),
-        and the app's copy of the text only comes back on the next rebuild — so
-        a widget that read the app's value would see the same stale string for
-        every key pressed inside one settle, and a word typed at speed would
-        collapse to its last character. It still DECIDES nothing: whether the
-        text is an answer is the app's call, on `enter`."""
-        index = self.question.selected
+        The FIELD is the source of truth while it has the keyboard — it holds
+        the cursor, the scroll and the undo stack — so this only keeps the
+        model in step for the rebuilds that reseed a fresh field from it. The
+        prefix is refreshed because in multi mode its tick is derived from
+        whether the row holds text."""
+        index = self._custom_index()
+        if index is None or (self.question.options[index].text or "") == text:
+            # A rebuilt field reloads its own text on mount, which `TextArea`
+            # reports as a change like any other. Nothing moved, so nothing is
+            # announced.
+            return
         options = list(self.question.options)
         options[index] = options[index].model_copy(update={"text": text or None})
         questions = list(self.model.questions)
         questions[self.model.active] = self.question.model_copy(update={"options": options})
         self.model = self.model.model_copy(update={"questions": questions})
-        for row in self.query(QuestionOptionRow):
-            if row.index == index:
-                row.option = options[index]
-                row.refresh()
+        for row in self.query(QuestionCustomRow):
+            row.option = options[index]
+            prefix = row.query_one(QuestionCustomPrefix)
+            prefix.option = options[index]
+            prefix.refresh()
         self.post_message(self.CustomChanged(self, text))
 
-    def _editing_custom(self) -> bool:
-        index = self.question.selected
-        options = self.question.options
-        return self.model.editing_custom and index < len(options) and options[index].kind == "custom"
+    def _field_has_keyboard(self) -> bool:
+        field = self.custom_field()
+        return field is not None and field.has_focus
 
-    async def _custom_key(self, event: events.Key) -> bool:
-        """Keystrokes while the custom field holds the keyboard. Digits and
-        `space` are LITERAL TEXT here; `enter` commits, `esc` clears the field
-        and returns the caret to the options. `esc` never leaves a question
-        unanswered — clearing the field is its ONE job in this panel."""
-        option = self.question.options[self.question.selected]
-        current = option.text or ""
-        key = event.key
-        if key == "escape":
-            self._set_custom("")
-            self.model = self.model.model_copy(update={"editing_custom": False})
-            self.post_message(self.Moved(self))
-        elif key == "enter":
-            # An EMPTY custom field is not an answer: committing it leaves the
-            # question exactly as it was.
-            if current.strip():
-                self.post_message(self.Answered(self, self.question.selected))
-            else:
-                self.model = self.model.model_copy(update={"editing_custom": False})
-                self.post_message(self.Moved(self))
-        elif key == "backspace":
-            self._set_custom(current[:-1])
-        elif key == "space":
-            self._set_custom(current + " ")
-        elif event.is_printable and event.character:
-            self._set_custom(current + event.character)
+    def _enter_custom(self, index: int) -> None:
+        """Hand the keyboard to the text field. The caret is already on the
+        row; from here every printable key, digit and space is literal text,
+        which is what makes the editor an editor."""
+        self.model = self.model.model_copy(update={"editing_custom": True})
+        field = self.custom_field()
+        if field is not None:
+            field.focus()
+            field.move_cursor(field.document.end)
+        self.post_message(self.Moved(self))
+
+    def _leave_custom(self) -> None:
+        """Back to the option rows, TEXT INTACT.
+
+        `escape` leaves the field; it no longer clears it. Deleting what you
+        typed is the editor's job now that the row holds a real one, and an
+        `escape` that wiped the line would be the one keystroke in the panel
+        that destroys work."""
+        self.model = self.model.model_copy(update={"editing_custom": False})
+        self.focus()
+        self.post_message(self.Moved(self))
+
+    def on_text_area_changed(self, message: PromptInput.Changed) -> None:
+        """The field's text, as it is typed, pasted or undone.
+
+        STOPPED HERE, always: the app binds `on_text_area_changed` to the
+        composer's `/` and `@` triggers, and a custom answer that opens with
+        `/` must be text, not a command palette."""
+        message.stop()
+        if isinstance(message.text_area, PromptInput) and self._custom_index() is not None:
+            self._set_custom(message.text_area.text)
+
+    def on_prompt_input_submitted(self, message: PromptInput.Submitted) -> None:
+        """`enter` in the field commits the custom answer.
+
+        STOPPED HERE, always: the app's own handler would otherwise read it as
+        a prompt to send to the model."""
+        message.stop()
+        index = self._custom_index()
+        if index is None:
+            return
+        # An EMPTY custom field is not an answer: committing it leaves the
+        # question exactly as it was.
+        if message.value.strip():
+            self.post_message(self.Answered(self, index))
         else:
-            return False
-        return True
+            self._leave_custom()
 
     # ── keys ─────────────────────────────────────────────────────────────────
 
     async def on_key(self, event: events.Key) -> None:
-        if self._editing_custom():
-            if not await self._custom_key(event):
-                return
+        # `escape` is the way OUT of the field. `TextArea` binds neither it nor
+        # `⇥`, so both arrive here while the editor has the keyboard — which is
+        # what keeps question navigation working from inside the field.
+        if event.key == "escape" and self._field_has_keyboard():
+            self._leave_custom()
             event.stop()
             event.prevent_default()
             return
@@ -492,12 +596,12 @@ class QuestionSetView(Vertical, can_focus=True):
         options = question.options
         key = event.key
         if key == "escape":
-            # `esc` NEVER LEAVES A QUESTION UNANSWERED. In this panel it has
-            # exactly one job — clearing the custom-answer field, handled above
-            # while that field holds the keyboard — so here it is inert and
-            # CONSUMED. Letting it through would reach the app's cancel binding
-            # and end the turn, and the only ways out of a question set are the
-            # custom-answer row and Chat about this.
+            # `esc` NEVER LEAVES A QUESTION UNANSWERED. Its one job is leaving
+            # the text field, handled above while that field holds the
+            # keyboard — so out here it is inert and CONSUMED. Letting it
+            # through would reach the app's cancel binding and end the turn,
+            # and the only ways out of a question set are the custom-answer row
+            # and Chat about this.
             pass
         elif key == "up":
             self._move(-1)
@@ -537,11 +641,7 @@ class QuestionSetView(Vertical, can_focus=True):
             self.post_message(self.ChatRequested(self))
             return
         if option.kind == "custom":
-            self.model = self.model.model_copy(update={"editing_custom": True})
-            for row in self.query(QuestionOptionRow):
-                row.editing = row.index == index
-                row.refresh()
-            self.post_message(self.Moved(self))
+            self._enter_custom(index)
             return
         if self._multi and ticking:
             self.post_message(self.Toggled(self, index))

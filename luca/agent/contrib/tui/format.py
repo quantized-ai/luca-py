@@ -188,7 +188,7 @@ HINTS: dict[str, list[str]] = {
     "questions-single": ["↑↓ move", "1–N pick", "enter confirm", "⇥ next"],
     "questions-multi": ["↑↓ move", "1–N toggle", "space toggle", "enter confirm"],
     "questions-last": ["↑↓ move", "1–N pick", "enter answer + submit"],
-    "questions-custom": ["enter save", "esc clear"],
+    "questions-custom": ["enter save", "esc back to options", "⇥ next"],
     "questions-confirm": ["enter submit", "esc back to questions"],
 }
 
@@ -218,7 +218,9 @@ def question_hints(
         return list(HINTS["questions-confirm"])
     if editing_custom:
         # While the field has the keyboard, digits and `space` are LITERAL
-        # TEXT — advertising them would be actively wrong.
+        # TEXT — advertising them would be actively wrong. `esc` LEAVES the
+        # field; it does not clear it, because the row holds a real editor and
+        # deleting what you typed is the editor's job.
         return list(HINTS["questions-custom"])
     hints = [hint.replace("1–N", f"1–{option_count}") for hint in HINTS[f"questions-{mode}"]]
     if not last:

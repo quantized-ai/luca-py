@@ -617,14 +617,19 @@ class AgentApp(LucaApp):
         THE PANEL IS NOT REBUILT. The widget has already redrawn the row it
         owns, and nothing else on screen depends on the text; remounting the
         whole set per character would flicker, and every keystroke that landed
-        during the remount would be lost."""
+        during the remount would be lost.
+
+        IT ALSO SAYS NOTHING ABOUT EDIT MODE. A text change is not a focus
+        change — `Moved` is what reports that — and inferring one from the
+        other put the dock back into editing the moment a rebuilt field
+        reloaded its own text on mount."""
         question = self._question()
         options = list(question.options)
         for index, option in enumerate(options):
             if option.kind == "custom":
                 options[index] = option.model_copy(update={"text": message.text or None})
                 break
-        self._replace_question(question.model_copy(update={"options": options}), editing_custom=True)
+        self._replace_question(question.model_copy(update={"options": options}))
         self.set_hints(question_hints_for(self._questions_state))
 
     async def on_question_set_view_chat_requested(self, message: QuestionSetView.ChatRequested) -> None:

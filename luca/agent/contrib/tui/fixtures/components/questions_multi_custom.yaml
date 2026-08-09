@@ -41,4 +41,4 @@ questions:
         - {label: the gallery, checked: false}
         - {label: 'Custom answer:', kind: custom, checked: true, text: 'the replay screen, behind a flag'}
         - {label: Chat about this, kind: chat, key_hint: enter}
-hints: [enter save, esc clear]
+hints: [enter save, esc back to options, ⇥ next]
