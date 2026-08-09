@@ -197,6 +197,8 @@ async def test_the_tool_returns_the_body_and_the_bundled_file_directory(tmp_path
         {"name": "writing"},
         session=None,
         conversation_id="c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 
@@ -211,6 +213,8 @@ async def test_an_unknown_name_reports_what_is_available(tmp_path):
         {"name": "nope"},
         session=None,
         conversation_id="c1",
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 

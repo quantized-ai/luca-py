@@ -1,0 +1,33 @@
+# Component sheet — one state of the agent's `ask_user` question set.
+# submitted — the set collapses into an ordinary tool block
+name: components/questions_answered
+title: submitted — the set collapses into an ordinary tool block
+status: {cwd: ~/quantized/luca, model: sonnet-4.5, branch: main, dirty: true, tokens: 11.2k, cost: $0.07}
+transcript:
+  - kind: user
+    text: migrate the event store to sqlite and keep the jsonl reader for old sessions
+  - kind: thinking
+    duration: 4
+  - kind: tool
+    tool: Ask the user
+    arg: 4 questions
+    status: ok
+    note_right: 4 answered
+  - kind: list
+    column: 28
+    rows:
+      - {glyph: done, text: storage, annotation: '→  ~/.luca/projects/<project>/events.db'}
+      - {glyph: done, text: reader, annotation: '→  keep it, version-gated'}
+      - {glyph: done, text: backfill, annotation: '→  custom · only sessions touched since the 0.8 tag'}
+      - {glyph: done, text: rollout, annotation: '→  sessions screen, resume / replay'}
+      - {glyph: none, text: '', annotation: 'added · in-process is fine if it is scoped'}
+  - kind: text
+    text: Good — in-process it is. I'll gate the backfill on `mtime > 30d` and leave the rest on jsonl.
+  - kind: tool
+    tool: write
+    arg: luca/store/schema.sql
+    result: {stat: {add: 34}}
+  - kind: thinking
+    activity: porting the writer
+composer: {placeholder: working…}
+hints: [enter queue, ^p palette, esc interrupt]

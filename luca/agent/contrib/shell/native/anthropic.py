@@ -13,6 +13,11 @@ building the requests here rather than once per tool: `view` asks for `read`
 (auto-allowed inside the workspace by the plugin's seeded rules, exactly like
 the generic `read`), `create` asks for `write`, and `str_replace` / `insert`
 ask for `edit`.
+
+`bash_20250124` is the other place a native declaration's silence matters: it
+promises a PERSISTENT shell, and having no description field there means the
+promise cannot be walked back. The process behind it lives in
+[`../session.py`](../session.py); this module is the tool around it.
 """
 
 from __future__ import annotations
@@ -39,7 +44,15 @@ from luca.agent.core import (
 from luca.client.native import NativeToolError
 from luca.client.native.text_editor import insert as insert_text_at, str_replace, view as render_view
 
-from ..tools import BashTool, FileReadTracker, ShellTool, ShellToolError, _file_lock
+from ..session import BASH, ShellSessionPool
+from ..tools import (
+    BASH_DEFAULT_TIMEOUT_MS,
+    BashTool,
+    FileReadTracker,
+    ShellTool,
+    ShellToolError,
+    _file_lock,
+)
 from ._files import SourceFile, normalize, read_source, unified_diff, write_source
 
 TEXT_EDITOR_DESCRIPTION = """View and edit files.
@@ -53,9 +66,13 @@ You must view a file before replacing it with `create`."""
 
 BASH_DESCRIPTION = """Run one shell command and return its output.
 
-Each call runs in a fresh shell, so there is no state to carry between calls and `restart` has nothing to restart."""
+Commands run in a persistent bash session: the working directory, environment variables and shell functions from one call are still there in the next. `restart: true` throws that session away and starts an empty one."""
 
-RESTART_OUTPUT = "Nothing to restart: every command runs in its own fresh shell."
+RESTART_OUTPUT = (
+    "Shell restarted. The next command runs in a new bash session: the working"
+    " directory, environment variables, shell functions and background jobs from"
+    " before the restart are gone."
+)
 
 # The verb each editor command asks approval for. `view` deliberately lands in
 # the plugin's auto-allowed read tier.
@@ -140,6 +157,8 @@ class AnthropicTextEditorTool(ShellTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         target = self._resolve(args["path"])
@@ -245,12 +264,17 @@ class AnthropicTextEditorTool(ShellTool):
 class AnthropicBashTool(BashTool):
     """`bash`, version `bash_20250124`.
 
-    Identical to the generic `bash` except for the argument shape: one
-    `command`, or `{"restart": true}`. The wire tool assumes a PERSISTENT
-    session, which this suite deliberately does not have — every call is its
-    own process — so a restart is answered with a successful result saying
-    exactly that. An error result would teach the model the tool is broken,
-    when what it asked for is already true."""
+    The generic `bash`'s argument shape narrowed to the wire tool's — one
+    `command`, or `{"restart": true}` — and its execution replaced by a
+    PERSISTENT one. The declaration carries no description, so the model cannot
+    be told anything about this tool it does not already believe, and what it
+    believes is Anthropic's contract: one bash process kept alive across calls,
+    every command running inside it. `session.py` is that process; this class
+    is the tool around it.
+
+    Consequently the approval prompt names the SHELL's current directory rather
+    than the workspace — after a `cd` those are different directories, and the
+    one the command will run in is the one the user has to see."""
 
     name = "anthropic_bash_20250124"
     title = "Bash"
@@ -280,9 +304,23 @@ class AnthropicBashTool(BashTool):
         workdir: str | os.PathLike[str] | None = None,
         shell: str | None = None,
         output_dir: str | os.PathLike[str] | None = None,
+        pool: ShellSessionPool | None = None,
     ) -> None:
-        super().__init__(workdir, shell, output_dir)
+        # `/bin/bash`, not `$SHELL`: the wire tool is bash, and `$SHELL` is zsh
+        # on most Macs. The sourced-script driver in `session.py` is bash's.
+        super().__init__(workdir, shell or BASH, output_dir)
         self.description = BASH_DESCRIPTION
+        # A pool of its own when nobody passes one, so the tool stands alone;
+        # `ShellAccessPlugin` passes the pool it owns and closes.
+        self.pool = pool or ShellSessionPool(self.workdir, self.shell)
+
+    def _effective_workdir(
+        self,
+        args: dict,
+        session: AgentSession,
+        conversation_id: str,
+    ) -> Path:
+        return Path(self.pool.get(session, conversation_id).cwd)
 
     def build_permission_requests(
         self,
@@ -292,7 +330,8 @@ class AnthropicBashTool(BashTool):
     ) -> list[PermissionRequest]:
         if not args.get("command"):
             # A restart runs nothing; the directory step alone keeps the shape
-            # every call in this suite declares.
+            # every call in this suite declares. It names the WORKSPACE, which
+            # is where the shell it is about to mint will start.
             return [self._access_request(self.workdir)]
         return super().build_permission_requests(args, session, conversation_id)
 
@@ -302,15 +341,24 @@ class AnthropicBashTool(BashTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
+        shell = self.pool.get(session, conversation_id)
         if not args.get("command"):
             if not args.get("restart"):
                 raise ShellToolError("Provide a command, or restart: true.")
+            await shell.restart()
             return ExecutionResult(content=[TextContent(text=RESTART_OUTPUT)])
-        return await super()._run(
-            {"command": args["command"], "timeout": None, "workdir": None},
-            session,
-            conversation_id,
+        result = await shell.run(
+            args["command"],
+            timeout_ms=BASH_DEFAULT_TIMEOUT_MS,
             cancellation_token=cancellation_token,
+        )
+        return self._render(
+            result.output,
+            result.outcome,
+            result.exit_code,
+            BASH_DEFAULT_TIMEOUT_MS,
         )

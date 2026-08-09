@@ -68,7 +68,7 @@ class PostingHangTool(FakeTool):
     def __init__(self) -> None:
         self.post = None  # wired by the test to runner.post_message
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         self.post()
         await asyncio.sleep(3600)
         return "unreachable"
@@ -85,7 +85,7 @@ class SelfPostingTool(FakeTool):
     def __init__(self) -> None:
         self.post = None  # wired by the test; receives the conversation id
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         self.post(conversation_id)
         return "noted"
 

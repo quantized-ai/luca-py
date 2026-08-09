@@ -32,6 +32,8 @@ class _DummyTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         return ExecutionResult(content=[TextContent(text=f"{self.name} executed")])
@@ -115,6 +117,8 @@ class OpenAIShellTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         return ExecutionResult(

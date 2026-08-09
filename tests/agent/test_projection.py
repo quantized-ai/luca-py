@@ -28,6 +28,8 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Conversation,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -141,8 +143,8 @@ def test_full_tool_call_turn():
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1003),
             ],
-            started_at=1003,
-            ended_at=1003,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1003, ended_at=1003)],
+            finished_at=1003,
         ),
         "a2": AssistantMessage(
             id="a2",
@@ -531,8 +533,8 @@ def test_failed_turn_finish_is_dropped_but_its_content_projects():
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=1003,
-            ended_at=1003,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1003, ended_at=1003)],
+            finished_at=1003,
         ),
         "tf": TurnFinish(
             id="tf",
@@ -613,8 +615,8 @@ def test_completed_projects_result_content_and_preserves_is_error():
             metadata={"path": "/tmp/missing.txt"},
             is_error=True,
         ),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     # is_error=True is the TOOL's verdict; the execution is still COMPLETED
@@ -635,8 +637,8 @@ def test_structured_content_never_reaches_the_tool_message():
             content=[TextContent(text="25°C, wind from the south.")],
             structured_content={"degrees_in_celsius": 25, "wind_direction": "south"},
         ),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
@@ -655,7 +657,7 @@ def test_not_found_projects_the_structured_error_message():
             error_type="ToolNotFound",
             error_message="Unknown tool: 'read_database'.",
         ),
-        ended_at=1001,
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
@@ -680,7 +682,7 @@ def test_invalid_projects_message_plus_validation_errors():
                 ],
             },
         ),
-        ended_at=1001,
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
@@ -706,8 +708,8 @@ def test_failed_projects_error_type_and_message():
             error_message="Connection to api.example.com was closed.",
             details={"phase": "execution"},
         ),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
@@ -722,25 +724,28 @@ def test_failed_projects_error_type_and_message():
 
 
 def test_status_only_terminals_project_their_placeholders():
+    # REJECTED and CANCELLED never reached a body, so they carry no attempt;
+    # INTERRUPTED and TIMED_OUT came out of one, so they carry the closed
+    # attempt that produced them.
     rejected = _execution(
         status=ExecutionStatus.REJECTED,
         approval_status=ApprovalStatus.REJECTED,
-        ended_at=1001,
+        finished_at=1001,
     )
     cancelled = _execution(
         status=ExecutionStatus.CANCELLED,
         cancel_signalled_at=1001,
-        ended_at=1001,
+        finished_at=1001,
     )
     interrupted = _execution(
         status=ExecutionStatus.INTERRUPTED,
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
     timed_out = _execution(
         status=ExecutionStatus.TIMED_OUT,
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(rejected, {}) == ToolMessage(
@@ -775,9 +780,9 @@ def test_refused_projects_the_limits_own_wording():
             error_message="Spawn limit reached (3/3 subagents this turn). Do not retry.",
             details={"limit": 3, "committed": 3},
         ),
-        ended_at=1001,
+        finished_at=1001,
     )
-    bare = _execution(status=ExecutionStatus.REFUSED, ended_at=1001)
+    bare = _execution(status=ExecutionStatus.REFUSED, finished_at=1001)
 
     assert PROJECTOR.project_tool_execution(refused, {}) == ToolMessage(
         tool_call_id="tc1",
@@ -792,7 +797,7 @@ def test_refused_projects_the_limits_own_wording():
 
 
 def test_gated_execution_projects_the_awaiting_approval_placeholder():
-    # THE ONE PROJECTABLE NONTERMINAL STATE (0008): PENDING with an approval
+    # THE FIRST PROJECTABLE NONTERMINAL STATE (0008): PENDING with an approval
     # the policy explicitly deferred. `is_error` stays False — the call has
     # not failed, it has not run, and an error result is exactly what makes a
     # model retry.
@@ -807,6 +812,32 @@ def test_gated_execution_projects_the_awaiting_approval_placeholder():
     assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
         tool_call_id="tc1",
         content=[TextBlock(text="[tool execution is awaiting approval — it has not run, and this is not its result]")],
+        is_error=False,
+    )
+
+
+def test_parked_execution_projects_the_awaiting_result_placeholder():
+    # THE SECOND (0007): the tool was dispatched and returned ExecutionDeferred,
+    # so the attempt is closed as DEFERRED while the execution itself stays
+    # nonterminal — `finished_at` is still None. `is_error` stays False for the
+    # gate's reason, and the wording actively discourages a re-call, which would
+    # mint a second ToolExecution for one job.
+    execution = _execution(
+        status=ExecutionStatus.AWAITING_RESULT,
+        approval_status=ApprovalStatus.ALLOWED,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=1000, ended_at=1000)],
+    )
+
+    assert PROJECTOR.project_tool_execution(execution, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[
+            TextBlock(
+                text=(
+                    "[tool execution has not finished — this is not its result; "
+                    "do not call it again, the result will follow when it completes]"
+                )
+            )
+        ],
         is_error=False,
     )
 
@@ -842,14 +873,22 @@ def test_received_execution_is_not_projectable():
 
 
 def test_running_execution_is_not_projectable():
-    execution = _execution(status=ExecutionStatus.RUNNING, started_at=1000)
+    # in flight: one OPEN attempt, no outcome and no ended_at on it
+    execution = _execution(
+        status=ExecutionStatus.RUNNING,
+        attempts=[ExecutionAttempt(started_at=1000)],
+    )
 
     with pytest.raises(ProjectionError, match="running"):
         PROJECTOR.project_tool_execution(execution, {})
 
 
 def test_completed_without_result_fails_loudly():
-    execution = _execution(status=ExecutionStatus.COMPLETED, ended_at=1001)
+    execution = _execution(
+        status=ExecutionStatus.COMPLETED,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
+    )
 
     with pytest.raises(ProjectionError, match="no ExecutionResult"):
         PROJECTOR.project_tool_execution(execution, {})
@@ -860,8 +899,8 @@ def test_projection_preserves_tool_call_id_correlation():
         tool_call_id="toolu_0abc",
         raw_tool_call=ToolCall(id="toolu_0abc", name="add", arguments={}),
         status=ExecutionStatus.TIMED_OUT,
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}).tool_call_id == "toolu_0abc"
@@ -871,8 +910,8 @@ def test_projection_is_deterministic_for_the_same_execution():
     execution = _execution(
         status=ExecutionStatus.FAILED,
         error=ToolExecutionError(error_type="ValueError", error_message="kaboom"),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
 
     assert PROJECTOR.project_tool_execution(execution, {}) == PROJECTOR.project_tool_execution(execution, {})
@@ -882,8 +921,8 @@ def test_projection_does_not_mutate_the_execution():
     execution = _execution(
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
     snapshot = execution.model_copy(deep=True)
 
@@ -905,7 +944,7 @@ def test_subclass_can_change_status_only_wording_via_class_attribute():
     execution = _execution(
         status=ExecutionStatus.REJECTED,
         approval_status=ApprovalStatus.REJECTED,
-        ended_at=1001,
+        finished_at=1001,
     )
 
     assert TersePlacebo().project_tool_execution(execution, {}) == ToolMessage(
@@ -930,6 +969,23 @@ def test_subclass_can_change_the_awaiting_approval_wording():
     assert Terse().project_tool_execution(execution, {}) == ToolMessage(
         tool_call_id="tc1",
         content=[TextBlock(text="[waiting on you]")],
+        is_error=False,
+    )
+
+
+def test_subclass_can_change_the_awaiting_result_wording():
+    class Terse(ConversationProjector):
+        AWAITING_RESULT_OUTPUT: ClassVar[str] = "[still out]"
+
+    execution = _execution(
+        status=ExecutionStatus.AWAITING_RESULT,
+        approval_status=ApprovalStatus.ALLOWED,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.DEFERRED, started_at=1000, ended_at=1000)],
+    )
+
+    assert Terse().project_tool_execution(execution, {}) == ToolMessage(
+        tool_call_id="tc1",
+        content=[TextBlock(text="[still out]")],
         is_error=False,
     )
 
@@ -988,8 +1044,8 @@ def test_the_placeholder_is_replaced_in_place_once_the_gate_resolves():
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1002),
             ],
             result=ExecutionResult(content=[TextContent(text="3")]),
-            started_at=1002,
-            ended_at=1002,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1002, ended_at=1002)],
+            finished_at=1002,
         ),
     }
 
@@ -1021,8 +1077,8 @@ def test_subclass_can_replace_project_tool_execution_wholesale():
     execution = _execution(
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="secret")]),
-        started_at=1000,
-        ended_at=1001,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1001)],
+        finished_at=1001,
     )
     conversation = Conversation(id="c1", nodes=["te1"], created_at=1000, updated_at=1000)
 
@@ -1077,8 +1133,8 @@ def test_pruned_tool_execution_projects_replacement_with_original_correlation():
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
-            started_at=1003,
-            ended_at=1003,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1003, ended_at=1003)],
+            finished_at=1003,
         ),
         "p1": PrunedEntry(
             id="p1",
@@ -1346,8 +1402,8 @@ def test_completed_execution_projects_image_result_content():
                     TextContent(text="shot.png"),
                 ]
             ),
-            started_at=1,
-            ended_at=1,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1, ended_at=1)],
+            finished_at=1,
         ),
     }
 
@@ -1382,8 +1438,8 @@ def test_pruned_entry_can_carry_an_image_replacement():
             raw_tool_call=ToolCall(id="tc1", name="read", arguments={}),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="original")]),
-            started_at=1,
-            ended_at=1,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1, ended_at=1)],
+            finished_at=1,
         ),
         "p1": PrunedEntry(
             id="p1",
@@ -1533,8 +1589,8 @@ def test_a_pruned_private_execution_projects_nothing():
             tool_spec=spec("create_conversation_result", is_private=True),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="A done")]),
-            started_at=1000,
-            ended_at=1000,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            finished_at=1000,
         ),
         "p1": PrunedEntry(
             id="p1",

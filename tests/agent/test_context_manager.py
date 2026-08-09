@@ -41,6 +41,8 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Entry,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -105,7 +107,7 @@ RUNNING_ADD = ToolExecution(
     tool_spec=ADD_SPEC,
     status=ExecutionStatus.RUNNING,
     approval_status=ApprovalStatus.ALLOWED,
-    started_at=500,
+    attempts=[ExecutionAttempt(started_at=500)],
     updated_at=500,
 )
 
@@ -129,7 +131,7 @@ RUNNING_MULTIPLY = ToolExecution(
     tool_spec=MULTIPLY_SPEC,
     status=ExecutionStatus.RUNNING,
     approval_status=ApprovalStatus.ALLOWED,
-    started_at=500,
+    attempts=[ExecutionAttempt(started_at=500)],
     updated_at=500,
 )
 
@@ -177,8 +179,8 @@ def test_completed_execution_counts_only_its_result_content():
         result=ExecutionResult(
             content=[TextContent(text="the answer is 3.")],  # 16 chars
         ),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert CM.calculate_context(SESSION, entry) == 4
@@ -199,8 +201,8 @@ def test_structured_content_is_not_counted_toward_context():
             content=[TextContent(text="the answer is 3.")],  # 16 chars
             structured_content={"answer": 3, "operands": [1, 2], "note": "a" * 500},
         ),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert CM.calculate_context(SESSION, entry) == 4
@@ -219,8 +221,8 @@ def test_failed_execution_counts_its_structured_error_message():
             error_message="kaboom kaboom",  # 13 chars
             details={"phase": "execution"},
         ),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert CM.calculate_context(SESSION, entry) == 3
@@ -249,7 +251,7 @@ def test_resultless_errorless_terminal_execution_counts_zero():
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.CANCELLED,
-        ended_at=1000,
+        finished_at=1000,
         cancel_signalled_at=1000,
     )
 
@@ -409,8 +411,8 @@ def test_prune_entry_builds_a_template_for_a_terminal_execution():
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={"a": 1, "b": 2}),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert CM.prune_entry(SESSION, entry) == PrunedEntry(
@@ -442,7 +444,7 @@ def test_prune_entry_rejects_a_nonterminal_execution():
         tool_call_id="tc1",
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.RUNNING,
-        started_at=1000,
+        attempts=[ExecutionAttempt(started_at=1000)],
     )
 
     with pytest.raises(AgentError, match="nonterminal"):
@@ -490,8 +492,8 @@ def test_subclass_can_change_the_pruned_output_marker():
         raw_tool_call=ToolCall(id="tc1", name="add", arguments={}),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert Terse().prune_entry(SESSION, entry).content == [TextContent(text="[gone]")]
@@ -605,8 +607,8 @@ def test_tool_result_images_are_counted():
                 TextContent(text="the answer is 3."),  # 16 chars
             ]
         ),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     assert CM.calculate_context(SESSION, entry) == 1_004  # IMAGE_TOKENS + 16 // 4

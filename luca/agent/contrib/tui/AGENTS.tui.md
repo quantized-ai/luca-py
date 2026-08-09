@@ -16,17 +16,18 @@ render.py     pure derivations: agent entries/events → view-models, and a whol
 blocks.py     the transcript block widgets (user, thinking, text, tool, list, diff, notice, task)
 chrome.py     StatusBar, HintLegend, Composer
 shells.py     SelectRow (THE selection treatment, defined once), ApprovalPromptView,
+              QuestionSetView + QuestionConfirmView (the ask_user dock),
               OverlayListView (palette/picker/menu), LucaModalScreen
 modals.py     SessionsScreen, SettingsScreen, CostScreen
 frame.py      LucaApp — the global frame; apply_state(ScreenState) renders any state
 catalog.py    the DERIVED catalog: screen × world → ScreenState (see below)
 gallery.py    GalleryApp (`--gallery`) over both tiers; fixture loading
 fixtures/     catalog.yaml (the grid) + sessions/ (the worlds)
-              + 1a–1k and components/ (hand-authored screen states)
+              + 1a–1l and components/ (hand-authored screen states)
 app.py        AgentApp(LucaApp) — the live agent wiring (drive worker, events)
 ```
 
-Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost state), `gitinfo.py` (branch/dirty), `files.py` (@-picker file listing), `prompt_files/` (`@`-mention expansion: `parse_prompt` → content parts, via a first-match-wins handler chain — add a format by adding a handler above `BinaryHandler`, nothing else changes), `sessions.py` (session store + summaries), `commands.py` (the 14 slash commands + live modal-state builders), `approvals.py` (the 4-option prompt model), `config.py` (`luca.json`), `cli.py`, `prompt.py` (the composer's TextArea).
+Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost state), `gitinfo.py` (branch/dirty), `files.py` (@-picker file listing), `prompt_files/` (`@`-mention expansion: `parse_prompt` → content parts, via a first-match-wins handler chain — add a format by adding a handler above `BinaryHandler`, nothing else changes), `sessions.py` (session store + summaries, and the `<session-id>.tui.json` sidecar), `commands.py` (the 14 slash commands + live modal-state builders), `approvals.py` (the 4-option prompt model), `config.py` (`luca.json`), `cli.py`, `prompt.py` (the composer's TextArea).
 
 ## Hard rules (from the design handoff)
 
@@ -36,7 +37,7 @@ Supporting live modules: `usage.py` (token totals, estimated cost, the 1k cost s
 - **Selection never reflows** — `SelectRow` always allocates the bar and caret columns; the treatment exists once (`shells.SelectRow` + `.select-row` in TCSS).
 - **Plain keys** — arrows, tab, enter, esc, digits, documented `^` pairs. The hint legend always reflects the focused context.
 - **Every automatic permission decision is stated in the transcript** (`approved by rule`, `denied · by rule`).
-- Don't invent UI the handoff doesn't specify. The two sanctioned extensions are `NoticeBlock` (turn-level notices) and `TaskBlock` (subagent conversations, built from the handoff's gutter idiom).
+- Don't invent UI the handoff doesn't specify. The two sanctioned extensions are `NoticeBlock` (turn-level notices) and `TaskBlock` (subagent conversations, built from the handoff's gutter idiom). The QUESTION SET has a handoff of its own — `specs/0007-deferred-tool-calling/design/README.md`, whose ASCII mockups are normative.
 - `@` file mentions render as ordinary `ToolBlock`s (`tool: read`) under the user turn — same idiom, no new block kind. They are NOT tool calls: no `ToolExecution` backs them, so they never carry an approval note. A declined mention (too long, binary, a directory) is `status: error` with a `[error]×[/]` summary; a path that does not resolve gets no row at all and stays prose, which is what keeps `@property` and `@types/node` from being read as files. See `fixtures/components/mentions.yaml`, the requirements sheet for the feature.
 
 ## The catalog
@@ -52,7 +53,7 @@ Two tiers, both browsable and both snapshot-tested (`tests/agent/contrib/tui/tes
 
 **Tier 1 — the catalog (`fixtures/catalog.yaml`).** Two axes:
 
-- **Screens** are projections, one per screen of the app: `catalog.SCREENS` maps a name to a pure `Scene → ScreenState` function. They call the SAME code the live app calls (`transcript_blocks`, `cost_state`, `build_settings_state`, `build_sessions_state`, `build_approval_prompts`), which is the whole point — a catalogued screen cannot depict a feature that no longer exists, because deleting it changes the screen or breaks the build.
+- **Screens** are projections, one per screen of the app: `catalog.SCREENS` maps a name to a pure `Scene → ScreenState` function. They call the SAME code the live app calls (`transcript_blocks`, `cost_state`, `build_settings_state`, `build_sessions_state`, `build_approval_prompts`, `question_set_state`), which is the whole point — a catalogued screen cannot depict a feature that no longer exists, because deleting it changes the screen or breaks the build.
 - **Worlds** are data: a committed `AgentSession` under `fixtures/sessions/` plus a `catalog.World` of the ambient state no session holds (branch, theme, approval mode, a typed query, the boxes ticked in a picker). Every `World` field has the ordinary default, so an entry names only what makes it different.
 
 ```yaml
@@ -68,11 +69,22 @@ Two tiers, both browsable and both snapshot-tested (`tests/agent/contrib/tui/tes
 
 Worlds are **authored, never captured**. A recorded real session is a 100KB diff nobody reviews, full of absolute paths; the builders are a dozen lines each. Everything is fixed — ids, timestamps, token counts, and `catalog.NOW` — so the built screens are byte-stable. `test_catalog.py` fails if the committed JSON and the builders disagree.
 
-**Tier 2 — fixtures (`fixtures/*.yaml`).** Hand-authored `ScreenState` documents: the eleven handoff screens `1a`–`1k` plus `components/` sheets. These are for states with no producer yet ("what does 90% context look like?") — specifications, not records. A fixture cannot notice drift, so prefer a catalog entry whenever the agent can actually produce the state.
+**Tier 2 — fixtures (`fixtures/*.yaml`).** Hand-authored `ScreenState` documents: the handoff screens `1a`–`1l` plus `components/` sheets. These are for states with no producer yet ("what does 90% context look like?") — specifications, not records. A fixture cannot notice drift, so prefer a catalog entry whenever the agent can actually produce the state.
 
 YAML gotchas: quote strings containing commas inside `{...}` flow mappings, and diff line numbers use the key `num` (`no` is a YAML boolean).
 
 A stored `AgentSession` path also works: the gallery recognises one by shape and derives its screen through `render.transcript_blocks` — the same derivation `app._replay_path` mounts on resume, so what you see is what a resume would show.
+
+## The fourth dock — the agent's questions
+
+`ask_user` (`luca.agent.contrib.questions`) is the first DEFERRED tool: it returns `ExecutionDeferred()`, the runner parks the open turn at `AWAITING_RESULT`, and the drive returns so the application can answer. The TUI answers it in the dock, mutually exclusive with composer / approval / overlay — `ScreenState.questions` plus a fourth `dock()` branch.
+
+- **The widget decides nothing.** `QuestionSetView` reports what the user did (`Answered` / `Toggled` / `CustomChanged` / `ChatRequested` / `Moved`); `AgentApp` owns advancing the active tab, flipping `phase` and rebuilding the state. Same split `ApprovalPromptView.Decided` already has.
+- **`QuestionSetState.settled` is the one predicate** behind both `enter`'s two meanings and the legend that states which (`question_set_is_last` / `question_hints_for`), so the panel and the hint row cannot disagree.
+- **`enter` commits and never toggles.** In multi select only digits and `space` tick a row; the keystroke that finishes a question must not also change the answer it is finishing.
+- **`esc` is swallowed in this panel** (it only clears the custom-answer field while that field is being edited) and `action_cancel_run` is a no-op while a set is out — otherwise the drive worker is left blocked on a future nothing will resolve. The design's only exits are the custom-answer row and Chat about this.
+- **The store is the app's, not the session's.** Outstanding questions are the INTERFACE's state, so they live in `<session-id>.tui.json` beside the session rather than on `AgentSession.extras`. Losing that file is survivable — the tool re-seeds from `raw_tool_call.arguments` and defers again — which is why every read and write of it is best-effort and never raises.
+- Fixtures: `1l_questions.yaml` plus the five `components/questions_*.yaml` sheets. They are Tier 2 (hand-authored) because there is no `Scene → ScreenState` producer for a live question set yet.
 
 ## Agent integration details
 

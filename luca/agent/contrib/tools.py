@@ -35,6 +35,30 @@ session state. Per-run application state is not the framework's concern; a tool
 is application code and can hold its own references or read a
 `contextvars.ContextVar`.
 
+`execute` / `_execute` additionally receive the keyword-only `tool_name` and
+`tool_call_id` — WHICH CALL THIS IS. Without them a body cannot tell one of its
+own invocations from another, which makes per-call state impossible to key, and
+per-call state is exactly what a DEFERRED tool needs: a tool that returns
+`ExecutionDeferred` is re-dispatched from scratch on a later drive, so the only
+thing connecting the two invocations is the id. `tool_call_id` is also the
+identity that travels over a wire to a remote tool body, and the key into
+`AgentSession.get_tool_execution(tool_call_id)` — through which a body can read
+its own durable `ToolExecution`, including `raw_tool_call.extras` (the provider
+payload captured at adoption) and its own `attempts`. `tool_name` is the
+EFFECTIVE name the registry resolved this call under, which is not necessarily
+the class's `name` — one class can be registered under several names, and
+middleware may rewrite the call.
+
+WHAT A TOOL MAY RETURN INSTEAD. `execute` may return `ExecutionDeferred()` —
+"I cannot produce the final result yet". The execution parks at
+`AWAITING_RESULT`, the drive returns, and the application resolves whatever the
+tool is waiting on (it discovers the parked calls through
+`AgentSessionRunner.pending_deferred_tool_executions()`) before driving again.
+There is no resume: the next drive re-dispatches the call from scratch, so
+`execute` must be a PURE PREDICATE — read state, answer ready / not yet, never
+wait. Whatever state that requires belongs to the tool; `AgentSession.extras`
+is where it goes if it must survive a restart.
+
 WHY A TOOL GETS A CONVERSATION. A session can hold several conversations at
 once — the main agent's and one per subagent — and a tool instance is SHARED by
 all of them. Without the id a body cannot tell whether it is running for the
@@ -88,6 +112,7 @@ from pydantic import BaseModel, ConfigDict, create_model
 from luca.agent.core import (
     AgentSession,
     CancellationToken,
+    ExecutionDeferred,
     ExecutionResult,
     TextContent,
     ToolKind,
@@ -177,13 +202,16 @@ class Tool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         """The simple override point: do the work, return text for the LLM.
         `session` is the live session — read-only; `conversation_id` is the
         conversation this call belongs to (key any per-conversation state by
-        it); the `cancellation_token` may be checked cooperatively (V1 tools
-        may ignore it)."""
+        it); `tool_name` / `tool_call_id` say WHICH CALL this is (key any
+        per-call state by the id); the `cancellation_token` may be checked
+        cooperatively (V1 tools may ignore it)."""
         raise NotImplementedError
 
     async def execute(
@@ -192,15 +220,26 @@ class Tool:
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
-    ) -> ExecutionResult:
+    ) -> ExecutionResult | ExecutionDeferred:
         """Run the tool and wrap the output. Override for is_error / metadata /
-        multi-block results. Timing is recorded by the runner on the
-        `ToolExecution` (`started_at` / `ended_at`), not on the result."""
+        multi-block results, or to return `ExecutionDeferred()` — "not yet".
+        Timing is recorded by the runner on the `ToolExecution`
+        (`created_at` / `finished_at`, and one `ExecutionAttempt` per body
+        invocation), not on the result.
+
+        The return annotation is WIDE ON THE BASE deliberately: a subclass
+        returning a wider type than its base is an LSP violation type-checkers
+        flag, so the union belongs here, once, even though the default body can
+        only ever produce an `ExecutionResult`."""
         output = await self._execute(
             args,
             session,
             conversation_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
             cancellation_token=cancellation_token,
         )
         return ExecutionResult(content=[TextContent(text=output)])
@@ -283,15 +322,20 @@ def tool_class(
                 **output,
             )
 
-    # Matches `Tool.execute`'s call exactly — including the keyword-only
-    # `cancellation_token` it always passes. The wrapped callable keeps the
-    # two-argument shape the factory advertises.
+    # Matches `Tool._execute`'s call exactly — including every keyword-only
+    # argument it always passes. The wrapped callable keeps the
+    # three-argument shape the factory advertises: `tool_name` /
+    # `tool_call_id` / `cancellation_token` are accepted and dropped, the same
+    # way the factories only ever wire the text path. A tool that needs to know
+    # which call it is (or to defer) hand-writes the class.
     async def _execute(
         self: Tool,
         args: dict,
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return await execute(args, session, conversation_id)

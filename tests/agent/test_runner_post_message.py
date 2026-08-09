@@ -32,6 +32,8 @@ from luca.agent.core.models import (
     CancelRequested,
     ChildConversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -150,8 +152,8 @@ SUBAGENTS_ACTIVE_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
             updated_at=500,
         ),
         "ch1": ChildConversation(
@@ -234,7 +236,7 @@ class PostingTool(FakeTool):
     def __init__(self) -> None:
         self.post = None  # wired by the test to runner.post_message
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         self.post()
         return str(args["a"] + args["b"])
 
@@ -636,8 +638,8 @@ async def test_a_mid_turn_post_between_tool_rounds_is_answered_before_the_close(
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -774,8 +776,8 @@ async def test_a_post_during_the_birth_of_the_executions_lands_behind_them():
                     is_error=False,
                 ),
                 error=None,
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 cancel_signalled_at=None,
                 updated_at=1000,
                 is_doom_loop_flagged=False,
@@ -1044,8 +1046,8 @@ GATED_WITH_SIBLING_SESSION = make_session(
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
             ],
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
             updated_at=500,
         ),
     },
@@ -1260,7 +1262,7 @@ async def test_an_llm_failure_during_the_fall_through_round_settles_the_gate():
             ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
         ],
         cancel_signalled_at=1000,
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
     )
     assert events == [
@@ -1568,7 +1570,7 @@ async def test_hard_max_steps_over_a_live_gate_settles_it_before_the_errored_clo
             ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),
         ],
         cancel_signalled_at=1000,
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
     )
     assert events == [

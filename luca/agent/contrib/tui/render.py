@@ -8,6 +8,7 @@ two cannot drift.
 from __future__ import annotations
 
 import json
+import textwrap
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 
 from luca.agent.contrib.memory import (
@@ -17,6 +18,11 @@ from luca.agent.contrib.memory import (
     is_todo_update,
     todos_of,
 )
+from luca.agent.contrib.questions import (
+    QUESTIONS_NAMESPACE,
+    OptionsType,
+    QuestionsTool,
+)
 from luca.agent.core import declares_spawn
 from luca.agent.core.models import (
     NONTERMINAL_STATUSES,
@@ -25,6 +31,7 @@ from luca.agent.core.models import (
     ChildConversation,
     CompactionEntry,
     ContentPart,
+    Conversation,
     Entry,
     ExecutionStatus,
     ImageContent,
@@ -95,6 +102,42 @@ def mention_blocks(parts: Iterable[ContentPart]) -> list[vm.ToolBlock]:
     return blocks
 
 
+def user_prompts(session: AgentSession, conversation_id: str | None = None) -> list[str]:
+    """Every message the user TYPED on one conversation, oldest first — the
+    composer's history, and nothing the app has to keep a second copy of.
+
+    TEXT parts only: an `@`-mention part is the harness's expansion of what was
+    typed, and an image is not something to retype. Consecutive duplicates
+    collapse, shell-style.
+
+    Walks the compaction lineage, so `/compact` does not eat the history — the
+    entries survive in the store, only the PATH to them is rewritten, and the
+    predecessor still holds the one the successor dropped. Nodes are deduped
+    because the successor's path re-lists the tail it kept."""
+    chain: list[Conversation] = []
+    conversation = session.conversations.get(conversation_id or session.main_conversation_id)
+    while conversation is not None:
+        chain.append(conversation)
+        conversation = session.conversations.get(conversation.previous_conversation_id)
+
+    prompts: list[str] = []
+    seen: set[str] = set()
+    for link in reversed(chain):
+        for node_id in link.nodes:
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            entry = session.entries.get(node_id)
+            if not isinstance(entry, UserMessage):
+                continue
+            text = "\n".join(
+                part.text for part in entry.parts if isinstance(part, TextContent) and mention_of(part) is None
+            ).strip()
+            if text and text != (prompts[-1] if prompts else None):
+                prompts.append(text)
+    return prompts
+
+
 def mention_summary(mention: dict) -> str:
     """`523 lines` when it was inlined; `× <reason>, defaulting to agent tool
     calling` when it was declined."""
@@ -154,6 +197,10 @@ _STATUS_MAP: dict[ExecutionStatus, vm.ToolStatus] = {
     ExecutionStatus.RECEIVED: "pending",
     ExecutionStatus.PENDING: "pending",
     ExecutionStatus.RUNNING: "running",
+    # A parked tool reads as in flight, because that is what it is from the
+    # transcript's point of view: dispatched, no result yet, nothing the user
+    # has to do about the ROW (whatever prompt the tool raised is its own).
+    ExecutionStatus.AWAITING_RESULT: "running",
     ExecutionStatus.COMPLETED: "ok",
     ExecutionStatus.REJECTED: "denied",
     ExecutionStatus.FAILED: "error",
@@ -191,9 +238,15 @@ def diff_stat(diff: str) -> vm.DiffStat | None:
 
 
 def _duration_note(execution: ToolExecution) -> str | None:
-    if execution.started_at is None or execution.ended_at is None:
+    """How long the BODY ran, from the last `ExecutionAttempt` — deliberately
+    not `duration_ms`, which is total time outstanding and would count the
+    approval wait and any parked period as work."""
+    if not execution.attempts:
         return None
-    seconds = (execution.ended_at - execution.started_at) / 1000
+    attempt = execution.attempts[-1]
+    if attempt.ended_at is None:
+        return None
+    seconds = (attempt.ended_at - attempt.started_at) / 1000
     if seconds < 0.05:
         return None
     return fmt_duration(seconds) if seconds >= 1 else f"{seconds:.1f}s"
@@ -450,6 +503,191 @@ def plan_from_session(session: AgentSession, *, running: bool = False) -> vm.Lis
     return plan_block(todos, changed=changed_of(last) if last is not None else (), running=running)
 
 
+# ── the agent's questions (`ask_user`) ────────────────────────────────────────
+
+# The panel's inner measure at the 105-column design width: 105 − 2×2 margin −
+# 2 border − 2 padding. The producer PRE-WRAPS the body to it, the way
+# `ToolOutput.lines` are pre-wrapped — the widget never reflows prose.
+QUESTION_MEASURE = 97
+TAB_CELLS = 12
+
+CUSTOM_LABEL = "Custom answer:"
+CHAT_LABEL = "Chat about this"
+
+
+def is_questions_tool(execution: ToolExecution) -> bool:
+    """The `ask_user` call, matched by DECLARATION — namespace plus name — so
+    an application's own tool of the same name is not this package's."""
+    spec = execution.tool_spec
+    return spec is not None and spec.namespace == QUESTIONS_NAMESPACE and spec.name == QuestionsTool.name
+
+
+def question_tab(title: str, index: int, *, limit: int = TAB_CELLS) -> str:
+    """A tab label for one question.
+
+    The tab is DERIVED, not authored: the tool's `Question` carries a title and
+    nothing shorter, and asking the model for a second label per question would
+    be one more thing for it to get wrong. Words are taken until the limit, so
+    a short question keeps its own words and a long one is cut at a word
+    boundary; a title with no usable words falls back to its position."""
+    cleaned = "".join(
+        character for character in title if character.isalnum() or character.isspace() or character in "-_"
+    )
+    label = ""
+    for word in cleaned.split():
+        candidate = f"{label} {word}".strip()
+        if label and len(candidate) > limit:
+            break
+        label = candidate[:limit]
+    return label or f"question {index + 1}"
+
+
+def question_set_state(questions: Sequence, *, measure: int = QUESTION_MEASURE) -> vm.QuestionSetState:
+    """Turn the tool's `Question` models into the dock's view-model.
+
+    The producer appends the custom and chat rows, so a question is never
+    authored with them and they are always last — which is what lets the widget
+    treat "the last two rows" as a fixed shape."""
+    built: list[vm.Question] = []
+    for index, question in enumerate(questions):
+        body = question.body or ""
+        lines: list[str] = []
+        for paragraph in body.split("\n"):
+            lines.extend(textwrap.wrap(paragraph, measure) or [""])
+        built.append(
+            vm.Question(
+                tab=question_tab(question.title, index),
+                title=question.title,
+                body=lines if body else [],
+                mode="multi" if question.options_type == OptionsType.MULTIPLE_SELECT else "single",
+                options=[
+                    *(vm.QuestionOption(label=option) for option in question.options),
+                    vm.QuestionOption(label=CUSTOM_LABEL, kind="custom"),
+                    vm.QuestionOption(label=CHAT_LABEL, kind="chat", key_hint="enter"),
+                ],
+            )
+        )
+    return vm.QuestionSetState(questions=built)
+
+
+def answer_payload(state: vm.QuestionSetState) -> dict:
+    """The dock's state as the payload `QuestionsTool.answer()` stores.
+
+    Verbatim and unvalidated on purpose: the tool never rejects a payload, and
+    everything here is text on its way to becoming a string the model reads."""
+    answers = []
+    for question in state.questions:
+        chat = any(option.kind == "chat" and option.checked for option in question.options)
+        selected: list[str] = []
+        custom: str | None = None
+        for index, option in enumerate(question.options):
+            if option.kind == "chat":
+                continue
+            if option.kind == "custom":
+                custom = option.text or None
+                continue
+            if question.mode == "multi":
+                if option.checked:
+                    selected.append(option.label)
+            # `answer`, not `selected`: the caret is not the pick. Reading the
+            # caret here would send the model whichever option the user last
+            # arrowed over rather than the one they committed.
+            elif question.answer == index:
+                selected.append(option.label)
+        answers.append(
+            {
+                "question": question.title,
+                "chat_about_this": chat,
+                "answers": selected,
+                "custom_answer": custom,
+            }
+        )
+    return {"answers": answers, "custom_notes": state.extra or None}
+
+
+def question_transcript_blocks(execution: ToolExecution) -> list[vm.Block] | None:
+    """How a `ask_user` execution renders in the transcript, or None when it is
+    not one and the ordinary tool-block path applies.
+
+    THE ONE DERIVATION, called by both the live event handler and the replay,
+    so the two cannot draw different things for the same call — which they did
+    while each carried its own status test: a set the user cancelled out of
+    rendered as a collapsed `0 questions · 0 answered` live and as the real
+    interrupted call on reload.
+
+    - COMPLETED → the collapsed header + answer list.
+    - NONTERMINAL (parked) → nothing: the set is still holding the dock, and a
+      header row under it would say it is over when it is not.
+    - any other terminal (INVALID at birth, INTERRUPTED by a cancel, a failed
+      poll) → None, so the ordinary tool block states what went wrong."""
+    if not is_questions_tool(execution):
+        return None
+    if execution.status is ExecutionStatus.COMPLETED:
+        return question_blocks(execution)
+    if execution.status in NONTERMINAL_STATUSES:
+        return []
+    return None
+
+
+def question_blocks(execution: ToolExecution) -> list[vm.Block]:
+    """The collapsed transcript rendering of a finished question set: the
+    ordinary `▸ ask_user  N questions` header plus one `☑ tab → answer` row per
+    question, in the gutter idiom the plan panel already uses.
+
+    Built from `structured_content` — the tool's own record of what it holds —
+    never from `raw_tool_call.arguments`, which carries the questions and none
+    of the answers."""
+    payload = (execution.result.structured_content if execution.result else None) or {}
+    stored = payload.get("questions")
+    stored = stored if isinstance(stored, list) else []
+    answer = payload.get("answer")
+    entries = (answer or {}).get("answers") if isinstance(answer, dict) else None
+    entries = [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+    rows: list[vm.ListRow] = []
+    declined = 0
+    for index, question in enumerate(stored):
+        title = str(question.get("title", "")) if isinstance(question, dict) else ""
+        entry = next(
+            (item for item in entries if item.get("question") == title),
+            entries[index] if index < len(entries) else None,
+        )
+        text = question_tab(title, index)
+        if entry is None:
+            rows.append(vm.ListRow(glyph="pending", text=text, annotation="→  no answer"))
+            continue
+        if entry.get("chat_about_this"):
+            declined += 1
+            rows.append(vm.ListRow(glyph="pending", text=text, annotation="→  [accent]chat about this[/]"))
+            continue
+        picked = [str(item) for item in entry.get("answers") or []]
+        custom = entry.get("custom_answer")
+        if isinstance(custom, str) and custom.strip():
+            picked.append(f"custom · {custom}")
+        rows.append(
+            vm.ListRow(
+                glyph="done" if picked else "pending",
+                text=text,
+                annotation="→  " + (", ".join(picked) if picked else "no answer"),
+            )
+        )
+    notes = (answer or {}).get("custom_notes") if isinstance(answer, dict) else None
+    if isinstance(notes, str) and notes.strip():
+        rows.append(vm.ListRow(glyph="none", text="", annotation=f"added · {notes}"))
+
+    answered = sum(1 for row in rows if row.glyph == "done")
+    note = f"{answered} answered"
+    if declined:
+        note += " · chat about this"
+    header = vm.ToolBlock(
+        tool=execution.tool_spec.display_name if execution.tool_spec else "ask_user",
+        arg=f"{len(stored)} question{'s' if len(stored) != 1 else ''}",
+        status="ok" if execution.status is ExecutionStatus.COMPLETED else "error",
+        note_right=note,
+    )
+    return [header, vm.ListBlock(rows=rows, column=28)]
+
+
 # ── subagents ─────────────────────────────────────────────────────────────────
 
 
@@ -557,6 +795,9 @@ def _execution_blocks(entry: ToolExecution, resolve_result: ResultResolver | Non
         # transcript block — so the transcript shows neither the write nor the
         # read that so often precedes it.
         return []
+    questions = question_transcript_blocks(entry)
+    if questions is not None:
+        return questions
     result_text, is_error = None, False
     if resolve_result is not None and entry.status not in NONTERMINAL_STATUSES:
         result_text, is_error = resolve_result(entry)

@@ -37,6 +37,8 @@ from luca.agent.core.models import (
     ApprovalOption,
     ApprovalStatus,
     Entry,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     SessionConfig,
@@ -251,8 +253,8 @@ async def test_processed_tool_output_reaches_session_event_and_wire_identically(
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=4,  # len("[output truncated]") // 4
     )
@@ -315,7 +317,7 @@ async def test_process_tool_output_is_handed_the_in_transition_execution():
             approval_decisions=[
                 ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
             ],
-            started_at=1000,
+            attempts=[ExecutionAttempt(started_at=1000)],
             updated_at=1000,
         )
     ]

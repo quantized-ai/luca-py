@@ -153,7 +153,7 @@ class UndeclaredSpawnTool(FakeTool):
     Args = _NoArgs
     # deliberately no `output_schema`
 
-    async def execute(self, args, session, conversation_id, *, cancellation_token):
+    async def execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         from luca.agent.core import ExecutionResult, TextContent
 
         return ExecutionResult(
@@ -179,7 +179,7 @@ class IncompleteSpawnTool(FakeTool):
     Args = _NoArgs
     output_schema: ClassVar[dict] = {"type": "object", "properties": {"is_subagent_spawn": {"type": "boolean"}}}
 
-    async def execute(self, args, session, conversation_id, *, cancellation_token):
+    async def execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token):
         from luca.agent.core import ExecutionResult, TextContent
 
         return ExecutionResult(

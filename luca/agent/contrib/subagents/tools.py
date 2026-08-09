@@ -174,6 +174,8 @@ class SpawnSubagent(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         description = args["description"]
@@ -221,6 +223,8 @@ class CreateConversationResult(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         # NOTE the two ids. The PARAMETER is the parent — where this tool runs.
@@ -334,6 +338,8 @@ class StopSubagent(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         task_id = args["task_id"]
@@ -393,6 +399,8 @@ class ListSubagents(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         links = open_turn_children(session, conversation_id)

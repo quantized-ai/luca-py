@@ -12,7 +12,7 @@ core invariants under test:
   `AgentSession` — there is no `ToolContext` any more.
 - A decide() response updates `approval_status` directly AND appends to the
   `approval_decisions` audit log. A DENY is terminal on the spot (REJECTED,
-  `ended_at` stamped, `started_at` unset, no dispatch).
+  `finished_at` stamped, `attempts` empty, no dispatch).
 - An ALLOW is a permission answer and nothing else: a call that then fails to
   RESOLVE records NOT_FOUND from the prepare phase, never REJECTED, and emits
   no `ToolExecutionStarted` — that event fires iff the body was dispatched.
@@ -48,6 +48,8 @@ from luca.agent.core.models import (
     ApprovalStatus,
     AssistantMessage,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     SessionConfig,
@@ -357,7 +359,7 @@ async def test_denied_call_is_rejected_and_loop_continues():
             "status": ExecutionStatus.REJECTED,
             "approval_status": ApprovalStatus.REJECTED,
             "approval_decisions": [DENY_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
         }
     )
@@ -442,7 +444,7 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -450,7 +452,8 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     rejected2 = birth2.model_copy(
@@ -458,7 +461,7 @@ async def test_mixed_decisions_reject_and_execute_in_one_batch():
             "status": ExecutionStatus.REJECTED,
             "approval_status": ApprovalStatus.REJECTED,
             "approval_decisions": [DENY_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
         }
     )
@@ -562,7 +565,7 @@ async def test_allowed_call_that_cannot_be_resolved_records_not_found():
     # A registry that ALLOWs a name it cannot resolve is not denying anything:
     # prepare() raises ToolNotFound, the call records NOT_FOUND with
     # details["phase"] == "prepare", the body is never dispatched
-    # (`started_at` None) and no ToolExecutionStarted is emitted.
+    # (`attempts` empty) and no ToolExecutionStarted is emitted.
     faux = FauxProvider()
     faux.set_responses(
         [
@@ -614,7 +617,7 @@ async def test_allowed_call_that_cannot_be_resolved_records_not_found():
                 error_message="Unknown tool: 'add'.",
                 details={"phase": "prepare"},
             ),
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
             "context_tokens": 5,
         }
@@ -705,14 +708,15 @@ async def test_rerun_reasks_strategy_and_accumulates_decisions():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [PENDING_1000, ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
         }
     )
     completed = running.model_copy(
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert resume_events == [
@@ -801,7 +805,7 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -809,7 +813,8 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     gated2 = birth2.model_copy(
@@ -848,7 +853,7 @@ async def test_allowed_sibling_dispatches_before_the_run_parks():
             "status": ExecutionStatus.REJECTED,
             "approval_status": ApprovalStatus.REJECTED,
             "approval_decisions": [PENDING_1000, DENY_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -949,8 +954,8 @@ async def test_loaded_gated_session_run_reasks_strategy_and_completes():
                     ),
                     ALLOW_1000,
                 ],
-                started_at=1000,
-                ended_at=1000,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+                finished_at=1000,
                 updated_at=1000,
             ),
             "a2": AssistantMessage(
@@ -1003,7 +1008,7 @@ async def test_cleared_execution_dispatches_before_any_llm_call_without_redecidi
     running = cleared.model_copy(
         update={
             "status": ExecutionStatus.RUNNING,
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -1011,7 +1016,8 @@ async def test_cleared_execution_dispatches_before_any_llm_call_without_redecidi
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -1070,8 +1076,8 @@ async def test_undecided_session_self_heals_and_run_asks_strategy():
             "result": ExecutionResult(content=[TextContent(text="3")]),
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
             "updated_at": 1000,
         }
     )
@@ -1166,7 +1172,7 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [ALLOW_1000],
-            "started_at": 1000,
+            "attempts": [ExecutionAttempt(started_at=1000)],
             "updated_at": 1000,
         }
     )
@@ -1174,7 +1180,8 @@ async def test_strategy_exception_propagates_and_session_stays_resumable():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 1000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+            "finished_at": 1000,
         }
     )
     assert events == [
@@ -1265,7 +1272,7 @@ async def test_gated_session_survives_restart_and_resumes():
             "status": ExecutionStatus.RUNNING,
             "approval_status": ApprovalStatus.ALLOWED,
             "approval_decisions": [PENDING_1000, ALLOW_2000],
-            "started_at": 2000,
+            "attempts": [ExecutionAttempt(started_at=2000)],
             "updated_at": 2000,
         }
     )
@@ -1273,7 +1280,8 @@ async def test_gated_session_survives_restart_and_resumes():
         update={
             "status": ExecutionStatus.COMPLETED,
             "result": ExecutionResult(content=[TextContent(text="3")]),
-            "ended_at": 2000,
+            "attempts": [ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=2000, ended_at=2000)],
+            "finished_at": 2000,
         }
     )
     assert events == [

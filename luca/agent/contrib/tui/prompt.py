@@ -14,6 +14,11 @@ The box grows with its content (`height: auto`, capped) and reuses
 `TextArea.suggestion` for slash-command completion: the remainder of the
 first match renders inline and Right accepts it, standing in for the
 `Input` suggester this widget replaced.
+
+With `history=True` (the composer, never the question dock's fields) Up and
+Down at the edges of the document post `HistoryRequested` instead of moving
+the cursor. The widget only reports the edge — which message that lands in
+the box is the app's decision, exactly as with `Submitted`.
 """
 
 from __future__ import annotations
@@ -47,6 +52,17 @@ class PromptInput(TextArea):
         def control(self) -> PromptInput:
             return self.prompt_input
 
+    @dataclass
+    class HistoryRequested(Message):
+        """Posted when ↑/↓ runs off the top/bottom of the document."""
+
+        prompt_input: PromptInput
+        delta: int  # -1 older, +1 newer
+
+        @property
+        def control(self) -> PromptInput:
+            return self.prompt_input
+
     _commands: Sequence[str] = ()
 
     def __init__(
@@ -54,12 +70,30 @@ class PromptInput(TextArea):
         *,
         placeholder: str = "",
         commands: Sequence[str] = (),
+        history: bool = False,
         id: str | None = None,  # noqa: A002
     ) -> None:
         super().__init__(placeholder=placeholder, id=id)
         self._commands = list(commands)
+        self._history = history
 
     async def _on_key(self, event: events.Key) -> None:
+        if self._history and event.key in ("up", "down"):
+            older = event.key == "up"
+            # Textual's own WRAP-AWARE predicates: true only on the first/last
+            # visual row of the whole document, so a soft-wrapped one-liner
+            # still walks its display rows before history takes over.
+            navigator = self.navigator
+            at_edge = (
+                navigator.is_first_wrapped_line(self.cursor_location)
+                if older
+                else navigator.is_last_wrapped_line(self.cursor_location)
+            )
+            if at_edge:
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.HistoryRequested(self, -1 if older else 1))
+                return
         if event.key in _NEWLINE_KEYS:
             event.stop()
             event.prevent_default()

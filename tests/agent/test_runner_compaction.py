@@ -48,6 +48,8 @@ from luca.agent.core.models import (
     CompactionSource,
     Conversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -788,8 +790,8 @@ async def test_an_updated_tool_execution_has_its_spec_filed_and_survives_a_reloa
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
         ],
-        started_at=500,
-        ended_at=500,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+        finished_at=500,
         updated_at=500,
     )
     # the displaced `add` row stays: `tool_specs` is append-only, and te0/te2/

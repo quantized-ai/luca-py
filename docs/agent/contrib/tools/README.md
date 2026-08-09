@@ -31,7 +31,7 @@ class ReadFileTool(Tool):
 
     async def _execute(
         self, args: dict, session: AgentSession, conversation_id: str,
-        *, cancellation_token: CancellationToken,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
     ) -> str:
         with open(args["path"]) as f:
             return f.read()
@@ -57,6 +57,8 @@ the core never does that for anyone.
 | `args` | the **validated** arguments, dumped from `Args` to a plain dict |
 | `session` | the live `AgentSession` — read `session.id`, `session.session_config.llm_config` |
 | `conversation_id` | which conversation is calling. One tool instance serves the whole tree, so per-conversation state is keyed by this ([`13-subagents.md`](../../13-subagents.md)) |
+| `tool_name` | keyword-only — the **effective** name the registry resolved this call under. Not necessarily the class's `name`: one class can be registered under several, and middleware may rewrite the call |
+| `tool_call_id` | keyword-only — **which call this is.** The key for per-call state, and for `session.get_tool_execution(tool_call_id)`, which reads this call's own durable `ToolExecution` (its `attempts`, its `raw_tool_call.extras`) |
 | `cancellation_token` | keyword-only, always passed — see §8 |
 
 ```python
@@ -64,7 +66,8 @@ class NoteTool(Tool):
     def __init__(self) -> None:
         self.notes: dict[str, str] = {}          # keyed by conversation, never flat
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id,
+                       *, tool_name, tool_call_id, cancellation_token) -> str:
         self.notes[conversation_id] = args["text"]
         return "noted"
 ```
@@ -73,6 +76,11 @@ class NoteTool(Tool):
 > is shared by the main agent and every subagent running in parallel; a flat
 > dict means they overwrite each other, silently. Dispatch within one
 > conversation is sequential, so a per-conversation slot needs no lock.
+
+`tool_call_id` is the *narrower* key, and a deferring tool cannot work without
+it (§10): a call that defers is re-dispatched from scratch on a later drive, so
+the id is the only thing connecting the two invocations. It is also the identity
+that travels to a remote tool body over a wire.
 
 > ⚠️ **The session is read-only.** The runner owns every write to session
 > state; a tool that mutates what it was handed corrupts the ledger. Per-run
@@ -130,7 +138,7 @@ class RunSqlTool(Tool):
 
     async def execute(
         self, args: dict, session: AgentSession, conversation_id: str,
-        *, cancellation_token: CancellationToken,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         try:
             rows = await db.fetch(args["query"])
@@ -145,8 +153,12 @@ class RunSqlTool(Tool):
 - `is_error=True` is **your verdict about the returned result** — the execution
   still records `COMPLETED` (the framework received a result). Raising is what
   records `FAILED`, with a structured `ToolExecutionError` instead of a result.
-- Timing lives on the execution (`started_at` / `ended_at`), stamped by the
-  runner — the result carries none.
+- Timing lives on the execution, stamped by the runner — the result carries
+  none. `created_at` / `finished_at` bracket the whole call; one
+  `ExecutionAttempt` per body invocation carries that invocation's own
+  `started_at` / `ended_at` ([`02-data-model.md`](../../02-data-model.md) §3).
+
+`execute` is also the only place a tool can say **"not yet"** — see §10.
 
 `content` takes the same `ContentPart` union a user message does, so a tool can
 return an image — a screenshot tool, or the shell `read` tool on a png:
@@ -228,7 +240,7 @@ class GetWeatherTool(Tool):
 
     async def execute(                     # produces the payload
         self, args: dict, session: AgentSession, conversation_id: str,
-        *, cancellation_token: CancellationToken,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         reading: WeatherReport = await fetch_weather(args["city"])
         return ExecutionResult(
@@ -327,7 +339,8 @@ cancellation grace window (`RuntimeConfig.tool_cancellation_grace_period`,
 default 0) — whatever it returns becomes its real result:
 
 ```python
-    async def _execute(self, args, session, conversation_id, *, cancellation_token):
+    async def _execute(self, args, session, conversation_id,
+                       *, tool_name, tool_call_id, cancellation_token):
         for chunk in stream:
             if cancellation_token.cancelled:
                 return "…cut short by cancellation."
@@ -378,5 +391,74 @@ ls = tool(
 > factory-built tool *declare* an output schema but never populate
 > `structured_content` — that needs an `execute` override. Hand-write the class,
 > or pass a `bases=` mixin that overrides `execute`, when you need both.
+
+> ⚠️ **`tool_name` and `tool_call_id` are accepted and dropped.** The wrapped
+> callable keeps the three-argument shape `(args, session, conversation_id)` the
+> factory advertises, so a factory-built tool can neither see which call it is
+> nor defer (§10). Hand-write the class for either.
+
+## 10. Deferred results — "not yet"
+
+`execute` may return `ExecutionDeferred()` instead of an `ExecutionResult`: *I
+cannot produce the final result yet*. The execution parks at `AWAITING_RESULT`,
+the drive returns, and the application resolves whatever the tool is waiting on
+before driving again ([`03-tools.md`](../../03-tools.md) §7,
+[`04-runner.md`](../../04-runner.md) §9).
+
+```python
+from luca.agent.core import ExecutionDeferred, ExecutionResult, TextContent
+
+class RenderVideoTool(Tool):
+    name = "render_video"
+    description = "Queue a render and return the finished file."
+    Args = RenderArgs
+
+    def __init__(self, store: dict) -> None:
+        self.store = store                     # keyed by tool_call_id, JSON-shaped
+
+    async def execute(
+        self, args: dict, session: AgentSession, conversation_id: str,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
+    ) -> ExecutionResult | ExecutionDeferred:
+        job = self.store.setdefault(tool_call_id, {"path": None})
+        if job["path"] is None:
+            return ExecutionDeferred()         # the driver will fill it in
+        return ExecutionResult(content=[TextContent(text=f"Rendered to {job['path']}.")])
+```
+
+**There is no resume, only re-dispatch.** When a tool defers, nothing about that
+call stays alive — no callable, no coroutine, no runner state. The next drive
+runs the identical dispatch path from scratch: `before_tool_execution` →
+`ToolRegistry.prepare()` → a brand-new callable → invoke. So:
+
+| Fact | Consequence |
+|---|---|
+| `execute` must be a **pure predicate** | read state, answer *ready / not yet*, never wait. No future, no event, no UI |
+| it is invoked once per drive, forever | `setdefault` makes the first dispatch the seeding one and every later one a read |
+| the call is one call | one `tool_call_id`, one `ToolExecution`, **one approval** — never re-asked per dispatch — and one `ExecutionAttempt` per invocation |
+| whatever state that needs is yours | `AgentSession.extras` is where it goes if it must survive a restart ([`02-data-model.md`](../../02-data-model.md) §7) |
+
+The driver discovers parked calls by reading the session — no event announces
+one, because `ToolExecutionStarted` fires per dispatch attempt and `ToolExecuted`
+only at the end:
+
+```python
+for execution in runner.pending_deferred_tool_executions():
+    await resolve_somehow(execution)          # your tool, your protocol
+```
+
+> ⚠️ **Nothing bounds a deferral, so the handler must block until it has made
+> progress.** Re-dispatching produces no model round, so no step limit or
+> doom-loop check trips; a handler that returns without resolving anything
+> causes an immediate re-drive, another deferral, and a spin as fast as Python
+> runs. The driver owns the cadence — and, since nothing cleans up after a
+> cancelled or crashed call, it owns abandonment too.
+
+`timeout_in_ms` still bounds each **body invocation**, never the parked period:
+a poll that hangs past the deadline records `TIMED_OUT` like any other, while a
+call sitting parked across drives is not aged out by anything.
+
+[`contrib/questions/`](../questions/README.md) is the worked example — the model
+asks the user up to four questions and the turn parks until they answer.
 
 Next: [`simple_tool_registry/README.md`](../simple_tool_registry/README.md).

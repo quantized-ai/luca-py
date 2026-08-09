@@ -41,7 +41,7 @@ Contract semantics:
   terminal-at-birth NOT_FOUND / INVALID / FAILED), `error` (a
   `ToolExecutionError` for terminal births — the registry authors it), and
   `extras`. It carries no identity — `id` / `created_at` stay `None`; the
-  RUNNER stamps `id`, `parent_id`, `created_at`, `ended_at` (when terminal at
+  RUNNER stamps `id`, `parent_id`, `created_at`, `finished_at` (when terminal at
   birth), `context_tokens`, and `is_doom_loop_flagged`, so ids and timestamps
   keep flowing through `generate_id()` / `now_ms()`. Registries stay unaware
   of the storage scheme: never compute a `spec_id` and never touch
@@ -54,25 +54,32 @@ Contract semantics:
   CALLABLE that runs the body. Raising means the body never runs, and the
   execution is never marked RUNNING: `ToolNotFound` → NOT_FOUND;
   `InvalidToolArguments` or a pydantic `ValidationError` → INVALID; anything
-  else → FAILED — all with `started_at=None` and `dispatched=False`. Once the
-  callable is invoked, every raise is FAILED. A returned `ExecutionResult` →
-  COMPLETED (after `ContextManager.process_tool_output`). `prepare` is called
-  once per dispatch attempt and only for an already-approved execution: a
-  deferred or denied call is never prepared.
+  else → FAILED — all with no `ExecutionAttempt` appended and
+  `dispatched=False`. Once the callable is invoked, every raise is FAILED. A
+  returned `ExecutionResult` → COMPLETED (after
+  `ContextManager.process_tool_output`). A returned `ExecutionDeferred` →
+  AWAITING_RESULT: the call is RE-DISPATCHED from scratch on a later drive,
+  through this same `prepare()`, which is exactly why the contract already
+  requires it to be re-callable and idempotent. `prepare` is called once per
+  dispatch attempt and only for an already-approved execution: an
+  approval-deferred or denied call is never prepared, and a parked one is never
+  re-decided.
 
 The prepared callable:
 
-    PreparedTool = Callable[..., Awaitable[ExecutionResult]]
+    PreparedTool = Callable[..., Awaitable[ExecutionResult | ExecutionDeferred]]
 
-    async def run(*, cancellation_token: CancellationToken) -> ExecutionResult:
+    async def run(
+        *, cancellation_token: CancellationToken
+    ) -> ExecutionResult | ExecutionDeferred:
 
 It takes the run's cancellation token and nothing else. It must be a
 CALLABLE, not a coroutine object: the runner may never invoke it (a
 cancellation landing between the return and the invocation), and a bare
 coroutine would emit `RuntimeWarning: coroutine was never awaited`. Calling it
 must produce an awaitable; a callable that returns a plain value has already
-been invoked, so it records as a post-dispatch failure (FAILED, `started_at`
-set) rather than a preparation failure.
+been invoked, so it records as a post-dispatch failure (FAILED, with its
+`ExecutionAttempt` appended) rather than a preparation failure.
 
 WHAT THE ARGUMENTS MEAN. The `AgentSession` is the LIVE object — the same
 instance the runner and ledger write through, not a copy. A registry may hold
@@ -80,8 +87,8 @@ the reference and re-read current state from it later, including from inside a
 prepared callable, where `session.entries[execution.id]` is the correct way to
 see the execution's current durable state. The `ToolExecution` is a SNAPSHOT:
 a detached copy as of the moment the call was made. The runner persists
-RUNNING and `started_at` AFTER `prepare()` returns, and persistence stores a
-copy, so a reference captured during `prepare()` is stale by the time the
+RUNNING and the new `ExecutionAttempt` AFTER `prepare()` returns, and
+persistence stores a copy, so a reference captured during `prepare()` is stale by the time the
 callable runs. Capture what the callable needs during `prepare()`; do not read
 execution state through the captured object.
 
@@ -193,6 +200,7 @@ from collections.abc import Awaitable, Callable
 from .models import (
     AgentSession,
     ApprovalDecision,
+    ExecutionDeferred,
     ExecutionResult,
     ToolCall,
     ToolExecution,
@@ -201,7 +209,9 @@ from .models import (
 
 # What `prepare()` hands back: a callable taking only the run's cancellation
 # token, whose invocation produces the awaitable that runs the tool body.
-PreparedTool = Callable[..., Awaitable[ExecutionResult]]
+# `ExecutionDeferred` is the tool saying "I cannot return the final result
+# yet"; the call parks and is re-dispatched from scratch on a later drive.
+PreparedTool = Callable[..., Awaitable[ExecutionResult | ExecutionDeferred]]
 
 
 class ToolRegistry:

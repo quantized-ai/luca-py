@@ -37,6 +37,8 @@ from luca.agent.core.models import (
     Conversation,
     ConversationRuntimeStatus,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
@@ -345,8 +347,8 @@ def test_derive_status_blocked_when_gated_with_a_completed_sibling_and_no_post()
                 tool_spec=spec("read"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="ok")]),
-                started_at=4,
-                ended_at=4,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=4, ended_at=4)],
+                finished_at=4,
             ),
         },
         conversations={
@@ -446,7 +448,7 @@ def test_derive_status_pending_with_orphaned_running_execution():
                 status=ExecutionStatus.RUNNING,
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ALLOW_1000],
-                started_at=3,
+                attempts=[ExecutionAttempt(started_at=3)],
             ),
         },
         conversations={
@@ -627,8 +629,8 @@ MATRIX_SESSION = make_session(
             result=ExecutionResult(content=[TextContent(text="3")]),
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
-            started_at=3,
-            ended_at=3,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=3, ended_at=3)],
+            finished_at=3,
         ),
         "te_undecided": ToolExecution(
             id="te_undecided",
@@ -673,7 +675,7 @@ MATRIX_SESSION = make_session(
             status=ExecutionStatus.RUNNING,
             approval_status=ApprovalStatus.ALLOWED,
             approval_decisions=[ALLOW_1000],
-            started_at=8,
+            attempts=[ExecutionAttempt(started_at=8)],
         ),
     },
     conversations={
@@ -1070,7 +1072,7 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
             "status": ExecutionStatus.REJECTED,
             "approval_status": ApprovalStatus.REJECTED,
             "approval_decisions": [DENY_1000],
-            "ended_at": 1000,
+            "finished_at": 1000,
             "updated_at": 1000,
         },
     )
@@ -1089,7 +1091,7 @@ def test_put_entry_stores_the_replacement_and_touches_conversation():
         status=ExecutionStatus.REJECTED,
         approval_status=ApprovalStatus.REJECTED,
         approval_decisions=[DENY_1000],
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
     )
     assert main_conversation(session).updated_at == 1000
@@ -1438,8 +1440,8 @@ def test_prune_replaces_the_node_in_place_and_keeps_the_original_entry():
                 tool_spec=spec("add"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=1,
-                ended_at=1,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1, ended_at=1)],
+                finished_at=1,
             ),
             "a2": AssistantMessage(
                 id="a2",
@@ -1510,8 +1512,8 @@ def test_prune_is_not_a_tool_spec_door():
                 tool_spec=spec("add"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="3")]),
-                started_at=0,
-                ended_at=0,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=0, ended_at=0)],
+                finished_at=0,
             ),
         },
         conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
@@ -1544,8 +1546,8 @@ def test_prune_is_not_a_tool_spec_door():
         tool_spec_id=ADD_SPEC_ID,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=0,
-        ended_at=0,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=0, ended_at=0)],
+        finished_at=0,
     )
 
 
@@ -1644,7 +1646,7 @@ def test_prune_rejects_a_nonterminal_execution():
                 raw_tool_call=ToolCall(id="tc1", name="add"),
                 tool_spec=spec("add"),
                 status=ExecutionStatus.RUNNING,
-                started_at=0,
+                attempts=[ExecutionAttempt(started_at=0)],
             ),
         },
         conversations={"c1": conversation("c1", ["te1"], created_at=0, updated_at=0)},
@@ -2083,8 +2085,8 @@ def test_transition_stores_created_entries():
         raw_tool_call=ToolCall(id="tcX", name="add"),
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     ledger.transition_conversation(
@@ -2272,8 +2274,8 @@ TRANSITION_TOOL_SESSION = make_session(
             tool_spec=spec("add"),
             status=ExecutionStatus.COMPLETED,
             result=ExecutionResult(content=[TextContent(text="3")]),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
         ),
         "ts_c": TurnStart(id="ts_c", parent_id="te1", created_at=600),
         "cmp": CompactionEntry(
@@ -2323,8 +2325,8 @@ def test_transition_files_the_spec_of_an_updated_execution():
         tool_spec_id=REVISED_ADD_SPEC_ID,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="3")]),
-        started_at=500,
-        ended_at=500,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+        finished_at=500,
     )
     assert session.tool_specs == {
         ADD_SPEC_ID: ADD_SPEC,
@@ -2344,8 +2346,8 @@ def test_transition_files_the_spec_of_a_created_execution():
         tool_spec=MULTIPLY_SPEC,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="12")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     ledger.transition_conversation(
@@ -2367,8 +2369,8 @@ def test_transition_files_the_spec_of_a_created_execution():
         tool_spec_id=MULTIPLY_SPEC_ID,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="12")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
     assert session.tool_specs == {
         ADD_SPEC_ID: ADD_SPEC,
@@ -2391,8 +2393,8 @@ def test_transition_files_the_spec_of_a_closing_execution():
         tool_spec=MULTIPLY_SPEC,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="12")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
 
     ledger.transition_conversation(
@@ -2414,8 +2416,8 @@ def test_transition_files_the_spec_of_a_closing_execution():
         tool_spec_id=MULTIPLY_SPEC_ID,
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(content=[TextContent(text="12")]),
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
     )
     assert session.tool_specs == {
         ADD_SPEC_ID: ADD_SPEC,
@@ -2763,8 +2765,8 @@ def _orchestrating_session(**overrides) -> AgentSession:
                 content=[TextContent(text="spawned")],
                 structured_content={"is_subagent_spawn": True, "task_id": "t1"},
             ),
-            started_at=500,
-            ended_at=500,
+            attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+            finished_at=500,
         ),
         "ch1": ChildConversation(
             id="ch1",
@@ -2853,8 +2855,8 @@ def test_derive_status_busy_when_a_resolution_awaits_the_model():
                 tool_spec=spec("create_conversation_result", is_private=True),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="done")]),
-                started_at=600,
-                ended_at=600,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=600, ended_at=600)],
+                finished_at=600,
             ),
         },
         nodes=["u1", "ts", "a1", "te1", "ch1", "ch2", "ter1"],
@@ -2890,8 +2892,8 @@ def test_derive_status_a_gate_outranks_material():
                 tool_spec=spec("read"),
                 status=ExecutionStatus.COMPLETED,
                 result=ExecutionResult(content=[TextContent(text="ok")]),
-                started_at=700,
-                ended_at=700,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=700, ended_at=700)],
+                finished_at=700,
             ),
         },
         nodes=["u1", "ts", "a1", "te1", "ch1", "te2", "te3"],

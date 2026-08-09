@@ -54,8 +54,12 @@ SESSION = AgentSession(
 )
 
 
-def run_kwargs() -> dict:
-    return {"cancellation_token": CancellationToken()}
+def run_kwargs(tool_name: str = "t", tool_call_id: str = "tc1") -> dict:
+    return {
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "cancellation_token": CancellationToken(),
+    }
 
 
 CONVERSATION = main_conversation(SESSION).id

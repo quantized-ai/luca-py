@@ -16,7 +16,7 @@ make cancel() a no-op: each one, hung forever, is unblocked by cancel() and
 closes the turn with the requested outcome. A cancelled birth records
 CANCELLED (never FAILED — a cancellation is not a tool failure), and a
 cancellation up to AND INCLUDING `prepare()` settling means the body is never
-dispatched: `started_at` stays None, `dispatched` stays False, and no
+dispatched: `attempts` stays empty, `dispatched` stays False, and no
 `ToolExecutionStarted` is emitted.
 
 House style throughout: precondition → one action → full-object
@@ -46,6 +46,8 @@ from luca.agent.core.models import (
     AssistantMessage,
     CancelRequested,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -117,6 +119,8 @@ class HangingTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
@@ -144,6 +148,8 @@ class CooperativeTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
@@ -168,6 +174,8 @@ class TimeoutRaisingTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.started.set()
@@ -189,6 +197,8 @@ class RecordingAddTool(AddTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.calls.append(args)
@@ -609,7 +619,7 @@ async def test_cancel_at_the_gate_parks_and_the_next_run_flushes():
         approval_status=ApprovalStatus.PENDING,  # untouched by the wind-down
         approval_decisions=[PENDING_500],
         cancel_signalled_at=1000,
-        ended_at=1000,
+        finished_at=1000,
         updated_at=1000,
     )
     assert events == [
@@ -720,7 +730,7 @@ async def test_flush_leaves_an_already_terminal_execution_untouched():
                 PENDING_500,
                 ApprovalDecision(decision=ApprovalOption.DENY, created_at=600),
             ],
-            "ended_at": 600,
+            "finished_at": 600,
             "updated_at": 600,
         }
     )
@@ -791,8 +801,8 @@ async def test_live_cancel_hard_cancels_the_hanging_tool():
         result=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=1000,  # stamped and persisted before the grace ran
         updated_at=1000,
     )
@@ -872,8 +882,8 @@ async def test_cooperative_tool_finishing_within_grace_records_its_real_result()
         ),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
         context_tokens=2,  # len("partial sum") // 4
@@ -929,8 +939,8 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
         error=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.INTERRUPTED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -948,8 +958,8 @@ async def test_pre_start_sibling_is_cancelled_when_the_first_is_interrupted():
         error=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1013,8 +1023,8 @@ async def test_lazy_cancel_between_events_cancels_the_unstarted_execution():
         error=None,
         approval_status=None,  # the policy never processed it
         approval_decisions=[],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1070,8 +1080,8 @@ async def test_cancel_landing_mid_decide_winds_down_instead_of_pausing():
         # the deferral WAS processed before the cancel consumed the turn
         approval_status=ApprovalStatus.PENDING,
         approval_decisions=[PENDING_1000],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1219,7 +1229,8 @@ async def test_cancel_during_create_execution_records_cancelled_not_failed():
         update={
             "status": ExecutionStatus.CANCELLED,
             "error": None,  # CANCELLED, never FAILED
-            "ended_at": 1000,
+            "attempts": [],  # the body was never dispatched
+            "finished_at": 1000,
             "cancel_signalled_at": 1000,
             "updated_at": 1000,
         },
@@ -1292,8 +1303,8 @@ async def test_cancel_on_an_unborn_execution_settles_it_instead_of_stranding_it(
         status=ExecutionStatus.CANCELLED,
         result=None,
         error=None,  # CANCELLED, never FAILED
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1344,8 +1355,8 @@ async def test_cancel_during_decide_records_no_decision_and_closes_cancelled():
         error=None,
         approval_status=None,
         approval_decisions=[],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1393,8 +1404,8 @@ async def test_cancel_during_prepare_records_cancelled_without_dispatching():
         error=None,
         approval_status=ApprovalStatus.ALLOWED,  # untouched by the wind-down
         approval_decisions=[PENDING_500, ALLOW_600],
-        started_at=None,  # the body was never dispatched
-        ended_at=1000,
+        attempts=[],  # the body was never dispatched
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1447,8 +1458,8 @@ async def test_cancel_after_prepare_returned_records_cancelled_and_never_runs_th
         error=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[PENDING_500, ALLOW_600],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1515,8 +1526,8 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
         error=None,
         approval_status=None,
         approval_decisions=[],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1537,8 +1548,8 @@ async def test_every_call_still_gets_an_execution_when_the_cancel_lands_mid_batc
         error=None,
         approval_status=None,
         approval_decisions=[],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1602,8 +1613,8 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
         error=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_600],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1625,8 +1636,8 @@ async def test_batch_cancelled_after_the_first_dispatch_ends_both_cancelled_alik
         error=None,
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_600],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1724,8 +1735,8 @@ async def test_a_pending_cancellation_fires_no_before_permission_check():
         error=None,
         approval_status=None,
         approval_decisions=[],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
     )
@@ -1964,8 +1975,8 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
         ),
         approval_status=ApprovalStatus.ALLOWED,
         approval_decisions=[ALLOW_1000],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=1000,
         updated_at=1000,
         context_tokens=4,  # len("tool's own deadline") // 4

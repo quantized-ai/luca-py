@@ -273,6 +273,22 @@ class ExecutionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ExecutionDeferred(BaseModel):
+    """The tool cannot produce its final result yet.
+
+    An EMPTY MARKER: the core learns exactly one new fact — "not yet" — and
+    nothing more. Whatever the tool is waiting on, and whatever state that
+    requires, belongs to the tool (`AgentSession.extras` is where a tool keeps
+    state that must outlive the process).
+
+    Returned by the prepared callable in place of an `ExecutionResult`. The
+    execution moves to `AWAITING_RESULT` and the drive parks; there is no
+    resume — the next drive RE-DISPATCHES the same call from scratch, through
+    `before_tool_execution` → `prepare()` → a brand-new callable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # ── system prompt parts (handed to the runner via system_prompt_parts) ──────
 
 
@@ -471,6 +487,7 @@ class ExecutionStatus(str, Enum):
     RECEIVED = "received"  # the model asked for it; the registry has not answered yet
     PENDING = "pending"  # body not started, no terminal outcome
     RUNNING = "running"  # body started, no terminal outcome
+    AWAITING_RESULT = "awaiting_result"  # the last dispatch returned ExecutionDeferred
     COMPLETED = "completed"  # the body returned an ExecutionResult
     FAILED = "failed"  # tool-owned code raised (preflight or after dispatch)
     NOT_FOUND = "not_found"  # the requested/effective tool could not be resolved
@@ -491,6 +508,7 @@ NONTERMINAL_STATUSES = frozenset(
         ExecutionStatus.RECEIVED,
         ExecutionStatus.PENDING,
         ExecutionStatus.RUNNING,
+        ExecutionStatus.AWAITING_RESULT,
     }
 )
 
@@ -514,6 +532,39 @@ class ToolExecutionError(BaseModel):
     error_type: str
     error_message: str
     details: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExecutionAttemptOutcome(str, Enum):
+    """How ONE invocation of a tool body ended.
+
+    `INTERRUPTED` and `DISCARDED` are different facts and the distinction is
+    the point: `INTERRUPTED` means the framework killed the body and knows it
+    did not finish; `DISCARDED` means the process died and nobody ever saw how
+    that run went."""
+
+    DEFERRED = "deferred"  # returned ExecutionDeferred — not yet
+    COMPLETED = "completed"  # returned an ExecutionResult
+    FAILED = "failed"  # raised
+    INTERRUPTED = "interrupted"  # the framework killed the body
+    TIMED_OUT = "timed_out"  # the deadline expired
+    DISCARDED = "discarded"  # the process died; this run's outcome was never seen
+
+
+class ExecutionAttempt(BaseModel):
+    """One invocation of a tool body, appended when the execution is persisted
+    as `RUNNING` — after `prepare()` returned, before the callable is invoked —
+    and closed with its outcome when the call settles.
+
+    That placement IS the invariant: **a `prepare()` that raises appends no
+    attempt**, on the first dispatch and the fifth alike. `outcome is None`
+    means the attempt is still in flight (or the process died mid-flight, which
+    orphan recovery closes as `DISCARDED`)."""
+
+    outcome: ExecutionAttemptOutcome | None = None  # None while in flight
+    started_at: int  # unix ms; the body was invoked
+    ended_at: int | None = None  # unix ms; the invocation settled
 
     model_config = ConfigDict(extra="forbid")
 
@@ -589,7 +640,15 @@ class ToolExecution(Entry):
     terminal keeps `approval_status=None` — no decision ever processed it.
 
     `updated_at` is ledger bookkeeping (any persisted mutation may touch it);
-    it is NOT an execution-end timestamp — use `started_at` / `ended_at`.
+    it is NOT an execution-end timestamp — use `created_at` / `finished_at`,
+    or `attempts[-1]` for the wall-clock of the last body invocation.
+
+    ONE CALL CAN BE DISPATCHED MANY TIMES. A tool may return
+    `ExecutionDeferred` instead of a result; the execution parks at
+    `AWAITING_RESULT` and the next drive re-dispatches it from scratch. So
+    there is no single dispatch to timestamp: `created_at` (inherited) is the
+    birth stamp, `finished_at` is the terminal transition, and each body
+    invocation carries its own pair on its `ExecutionAttempt`.
 
     The Pydantic model enforces no cross-field invariants: the framework
     produces the documented combinations, and application middleware is
@@ -629,8 +688,17 @@ class ToolExecution(Entry):
     result: ExecutionResult | None = None
     error: ToolExecutionError | None = None
 
-    started_at: int | None = None  # unix ms; set iff the body was dispatched
-    ended_at: int | None = None  # unix ms; set on every terminal transition
+    # AUDIT ONLY, and DERIVES NOTHING — not status, not result, not a source of
+    # truth for anything. One entry per body invocation, in dispatch order.
+    # UNBOUNDED: no cap, no fold. The driver contract keeps this at ~2 (a
+    # handler must block until something really changed, so each attempt
+    # corresponds to a real out-of-band event rather than a tick), and silent
+    # truncation inside an audit log is worse than a large one. An application
+    # that wants to trim does it in `after_tool_execution`, which runs exactly
+    # once, when the list is final.
+    attempts: list[ExecutionAttempt] = Field(default_factory=list)
+
+    finished_at: int | None = None  # unix ms; set on every terminal transition
     cancel_signalled_at: int | None = None  # unix ms; run cancellation only
 
     updated_at: int | None = None
@@ -638,15 +706,18 @@ class ToolExecution(Entry):
 
     @property
     def dispatched(self) -> bool:
-        """True iff the tool body was committed for dispatch."""
-        return self.started_at is not None
+        """True iff the tool body was committed for dispatch — an
+        `ExecutionAttempt` exists iff the body was invoked."""
+        return bool(self.attempts)
 
     @property
     def duration_ms(self) -> int | None:
-        """Body wall-clock duration, when both endpoints exist."""
-        if self.started_at is None or self.ended_at is None:
+        """TOTAL time this call was outstanding — the approval wait and any
+        parked time included, NOT body wall-clock. Body time is per-attempt
+        (`attempts[-1]`, or the sum)."""
+        if self.finished_at is None or self.created_at is None:
             return None
-        return self.ended_at - self.started_at
+        return self.finished_at - self.created_at
 
 
 # ── loop boundary markers (no "Turn" object) ──────────────────────────────────
@@ -1033,7 +1104,11 @@ def open_turn_has_advanceable_executions(
     births it; a persisted `RUNNING` execution is an orphan the next drive
     recovers; a `PENDING` execution the policy has not resolved (or has
     ALLOWED) is decidable or dispatchable. A gated (`approval_status` PENDING)
-    execution is deliberately NOT advanceable — the application must act."""
+    execution is deliberately NOT advanceable — the application must act.
+
+    Neither is a PARKED one (`AWAITING_RESULT`), for the identical reason and
+    with no code of its own: it falls through every clause above. The tool
+    said "not yet", and only the application can make it say otherwise."""
     for execution in open_turn_executions(nodes, entries):
         if execution.status in (ExecutionStatus.RECEIVED, ExecutionStatus.RUNNING):
             return True
@@ -1057,6 +1132,18 @@ def open_turn_has_awaiting_executions(
     )
 
 
+def open_turn_has_parked_executions(
+    nodes: Sequence[str],
+    entries: Mapping[str, AnyEntry],
+) -> bool:
+    """Is any execution in the open turn parked at `AWAITING_RESULT` —
+    dispatched, deferred, and only the application can move it? The gate's
+    twin: a durable resting point, not a runtime in flight."""
+    return any(
+        execution.status == ExecutionStatus.AWAITING_RESULT for execution in open_turn_executions(nodes, entries)
+    )
+
+
 def open_turn_is_runnable(
     nodes: Sequence[str],
     entries: Mapping[str, AnyEntry],
@@ -1069,14 +1156,24 @@ def open_turn_is_runnable(
     is a gate the application must answer out of band, and with only those
     left nothing can advance.
 
+    A PARKED execution (`AWAITING_RESULT`) is listed EXPLICITLY below rather
+    than left to fall through, and that is the trap this predicate hides: the
+    fallback is written as "nothing is left except gates", and a parked call is
+    not a gate. Omitting it derives `BUSY` for a drive that can only park and
+    return, which spins a `while not idle(): run()` driver.
+
     UNRESOLVED SUBAGENTS ARE NOT CONSIDERED HERE — a path cannot see another
     conversation's entries. `AgentSession.get_conversation_status` handles that
     term, because it is the thing that can reach the child."""
     if open_turn_has_advanceable_executions(nodes, entries):
         return True
-    # Anything still PENDING here is gated: with only those left, nothing in
-    # this conversation can advance until the application answers.
-    return not any(execution.status == ExecutionStatus.PENDING for execution in open_turn_executions(nodes, entries))
+    # Anything still PENDING here is gated, and an AWAITING_RESULT one is
+    # parked: with only those left, nothing in this conversation can advance
+    # until the application answers or resolves.
+    return not any(
+        execution.status in (ExecutionStatus.PENDING, ExecutionStatus.AWAITING_RESULT)
+        for execution in open_turn_executions(nodes, entries)
+    )
 
 
 def _last_assistant_index(
@@ -1504,6 +1601,13 @@ class ConversationRuntimeStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# The version of the SERIALIZED session shape. Stamped on every session as
+# `AgentSession.spec_version` and bumped only when a change to the data model
+# breaks reading an older file. A loader reads the field to decide whether the
+# session needs migrating before it can be constructed.
+SPEC_VERSION = "0.0.1"
+
+
 class AgentSession(BaseModel):
     """The whole durable session: one flat entry store, the CATALOG of
     conversations over it, and the normalized tool-spec store.
@@ -1528,6 +1632,11 @@ class AgentSession(BaseModel):
     stays self-describing."""
 
     id: str
+    # Which revision of the session shape this file was written against. A
+    # session built in-process gets the current `SPEC_VERSION`; one loaded from
+    # disk keeps whatever it was written with, so a loader can tell an old file
+    # from a current one and migrate it.
+    spec_version: str = SPEC_VERSION
     entries: dict[str, AnyEntry] = Field(default_factory=dict)  # append-only store
     # spec_id → ToolSpec. Append-only (never garbage-collected), written only
     # through `SessionLedger`'s write doors. Holds the specs referenced by an
@@ -1675,9 +1784,9 @@ class AgentSession(BaseModel):
 
         - open turn with an unconsumed cancel  → `CANCELLING`
         - open turn with something runnable    → `BUSY`
-        - open turn with nothing runnable (only gated executions remain) but
-          an unseen user post → `BUSY` — the gate projects a placeholder, so
-          the next drive answers the post and re-parks (0008)
+        - open turn with nothing runnable (only gated or PARKED executions
+          remain) but an unseen user post → `BUSY` — both project a
+          placeholder, so the next drive answers the post and re-parks (0008)
         - open turn with nothing runnable      → `BLOCKED`
         - trailing `UserMessage` (queued work) → `BUSY`
         - anything else, INCLUDING a closed `TurnFinish` whatever its outcome
@@ -1766,13 +1875,16 @@ class AgentSession(BaseModel):
                 # 2. A BUSY child is working; an IDLE one has finished and
                 #    this conversation can resolve it; a CANCELLING one is
                 #    winding down → BUSY.
-                # 3. A gated execution with nothing above it → BLOCKED, UNLESS
-                #    an unseen post can reach the model past it (0008): with
-                #    the gate projecting a placeholder the next drive CAN do
-                #    something, so the material term below is allowed to speak.
-                #    Without a post the old reasoning stands — the drive would
-                #    only re-park, and BUSY would hot-loop every
-                #    poll-for-BLOCKED consumer.
+                # 3. A gated OR PARKED execution with nothing above it →
+                #    BLOCKED, UNLESS an unseen post can reach the model past it
+                #    (0008): with the gate (or the parked call) projecting a
+                #    placeholder the next drive CAN do something, so the
+                #    material term below is allowed to speak. Without a post the
+                #    old reasoning stands — the drive would only re-park, and
+                #    BUSY would hot-loop every poll-for-BLOCKED consumer.
+                #    A parked call has to be named HERE and not left to the
+                #    material term: any completed sibling satisfies that term,
+                #    so a drive that only parks would derive BUSY.
                 # 4. Unseen material (a resolved child's result, a mid-turn
                 #    post, a non-spawn tool result) → BUSY: the next run()
                 #    calls the model with it. With
@@ -1795,7 +1907,9 @@ class AgentSession(BaseModel):
                     if child.conversation_id in self.conversations
                 ):
                     return ConversationStatus.BUSY
-                if open_turn_has_awaiting_executions(nodes, entries) and not open_turn_unseen_post(nodes, entries):
+                if (
+                    open_turn_has_awaiting_executions(nodes, entries) or open_turn_has_parked_executions(nodes, entries)
+                ) and not open_turn_unseen_post(nodes, entries):
                     return ConversationStatus.BLOCKED
                 if open_turn_unseen_material(
                     nodes,
@@ -1806,9 +1920,10 @@ class AgentSession(BaseModel):
                 return ConversationStatus.BLOCKED
             if open_turn_is_runnable(nodes, entries):
                 return ConversationStatus.BUSY
-            # Not runnable means only gated executions remain. An unseen post
-            # still reaches the model past them (0008): the gate projects a
-            # placeholder, so the next drive answers the post and re-parks.
+            # Not runnable means only gated or PARKED executions remain. An
+            # unseen post still reaches the model past them (0008): both
+            # project a placeholder, so the next drive answers the post and
+            # re-parks.
             if open_turn_unseen_post(nodes, entries):
                 return ConversationStatus.BUSY
             return ConversationStatus.BLOCKED

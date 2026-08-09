@@ -40,7 +40,7 @@ class AddTool(Tool):
     Args = AddArgs
     async def _execute(
         self, args: dict, session: AgentSession, conversation_id: str,
-        *, cancellation_token: CancellationToken,
+        *, tool_name: str, tool_call_id: str, cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
 

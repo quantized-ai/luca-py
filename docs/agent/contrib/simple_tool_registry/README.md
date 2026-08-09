@@ -32,7 +32,7 @@ conversation second:
 | `get_tools(session, conversation_id)` | one `ToolSpec` per tool, from `Tool.get_tool_spec()` |
 | `create_execution(session, conversation_id, call)` | the classic preflight: resolve the name (miss → `NOT_FOUND` birth), validate `Args` (failure → `INVALID` birth), collect the duck-typed `get_approval_context(args, session, conversation_id)` (a raise → `FAILED` birth with `details={"phase": "approval_context"}`; success → stored under `extras["approval_context"]`), else a `PENDING` birth carrying the tool's `ToolSpec` (incl. `timeout_in_ms`) |
 | `decide(session, conversation_id, execution)` | delegates to `permission_policy.decide(session, execution)` — the policy needs no id, the execution carries one |
-| `prepare(session, conversation_id, execution)` | resolves by `raw_tool_call.name` (the middleware-effective call), validates `Args`, and returns a closure binding the validated arguments, the session and the conversation |
+| `prepare(session, conversation_id, execution)` | resolves by `raw_tool_call.name` (the middleware-effective call), validates `Args`, and returns a closure binding the validated arguments, the session, the conversation **and the call's identity** |
 
 `prepare()` does everything fallible; the callable it returns runs the body:
 
@@ -40,6 +40,19 @@ conversation second:
 prepared = await registry.prepare(session, conversation_id, execution)   # ToolNotFound / InvalidToolArguments
 result = await prepared(cancellation_token=token)                        # tool.execute(args, session, conversation_id, …)
 ```
+
+**The closure is where the call identity comes from.** `PreparedTool` still
+takes only the cancellation token — that is what keeps the core free of any
+Python tool class — so `tool_name` (the name this call resolved under) and
+`tool_call_id` are bound here, at prepare time, and nothing is re-derived at
+invocation ([`tools/README.md`](../tools/README.md) §2).
+
+> ⚠️ **`prepare()` runs once per dispatch *attempt*, not once per call.** It was
+> always contractually re-callable and idempotent; a deferring tool
+> ([`tools/README.md`](../tools/README.md) §10) makes that load-bearing — a call
+> parked at `AWAITING_RESULT` is re-dispatched from scratch, straight back
+> through `prepare()`, on every drive until it resolves. Resolve and validate;
+> never take a lock, a lease or a slot here, and never do I/O.
 
 The registry holds no per-call state, which is what makes it safe for several
 conversations at once ([`13-subagents.md`](../../13-subagents.md)). A subclass
@@ -56,7 +69,9 @@ class GatedRegistry(SimpleToolRegistry):
 ```
 
 A raise means the body never ran — `ToolNotFound` records `NOT_FOUND`,
-`InvalidToolArguments` records `INVALID`, both with `started_at=None`.
+`InvalidToolArguments` records `INVALID`, both with **no `ExecutionAttempt`
+appended** (`execution.dispatched` stays False). That is the invariant, and it
+holds on a re-dispatch too, where the call demonstrably ran before.
 
 > ⚠️ **`timeout_in_ms` bounds the body only.** The spec's deadline applies to
 > the prepared callable; resolution, validation and approval sit outside it, so
@@ -114,4 +129,4 @@ Nesting proxies needs nothing special.
 > `ToolNotFound`, so the call records the honest `NOT_FOUND` instead of a false
 > `REJECTED`. Anything that resolves is always gated.
 
-Next: [`plugins/README.md`](../plugins/README.md).
+Next: [`questions/README.md`](../questions/README.md).

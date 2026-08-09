@@ -88,7 +88,8 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
@@ -139,11 +140,18 @@
           ]
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000024000,
-      "ended_at": 1700000024400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000024000,
+          "ended_at": 1700000024400
+        }
+      ],
+      "finished_at": 1700000024400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -179,7 +187,8 @@
               "status": "pending"
             }
           ]
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
       "extras": {},
@@ -229,11 +238,18 @@
           ]
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000491999,
-      "ended_at": 1700000492399,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000491999,
+          "ended_at": 1700000492399
+        }
+      ],
+      "finished_at": 1700000492399,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -275,7 +291,8 @@
         "arguments": {
           "description": "audit the reader",
           "prompt": "Read the store module and report what belongs on the write path."
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
       "extras": {},
@@ -298,11 +315,18 @@
           "process_subagent_result_tool_name": "task_result"
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000042000,
-      "ended_at": 1700000042400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000042000,
+          "ended_at": 1700000042400
+        }
+      ],
+      "finished_at": 1700000042400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -325,7 +349,8 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "result_execution_id": null
     },
@@ -344,7 +369,8 @@
         "arguments": {
           "description": "draft the writer",
           "prompt": "Create writer.py and move the write path into it."
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
       "extras": {},
@@ -367,11 +393,18 @@
           "process_subagent_result_tool_name": "task_result"
         },
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000042000,
-      "ended_at": 1700000042400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000042000,
+          "ended_at": 1700000042400
+        }
+      ],
+      "finished_at": 1700000042400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -394,7 +427,8 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "result_execution_id": null
     },
@@ -481,7 +515,8 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/reader.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
       "extras": {},
@@ -498,11 +533,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000066000,
-      "ended_at": 1700000066400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000066000,
+          "ended_at": 1700000066400
+        }
+      ],
+      "finished_at": 1700000066400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -521,7 +563,8 @@
         "name": "read",
         "arguments": {
           "path": "luca/store/schema.sql"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
       "extras": {},
@@ -538,11 +581,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000114000,
-      "ended_at": 1700000114400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000114000,
+          "ended_at": 1700000114400
+        }
+      ],
+      "finished_at": 1700000114400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -562,7 +612,8 @@
         "arguments": {
           "pattern": "def append|def flush",
           "path": "luca/store"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
       "extras": {},
@@ -579,11 +630,18 @@
         ],
         "structured_content": null,
         "metadata": {},
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000156000,
-      "ended_at": 1700000156400,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000156000,
+          "ended_at": 1700000156400
+        }
+      ],
+      "finished_at": 1700000156400,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -662,7 +720,8 @@
         "name": "write",
         "arguments": {
           "path": "luca/store/writer.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62",
       "extras": {
@@ -710,11 +769,18 @@
         "metadata": {
           "diff": "--- /dev/null\n+++ b\n+class Writer:\n+    def append(self, event):\n+        ...\n+    def flush(self):\n+        ...\n+    def close(self):\n+        ...\n"
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000084000,
-      "ended_at": 1700000084300,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000084000,
+          "ended_at": 1700000084300
+        }
+      ],
+      "finished_at": 1700000084300,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -733,7 +799,8 @@
         "name": "edit",
         "arguments": {
           "path": "luca/store/__init__.py"
-        }
+        },
+        "extras": {}
       },
       "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
       "extras": {
@@ -781,11 +848,18 @@
         "metadata": {
           "diff": "--- a\n+++ b\n-from .reader import Reader, append, flush\n+from .reader import Reader\n+from .writer import Writer\n"
         },
-        "is_error": false
+        "is_error": false,
+        "extras": {}
       },
       "error": null,
-      "started_at": 1700000132000,
-      "ended_at": 1700000132200,
+      "attempts": [
+        {
+          "outcome": "completed",
+          "started_at": 1700000132000,
+          "ended_at": 1700000132200
+        }
+      ],
+      "finished_at": 1700000132200,
       "cancel_signalled_at": null,
       "updated_at": null,
       "is_doom_loop_flagged": false
@@ -816,6 +890,7 @@
   "tool_specs": {
     "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
       "name": "update_todos",
+      "title": null,
       "description": "update_todos tool.",
       "input_schema": {
         "type": "object",
@@ -831,6 +906,7 @@
     },
     "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
       "name": "task",
+      "title": null,
       "description": "task tool.",
       "input_schema": {
         "type": "object",
@@ -856,6 +932,7 @@
     },
     "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
       "name": "read",
+      "title": null,
       "description": "read tool.",
       "input_schema": {
         "type": "object",
@@ -871,6 +948,7 @@
     },
     "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
       "name": "grep",
+      "title": null,
       "description": "grep tool.",
       "input_schema": {
         "type": "object",
@@ -886,6 +964,7 @@
     },
     "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62": {
       "name": "write",
+      "title": null,
       "description": "write tool.",
       "input_schema": {
         "type": "object",
@@ -901,6 +980,7 @@
     },
     "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
       "name": "edit",
+      "title": null,
       "description": "edit tool.",
       "input_schema": {
         "type": "object",
@@ -1031,8 +1111,17 @@
       "wake_parent_on_subagent_completion": true,
       "limit_tool_choice_on_soft_max_steps_reached": true,
       "limit_tool_choice_on_doom_loop_flagged": true
-    }
+    },
+    "use_native_tools": false
   },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "model_options": {},
+    "provider_options": {}
+  },
+  "use_native_tools": false,
   "extras": {
     "todos": {
       "c1": {

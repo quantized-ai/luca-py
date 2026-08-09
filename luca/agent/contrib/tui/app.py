@@ -82,7 +82,7 @@ from .blocks import (
     ToolBlockView,
 )
 from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
-from .format import HINTS, home_path, inline_paths, short_model
+from .format import HINTS, home_path, inline_paths, question_hints_for, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
@@ -91,22 +91,32 @@ from .prompt_files import ReadLimits, parse_prompt
 from .render import (
     SCRATCHPAD_STORE_KEY,
     TODO_STORE_KEY,
+    answer_payload,
     child_links,
     entry_blocks,
     filter_rows,
+    is_questions_tool,
     is_runtime_plumbing,
     mention_blocks,
     picker_rows,
     plan_block,
     plan_dismissed,
+    question_set_state,
+    question_transcript_blocks,
     session_todos,
     subagent_task,
     tool_block,
+    user_prompts,
     user_transcript_text,
     was_auto_approved,
 )
-from .sessions import save_session
-from .shells import ApprovalPromptView, OverlayListView
+from .sessions import QUESTIONS_STORE_KEY, load_tui_state, save_session, save_tui_state
+from .shells import (
+    ApprovalPromptView,
+    OverlayListView,
+    QuestionConfirmView,
+    QuestionSetView,
+)
 from .usage import status_counter
 from .wiring import build_runner
 
@@ -171,7 +181,8 @@ class AgentApp(LucaApp):
         self._instructions = instructions
         self._extra_instructions = extra_instructions
         self._resume = resume
-        self.runner, self.strategy = self._build_runner(session)
+        self._tui_state: dict = {}
+        self.runner, self.strategy, self.questions = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._driving = False
         # KEYED BY CONVERSATION: with subagents several conversations stream
@@ -191,6 +202,12 @@ class AgentApp(LucaApp):
         self._answered: set[str] = set()
         self._denied_by_user: set[str] = set()
         self._approval_future: asyncio.Future[int] | None = None
+        # The question set currently in the dock, and the future its submission
+        # resolves. Held on the app rather than the widget because the app owns
+        # advancing the active tab, flipping `phase` and rebuilding the state —
+        # the widget never decides which question comes next.
+        self._questions_state: vm.QuestionSetState | None = None
+        self._questions_future: asyncio.Future[dict] | None = None
         self._retry_prompt_active = False
         self._git = GitInfo()
         self._show_counter = True
@@ -198,6 +215,13 @@ class AgentApp(LucaApp):
         # the dock, so the half-typed message has to be carried across and put
         # back — with the `@` picker's paths inlined, or unchanged on esc.
         self._composer_prefix = ""
+        # Where ↑/↓ has walked back to in the messages already sent, and the
+        # draft that was in the box when the walk started. On the APP because
+        # every overlay, approval prompt and question set destroys the composer
+        # and mounts a fresh one — widget-local state would not survive a
+        # picker opening mid-browse.
+        self._history_offset = 0
+        self._history_draft = ""
         self._menu_handler = None
         self._menu_rows: list[vm.OverlayRow] = []
         self._menu_all_rows: list[vm.OverlayRow] = []
@@ -236,6 +260,9 @@ class AgentApp(LucaApp):
     # ── input ─────────────────────────────────────────────────────────────────
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        # ANY enter ends the walk, including the paths that refuse the submit
+        # below — what is in the box is the draft again from here on.
+        self._history_offset = 0
         text = event.value.strip()
         if text.startswith("/"):
             from .commands import dispatch
@@ -262,8 +289,15 @@ class AgentApp(LucaApp):
         # siblings still working leaves this conversation BUSY, and steering
         # posts into a live orchestration stay supported. Checked BEFORE the
         # post, so 0008's own BLOCKED → BUSY transition cannot bypass it.
+        # BLOCKED now has two causes (0007), and the notice has to name the one
+        # in front of the user: an approval gate, or a tool that said "not yet"
+        # and is holding the dock with its own prompt.
         if self.runner.blocked():
-            await self._notice("answer the approval prompt first", error=True)
+            parked = self.runner.pending_deferred_tool_executions()
+            await self._notice(
+                "answer the questions first" if parked else "answer the approval prompt first",
+                error=True,
+            )
             return
         try:
             self.runner.post_message(parts)
@@ -296,6 +330,24 @@ class AgentApp(LucaApp):
             limits=self._read_limits,
             context_window=get_context_window_size(self.runner.session),
         )
+
+    async def on_prompt_input_history_requested(self, message: PromptInput.HistoryRequested) -> None:
+        """↑/↓ off the edge of the composer walks the messages already sent.
+
+        Offset 0 is the DRAFT — stashed on the way in and handed back on the
+        way out, so browsing never eats what was half-typed. The list is
+        re-derived from the session on every press: it is the only copy, and
+        nothing else has to be kept in step with `/clear`, resume or a fork."""
+        prompts = user_prompts(self.runner.session)
+        offset = self._history_offset - message.delta
+        if not prompts or not 0 <= offset <= len(prompts):
+            return
+        if self._history_offset == 0:
+            self._history_draft = message.prompt_input.text
+        self._history_offset = offset
+        field = message.prompt_input
+        field.load_text(prompts[-offset] if offset else self._history_draft)
+        field.move_cursor(field.document.end)
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """`/` in an empty composer opens the palette; `@` opens the context
@@ -338,7 +390,7 @@ class AgentApp(LucaApp):
                             await self._on_agent_event(event)
                 except Exception as exc:
                     self._current_run = None
-                    save_session(runner.session, self._session_dir)
+                    self._save()
                     self._refresh_status()
                     if not await self._recover_from(exc):
                         break
@@ -346,10 +398,16 @@ class AgentApp(LucaApp):
                 finally:
                     self._current_run = None
                     self._sync_tasks()
-                    save_session(runner.session, self._session_dir)
+                    self._save()
                     self._refresh_status()
                 if runner.blocked():
                     await self._resolve_approvals()
+                    # A cancel raised at the approval prompt has not been
+                    # consumed yet, so the parked call is still parked — asking
+                    # its questions now would prompt for a turn the user just
+                    # ended. The next drive winds it down instead.
+                    if not runner.cancelling() and not await self._resolve_questions():
+                        break
         finally:
             self._driving = False
             self._set_busy(False)
@@ -479,6 +537,226 @@ class AgentApp(LucaApp):
             self.strategy.apply_answer(execution, answers)
         await self._restore_composer()
 
+    # ── the agent's questions (the fourth dock) ───────────────────────────────
+
+    async def _resolve_questions(self) -> bool:
+        """Answer every parked `ask_user` call, then hand the composer back.
+
+        True = the drive may continue. False = there is a parked call this app
+        cannot resolve, so DRIVING AGAIN WOULD SPIN: 0007 has no framework
+        backoff, and a driver that re-enters `run()` without resolving anything
+        gets another deferral immediately. The only way that happens is a
+        deferring tool the TUI did not install, which is why it is a notice and
+        not a crash."""
+        parked = self.runner.pending_deferred_tool_executions()
+        if not parked:
+            return True
+        unresolved = [execution for execution in parked if not is_questions_tool(execution)]
+        for execution in parked:
+            if not is_questions_tool(execution):
+                continue
+            await self._ask_questions(execution)
+            # Written the moment it is answered, not at the end of the drive: a
+            # crash between here and the next save must not lose an answer the
+            # user already gave.
+            self._save()
+        await self._restore_composer()
+        if unresolved:
+            names = ", ".join(sorted({execution.raw_tool_call.name for execution in unresolved}))
+            await self._notice(
+                f"{names} is waiting on something this app cannot answer — stopping here",
+                error=True,
+            )
+            return False
+        return True
+
+    async def _ask_questions(self, execution: ToolExecution) -> None:
+        """Put one parked call's questions in the dock and block on the human.
+
+        BLOCKING IS THE CONTRACT. 0007's driver rule is that a handler must not
+        return until it has made progress; this awaits the user and then writes
+        the payload through `QuestionsTool.answer()`, which never raises — a
+        raising validator here would abort the handler before it resolved
+        anything and hang the UI on a cosmetic mismatch."""
+        questions = self.questions.tool.pending(execution.tool_call_id)
+        if not questions:
+            # The store lost this job (a sidecar that could not be read) but the
+            # call is still parked. Answering nothing is still an answer: the
+            # tool completes, the model reads "no answer", and the turn moves.
+            self.questions.tool.answer(execution.tool_call_id, {"answers": [], "custom_notes": None})
+            return
+        self._questions_state = question_set_state(questions)
+        payload = await self._collect_questions()
+        self.questions.tool.answer(execution.tool_call_id, payload)
+        self._questions_state = None
+
+    async def _collect_questions(self) -> dict:
+        await self._show_questions()
+        self._questions_future = asyncio.get_running_loop().create_future()
+        try:
+            return await self._questions_future
+        finally:
+            self._questions_future = None
+
+    async def _show_questions(self) -> None:
+        state = self._questions_state
+        await self.show_questions(state)
+        self.set_hints(question_hints_for(state))
+
+    def _finish_questions(self) -> None:
+        state = self._questions_state
+        if self._questions_future is not None and not self._questions_future.done():
+            self._questions_future.set_result(answer_payload(state))
+
+    def _question(self) -> vm.Question:
+        return self._questions_state.questions[self._questions_state.active]
+
+    def _replace_question(self, question: vm.Question, **state_changes) -> None:
+        state = self._questions_state
+        questions = list(state.questions)
+        questions[state.active] = question
+        self._questions_state = state.model_copy(update={"questions": questions, **state_changes})
+
+    async def _advance_questions(self) -> None:
+        """Answering advances to the next UNANSWERED tab, wrapping; when
+        answering the current one leaves none open, the dock flips to the
+        confirmation instead. Both come from `settled`, so the panel and the
+        hint legend can never disagree about what `enter` just did."""
+        state = self._questions_state
+        if state.settled:
+            self._questions_state = state.model_copy(update={"phase": "confirming"})
+        else:
+            count = len(state.questions)
+            for step in range(1, count + 1):
+                index = (state.active + step) % count
+                if not state.questions[index].answered:
+                    self._questions_state = state.model_copy(update={"active": index, "editing_custom": False})
+                    break
+        await self._show_questions()
+
+    async def on_question_set_view_answered(self, message: QuestionSetView.Answered) -> None:
+        question = self._question()
+        options = list(question.options)
+        picked = options[message.index]
+        if question.mode == "single":
+            # A CUSTOM ANSWER IS EXCLUSIVE in a radio question: typing into it
+            # clears any picked option, and picking an option clears it.
+            options = [
+                option.model_copy(update={"text": None})
+                if option.kind == "custom" and picked.kind != "custom"
+                else option
+                for option in options
+            ]
+        # `answer` is THE PICK and `selected` is the caret: they coincide here
+        # because committing moves neither, and they diverge the moment the
+        # user arrows over an answered question to re-read it. Only `answer`
+        # reaches the model. In multi mode the ticks carry the answer, so it
+        # stays None.
+        self._replace_question(
+            question.model_copy(
+                update={
+                    "options": options,
+                    "selected": message.index,
+                    "answer": None if question.mode == "multi" else message.index,
+                    "answered": True,
+                },
+            ),
+            editing_custom=False,
+        )
+        await self._advance_questions()
+
+    async def on_question_set_view_toggled(self, message: QuestionSetView.Toggled) -> None:
+        question = self._question()
+        options = list(question.options)
+        option = options[message.index]
+        options[message.index] = option.model_copy(update={"checked": not option.checked})
+        self._replace_question(question.model_copy(update={"options": options, "selected": message.index}))
+        await self._show_questions()
+
+    async def on_question_set_view_custom_changed(self, message: QuestionSetView.CustomChanged) -> None:
+        """The typed text, one keystroke at a time.
+
+        THE PANEL IS NOT REBUILT. The widget has already redrawn the row it
+        owns, and nothing else on screen depends on the text; remounting the
+        whole set per character would flicker, and every keystroke that landed
+        during the remount would be lost.
+
+        IT ALSO SAYS NOTHING ABOUT EDIT MODE. A text change is not a focus
+        change — `Moved` is what reports that — and inferring one from the
+        other put the dock back into editing the moment a rebuilt field
+        reloaded its own text on mount."""
+        question = self._question()
+        options = list(question.options)
+        for index, option in enumerate(options):
+            if option.kind == "custom":
+                options[index] = option.model_copy(update={"text": message.text or None})
+                break
+        self._replace_question(question.model_copy(update={"options": options}))
+        self.set_hints(question_hints_for(self._questions_state))
+
+    async def on_question_set_view_chat_requested(self, message: QuestionSetView.ChatRequested) -> None:
+        """THE ONE WAY OUT. It ends the set immediately — no confirmation —
+        keeping every answer given so far; the question that triggered it is
+        reported as declined, the model answers in prose, and the composer takes
+        the dock back. The tool call still COMPLETES: this is a result the model
+        reads, not a cancellation."""
+        question = self._question()
+        options = [
+            option.model_copy(update={"checked": True}) if option.kind == "chat" else option
+            for option in question.options
+        ]
+        self._replace_question(question.model_copy(update={"options": options}), editing_custom=False)
+        self._finish_questions()
+
+    async def on_question_set_view_moved(self, message: QuestionSetView.Moved) -> None:
+        """The caret or the active tab moved: MERGE the three facts the widget
+        owns and re-derive the legend.
+
+        Merged, never assigned wholesale. The widget's model is a snapshot that
+        diverges the moment the app rewrites an answer, because the app rebuilds
+        the panel from ITS state and the widget's copy keeps the pre-edit
+        options — so assigning it back would silently undo whatever the app just
+        wrote. `esc` on the custom row is exactly that race: it posts
+        `CustomChanged("")` and then `Moved`, and taking the widget's options
+        would restore the text the clear had just removed."""
+        moved = message.view.model
+        state = self._questions_state
+        # A caret move changes one row's colours and the widget has already
+        # done it. A TAB MOVE or an edit-mode flip changes the whole panel —
+        # title, body, option list — so those two are what force a rebuild.
+        # Without it `⇥` silently keeps drawing the previous question while
+        # every keystroke answers the new one.
+        reshaped = moved.active != state.active or moved.editing_custom != state.editing_custom
+        merged = [
+            question.model_copy(update={"selected": moved.questions[index].selected})
+            for index, question in enumerate(state.questions)
+        ]
+        self._questions_state = state.model_copy(
+            update={
+                "questions": merged,
+                "active": moved.active,
+                "editing_custom": moved.editing_custom,
+            },
+        )
+        if reshaped:
+            await self._show_questions()
+        else:
+            self.set_hints(question_hints_for(self._questions_state))
+
+    async def on_question_confirm_view_submitted(self, message: QuestionConfirmView.Submitted) -> None:
+        self._questions_state = self._questions_state.model_copy(update={"extra": message.extra or None})
+        self._finish_questions()
+
+    async def on_question_confirm_view_cancelled(self, message: QuestionConfirmView.Cancelled) -> None:
+        """Reaching the confirmation is never a dead end: `esc` returns to the
+        questions with EVERYTHING intact — the answers, and whatever was typed
+        into the optional field, which the message carries back so a second
+        visit finds it still there."""
+        self._questions_state = self._questions_state.model_copy(
+            update={"phase": "asking", "extra": message.extra or None},
+        )
+        await self._show_questions()
+
     async def _restore_composer(self, text: str = "") -> None:
         placeholder = "working…" if self._driving else "ask, or / for commands"
         composer = await self.show_composer(vm.ComposerState(placeholder=placeholder, text=text))
@@ -534,6 +812,11 @@ class AgentApp(LucaApp):
                 pass  # a spawn renders as its task block; private tools render nothing
             case ToolCallReceived(execution=execution) if is_todo_tool(execution):
                 pass  # a todo call is the sticky panel, not a transcript row
+            case ToolCallReceived(execution=execution) if is_questions_tool(execution):
+                # The set holds the DOCK while it is out; a half-empty header
+                # row above it would say it is over when it is not. It lands in
+                # the transcript once, collapsed, on `ToolExecuted`.
+                pass
             case ToolCallReceived(tool_call_id=tool_call_id, execution=execution):
                 view = ToolBlockView(tool_block(execution))
                 self._tool_views[tool_call_id] = view
@@ -552,6 +835,14 @@ class AgentApp(LucaApp):
                 elif source == self.runner.main_conversation_id and is_todo_update(execution):
                     self._plan_changed = changed_of(execution)
                     self._render_plan(running=True)
+            case ToolExecuted(execution=execution) if question_transcript_blocks(execution) is not None:
+                # The SAME derivation the replay uses, so a cancelled or
+                # invalid set cannot render one thing now and another on
+                # reload. A `None` here means "not special" and falls through
+                # to the ordinary tool block below.
+                for block in question_transcript_blocks(execution):
+                    await self._mount_widget_block(block, source)
+                self.scroll_transcript_end()
             case ToolExecuted(
                 tool_call_id=tool_call_id,
                 execution=execution,
@@ -732,6 +1023,9 @@ class AgentApp(LucaApp):
     async def open_palette(self, query: str = "") -> None:
         from .commands import palette_rows
 
+        if self._questions_hold_the_dock():
+            return
+
         self._composer_prefix = ""  # the palette only opens on a lone `/`
         self._menu_all_rows = palette_rows()
         self._menu_handler = self._run_palette_choice
@@ -742,6 +1036,9 @@ class AgentApp(LucaApp):
         """`@` picker. Each open starts unchecked: the paths it commits go into
         the composer as text, so there is no standing set to reopen onto."""
         from .files import list_workspace_files
+
+        if self._questions_hold_the_dock():
+            return
 
         composer = self.composer()
         self._composer_prefix = composer.input.text if composer is not None else ""
@@ -858,7 +1155,7 @@ class AgentApp(LucaApp):
     # ── actions ───────────────────────────────────────────────────────────────
 
     async def action_palette(self) -> None:
-        if self.query(OverlayListView):
+        if self.query(OverlayListView) or self._questions_hold_the_dock():
             return
         await self.open_palette()
 
@@ -896,7 +1193,24 @@ class AgentApp(LucaApp):
         )
         await self._notice(f"image attached ({len(self._pending_images)}) — enter sends it")
 
+    def _questions_hold_the_dock(self) -> bool:
+        """A question set is up and the drive worker is blocked on it.
+
+        Anything that would REPLACE the dock has to refuse while this is true:
+        `show_overlay` empties the dock slot, and the view it destroys is the
+        only thing that can resolve `_questions_future` — after which `esc`,
+        `^c` and the composer are all inert and the turn is unrecoverable."""
+        return self._questions_future is not None
+
     async def action_cancel_run(self) -> None:
+        if self._questions_future is not None:
+            # A question set holds the dock and the drive worker is blocked on
+            # the human. Cancelling here would leave that future unresolved and
+            # the worker parked forever — and the design gives the set its own
+            # way out (Chat about this), so `esc` has no business ending the
+            # turn from under it. The panel swallows `esc` anyway; this is the
+            # backstop for every other route to this action.
+            return
         run = self._current_run
         if run is None:
             if self._pending_images:
@@ -913,12 +1227,38 @@ class AgentApp(LucaApp):
         await self._quit()
 
     async def _quit(self) -> None:
-        save_session(self.runner.session, self._session_dir)
+        self._save()
+        await self._close_plugins()
         self.exit()
 
     # ── session plumbing ──────────────────────────────────────────────────────
 
+    async def _close_plugins(self) -> None:
+        """Dispose of the runner we are about to drop. `ShellAccessPlugin`
+        holds live bash processes (one per conversation, for the Anthropic
+        native bash); a plugin with nothing to release has no `aclose`."""
+        for plugin in getattr(self.runner, "plugins", []):
+            aclose = getattr(plugin, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
     def _build_runner(self, session: AgentSession):
+        """Compose the runner for one session, and load THE TUI'S OWN STATE for
+        it from the `<session-id>.tui.json` sidecar beside the session file.
+
+        The question store lives there rather than on `AgentSession.extras`
+        because outstanding questions are the INTERFACE's state: another driver
+        loading this session has no use for a prompt only this TUI knows how to
+        render. Losing the sidecar is survivable — `ask_user` re-seeds from
+        `raw_tool_call.arguments` and defers again, so the user is asked a
+        second time rather than left wedged."""
+        self._tui_state = load_tui_state(session.id, self._session_dir)
+        # The store is the app's own reference, NOT a key `setdefault`-ed into
+        # `_tui_state` — that would make the state permanently truthy and write
+        # a sidecar beside every session that never asked a question.
+        # `_save()` files it back only when it holds something.
+        stored = self._tui_state.get(QUESTIONS_STORE_KEY)
+        self._questions_store: dict = stored if isinstance(stored, dict) else {}
         return build_runner(
             session,
             workspace=self._workspace,
@@ -933,7 +1273,20 @@ class AgentApp(LucaApp):
             extra_skill_locations=self._extra_skill_locations,
             instructions=self._instructions,
             extra_instructions=self._extra_instructions,
+            questions_store=self._questions_store,
         )
+
+    def _save(self) -> None:
+        """Persist both halves of a session: the conversation and the TUI's own
+        sidecar. Called wherever `save_session` used to be, so the two can never
+        drift out of step."""
+        save_session(self.runner.session, self._session_dir)
+        state = dict(self._tui_state)
+        if self._questions_store:
+            state[QUESTIONS_STORE_KEY] = self._questions_store
+        else:
+            state.pop(QUESTIONS_STORE_KEY, None)
+        save_tui_state(self.runner.session.id, state, self._session_dir)
 
     def _settle(self) -> None:
         if self.runner.idle():
@@ -944,7 +1297,10 @@ class AgentApp(LucaApp):
             self._start_drive()
 
     async def _reset_session(self, session: AgentSession) -> None:
-        self.runner, self.strategy = self._build_runner(session)
+        # `/clear`, `/resume` and fork all land here, each discarding a whole
+        # runner — including the shell plugin's live bash processes.
+        await self._close_plugins()
+        self.runner, self.strategy, self.questions = self._build_runner(session)
         await self.clear_transcript()
         self._live_thinking.clear()
         self._live_text.clear()
@@ -954,6 +1310,7 @@ class AgentApp(LucaApp):
         self._pending_images.clear()
         self._answered.clear()
         self._denied_by_user.clear()
+        self._history_offset = 0
         await self._replay_history()
         self._refresh_status()
         self._settle()
@@ -1065,7 +1422,7 @@ class AgentApp(LucaApp):
         adjust_setting(self, message.screen, message.row, message.delta)
 
     async def on_settings_screen_closed(self, message: SettingsScreen.Closed) -> None:
-        save_session(self.runner.session, self._session_dir)
+        self._save()
         self._refresh_status()
 
     async def on_cost_screen_compact_requested(self, message: CostScreen.CompactRequested) -> None:
@@ -1074,6 +1431,12 @@ class AgentApp(LucaApp):
         await self._notice("compacting the conversation…")
         if not self._driving:
             self._start_drive()
+
+    def action_clear_prompt(self) -> None:
+        # Throwing the text away ends the walk with it: what `↓` would hand
+        # back is a draft the user has just discarded.
+        self._history_offset = 0
+        super().action_clear_prompt()
 
     async def on_key(self, event) -> None:
         # ^r at the retry prompt = "Retry now" (option 1).

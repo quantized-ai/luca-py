@@ -28,6 +28,8 @@ from luca.agent.core.models import (
     AssistantMessage,
     ChildConversation,
     ConversationStatus,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -77,7 +79,7 @@ class PostingHangTool(FakeTool):
     def __init__(self) -> None:
         self.post = None  # wired by the test
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         self.post()
         await asyncio.sleep(3600)
         return "unreachable"
@@ -184,8 +186,8 @@ def resolved_unseen_session(**runtime):
                 ),
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500)],
-                started_at=500,
-                ended_at=500,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=500, ended_at=500)],
+                finished_at=500,
                 updated_at=500,
             ),
             "ch1": ChildConversation(
@@ -209,8 +211,8 @@ def resolved_unseen_session(**runtime):
                 result=ExecutionResult(content=[TextContent(text="A done")]),
                 approval_status=ApprovalStatus.ALLOWED,
                 approval_decisions=[ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=600)],
-                started_at=600,
-                ended_at=600,
+                attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=600, ended_at=600)],
+                finished_at=600,
                 updated_at=600,
             ),
             "u_seed": UserMessage(id="u_seed", created_at=500, parts=[TextContent(text="Research A")]),

@@ -139,3 +139,105 @@ def test_dock_prefers_approval_then_overlay_then_composer():
     assert vm.ScreenState(approval=approval, overlay=overlay).dock() == "approval"
     assert vm.ScreenState(overlay=overlay).dock() == "overlay"
     assert vm.ScreenState().dock() == "composer"
+
+
+# ── the question set: the fourth dock ─────────────────────────────────────────
+
+# Two questions, differing only in the one field `settled` reads.
+ANSWERED_QUESTION = vm.Question(tab="storage", title="Where should the sqlite file live?", answered=True)
+OPEN_QUESTION = vm.Question(tab="backfill", title="How should existing sessions be backfilled?")
+
+# The `questions:` half of a YAML fixture, with every column treatment the
+# panel has: a picked radio, the custom row holding text, and the chat row.
+QUESTIONS_FIXTURE = {
+    "active": 1,
+    "phase": "asking",
+    "editing_custom": True,
+    "extra": "in-process is fine if it's scoped",
+    "questions": [
+        {
+            "tab": "storage",
+            "title": "Where should the sqlite file live?",
+            "answered": True,
+            "selected": 1,
+            "options": [
+                {"label": "~/.luca/projects/<project>/events.db"},
+                {"label": "Beside the jsonl files"},
+                {"label": "Custom answer:", "kind": "custom"},
+                {"label": "Chat about this", "kind": "chat", "key_hint": "enter"},
+            ],
+        },
+        {
+            "tab": "rollout",
+            "title": "Which surfaces read sqlite first?",
+            "body": ["Anything left unticked keeps the jsonl path until it's ported."],
+            "mode": "multi",
+            "options": [
+                {"label": "the sessions screen", "checked": True},
+                {"label": "the cost screen"},
+                {"label": "Custom answer:", "kind": "custom", "checked": True, "text": "the replay screen"},
+                {"label": "Chat about this", "kind": "chat", "key_hint": "enter"},
+            ],
+        },
+    ],
+}
+
+
+def test_a_question_set_fixture_validates_to_the_typed_view_model():
+    assert vm.QuestionSetState.model_validate(QUESTIONS_FIXTURE) == vm.QuestionSetState(
+        active=1,
+        phase="asking",
+        editing_custom=True,
+        extra="in-process is fine if it's scoped",
+        questions=[
+            vm.Question(
+                tab="storage",
+                title="Where should the sqlite file live?",
+                answered=True,
+                selected=1,
+                options=[
+                    vm.QuestionOption(label="~/.luca/projects/<project>/events.db"),
+                    vm.QuestionOption(label="Beside the jsonl files"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+                ],
+            ),
+            vm.Question(
+                tab="rollout",
+                title="Which surfaces read sqlite first?",
+                body=["Anything left unticked keeps the jsonl path until it's ported."],
+                mode="multi",
+                options=[
+                    vm.QuestionOption(label="the sessions screen", checked=True),
+                    vm.QuestionOption(label="the cost screen"),
+                    vm.QuestionOption(label="Custom answer:", kind="custom", checked=True, text="the replay screen"),
+                    vm.QuestionOption(label="Chat about this", kind="chat", key_hint="enter"),
+                ],
+            ),
+        ],
+    )
+
+
+def test_a_set_is_settled_only_once_every_question_is_answered():
+    assert [
+        vm.QuestionSetState(questions=[ANSWERED_QUESTION, ANSWERED_QUESTION]).settled,
+        vm.QuestionSetState(questions=[ANSWERED_QUESTION, OPEN_QUESTION]).settled,
+        vm.QuestionSetState(questions=[OPEN_QUESTION]).settled,
+    ] == [True, False, False]
+
+
+def test_an_empty_set_is_not_settled():
+    # `all([])` is vacuously true; a set with nothing in it has nothing to
+    # submit, so the predicate that flips the dock to the confirmation says so.
+    assert vm.QuestionSetState().settled is False
+
+
+def test_dock_gives_a_question_set_the_composers_place():
+    assert vm.ScreenState(questions=vm.QuestionSetState(questions=[OPEN_QUESTION])).dock() == "questions"
+
+
+def test_dock_prefers_approval_over_questions_and_questions_over_overlay():
+    approval = vm.ApprovalState(question="Run bash?", options=[vm.ApprovalOption(label="Approve once")])
+    questions = vm.QuestionSetState(questions=[OPEN_QUESTION])
+    assert vm.ScreenState(approval=approval, questions=questions, overlay=vm.OverlayState()).dock() == "approval"
+    assert vm.ScreenState(questions=questions, overlay=vm.OverlayState()).dock() == "questions"

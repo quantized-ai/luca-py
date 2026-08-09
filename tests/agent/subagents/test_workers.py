@@ -51,7 +51,7 @@ class SlowTool(FakeTool):
     class Args(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-    async def _execute(self, args, session, conversation_id, *, cancellation_token) -> str:
+    async def _execute(self, args, session, conversation_id, *, tool_name, tool_call_id, cancellation_token) -> str:
         await asyncio.sleep(0.05)
         return "slow done"
 

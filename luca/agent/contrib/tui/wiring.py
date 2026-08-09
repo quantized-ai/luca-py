@@ -2,10 +2,10 @@
 
 `build_runner` reproduces the demo wiring in one place: the prompt plugins
 (the model's base prompt, the environment, the project's instruction files),
-the shell plugin's tools scoped to a workspace, the memory plugin, the three
-demo math tools, and ONE `PermissionStrategy` (built and seeded by
-`ShellAccessPlugin`) shared by every registry so a single approval gate serves
-everything.
+the shell plugin's tools scoped to a workspace, the memory plugin, the
+questions plugin (`ask_user`), the three demo math tools, and ONE
+`PermissionStrategy` (built and seeded by `ShellAccessPlugin`) shared by every
+registry so a single approval gate serves everything.
 
 `build_faux_provider` scripts an offline conversation (`--faux`) so the TUI
 can be exercised end-to-end with no key and no network — the same
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from luca.agent.contrib.memory import MemoryPlugin
 from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.prompts import InstructionsPlugin, SystemPromptPlugin
+from luca.agent.contrib.questions import QuestionsPlugin
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.shell import ShellAccessPlugin
 from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
@@ -62,6 +63,8 @@ class AddTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] + args["b"])
@@ -78,6 +81,8 @@ class SubtractTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] - args["b"])
@@ -94,6 +99,8 @@ class MultiplyTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return str(args["a"] * args["b"])
@@ -126,14 +133,24 @@ def build_runner(
     extra_skill_locations: list[str] | None = None,
     instructions: bool = True,
     extra_instructions: list[str] | None = None,
-) -> tuple[PluginAgentSessionRunner, PermissionStrategy]:
-    """The full demo composition: shell + memory plugins, the math tools, one
-    shared strategy, and — unless `subagents=False` — the subagent tools. `provider=` is the zero-logic passthrough the tests use
-    to inject a `FauxProvider`, and `api_key=` the credential the app resolved
-    for the session's provider (None = let the client read its env var); `context_manager=` is the same for context
-    accounting and compaction — `None` falls back to core's default, which
-    accounts but never compacts, so `/compact` fails until one that implements
-    `compact()` is passed here."""
+    questions_store: dict | None = None,
+) -> tuple[PluginAgentSessionRunner, PermissionStrategy, QuestionsPlugin]:
+    """The full demo composition: shell + memory + questions plugins, the math
+    tools, one shared strategy, and — unless `subagents=False` — the subagent
+    tools. `provider=` is the zero-logic passthrough the tests use to inject a
+    `FauxProvider`, and `api_key=` the credential the app resolved for the
+    session's provider (None = let the client read its env var);
+    `context_manager=` is the same for context accounting and compaction —
+    `None` falls back to core's default, which accounts but never compacts, so
+    `/compact` fails until one that implements `compact()` is passed here.
+
+    `questions_store=` is the dict `QuestionsTool` keeps its outstanding jobs
+    in. The app hands in the one it loaded from the session's `.tui.json`
+    sidecar, so a question parked when the process died comes back parked;
+    passing nothing starts clean, which is right for a script and wrong for
+    anything a user comes back to. The plugin is returned alongside the runner
+    because the driver needs a stable reference to `answer()` on — resolving a
+    deferred tool belongs to the tool and its driver, never to the runner."""
     # Skill roots become read-granted directories on the shell plugin below, so
     # bundled files open without a prompt. Read tier only.
     skills_plugin = SkillsPlugin(workspace=workspace, extra_locations=extra_skill_locations) if skills else None
@@ -163,7 +180,12 @@ def build_runner(
         scratchpad_store=session.extras.setdefault(SCRATCHPAD_STORE_KEY, {}),
         todo_store=session.extras.setdefault(TODO_STORE_KEY, {}),
     )
-    plugins: list = [SystemPromptPlugin(workspace=workspace), memory, shell]
+    # THE `ask_user` TOOL, and the one deferred tool the demo ships. Its store
+    # is the app's, not the session's: outstanding questions are the
+    # INTERFACE's state, and a second driver loading this session has no use
+    # for a prompt only this TUI knows how to render.
+    questions = QuestionsPlugin(store=questions_store)
+    plugins: list = [SystemPromptPlugin(workspace=workspace), memory, questions, shell]
     if skills_plugin is not None:
         plugins.append(skills_plugin)
     if instructions:
@@ -183,7 +205,7 @@ def build_runner(
         api_key=api_key,
         context_manager=context_manager,
     )
-    return runner, strategy
+    return runner, strategy, questions
 
 
 def build_faux_provider() -> FauxProvider:

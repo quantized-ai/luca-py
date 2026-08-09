@@ -33,6 +33,7 @@ from .exceptions import (
 )
 from .middleware import AgentMiddlewareMixin
 from .models import (
+    SPEC_VERSION,
     AgentSession,
     AnyEntry,
     ApprovalDecision,
@@ -50,6 +51,9 @@ from .models import (
     ConversationRuntimeStatus,
     ConversationStatus,
     Entry,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
+    ExecutionDeferred,
     ExecutionResult,
     ExecutionStatus,
     ImageBase64,
@@ -133,6 +137,9 @@ __all__ = [
     "ConversationStatus",
     "DefaultSystemPromptAssembler",
     "Entry",
+    "ExecutionAttempt",
+    "ExecutionAttemptOutcome",
+    "ExecutionDeferred",
     "ExecutionResult",
     "ExecutionStatus",
     "ImageBase64",
@@ -152,6 +159,7 @@ __all__ = [
     "PrunedEntry",
     "RunResult",
     "RuntimeConfig",
+    "SPEC_VERSION",
     "Seconds",
     "SessionConfig",
     "ConversationRuntimeStatus",

@@ -43,6 +43,8 @@ from luca.agent.core.models import (
     ApprovalOption,
     ApprovalStatus,
     AssistantMessage,
+    ExecutionAttempt,
+    ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
     RuntimeConfig,
@@ -103,6 +105,8 @@ class CooperatingHangTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         try:
@@ -138,6 +142,8 @@ class StubbornHangTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         try:
@@ -162,6 +168,8 @@ class TightTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return "tight"
@@ -181,6 +189,8 @@ class LookupTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         raise ToolNotFound("No such record: 42.")
@@ -200,6 +210,8 @@ class ValidatingTool(FakeTool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         BinaryArgs.model_validate({})
@@ -442,8 +454,8 @@ def prepare_failure(
 
     Only `status` and `error` vary with the exception: the birth `tool_spec`
     stands (there is no dispatch-time re-snapshot), approval was granted and
-    stays granted, and nothing about the body was ever stamped — `started_at`
-    is None, so `dispatched` is False, and there is no result."""
+    stays granted, and the body was never invoked — no attempt was ever
+    appended, so `dispatched` is False, and there is no result."""
     return ToolExecution(
         id="te1",
         conversation_id="c1",
@@ -460,8 +472,8 @@ def prepare_failure(
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=len(error.error_message) // 4,
     )
@@ -476,13 +488,15 @@ def resolution_facts(execution: ToolExecution) -> dict:
         "status": execution.status,
         "error_type": execution.error.error_type,
         "result": execution.result,
-        "started_at": execution.started_at,
+        "attempts": execution.attempts,
         "dispatched": execution.dispatched,
     }
 
 
 # The orphan recovery outcome, shared by the two scenarios that produce it:
-# an orphan is exactly another INTERRUPTED execution.
+# an orphan is exactly another INTERRUPTED execution. Its dangling attempt —
+# opened when the dead process persisted RUNNING — is closed as DISCARDED:
+# recovery never learned how that invocation ended.
 RECOVERED_ORPHAN = ToolExecution(
     id="te1",
     conversation_id="c1",
@@ -498,8 +512,8 @@ RECOVERED_ORPHAN = ToolExecution(
     approval_decisions=[
         ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=500),
     ],
-    started_at=500,
-    ended_at=1000,
+    attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.DISCARDED, started_at=500, ended_at=1000)],
+    finished_at=1000,
     updated_at=1000,
 )
 
@@ -569,8 +583,8 @@ async def test_tool_timeout_records_timed_out_and_the_turn_continues():
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=None,
         updated_at=1000,
     )
@@ -720,8 +734,8 @@ async def test_instant_tool_under_a_huge_deadline_is_unaffected():
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     assert [event.type for event in events] == [
@@ -783,8 +797,8 @@ async def test_a_prepare_slower_than_the_tools_own_deadline_still_succeeds():
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=1,
     )
@@ -832,8 +846,8 @@ async def test_the_same_deadline_against_a_slow_callable_records_timed_out():
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.TIMED_OUT, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         cancel_signalled_at=None,
         updated_at=1000,
     )
@@ -972,7 +986,7 @@ async def test_a_resolution_failure_records_the_same_way_whenever_it_is_found():
             "status": ExecutionStatus.NOT_FOUND,
             "error_type": "ToolNotFound",
             "result": None,
-            "started_at": None,
+            "attempts": [],
             "dispatched": False,
         }
     )
@@ -1058,8 +1072,8 @@ async def test_a_non_callable_prepare_fails_one_execution_and_leaves_the_rest(re
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.COMPLETED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
     )
     assert runner.session.entries["tf"].outcome == TurnOutcome.COMPLETED
@@ -1185,8 +1199,8 @@ async def test_a_tool_body_raising_tool_not_found_records_failed_at_execution():
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=len("No such record: 42.") // 4,
     )
@@ -1239,8 +1253,8 @@ async def test_a_tool_body_raising_a_validation_error_records_failed_not_invalid
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=len(str(VALIDATION_ERROR)) // 4,
     )
@@ -1301,8 +1315,8 @@ async def test_a_prepared_callable_that_returns_a_plain_value_fails_after_dispat
         approval_decisions=[
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),
         ],
-        started_at=1000,
-        ended_at=1000,
+        attempts=[ExecutionAttempt(outcome=ExecutionAttemptOutcome.FAILED, started_at=1000, ended_at=1000)],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=len(error_message) // 4,
     )
@@ -1359,8 +1373,8 @@ async def test_a_toolless_runner_terminalizes_a_loaded_ready_execution():
             ApprovalDecision(decision=ApprovalOption.PENDING, created_at=500),
             ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=600),
         ],
-        started_at=None,
-        ended_at=1000,
+        attempts=[],
+        finished_at=1000,
         updated_at=1000,
         context_tokens=len("Unknown tool: 'add'.") // 4,
     )
@@ -1493,8 +1507,8 @@ async def test_orphan_recovery_precedes_a_parked_cancel_flush():
 async def test_a_crash_during_prepare_leaves_it_pending_and_the_next_drive_prepares_again():
     # The mirror of the orphan case, and the reason the RUNNING row moved
     # AFTER `prepare()`: preparation writes nothing, so a process that dies
-    # inside it leaves the execution exactly as it was — PENDING, ALLOWED,
-    # `started_at` unset — and the next drive prepares it again and completes.
+    # inside it leaves the execution exactly as it was — PENDING, ALLOWED, no
+    # attempt appended — and the next drive prepares it again and completes.
     # Nothing is INTERRUPTED, because no body ever started.
     faux = FauxProvider()
     faux.set_responses(

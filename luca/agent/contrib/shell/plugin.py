@@ -36,6 +36,13 @@ sandbox — approval is the only containment).
 The strategy is exposed as `permission_strategy` so the application can feed
 `pending_requests()` / `apply_answer()` from its approval prompt, or share
 the strategy with its own registries.
+
+One thing here outlives a single call: the `ShellSessionPool` behind the
+Anthropic native bash — a live bash process per conversation lineage (see
+[`session.py`](session.py)). That makes this the only object in the suite with
+a lifetime, so it is also the one that ends it: `aclose()` on the graceful
+paths, and a system-prompt part that tells the model whenever the shell it is
+about to use is a new, empty one.
 """
 
 from __future__ import annotations
@@ -59,7 +66,9 @@ from .native import (
     OpenAIApplyPatchTool,
     OpenAIShellTool,
     ShellNativeMiddleware,
+    active_natives,
 )
+from .session import ShellSessionPool, called_tool
 from .tools import (
     ApplyPatchTool,
     BashTool,
@@ -78,6 +87,11 @@ SHELL_SYSTEM_PROMPT_TEMPLATE = """
 ### Shell access
 You have filesystem and process tools ({tools}). Your workspace directory is {workspace}; relative paths resolve against it.{additional}
 Paths outside these directories are NOT off-limits: calling a tool on one automatically asks the user to approve or deny that access. Never refuse a request or ask for permission in text because a path is outside the workspace — make the tool call and let the approval flow decide.
+""".strip()
+
+BASH_RESTART_NOTICE = """
+### Shell session
+Your bash session was restarted and is empty. The working directory, environment variables, shell functions and background jobs from earlier in this conversation are gone.
 """.strip()
 
 
@@ -104,6 +118,10 @@ class ShellAccessPlugin:
             mode=self.mode,
             rules=[*self._default_rules(), *(extra_rules or [])],
         )
+        # The live bash processes behind `anthropic_bash_20250124`, one per
+        # conversation lineage. The plugin owns them because it is the only
+        # thing here with a lifetime — `aclose()` is the other half.
+        self.shells = ShellSessionPool(self.workspace)
         self.tools: list[Tool] = [
             ReadTool(workdir=self.workspace, tracker=self.tracker),
             GlobTool(workdir=self.workspace),
@@ -116,8 +134,20 @@ class ShellAccessPlugin:
             OpenAIApplyPatchTool(workdir=self.workspace, tracker=self.tracker),
             OpenAIShellTool(workdir=self.workspace),
             AnthropicTextEditorTool(workdir=self.workspace, tracker=self.tracker),
-            AnthropicBashTool(workdir=self.workspace),
+            AnthropicBashTool(workdir=self.workspace, pool=self.shells),
         ]
+
+    async def aclose(self) -> None:
+        """Release what the tools hold OUTSIDE the session: the live bash
+        processes. Nothing else in the suite owns an OS resource.
+
+        Not a framework hook — there is no teardown contract on `Tool`,
+        `ToolRegistry` or `BasePlugin`, and nothing runs on a hard process kill
+        anyway (the OS covers that case: the shell reads from a pipe only we
+        hold, so it gets EOF and exits). The application calls this on its
+        graceful paths — quit, `/clear`, `/resume`, fork — where a runner is
+        discarded while the process lives on."""
+        await self.shells.aclose()
 
     def get_tool_registry(self, agent_session: AgentSession) -> SimpleToolRegistry:
         return SimpleToolRegistry(
@@ -133,7 +163,7 @@ class ShellAccessPlugin:
         return [ShellNativeMiddleware(agent_session)]
 
     def get_system_prompt_parts(self, agent_session: AgentSession) -> list:
-        return [self.system_prompt_part]
+        return [self.system_prompt_part, self.bash_restart_part]
 
     def system_prompt_part(self, session: AgentSession, conversation_id: str) -> str:
         """A CALLABLE part, resolved before every LLM call, because WHICH tools
@@ -153,6 +183,31 @@ class ShellAccessPlugin:
             workspace=self.workspace,
             additional=additional,
         )
+
+    def bash_restart_part(self, session: AgentSession, conversation_id: str) -> str | None:
+        """Tells the model its persistent shell is gone — the other half of
+        never rebuilding one. Three conditions, in the order that makes the
+        cheapest one decide first:
+
+        1. The Anthropic native bash is what the next call will be offered.
+           `active_natives` is where the capability table meets the
+           `use_native_tools` switch, and it reads the config the runner
+           re-stamps every drive iteration, so a mid-session `/model` switch is
+           already accounted for.
+        2. The shell it would use has run nothing yet. Not a one-shot flag:
+           the system prompt is re-sent whole on every call, so a notice the
+           model read and never acted on has to still be there on the call
+           where it finally runs a command.
+        3. The conversation HAS run that bash before. Without this a brand-new
+           session would open by announcing a restart that never happened —
+           nothing was lost, and no history claims otherwise."""
+        if AnthropicBashTool.name not in active_natives(session):
+            return None
+        if not self.shells.is_fresh(session, conversation_id):
+            return None
+        if not called_tool(session, conversation_id, AnthropicBashTool.name):
+            return None
+        return BASH_RESTART_NOTICE
 
     def _default_rules(self) -> list[ToolRule]:
         """ALLOW rules for the read tier over each permitted root: the root

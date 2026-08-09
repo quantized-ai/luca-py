@@ -81,7 +81,7 @@ snapshot — by the time the callable runs the runner has persisted RUNNING, so
 read current durable state through `session.entries[execution.id]`.
 
 Raising means the body never runs and the execution is never marked RUNNING —
-`started_at=None`, `dispatched=False`, no `ToolExecutionStarted` event, and
+no `ExecutionAttempt` appended, no `ToolExecutionStarted` event, and
 `details["phase"] == "prepare"` on the recorded error:
 
 | Raised from `prepare()` | Status |
@@ -91,7 +91,7 @@ Raising means the body never runs and the execution is never marked RUNNING —
 | anything else — or a return that isn't callable | `FAILED` |
 
 Once the callable is invoked the mapping ends: every raise from there on is
-`FAILED`, with `started_at` set and `dispatched=True`.
+`FAILED`, with its `ExecutionAttempt` recorded and `dispatched=True`.
 
 > ⚠️ **`timeout_in_ms` bounds the body only.** `get_tools`,
 > `create_execution`, `decide` and `prepare` have no deadline. A tool with

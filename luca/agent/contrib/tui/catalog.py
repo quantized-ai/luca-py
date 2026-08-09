@@ -5,12 +5,12 @@ Two axes, combined by `fixtures/catalog.yaml`:
 - **Screens** are projections. One pure function per screen of the app, each
   taking the world it reads and returning a whole `ScreenState`. They are the
   SAME functions the live app calls (`transcript_blocks`, `cost_state`,
-  `build_settings_state`, `build_sessions_state`, `build_approval_prompts`),
-  so a catalogued screen cannot drift from the product: delete a feature and
-  its catalogued screens change or stop building.
+  `build_settings_state`, `build_sessions_state`, `build_approval_prompts`,
+  `question_set_state`), so a catalogued screen cannot drift from the product:
+  delete a feature and its catalogued screens change or stop building.
 - **Worlds** are data. A committed `AgentSession` under `fixtures/sessions/`
   plus the ambient state no session holds — branch, theme, a typed query, the
-  boxes ticked in a picker.
+  boxes ticked in a picker, how far through a question set the user has got.
 
 Adding a state to the catalog is a line in `catalog.yaml`. Adding a world is a
 session file. Adding a screen is a function plus a name in `SCREENS`.
@@ -30,17 +30,30 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from luca.agent.contrib.questions import QuestionsTool
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.core.exceptions import ProjectionError
-from luca.agent.core.models import NONTERMINAL_STATUSES, AgentSession, ToolExecution
+from luca.agent.core.models import (
+    NONTERMINAL_STATUSES,
+    AgentSession,
+    ExecutionStatus,
+    ToolExecution,
+)
 from luca.agent.core.projection import ConversationProjector, tool_message_text
 
 from . import state as vm
 from .approvals import build_approval_prompts
 from .commands import build_sessions_state, build_settings_state, palette_rows
 from .files import rank_files
-from .format import HINTS, approval_hints, short_model
-from .render import filter_rows, picker_rows, plan_from_session, transcript_blocks
+from .format import HINTS, approval_hints, question_hints_for, short_model
+from .render import (
+    filter_rows,
+    is_questions_tool,
+    picker_rows,
+    plan_from_session,
+    question_set_state,
+    transcript_blocks,
+)
 from .sessions import SessionSummary, summarize
 from .usage import cost_state, status_counter
 
@@ -51,7 +64,7 @@ SESSIONS_DIR = Path(__file__).parent / "fixtures" / "sessions"
 # NOW that never moves or its snapshots would rot overnight.
 NOW = datetime(2026, 3, 14, 9, 30, 0)
 
-ScreenName = Literal["chat", "approval", "palette", "picker", "cost", "settings", "sessions"]
+ScreenName = Literal["chat", "approval", "questions", "palette", "picker", "cost", "settings", "sessions"]
 
 
 class CatalogError(Exception):
@@ -101,6 +114,13 @@ class World(BaseModel):
     query: str = ""
     selected: int = 0
     checked: list[str] = Field(default_factory=list)
+    # the question dock — how far the user has got through the set. `answers`
+    # maps a question's index to the option indices committed on it; a question
+    # the map does not mention is still open.
+    active: int = 0
+    phase: Literal["asking", "confirming"] = "asking"
+    answers: dict[int, list[int]] = Field(default_factory=dict)
+    extra: str | None = None
     # Copied, not shared: a `World` must never be able to reach into the
     # module constant and change what every other world sees.
     files: list[FileEntry] = Field(default_factory=lambda: [entry.model_copy() for entry in DEFAULT_FILES])
@@ -222,6 +242,76 @@ def _gated_execution(session: AgentSession) -> ToolExecution | None:
     return None
 
 
+def questions_screen(scene: Scene) -> vm.ScreenState:
+    """1l — the agent's own `ask_user` set, the fourth dock.
+
+    Rebuilt through the tool's OWN app-facing API and along the same three
+    steps the live app takes: the parked call's arguments seed a
+    `QuestionsTool` store, `pending()` re-validates them into `Question`
+    objects, and `question_set_state` turns those into the dock. The clicks on
+    top of it are the world's — nothing in a session records how far through a
+    set the user is, because a set is answered all at once."""
+    execution = _parked_questions(scene.session)
+    if execution is None:
+        raise CatalogError("the questions screen needs a session with a parked ask_user call")
+    tool = QuestionsTool(
+        store={
+            execution.tool_call_id: {"questions": execution.raw_tool_call.arguments.get("questions"), "answer": None}
+        }
+    )
+    questions = question_set_state(tool.pending(execution.tool_call_id))
+    state = _with_answers(questions, scene.world)
+    return vm.ScreenState(
+        **_base(scene),
+        questions=state,
+        hints=question_hints_for(state),
+    )
+
+
+def _parked_questions(session: AgentSession) -> ToolExecution | None:
+    """The `ask_user` call holding the dock: parked at `AWAITING_RESULT`, and
+    matched by the same declaration test the live app matches on."""
+    for node_id in session.conversations[session.main_conversation_id].nodes:
+        entry = session.entries.get(node_id)
+        if (
+            isinstance(entry, ToolExecution)
+            and entry.status is ExecutionStatus.AWAITING_RESULT
+            and is_questions_tool(entry)
+        ):
+            return entry
+    return None
+
+
+def _with_answers(state: vm.QuestionSetState, world: World) -> vm.QuestionSetState:
+    """The world's answers applied to a freshly built set.
+
+    A single-select question carries its pick on `answer`; a multi-select
+    carries it on each option's `checked`. The caret follows the pick, which is
+    where the live dock leaves it after answering."""
+    questions: list[vm.Question] = []
+    for index, question in enumerate(state.questions):
+        picked = world.answers.get(index)
+        if picked is None:
+            questions.append(question)
+        elif question.mode == "multi":
+            options = [
+                option.model_copy(update={"checked": position in picked})
+                for position, option in enumerate(question.options)
+            ]
+            questions.append(question.model_copy(update={"options": options, "answered": True}))
+        else:
+            first = picked[0] if picked else None
+            questions.append(question.model_copy(update={"answer": first, "selected": first or 0, "answered": True}))
+    return state.model_copy(
+        update={
+            "questions": questions,
+            "active": world.active,
+            "phase": world.phase,
+            "extra": world.extra,
+        }
+    )
+
+
 def palette_screen(scene: Scene) -> vm.ScreenState:
     """1e — the command palette over a dimmed transcript."""
     everything = palette_rows()
@@ -313,7 +403,9 @@ def sessions_screen(scene: Scene) -> vm.ScreenState:
 # How long ago each world was last touched. Declared, not read off the file's
 # mtime: the catalog must not change because someone checked a fixture out.
 AGES_MINUTES: dict[str, int] = {
+    "questions": 7,
     "conversation": 18,
+    "questions-answered": 25,
     "planning": 42,
     "todos": 55,
     "approval": 96,
@@ -339,6 +431,7 @@ def _summary(session: AgentSession) -> SessionSummary:
 SCREENS: dict[ScreenName, Callable[[Scene], vm.ScreenState]] = {
     "chat": chat_screen,
     "approval": approval_screen,
+    "questions": questions_screen,
     "palette": palette_screen,
     "picker": picker_screen,
     "cost": cost_screen,

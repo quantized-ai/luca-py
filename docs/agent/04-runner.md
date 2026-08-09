@@ -70,7 +70,7 @@ await run   # the model sees it on its next call, and the turn cannot close
 |---|---|
 | `IDLE` main conversation | accepts — the next `run()` opens a turn |
 | trailing message queued (`BUSY`, no open turn) | accepts — one turn answers all of them |
-| open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a gated turn answers the post past the gate: the conversation derives `BUSY`, the next drive projects the gated call as an awaiting-approval placeholder ([10](10-projection.md) §2) and runs ONE model round, then re-parks at the same gate. The gate is untouched — a post is not an approval |
+| open turn (`BUSY` / `BLOCKED`) | accepts — the mid-turn append; a turn parked on a gate or on a deferred tool call (§9) answers the post past it: the conversation derives `BUSY`, the next drive projects the parked call as a placeholder ([10](10-projection.md) §2) and runs ONE model round, then re-parks. The gate — or the tool — is untouched: a post is not an approval, and not a result either |
 | open turn with unresolved subagents | accepts — the children never see it, but the PARENT does: a parked drive is woken and the model can steer, including stopping a task ([13](13-subagents.md) §6) |
 | `CANCELLING` | raises `ConversationCancellingError` — retry after the flush |
 | compaction scheduled / in flight | raises `AgentError` ([12](12-compaction.md)) |
@@ -110,13 +110,17 @@ the agent. Stop iterating and the agent stops.
 ```python
 result.status              # the DERIVED status where the run stopped
 result.outcome             # how the last bracket this run closed ended, else None
-result.pending_approvals   # list[ToolExecution] — non-empty iff BLOCKED
+result.pending_approvals   # list[ToolExecution] — gates, reported whenever non-empty
+result.pending_deferred_tool_executions   # list[ToolExecution] — calls parked at
+                                          # AWAITING_RESULT (§9)
 ```
 
 `status` is derived, not assumed: a turn that finished is `IDLE`, a gate nothing
 can get past is `BLOCKED`. `outcome` is carried from the close rather than read
 off the path, because after a compaction the closing marker is on the archived
-conversation ([12](12-compaction.md)).
+conversation ([12](12-compaction.md)). Both lists are reported whenever they are
+non-empty rather than in one status only: a pause no longer implies a status of
+its own, so the list *is* the signal.
 
 No usage on the result — provider usage is recorded per assistant entry in
 `session.usages` ([11](11-context-and-usage.md)).
@@ -198,7 +202,10 @@ async with runner.run() as run:
 ```
 
 Per execution the order is strict: `ToolCallReceived` → (`ToolExecutionStarted`
-iff the body is dispatched, §8) → `ToolExecuted`. There is no `TurnFinished` event —
+iff the body is dispatched, §8) → `ToolExecuted`. `ToolExecutionStarted` fires
+once per **dispatch attempt**, so a deferred call emits it again on every poll
+with no terminal event in between (§9); `ToolExecuted` fires once per call,
+however many times its body ran. There is no `TurnFinished` event —
 `RunResult` is the completion signal (a cancel flush may emit zero events).
 
 ## 5. Streaming
@@ -264,35 +271,39 @@ conversation being answered for**, none receiving the cancellation token.
 
 Dispatch is split in two. `prepare()` resolves the tool and validates the
 arguments and hands back a callable; only once it has returned does the runner
-persist `RUNNING` + `started_at` and emit `ToolExecutionStarted`; then it
-invokes that callable. What that buys you:
+persist `RUNNING` with a fresh open `ExecutionAttempt` and emit
+`ToolExecutionStarted`; then it invokes that callable. What that buys you:
 
-- `started_at` / `execution.dispatched` mean "the body was dispatched", for
-  every outcome — and `ToolExecutionStarted` fires iff it was.
+- `execution.dispatched` means "the body was dispatched", for every outcome —
+  an attempt exists iff it was invoked, and `ToolExecutionStarted` fires iff it
+  was. The invariant survives a call dispatched several times (§9): **a
+  `prepare()` that raises appends no attempt**, on the first dispatch and the
+  fifth alike.
 - `NOT_FOUND` / `INVALID` mean resolution and validation failed. A *body* that
   raises `ToolNotFound` looking up a sub-resource is `FAILED`, like any other
   raise after dispatch.
-- `error.details["phase"]` is a fact the runner knows, not an inference from
-  `started_at`.
+- `error.details["phase"]` is a fact the runner knows, not an inference from a
+  timestamp.
 
-| What happened | status | `started_at` | `dispatched` | `details["phase"]` |
+| What happened | status | attempt | `dispatched` | `details["phase"]` |
 |---|---|---|---|---|
-| `create_execution` raised | `FAILED` | `None` | `False` | `create_execution` |
-| toolless runner, at birth | `NOT_FOUND` | `None` | `False` | `create_execution` |
-| the registry authored a terminal draft | `NOT_FOUND`/`INVALID`/`FAILED` | `None` | `False` | the registry's own |
-| `decide` returned `DENY` | `REJECTED` | `None` | `False` | — |
-| a framework runtime limit refused the call at birth (the spawn budget, [13](13-subagents.md)) | `REFUSED` | `None` | `False` | — |
-| `prepare` raised `ToolNotFound` | `NOT_FOUND` | `None` | `False` | `prepare` |
-| `prepare` raised `InvalidToolArguments` / `ValidationError` | `INVALID` | `None` | `False` | `prepare` |
-| `prepare` raised anything else | `FAILED` | `None` | `False` | `prepare` |
-| `prepare` returned a non-callable | `FAILED` | `None` | `False` | `prepare` |
-| the callable raised (any type) | `FAILED` | set | `True` | `execution` |
-| the callable returned a non-awaitable | `FAILED` | set | `True` | `execution` |
-| the callable returned | `COMPLETED` | set | `True` | — |
-| the deadline expired on the callable | `TIMED_OUT` | set | `True` | — |
-| the cancel grace expired on the callable | `INTERRUPTED` | set | `True` | — |
-| cancelled up to and including `prepare()` settling | `CANCELLED` | `None` | `False` | — |
-| crash after `RUNNING` was persisted | `INTERRUPTED` | set | `True` | — |
+| `create_execution` raised | `FAILED` | none | `False` | `create_execution` |
+| toolless runner, at birth | `NOT_FOUND` | none | `False` | `create_execution` |
+| the registry authored a terminal draft | `NOT_FOUND`/`INVALID`/`FAILED` | none | `False` | the registry's own |
+| `decide` returned `DENY` | `REJECTED` | none | `False` | — |
+| a framework runtime limit refused the call at birth (the spawn budget, [13](13-subagents.md)) | `REFUSED` | none | `False` | — |
+| `prepare` raised `ToolNotFound` | `NOT_FOUND` | none | `False` | `prepare` |
+| `prepare` raised `InvalidToolArguments` / `ValidationError` | `INVALID` | none | `False` | `prepare` |
+| `prepare` raised anything else | `FAILED` | none | `False` | `prepare` |
+| `prepare` returned a non-callable | `FAILED` | none | `False` | `prepare` |
+| the callable raised (any type) | `FAILED` | `failed` | `True` | `execution` |
+| the callable returned a non-awaitable | `FAILED` | `failed` | `True` | `execution` |
+| the callable returned an `ExecutionResult` | `COMPLETED` | `completed` | `True` | — |
+| the callable returned `ExecutionDeferred` | `AWAITING_RESULT` — **not terminal** (§9) | `deferred` | `True` | — |
+| the deadline expired on the callable | `TIMED_OUT` | `timed_out` | `True` | — |
+| the cancel grace expired on the callable | `INTERRUPTED` | `interrupted` | `True` | — |
+| cancelled up to and including `prepare()` settling | `CANCELLED` | none | `False` | — |
+| crash after `RUNNING` was persisted | `INTERRUPTED` | `discarded` | `True` | — |
 
 `to_tool_execution_error(execution, exception, *, phase)` builds the durable
 `ToolExecutionError` from the live exception (which is never persisted).
@@ -305,7 +316,76 @@ Override it to redact secrets, keep domain codes, or add a traceback — the
 > configured with `timeout_in_ms=5000` is not bounded end to end
 > ([08](08-runtime-config.md)).
 
-## 9. Cancellation
+## 9. Deferred tool calls — the drive parks
+
+A prepared callable may answer `ExecutionDeferred()` — "I cannot produce the
+final result yet" ([03](03-tools.md) §7). The execution parks at
+`AWAITING_RESULT` and the drive returns; the conversation derives `BLOCKED`
+once nothing else can advance (a working sibling or subagent keeps it `BUSY`,
+exactly as with a gate). A deferral is **not an outcome**, so nothing downstream
+fires: no `ToolExecuted`, no `after_tool_execution`, no
+`ContextManager.process_tool_output`, no `finished_at` — the call has not
+finished, and the turn cannot close over it.
+
+Discovery is a read over the session, exactly like approvals:
+
+```python
+result = await runner.run()
+result.pending_deferred_tool_executions          # the same list, from the run
+
+for execution in runner.pending_deferred_tool_executions():
+    await handlers[execution.tool_spec.name](execution)    # blocks until it resolves
+```
+
+`pending_deferred_tool_executions(conversation_id=None)` is **subtree-scoped**
+like `pending_approvals()` — each execution names the conversation it came from
+— and is a plain read, so it is safe to call from another task while a run is
+live. That is how a parked *subagent* is discovered ([13](13-subagents.md) §5).
+
+**There is no resume, only re-dispatch.** The next drive runs the identical
+dispatch path from scratch — `before_tool_execution` → `prepare()` → a
+brand-new callable → invoke. So `prepare()` runs again on every poll, `status`
+cycles `AWAITING_RESULT → RUNNING → AWAITING_RESULT`, `ToolExecutionStarted`
+fires once per poll, and each invocation appends an `ExecutionAttempt`
+([02](02-data-model.md) §3). Approval is **not** re-asked: the decide step only
+ever sees `PENDING` executions, so a call approved once stays approved. It is
+one tool call.
+
+No event says "parked", and that is deliberate: `ToolExecutionStarted` fires per
+dispatch attempt and `ToolExecuted` only at the end, so a consumer watching the
+stream alone sees repeated Starteds and cannot tell parked from in flight.
+Reading durable state is the supported way — the same channel approvals use.
+
+> ⚠️ **The handler must block until it has made progress.** There is no
+> framework backoff and deliberately none: a handler that returns without
+> resolving anything causes an immediate re-drive, another deferral, and a spin.
+
+> ⚠️ **Nothing bounds a deferral.** Re-dispatching produces no model round, so
+> `hard_max_steps`, `soft_max_steps` and the doom-loop check never trip on it. A
+> tool that defers forever runs until the driver stops driving or somebody calls
+> `cancel()`. Posts are the exception — they drive real rounds, and those count.
+
+A post while a call is parked behaves exactly as a post past a gate: the
+conversation derives `BUSY`, the next drive projects the parked call as the
+awaiting-result placeholder ([10](10-projection.md) §2) and runs ONE model
+round, then re-parks. The tool is untouched and
+`pending_deferred_tool_executions()` returns it before and after — a post does
+not resolve a deferral any more than it answers an approval, and it is not an
+exit: the model can talk while `render_video` is out for two hours, but the turn
+cannot close over the call.
+
+Ending one is the tool's job, not the framework's: the driver tells it to give
+up and it returns an ordinary `is_error=True` result. The framework's own two
+endings are the rare paths — `cancel()` settles a parked call `INTERRUPTED`
+(not `CANCELLED`: the body demonstrably started) with `cancel_signalled_at` and
+`finished_at` stamped, and a crash mid-poll leaves a `RUNNING` execution that
+the next drive recovers to `INTERRUPTED` with its dangling attempt closed
+`DISCARDED`. Neither tells the tool anything; the driver owns resolution, so it
+owns abandonment. The work usually survives anyway — the tool's state lives in
+`session.extras`, so a model that reads `[tool execution interrupted]` and calls
+again finds the job already submitted.
+
+## 10. Cancellation
 
 `cancel()` is a pure, synchronous signal — callable in any state, from any handle
 (`runner.cancel()` and `run.cancel()` are equivalent; cancellation is
@@ -349,11 +429,12 @@ a dispatch.
 | before a ready call's dispatch | left PENDING, no middleware fired — the wind-down records `CANCELLED` |
 | `prepare`, up to and including its return | no `RUNNING` row, no `ToolExecutionStarted`; the dispatch path records `CANCELLED` in place |
 | the prepared callable | the grace window decides: `COMPLETED` with its real result, or `INTERRUPTED` |
+| nothing — the call is parked at `AWAITING_RESULT` (§9) | `INTERRUPTED`, not `CANCELLED`: the body demonstrably started. One attempt, already closed `deferred` — nothing was running when the cancel landed |
 
 > ⚠️ **A cancelled birth is `CANCELLED`, never `FAILED`.** N tool calls always
 > yield N tool executions — a cancellation landing mid-batch never drops one.
 
-## 10. The status machine
+## 11. The status machine
 
 Four statuses, **derived from the entries on every read** — nothing is stored,
 so a reloaded or crashed session lands in the right state on its own. The
@@ -364,7 +445,7 @@ other ([02](02-data-model.md) §10).
 |---|---|---|
 | `IDLE` | `runner.idle()` | Nothing queued → `post_message()` |
 | `BUSY` | `runner.busy()` | Something can advance (a queued message, a running tool, a working subagent, a subagent result or mid-turn post the model has not seen — a post into a gated turn included) → `run()` |
-| `BLOCKED` | `runner.blocked()` | Nothing can advance until you act — a gate → resolve, then `run()` ([05](05-permissions.md)). A post flips it to `BUSY` for exactly one round (the acceptance table above), then it re-derives `BLOCKED` |
+| `BLOCKED` | `runner.blocked()` | Nothing can advance until you act. **Two causes:** an approval gate → resolve it ([05](05-permissions.md)); or a tool call parked at `AWAITING_RESULT` → resolve whatever it waits on (§9). Then `run()`. A post flips it to `BUSY` for exactly one round (the acceptance table above), then it re-derives `BLOCKED` |
 | `CANCELLING` | `runner.cancelling()` | Unconsumed cancel → `run()` flushes it |
 
 ```python
@@ -373,12 +454,15 @@ while not runner.idle():
         async for event in run:
             render(event)
     if runner.blocked():
-        resolve(runner.pending_approvals())      # then loop: the next run re-asks
+        resolve(runner.pending_approvals())               # the next run re-asks decide()
+        for execution in runner.pending_deferred_tool_executions():
+            await handlers[execution.tool_spec.name](execution)   # blocks until resolved
 ```
 
-That loop is the whole protocol, subagents included: `pending_approvals()` is
-**subtree-scoped**, so a subagent's gate surfaces on the main runner and each
-execution names the conversation it came from.
+That loop is the whole protocol, subagents included: both doors are
+**subtree-scoped**, so a subagent's gate or parked call surfaces on the main
+runner and each execution names the conversation it came from. `blocked()`
+does not say *which* cause; ask the two lists.
 
 Two consequences of the derivation, both deliberate: a **failed** turn is a
 closed turn and therefore `IDLE` (retry by posting, not by re-driving), and a
@@ -397,7 +481,7 @@ closes the engine where it is, re-derives status, and finalizes that handle
 without writing anything. The open turn resumes on a later `run()`. A finalized
 handle is spent; create a fresh `runner.run()` to continue.
 
-## 11. Compaction
+## 12. Compaction
 
 The `context_manager`'s compaction pair runs as a step at the top of a drive —
 *before* the conversational bracket opens:
@@ -418,7 +502,7 @@ eager run opens a compaction bracket instead of a `TurnStart` when one is due.
 Everything else — the compaction contract, the plan, the events, the guarantees —
 is [`12-compaction.md`](12-compaction.md).
 
-## 12. The run is a tree
+## 13. The run is a tree
 
 When a turn spawns subagents ([13](13-subagents.md)), the handle you are holding
 is the root of a tree of runs — one per live conversation:

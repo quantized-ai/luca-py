@@ -113,7 +113,7 @@ async def openrouter():
 def demo_runner(session, provider, workspace):
     """`main.py`'s composition, minus the parts that read the developer's
     machine (skills discovery, instruction files) and minus subagents."""
-    runner, _strategy = build_runner(
+    runner, _strategy, _questions = build_runner(
         session,
         workspace=workspace,
         provider=provider,

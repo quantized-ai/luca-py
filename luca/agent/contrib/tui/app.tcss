@@ -284,6 +284,138 @@ OverlayListView .overlay-options {
     scrollbar-size-vertical: 0;
 }
 
+/* ── the question set — 1l — the fourth dock, mutually exclusive with the
+      composer / approval prompt / overlay ───────────────────────────────── */
+
+QuestionSetView,
+QuestionConfirmView {
+    height: auto;
+    margin: 0 2;
+    border: round $border-hairline;
+}
+
+QuestionSetView .inner-rule,
+QuestionConfirmView .inner-rule {
+    height: 1;
+    background: $rule;
+}
+
+QuestionSetView .question-tabs {
+    height: 1;
+    padding: 0 1;
+}
+
+QuestionSetView .question-title {
+    height: 1;
+    padding: 0 1;
+    color: $foreground;
+}
+
+QuestionSetView .question-body {
+    height: auto;
+    /* The long description gets the full measure and up to eight rows, then
+       scrolls. A cell count, not a percentage — the same reason the overlay
+       list is bounded this way. */
+    max-height: 8;
+    padding: 0 1;
+    color: $text-muted;
+    scrollbar-size-vertical: 0;
+}
+
+QuestionSetView .question-options {
+    height: auto;
+    padding: 0;
+}
+
+/* The blank row before "Chat about this": it is the way out, not one more
+   answer, and the gap is what says so. */
+QuestionSetView .option-gap {
+    height: 1;
+}
+
+/* The custom-answer row: the shared column prefix plus a real text field.
+   These rules have to live HERE and not in the widget's own DEFAULT_CSS, or
+   PromptInput's `height: auto; max-height: 10` outranks them and the field
+   collapses to nothing. */
+QuestionSetView .question-custom {
+    layout: horizontal;
+    height: 1;
+}
+
+QuestionSetView .question-custom .custom-prefix {
+    width: auto;
+}
+
+/* One row, and it stays one row: `soft_wrap` is off on the widget, so an
+   answer longer than the panel scrolls sideways under the cursor instead of
+   wrapping the whole dock taller. */
+QuestionSetView .question-custom PromptInput {
+    width: 1fr;
+    height: 1;
+    max-height: 1;
+    background: transparent;
+    border: none;
+    padding: 0;
+    scrollbar-size: 0 0;
+}
+
+QuestionSetView .question-custom PromptInput:focus {
+    background: transparent;
+    border: none;
+}
+
+QuestionConfirmView .confirm-head {
+    height: 1;
+    padding: 0 1;
+    color: $foreground;
+}
+
+QuestionConfirmView .confirm-summary {
+    height: auto;
+    max-height: 6;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+/* One row per question, and ONE row: a long answer ellipsizes rather than
+   wrapping, so the panel's height is the question count and nothing else. */
+QuestionConfirmView .confirm-summary SpanLine {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+QuestionConfirmView .confirm-extra {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+    layout: horizontal;
+}
+
+QuestionConfirmView .confirm-extra .composer-glyph {
+    width: 2;
+    color: $accent;
+}
+
+QuestionConfirmView .confirm-extra PromptInput {
+    width: 1fr;
+    height: auto;
+    max-height: 3;
+    background: transparent;
+    border: none;
+    padding: 0;
+    scrollbar-size-vertical: 0;
+}
+
+QuestionConfirmView .confirm-extra PromptInput:focus {
+    background: transparent;
+    border: none;
+}
+
+QuestionConfirmView .confirm-extra PromptInput .text-area--placeholder {
+    color: $text-faint;
+}
+
 /* ── overlay lists — 1e palette, 1f context picker ───────────────────────── */
 
 OverlayListView {

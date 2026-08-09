@@ -121,6 +121,8 @@ class EchoTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         return f"echo {args['path']}"
@@ -148,6 +150,8 @@ class WeatherTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> ExecutionResult:
         reading = WeatherReport(degrees_in_celsius=25, wind_direction="south")
@@ -171,6 +175,8 @@ class CapturingTool(Tool):
         session: AgentSession,
         conversation_id: str,
         *,
+        tool_name: str,
+        tool_call_id: str,
         cancellation_token: CancellationToken,
     ) -> str:
         self.calls.append((args, session, cancellation_token))
@@ -225,6 +231,8 @@ async def test_a_tool_may_return_structured_content_alongside_its_text():
         {"path": "Berlin"},
         SESSION,
         CONVERSATION,
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 
@@ -241,6 +249,8 @@ async def test_execute_wraps_the_simple_text_path():
         {"path": "src"},
         SESSION,
         CONVERSATION,
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 
@@ -256,7 +266,9 @@ async def test_execute_threads_the_session_and_token_to_the_body():
     instance = CapturingTool()
     token = CancellationToken()
 
-    await instance.execute({"path": "."}, SESSION, CONVERSATION, cancellation_token=token)
+    await instance.execute(
+        {"path": "."}, SESSION, CONVERSATION, tool_name="t", tool_call_id="tc1", cancellation_token=token
+    )
 
     assert instance.calls == [({"path": "."}, SESSION, token)]
 
@@ -431,6 +443,8 @@ async def test_execute_runs_the_wired_callable():
         {"path": "src"},
         SESSION,
         CONVERSATION,
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 
@@ -482,6 +496,8 @@ async def test_a_tool_with_an_approval_context_still_executes():
         {"path": "src"},
         SESSION,
         CONVERSATION,
+        tool_name="t",
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 

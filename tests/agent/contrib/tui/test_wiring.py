@@ -26,6 +26,7 @@ from .helpers import fresh_session
 MATH_TOOLS = {"add", "subtract", "multiply"}
 SHELL_TOOLS = {"read", "glob", "grep", "edit", "write", "apply_patch", "delete_file", "bash"}
 MEMORY_TOOLS = {"read_scratchpad", "write_scratchpad", "read_todo", "update_todos"}
+QUESTION_TOOLS = {"ask_user"}
 SKILL_TOOLS = {"skill"}
 
 # What one demo tool looks like on the wire: the `ToolSpec.input_schema`
@@ -58,25 +59,25 @@ async def _wire_tools(runner):
 async def test_build_runner_composes_all_tool_families(tmp_path):
     session = fresh_session()
 
-    runner, strategy = build_runner(session, workspace=tmp_path)
+    runner, strategy, _ = build_runner(session, workspace=tmp_path)
 
     assert isinstance(runner, PluginAgentSessionRunner)
     assert runner.session is session
     names = {tool.name for tool in await _wire_tools(runner)}
-    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS | SKILL_TOOLS
+    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS | QUESTION_TOOLS | SKILL_TOOLS
     assert strategy.mode is PermissionMode.ASK
 
 
 async def test_no_skills_withholds_the_skill_tool(tmp_path):
-    runner, _ = build_runner(fresh_session(), workspace=tmp_path, skills=False)
+    runner, _, _ = build_runner(fresh_session(), workspace=tmp_path, skills=False)
 
     names = {tool.name for tool in await _wire_tools(runner)}
 
-    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS
+    assert names == MATH_TOOLS | SHELL_TOOLS | MEMORY_TOOLS | QUESTION_TOOLS
 
 
 async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):
-    runner, _ = build_runner(fresh_session(), workspace=tmp_path)
+    runner, _, _ = build_runner(fresh_session(), workspace=tmp_path)
 
     tools = await _wire_tools(runner)
 
@@ -88,7 +89,7 @@ async def test_build_runner_puts_the_math_argument_schema_on_the_wire(tmp_path):
 def test_build_runner_mode_passthrough(tmp_path):
     session = fresh_session()
 
-    _, strategy = build_runner(session, workspace=tmp_path, mode="yolo")
+    _, strategy, _ = build_runner(session, workspace=tmp_path, mode="yolo")
 
     assert strategy.mode is PermissionMode.YOLO
 
@@ -104,6 +105,8 @@ async def test_math_tools_execute_against_the_live_session(math_tool, expected):
         {"a": 7.0, "b": 2.0},
         session,
         main_conversation(session).id,
+        tool_name=math_tool.name,
+        tool_call_id="tc1",
         cancellation_token=CancellationToken(),
     )
 
@@ -118,7 +121,7 @@ def _prompt(runner, model="anthropic/claude-sonnet-5"):
 
 
 def test_the_base_prompt_opens_and_the_family_addendum_follows_the_model(tmp_path):
-    runner, _ = build_runner(fresh_session(), workspace=tmp_path)
+    runner, _, _ = build_runner(fresh_session(), workspace=tmp_path)
 
     claude = _prompt(runner, "anthropic/claude-sonnet-5")
     gpt = _prompt(runner, "openai/gpt-5.4-mini")
@@ -152,7 +155,7 @@ def test_extra_instructions_are_read_too(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / "conventions.md").write_text("Two spaces, always.")
 
-    runner, _ = build_runner(
+    runner, _, _ = build_runner(
         fresh_session(),
         workspace=tmp_path,
         extra_instructions=["conventions.md"],
