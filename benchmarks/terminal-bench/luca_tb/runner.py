@@ -172,9 +172,19 @@ def resolve_addendum(args: argparse.Namespace) -> str | None:
     return args.append_system_prompt
 
 
+def llm_config(model: str, provider: str, reasoning: str | None = None) -> LLMConfig:
+    """`reasoning` is a `model_options` key, not a field.
+
+    `LLMConfig` forwards `model_options` to `luca.client.acompletion` as
+    keyword arguments and validates nothing inside it, so anything that model
+    accepts belongs there rather than on the config itself."""
+    options = {"reasoning": reasoning} if reasoning else {}
+    return LLMConfig(model=model, provider=provider, model_options=options)
+
+
 async def run(args: argparse.Namespace, provider=None) -> int:
     session = AgentSessionRunner.new_session(
-        LLMConfig(model=args.model, provider=args.provider, reasoning=args.reasoning),
+        llm_config(args.model, args.provider, args.reasoning),
         runtime_config=RuntimeConfig(
             hard_max_steps=args.max_steps,
             subagents_enabled=args.subagents,
