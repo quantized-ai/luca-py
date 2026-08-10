@@ -559,6 +559,7 @@ def get_provider(model_or_pair: str) -> BaseProvider:
     return _get_cached_provider(
         provider_name,
         api_key=None,
+        credentials=None,
         base_url=None,
         transport_class=None,
         timeout=None,

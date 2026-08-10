@@ -16,7 +16,6 @@ import json
 from datetime import UTC, datetime
 
 import httpx
-import pytest
 
 from luca.client.transports.bedrock import sigv4
 from luca.client.transports.bedrock.credentials import ResolvedAwsCredentials
@@ -220,21 +219,24 @@ def test_a_bearer_stream_carries_no_signature(bedrock_transport_factory):
     assert captured["authorization"] == "Bearer bedrock-token-test"
 
 
-@pytest.mark.parametrize("stream", [False, True], ids=["converse", "converse-stream"])
-def test_the_signing_timestamp_is_the_same_for_both_operations(bedrock_sigv4_transport_factory, frozen_time, stream):
+def test_converse_stamps_the_signing_timestamp(bedrock_sigv4_transport_factory, frozen_time):
+    captured: dict = {}
+    transport = bedrock_sigv4_transport_factory(http_client=make_sync_client(_capture(captured)))
+
+    transport.completion(REQUEST)
+
+    assert captured["x_amz_date"] == "20250527T155000Z"
+
+
+def test_converse_stream_stamps_the_same_signing_timestamp(bedrock_sigv4_transport_factory, frozen_time):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["x_amz_date"] = request.headers.get("x-amz-date")
-        if stream:
-            return eventstream_response(STREAM_FRAMES)(request)
-        return httpx.Response(200, json=CONVERSE_REPLY)
+        return eventstream_response(STREAM_FRAMES)(request)
 
     transport = bedrock_sigv4_transport_factory(http_client=make_sync_client(handler))
-    if stream:
-        with transport.completion_stream(REQUEST) as s:
-            collect_events_with_snapshots(s)
-    else:
-        transport.completion(REQUEST)
+    with transport.completion_stream(REQUEST) as stream:
+        collect_events_with_snapshots(stream)
 
     assert captured["x_amz_date"] == "20250527T155000Z"
