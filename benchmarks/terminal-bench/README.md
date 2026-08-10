@@ -35,6 +35,16 @@ concurrent containers can exceed it on the heavier images, which is what the
 `AgentSetupTimeoutError` above is. Use a low `-n` locally, or x86 / a cloud
 sandbox for a real run.
 
+## In CI
+
+Actions → **terminal-bench** → Run workflow. Runners are x86_64, so no QEMU and
+no setup timeouts. Defaults to 10 tasks on `gpt-5.6-luna`, about 10 minutes and
+a few cents; set `tasks=all shards=9` for the full sweep in ~15 minutes.
+
+The score lands in the run summary, trajectories are attached as artifacts for
+30 days, and a PR adds one row to [results.md](results.md). Needs the
+`OPENROUTER_API_KEY` repo secret.
+
 ## Setup
 
 ```bash

@@ -1,0 +1,171 @@
+# Score luca on Terminal-Bench. Manual trigger only.
+#
+# GitHub runners are x86_64, so the task images run natively instead of under
+# QEMU as they do on Apple Silicon. That is the whole reason this exists: local
+# runs lose trials to agent-setup timeouts that have nothing to do with the
+# agent.
+#
+# Third-party actions are pinned by SHA: this workflow sees an API key, and the
+# repo is public.
+
+name: terminal-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model, as provider/model"
+        default: openrouter/openai/gpt-5.6-luna
+      reasoning_effort:
+        description: "Reasoning effort (blank to omit)"
+        default: ""
+      tasks:
+        description: "'all', a count, or a glob like '*/fix-git'"
+        default: "10"
+      k:
+        description: "Attempts per task"
+        default: "1"
+      shards:
+        description: "Parallel runners (max 20 on the free plan)"
+        default: "1"
+      concurrency:
+        description: "Trials in flight per runner"
+        default: "4"
+      max_steps:
+        description: "Assistant messages per turn"
+        default: "200"
+      setup_timeout_multiplier:
+        description: "Agent-setup budget multiplier (360s base)"
+        default: "3"
+      record:
+        description: "Open a PR appending the run to results.md"
+        type: boolean
+        default: true
+
+# One benchmark at a time, so two runs cannot interleave into one scoreboard row.
+concurrency:
+  group: terminal-bench
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: benchmarks/terminal-bench
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.shard.outputs.matrix }}
+      count: ${{ steps.shard.outputs.count }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: benchmarks/terminal-bench/uv.lock
+      - id: shard
+        run: uv run python -m ci.shard --tasks '${{ inputs.tasks }}' --shards '${{ inputs.shards }}'
+
+  bench:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # under the 6h job ceiling
+    strategy:
+      fail-fast: false # one shard dying must not bin the others
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Runners ship ~20GB free of 72GB, and task images run 300MB-3GB each.
+      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main@2023-10-18
+        with:
+          tool-cache: true
+          large-packages: false # slow, and we do not need that much back
+          docker-images: false # nothing cached yet on a fresh runner
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: benchmarks/terminal-bench/uv.lock
+
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          effort=""
+          if [ -n "${{ inputs.reasoning_effort }}" ]; then
+            effort="--ak reasoning_effort=${{ inputs.reasoning_effort }}"
+          fi
+          includes=""
+          for task in ${{ matrix.tasks }}; do
+            includes="$includes -i $task"
+          done
+          uv run harbor run \
+            -d terminal-bench/terminal-bench-2-1 \
+            -a luca_tb.agent:LucaAgent \
+            -m '${{ inputs.model }}' \
+            $includes \
+            -k '${{ inputs.k }}' \
+            -n '${{ inputs.concurrency }}' \
+            --ak max_steps='${{ inputs.max_steps }}' \
+            $effort \
+            --agent-setup-timeout-multiplier '${{ inputs.setup_timeout_multiplier }}' \
+            -o jobs \
+            -q
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always() # a crashed shard's trajectories are the useful part
+        with:
+          name: trials-shard-${{ matrix.shard }}
+          path: benchmarks/terminal-bench/jobs
+          retention-days: 30
+
+  aggregate:
+    needs: [prepare, bench]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: benchmarks/terminal-bench/uv.lock
+
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          path: benchmarks/terminal-bench/merged
+          pattern: trials-shard-*
+
+      - name: Summarise
+        run: |
+          uv run python -m ci.report \
+            --jobs-dir merged \
+            --model '${{ inputs.model }}' \
+            --effort '${{ inputs.reasoning_effort }}' \
+            --k '${{ inputs.k }}' \
+            --date "$(date -u +%Y-%m-%d)" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            ${{ inputs.record && '--results results.md' || '' }}
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: trials-all
+          path: benchmarks/terminal-bench/merged
+          retention-days: 30
+
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        if: ${{ inputs.record }}
+        with:
+          add-paths: benchmarks/terminal-bench/results.md
+          branch: bench/results-${{ github.run_id }}
+          title: "Terminal-Bench: ${{ inputs.model }} over ${{ needs.prepare.outputs.count }} tasks"
+          body: |
+            Scoreboard row from [run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+            Trajectories are attached to that run as artifacts for 30 days.
+          commit-message: "Record Terminal-Bench run ${{ github.run_id }}"
