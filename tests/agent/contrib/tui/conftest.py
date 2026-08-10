@@ -2,7 +2,6 @@
 installed, and keeps every TUI test off the developer's real configuration."""
 
 import logging
-import os
 
 import pytest
 
@@ -12,17 +11,6 @@ from luca.agent.contrib.tui.cli import _remove_log_handlers
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.client.catalog import _store
 from luca.client.providers import PROVIDERS
-
-
-@pytest.fixture(autouse=True)
-def _restore_environ():
-    """`apply_env_file` writes straight to `os.environ`, which monkeypatch has
-    no record of and so never rolls back. Declared FIRST so it tears down last
-    and restores what the other env fixtures set up over."""
-    saved = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)

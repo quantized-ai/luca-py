@@ -325,14 +325,11 @@ def _read_json_object(path: Path) -> dict:
     return _normalize_keys(data, path)
 
 
-def find_project_config(start: Path, filename: str = "luca.json") -> Path | None:
-    """The nearest `filename` at or above `start`, so a project file applies
+def find_project_config(start: Path) -> Path | None:
+    """The nearest `luca.json` at or above `start`, so a project config applies
     from any subdirectory. Two bounds keep a file outside the project from
     silently applying: the directory holding `.git`, and the home directory when
-    there is no repo. `exists()`, not `is_dir()`: a worktree's `.git` is a file.
-
-    `filename` is a parameter because `.env` is discovered the same way and the
-    bounds are the interesting part — see `env_file.py`."""
+    there is no repo. `exists()`, not `is_dir()`: a worktree's `.git` is a file."""
     # Both sides resolved, or the comparison misses whenever a symlink is in
     # play (/tmp vs /private/tmp on macOS) and the bound silently never fires.
     home = Path.home().resolve()
@@ -340,7 +337,7 @@ def find_project_config(start: Path, filename: str = "luca.json") -> Path | None
     for directory in (start, *start.parents):
         if directory == home and directory != start:
             break  # ~/luca.json is not the project config for everything below it
-        candidate = directory / filename
+        candidate = directory / "luca.json"
         if candidate.is_file():
             return candidate
         if (directory / ".git").exists():

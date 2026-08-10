@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 from pathlib import Path
 
 import pytest
@@ -415,48 +414,6 @@ def test_a_provider_that_cannot_be_built_fails_at_boot_not_mid_turn(tmp_path, mo
     assert "BEDROCK_AWS_REGION" in capsys.readouterr().err
 
 
-def test_a_dot_env_file_supplies_the_credential(tmp_path, monkeypatch):
-    # The other half of the same bug: `.env` was documented as working and was
-    # never read, so the variables below reached nothing.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text('AWS_BEARER_TOKEN_BEDROCK="from-dot-env"\nBEDROCK_AWS_REGION="eu-west-2"\n')
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-    monkeypatch.delenv("BEDROCK_AWS_REGION", raising=False)
-    seen: dict[str, object] = {}
-
-    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(booted=True))
-    main(["--provider", "bedrock", "--model", "amazon.nova-pro-v1:0"])
-
-    # Booting at all is the assertion: without the file the provider cannot be
-    # constructed and boot exits 1.
-    assert seen == {"booted": True}
-    assert os.environ["BEDROCK_AWS_REGION"] == "eu-west-2"
-
-
-def test_a_malformed_dot_env_names_the_line(tmp_path, monkeypatch, capsys):
-    # A doubled closing quote — the shape that silently dropped a real token.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text('OPENROUTER_API_KEY="sk-or-1""\n')
-
-    with pytest.raises(SystemExit):
-        main([])
-
-    assert "line 1: OPENROUTER_API_KEY has trailing characters" in capsys.readouterr().err
-
-
-def test_faux_boots_past_a_malformed_dot_env(tmp_path, monkeypatch):
-    # `--faux` is the offline path and is documented as needing nothing, so a
-    # file it never reads a credential from must not stop it.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text('BROKEN="x""\n')
-    seen: dict[str, object] = {}
-
-    monkeypatch.setattr(AgentApp, "run", lambda self: seen.update(booted=True))
-    main(["--faux"])
-
-    assert seen == {"booted": True}
-
-
 def test_a_saved_session_that_cannot_boot_says_how_to_open_it(tmp_path, monkeypatch, capsys):
     # Refusing to start is right, but being locked out of your own transcript
     # with no way back in is not.
@@ -470,17 +427,6 @@ def test_a_saved_session_that_cannot_boot_says_how_to_open_it(tmp_path, monkeypa
         main(["--provider", "bedrock", "--model", "amazon.nova-pro-v1:0"])
 
     assert "--provider/--model" in capsys.readouterr().err
-
-
-def test_an_exported_variable_beats_the_dot_env_file(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text('LUCA_TEST_ONLY="from-file"\n')
-    monkeypatch.setenv("LUCA_TEST_ONLY", "from-shell")
-
-    monkeypatch.setattr(AgentApp, "run", lambda self: None)
-    main(["--faux"])
-
-    assert os.environ["LUCA_TEST_ONLY"] == "from-shell"
 
 
 def test_a_provider_with_no_auth_entry_passes_no_key_at_all(tmp_path, monkeypatch):

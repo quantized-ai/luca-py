@@ -318,40 +318,6 @@ the provider's own authentication error.
 
 `LUCA_AUTH_PATH` names a different file, for a sandbox or a test.
 
-### env files
-
-`auth.json` is the designed path. A `.env` is the other thing people reach
-for, so the TUI loads one at boot:
-
-```
-.env            # nearest at or above the cwd, bounded by the repo — like luca.json
-LUCA_ENV_PATH   # names a different file outright
-```
-
-Two rules:
-
-- **An exported variable wins.** A name already in the environment is left
-  alone. Exporting is a deliberate act; a `.env` sitting in a checked-out repo
-  is a default, and a stale default must not shadow what you just typed.
-- **A line that cannot be read stops the launch**, naming the file, the line
-  and the reason:
-
-  ```
-  luca: .env line 5: AWS_BEARER_TOKEN_BEDROCK has trailing characters after the closing " quote
-  ```
-
-  That strictness is the point. `python-dotenv` reports an unreadable line as a
-  logging warning and carries on, and since the TUI writes logs to a file and
-  draws over stderr, a stray quote silently dropped a real credential with
-  nothing on screen to say so.
-
-The grammar is deliberately small: `KEY=value`, `KEY="value"`, `KEY='value'`,
-an optional `export` prefix, `#` comments, blank lines. An unquoted value runs
-to the end of the line, so `=`, `:`, `/` and `#` inside one need no escaping.
-
-Nothing here reaches `luca.client` as a file — it fills `os.environ`, which is
-where the client looks when it builds a provider.
-
 ### Failing at boot, not mid-conversation
 
 After reading all of the above, the TUI **constructs** the session's provider

@@ -98,7 +98,6 @@ from .config import (
     resolve_runtime_config,
     validate_provider,
 )
-from .env_file import apply_env_file
 from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
 
@@ -436,10 +435,6 @@ def main(argv: list[str] | None = None) -> None:
     # `instructions` paths, and a typo there has to exit readably like any
     # other bad config value rather than traceback.
     try:
-        # Before the config: a `.env` may carry `LUCA_CONFIG_PATH`. Skipped
-        # under `--faux`, the offline path that needs no credential at all.
-        if not args.faux:
-            apply_env_file()
         config = load_luca_config(path=resolve_config_path(args.config))
         # Resolved once and threaded everywhere: `build_session` loads before
         # the app exists, and `--pretty-print` never builds one at all.
