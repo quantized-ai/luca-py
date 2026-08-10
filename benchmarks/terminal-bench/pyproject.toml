@@ -1,0 +1,36 @@
+[project]
+name = "luca-terminal-bench"
+version = "0.1.0"
+description = "Terminal-Bench harness for luca: a Harbor installed-agent adapter"
+readme = "README.md"
+# Harbor requires >=3.12, which is why this is its own project rather than a
+# dependency group on the root pyproject (that one declares >=3.11 and uv
+# refuses to resolve harbor against it).
+requires-python = ">=3.12"
+dependencies = [
+    "harbor>=0.20",
+    "luca-ai",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.16.0",
+]
+
+[tool.uv.sources]
+luca-ai = { path = "../..", editable = true }
+
+[tool.pytest.ini_options]
+addopts = ["--strict-markers", "--strict-config"]
+asyncio_mode = "auto"
+filterwarnings = ["error"]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["luca_tb"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,46 @@
+# Terminal-Bench without installing Harbor, uv or Python 3.12 on the host.
+#
+#   docker compose -f docker/docker-compose.bench.yml run --rm bench \
+#       harbor run -d terminal-bench/terminal-bench-2-1 -a oracle -l 5
+#
+# RUN FROM THE REPO ROOT: ${PWD} below is the host's working directory.
+#
+# The repo is mounted at ${PWD}:${PWD} rather than somewhere tidy because the
+# mounted socket makes Harbor's task containers siblings of this one, spawned
+# by the host daemon, so its bind mounts resolve against host paths. Same
+# absolute path on both sides keeps them agreeing.
+#
+# In docker/ rather than the repo root because Compose auto-loads a neighbouring
+# .env for interpolation, and the root .env is the agent's secrets file.
+#
+# The socket also means task containers are not isolated from the host daemon.
+# Do not point this at untrusted task definitions.
+
+services:
+  bench:
+    build:
+      context: ..
+      dockerfile: Dockerfile.harbor
+    image: luca-bench:latest
+    working_dir: ${PWD}
+    environment:
+      BENCH_DIR: ${PWD}/benchmarks/terminal-bench
+      # Whichever of these is set on the host is forwarded. LUCA_API_KEY is the
+      # single override the adapter accepts across providers.
+      LUCA_API_KEY: ${LUCA_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LUCA_WHEEL: ${LUCA_WHEEL:-}
+    volumes:
+      # The repo, at its host path. See the note above.
+      - ${PWD}:${PWD}
+      # Sibling containers, spawned through the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Downloaded task images and wheels survive between runs.
+      - bench-uv-cache:/opt/uv-cache
+      - bench-harbor-cache:/root/.cache/harbor
+
+volumes:
+  bench-uv-cache:
+  bench-harbor-cache:

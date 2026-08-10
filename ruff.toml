@@ -1,4 +1,12 @@
-include = ["luca/**/*.py", "luca/**/*.pyi", "tests/**/*.py", "main.py"]
+include = [
+    "luca/**/*.py",
+    "luca/**/*.pyi",
+    "tests/**/*.py",
+    "main.py",
+    # The Terminal-Bench harness. Its own uv project, but one house style.
+    "benchmarks/**/*.py",
+]
+exclude = [".venv"]
 
 line-length = 120
 indent-width = 4
@@ -34,7 +42,7 @@ ignore = [
 
 [lint.isort]
 combine-as-imports = true
-known-first-party = ["luca", "tests"]
+known-first-party = ["luca", "luca_tb", "tests"]
 
 [format]
 quote-style = "double"
