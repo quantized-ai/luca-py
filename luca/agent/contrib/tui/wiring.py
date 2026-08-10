@@ -124,6 +124,7 @@ def build_runner(
     workspace: str | os.PathLike[str] = ".",
     provider=None,
     api_key: str | None = None,
+    credentials=None,
     mode: str = "ask",
     context_manager=None,
     additional_directories: list | None = None,
@@ -203,6 +204,7 @@ def build_runner(
         plugins=plugins,
         provider=provider,
         api_key=api_key,
+        credentials=credentials,
         context_manager=context_manager,
     )
     return runner, strategy, questions

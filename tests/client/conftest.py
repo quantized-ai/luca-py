@@ -29,8 +29,13 @@ def clear_provider_cache():
 
 
 @pytest.fixture(autouse=True)
-def no_real_env(monkeypatch):
-    """Strip provider env vars so forgotten api_key= can't hit a real provider."""
+def no_real_env(request, monkeypatch, tmp_path):
+    """Strip provider env vars so forgotten api_key= can't hit a real provider.
+
+    A `live` test wants the real environment — that is the whole point of it —
+    so it opts out."""
+    if request.node.get_closest_marker("live"):
+        return
     for var in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -44,5 +49,18 @@ def no_real_env(monkeypatch):
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_VERSION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "BEDROCK_AWS_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_PROFILE",
     ):
         monkeypatch.delenv(var, raising=False)
+    # The AWS resolver falls back to `~/.aws/...` when these are unset, so
+    # deleting them is not enough: point them at paths that do not exist, or a
+    # developer's own credentials answer a test about their absence.
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-such-aws" / "credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-such-aws" / "config"))

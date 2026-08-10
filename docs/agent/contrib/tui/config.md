@@ -269,27 +269,101 @@ $XDG_DATA_HOME/luca/auth.json      # default: ~/.local/share/luca/auth.json
 ```jsonc
 {
   "openrouter":         { "type": "api", "key": "sk-or-..." },
-  "my_custom_provider": { "type": "api", "key": "sk-..." }
+  "my_custom_provider": { "type": "api", "key": "sk-..." },
+  "bedrock":            { "type": "aws", "profile": "work" }
 }
 ```
 
 Any provider name works, including one the client has never heard of — pair it
 with a `providers` entry giving `base_url` and `transport` and the host is
-reachable. `type` is `"api"` today; `"oauth"` is coming.
+reachable.
+
+`type` discriminates two credential shapes. `"api"` is one opaque string,
+which covers every provider that authenticates with a bearer token or an
+api-key header. `"aws"` is the SigV4 tuple, because one string cannot express
+it:
+
+```jsonc
+{
+  "bedrock": {
+    "type": "aws",
+    "access_key_id": "AKIA...",       // optional
+    "secret_access_key": "...",       // optional
+    "session_token": null,            // optional
+    "region": "us-east-1",            // optional
+    "profile": "work"                 // optional
+  }
+}
+```
+
+Every AWS field is optional, and what you leave out is filled from the
+environment and `~/.aws` by the client. `{ "type": "aws", "profile": "work" }`
+is the ordinary entry for someone who has run `aws configure`, and a Bedrock
+API key in `AWS_BEARER_TOKEN_BEDROCK` takes precedence over all of it. See
+[the client's provider docs](../../../client/09-providers-and-transports.md#bedrock-authentication)
+for the full chain. `"oauth"` is coming.
 
 A separate file because a config is the kind of thing you commit to a repo or
 paste into an issue and a key is not, and because nothing in the file ever
 reaches the session: it is read once at startup and handed to the runner as a
-runtime argument, so no key is written to `~/.luca/projects/…`.
+runtime argument, so no credential is written to `~/.luca/projects/…`.
 
-A provider with **no entry** is not an error. No key is passed for it and the
-client falls back to whatever environment variable it knows for that provider
-(`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, …) — which is how luca worked
-before this file existed, and still the shortest path to a running agent. The
-TUI never knows which variable that is; that is the client's business, and a
-missing one surfaces as the provider's own authentication error.
+A provider with **no entry** is not an error. No credential is passed for it
+and the client falls back to whatever environment variable or credential chain
+it knows for that provider (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`,
+`~/.aws/credentials`, …) — which is how luca worked before this file existed,
+and still the shortest path to a running agent. The TUI never knows which
+variable that is; that is the client's business, and a missing one surfaces as
+the provider's own authentication error.
 
 `LUCA_AUTH_PATH` names a different file, for a sandbox or a test.
+
+### env files
+
+`auth.json` is the designed path. A `.env` is the other thing people reach
+for, so the TUI loads one at boot:
+
+```
+.env            # nearest at or above the cwd, bounded by the repo — like luca.json
+LUCA_ENV_PATH   # names a different file outright
+```
+
+Two rules:
+
+- **An exported variable wins.** A name already in the environment is left
+  alone. Exporting is a deliberate act; a `.env` sitting in a checked-out repo
+  is a default, and a stale default must not shadow what you just typed.
+- **A line that cannot be read stops the launch**, naming the file, the line
+  and the reason:
+
+  ```
+  luca: .env line 5: AWS_BEARER_TOKEN_BEDROCK has trailing characters after the closing " quote
+  ```
+
+  That strictness is the point. `python-dotenv` reports an unreadable line as a
+  logging warning and carries on, and since the TUI writes logs to a file and
+  draws over stderr, a stray quote silently dropped a real credential with
+  nothing on screen to say so.
+
+The grammar is deliberately small: `KEY=value`, `KEY="value"`, `KEY='value'`,
+an optional `export` prefix, `#` comments, blank lines. An unquoted value runs
+to the end of the line, so `=`, `:`, `/` and `#` inside one need no escaping.
+
+Nothing here reaches `luca.client` as a file — it fills `os.environ`, which is
+where the client looks when it builds a provider.
+
+### Failing at boot, not mid-conversation
+
+After reading all of the above, the TUI **constructs** the session's provider
+and throws it away. Naming a provider the client knows is a weaker check than
+it sounds: a missing region, a half-written AWS credential or an unresolvable
+profile all live in the provider's constructor, which otherwise does not run
+until the first message — surfacing as a failed turn rather than as the
+configuration error it is. No network call is involved.
+
+`/model` stays deliberately ungated: it switches to anything, and if the new
+provider cannot be built it says so immediately instead of leaving you to find
+out on the next message.
 
 ## Logging
 

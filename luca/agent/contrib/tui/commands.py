@@ -161,7 +161,7 @@ def _apply(
     updated = config.model_copy(update=updates) if updates else config
     if updates:
         updated = app.resolve_model_options(updated)
-        app.repoint_api_key(updated.provider)
+        app.repoint_credential(updated.provider)
     if reasoning is not _UNSET:
         options = {**updated.model_options}
         if reasoning is None:
@@ -171,6 +171,15 @@ def _apply(
         updated = updated.model_copy(update={"model_options": options})
     app.runner.session.session_config.llm_config = updated
     app._refresh_status()
+
+
+async def _warn_if_unbuildable(app: AgentApp) -> None:
+    """Report that the new provider cannot be built. Never a gate: the switch
+    has already happened and stays. Without this the model reads as set and
+    only the next message discovers it."""
+    error = app.provider_error()
+    if error:
+        await app._notice(error, error=True)
 
 
 async def _cmd_help(app: AgentApp, arg: str) -> None:
@@ -190,6 +199,7 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
         else:
             _apply(app, model=arg)
         await app._notice(f"model set to {app.runner.session.session_config.llm_config.model}")
+        await _warn_if_unbuildable(app)
         return
 
     models = pickable_models(app.recommended_models)
@@ -207,6 +217,7 @@ async def _cmd_model(app: AgentApp, arg: str) -> None:
             await app._restore_composer()
             _apply(app, provider=provider, model=model)
             await app._notice(f"model set to {provider}:{model}")
+            await _warn_if_unbuildable(app)
 
         await app.open_menu(
             [vm.OverlayRow(primary=model, secondary=model_context_note(provider, model)) for model in models[provider]],

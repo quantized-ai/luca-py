@@ -45,6 +45,7 @@ luca/client/                       # the supporting LLM SDK
 ├── testing.py                     # FauxProvider + builder re-exports
 │
 ├── types/                         # canonical DTOs (Pydantic)
+│   ├── auth.py                    # Credentials marker, AwsCredentials
 │   ├── catalog.py                 # ModelInfo, ModelCost
 │   ├── completion.py              # ChatCompletionRequest, ChatCompletionResponse, Usage, UsageCost
 │   ├── content.py                 # TextBlock, ImageBlock, ThinkingBlock, ToolCall, RefusalBlock, ...
@@ -61,7 +62,8 @@ luca/client/                       # the supporting LLM SDK
 │   ├── openai.py                  # OpenAI provider (→ OpenAIResponsesTransport)
 │   ├── anthropic.py               # Anthropic provider
 │   ├── openrouter.py              # OpenRouter provider
-│   ├── bedrock.py                 # Bedrock provider (region → base_url)
+│   ├── bedrock.py                 # Bedrock provider (region → base_url;
+│   │                              #   picks bearer token vs SigV4)
 │   ├── generic.py                 # GenericProvider (used by PROVIDERS dict entries)
 │   └── faux.py                    # FauxProvider for tests
 │
@@ -73,7 +75,8 @@ luca/client/                       # the supporting LLM SDK
 │   ├── openai_responses/          # /v1/responses: transport.py + stream.py
 │   ├── anthropic/                 # transport.py + stream.py
 │   ├── openrouter/                # subclass of OpenAITransport (only overrides _headers)
-│   ├── bedrock/                   # Converse translation; binary eventstream decoder
+│   ├── bedrock/                   # Converse translation; binary eventstream
+│   │                              #   decoder; sigv4.py + credentials.py
 │   └── faux/                      # scripted responses; no httpx
 │
 ├── catalog/                       # in-memory ModelInfo store
@@ -215,6 +218,42 @@ an input and storage form.
 Each transport implements `_classify_finish(provider_value, message)` to compute the canonical pair `(finish_reason, error_message)`. It receives the fully assembled message so it can inspect content — for example, strict-mode OpenAI returns a raw `"stop"` reason alongside a `RefusalBlock`, which classifies to canonical `"error"`.
 
 **LLM-side refusals, safety blocks, and content filters are not exceptions.** They arrive as a normal response with `finish_reason="error"` and an `error_message`. `ClientError` subclasses are reserved for transport or network failures.
+
+### `api_key` is not the only credential
+
+Every provider but Bedrock authenticates with one opaque string, and that is
+`api_key`. AWS SigV4 needs four values, so the client also carries an opaque
+`credentials` object (`types/auth.py`) that CORE NEVER READS — it is stored
+and forwarded through `completion()`, the provider cache key, and both
+constructors, and only `BedrockProvider` / `BedrockTransport` look inside.
+Same division `provider_options` uses: core routes, the provider interprets.
+
+`Credentials` is `frozen=True` because it is part of the `_provider_cache`
+key, and it IS in that key: two credential sets in one process must not answer
+each other's calls.
+
+### Bedrock signs the bytes it sends
+
+`BedrockTransport` is the only transport that overrides
+`_build_chat_completion_httpx_request`, and its streaming path is the only one
+that passes `content=` rather than `json=`. Both for the same reason: SigV4
+signs a `sha256` of the exact request body, so the payload is serialized ONCE
+(`serialize_payload`) and the same bytes are both signed and sent. Letting
+httpx serialize a dict a second time signs a string that never went on the
+wire, and the result is a 403 that reads like bad credentials.
+
+The path has the mirror-image trap. A Bedrock inference-profile id carries a
+colon (`/model/us.anthropic.claude-…-v1:0/converse`) which httpx sends
+literally and the canonical URI encodes to `%3A` — that is the "encode each
+path segment twice" rule for every service except S3. `sigv4.py` reads
+`httpx.URL.raw_path` so the two can never drift.
+
+`AWS_BEARER_TOKEN_BEDROCK` (or an explicit `api_key=`) wins over SigV4
+entirely, matching AWS's own SDKs. The signer is validated against AWS's
+published `aws-sig-v4-test-suite` vectors in
+`tests/client/test_transports/test_bedrock/test_sigv4.py`; note the suite's
+`post-x-www-form-urlencoded` case ships a `.creq` that disagrees with its own
+`.sts` and `.authz`, and the latter pair is authoritative.
 
 ### Two OpenAI wire protocols
 

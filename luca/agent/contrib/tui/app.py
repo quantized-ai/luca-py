@@ -490,15 +490,50 @@ class AgentApp(LucaApp):
 
         return api_key_for(self._auth, provider)
 
-    def repoint_api_key(self, provider: str) -> None:
+    def credentials_for(self, provider: str):
+        """This provider's non-string credential from `auth.json` (AWS SigV4
+        today), or None. At most one of this and `api_key_for` answers for any
+        one entry."""
+        from .auth import credentials_for
+
+        return credentials_for(self._auth, provider)
+
+    def provider_error(self) -> str | None:
+        """Why the session's provider cannot be built right now, or None.
+
+        Boot refuses to start on this; a mid-session `/model` is deliberately
+        never a gate, so it reports instead. An injected provider (`--faux`)
+        is already built and has nothing to resolve."""
+        if self._provider is not None:
+            return None
+        from .config import LucaConfigError, check_provider_buildable
+
+        try:
+            check_provider_buildable(
+                self.runner.session.session_config.llm_config,
+                api_key=self.runner.api_key,
+                credentials=self.runner.credentials,
+            )
+        except LucaConfigError as exc:
+            return str(exc)
+        return None
+
+    def repoint_credential(self, provider: str) -> None:
         """Move the live runner (and its context manager) onto another
         provider's credential. Called by `_apply` alongside the option
         re-resolution: a `/model openai:…` on a session configured for
-        openrouter must stop sending openrouter's key."""
+        openrouter must stop sending openrouter's key.
+
+        Both kinds move together in one method: they are mutually exclusive
+        per provider, so moving one and forgetting the other would send
+        bedrock's credential to openai."""
         key = self.api_key_for(provider)
+        credentials = self.credentials_for(provider)
         self.runner.api_key = key
+        self.runner.credentials = credentials
         if self._context_manager is not None:
             self._context_manager.api_key = key
+            self._context_manager.credentials = credentials
 
     def _alternate_model(self) -> tuple[str, str] | None:
         """A sibling to offer after a turn fails — the newest model from the
@@ -1301,6 +1336,7 @@ class AgentApp(LucaApp):
             workspace=self._workspace,
             provider=self._provider,
             api_key=self.api_key_for(session.session_config.llm_config.provider),
+            credentials=self.credentials_for(session.session_config.llm_config.provider),
             mode=self._mode,
             context_manager=self._context_manager,
             additional_directories=self._additional_directories,

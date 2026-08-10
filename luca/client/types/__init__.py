@@ -1,5 +1,6 @@
 """Public DTOs for the SDK. Re-exports everything from the submodules."""
 
+from .auth import AwsCredentials, Credentials
 from .catalog import ModelCost, ModelInfo
 from .completion import (
     ChatCompletionRequest,
@@ -75,6 +76,9 @@ ChatCompletionResponse.model_rebuild()
 
 
 __all__ = [
+    # auth
+    "AwsCredentials",
+    "Credentials",
     # catalog
     "ModelCost",
     "ModelInfo",

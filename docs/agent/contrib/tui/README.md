@@ -36,9 +36,11 @@ uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 
 `--model` / `--provider` / `--reasoning` update the session's `LLMConfig`
 (`--reasoning` lands in its `model_options`); they persist with the session and
-override the stored values on a resume. The provider's api key does not — it is
-read from `auth.json` at every boot and handed to the runner
-([config.md](config.md#credentials)).
+override the stored values on a resume. The provider's credential does not — it
+is read from `auth.json` at every boot and handed to the runner, and follows a
+mid-session `/model` onto the new provider
+([config.md](config.md#credentials)). That credential is an api key for most
+providers and the AWS SigV4 tuple for `bedrock`.
 Subagent flags (`--subagents-max-depth`, `--subagents-max-per-turn`,
 `--subagents-max-workers`) and `--pretty-print` behave as before — see
 [`08-runtime-config.md`](../../08-runtime-config.md) and

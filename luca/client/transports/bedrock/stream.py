@@ -195,12 +195,17 @@ def _safe_json(payload: bytes) -> dict | None:
 
 class BedrockChatCompletionStream(ChatCompletionStream):
     def _open_http(self) -> Any:
-        payload = self._transport._build_chat_completion_payload(self._request, stream=True)
+        # `content=`, not `json=`: httpx re-serializing the dict would sign
+        # one byte string and send another.
+        url = self._transport._chat_completion_url(self._request, stream=True)
+        body = self._transport._serialize_payload(
+            self._transport._build_chat_completion_payload(self._request, stream=True)
+        )
         return self._transport._client.stream(
             "POST",
-            self._transport._chat_completion_url(self._request, stream=True),
-            json=payload,
-            headers=self._transport._headers(),
+            url,
+            content=body,
+            headers=self._transport._signed_headers("POST", url, body),
         )
 
     def parse_chunks(self) -> Iterator[RawStreamEvent]:
@@ -214,13 +219,16 @@ class BedrockChatCompletionStream(ChatCompletionStream):
 
 class BedrockAsyncChatCompletionStream(AsyncChatCompletionStream):
     async def _open_http(self) -> Any:
-        payload = self._transport._build_chat_completion_payload(self._request, stream=True)
+        url = self._transport._chat_completion_url(self._request, stream=True)
+        body = self._transport._serialize_payload(
+            self._transport._build_chat_completion_payload(self._request, stream=True)
+        )
         aclient = self._transport._ensure_aclient()
         return aclient.stream(
             "POST",
-            self._transport._chat_completion_url(self._request, stream=True),
-            json=payload,
-            headers=self._transport._headers(),
+            url,
+            content=body,
+            headers=self._transport._signed_headers("POST", url, body),
         )
 
     async def parse_chunks(self) -> AsyncIterator[RawStreamEvent]:

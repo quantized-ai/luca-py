@@ -45,6 +45,12 @@ nobody has to grep to find out whether a feature is real.
 `BedrockProvider`, `FauxProvider`, plus `GenericProvider`-backed entries for
 `groq`, `deepseek`, `ollama`, `quantized`.
 
+**Auth**: an api key per provider, plus AWS SigV4 for Bedrock — signing, and
+credential resolution from the environment and `~/.aws` including named
+profiles. The AWS chain stops short of IMDS, ECS/EKS, web identity, SSO and
+`assume-role`; see
+[09-providers-and-transports.md](09-providers-and-transports.md#bedrock-authentication).
+
 **Transports**: `OpenAIResponsesTransport` (provider `openai`),
 `OpenAITransport` (chat completions — every OpenAI-compatible host),
 `AnthropicTransport`, `OpenRouterTransport`, `BedrockTransport`,

@@ -81,13 +81,14 @@ from luca.client.catalog.refresh import main as refresh_catalog
 from luca.client.types import Reasoning
 
 from .app import DEFAULT_THEME, AgentApp
-from .auth import api_key_for, load_auth, resolve_auth_path
+from .auth import api_key_for, credentials_for, load_auth, resolve_auth_path
 from .config import (
     LucaConfig,
     LucaConfigError,
     apply_model_options,
     build_context_manager,
     build_permission_rules,
+    check_provider_buildable,
     load_luca_config,
     pick,
     picker_models,
@@ -97,6 +98,7 @@ from .config import (
     resolve_runtime_config,
     validate_provider,
 )
+from .env_file import apply_env_file
 from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
 
@@ -434,6 +436,10 @@ def main(argv: list[str] | None = None) -> None:
     # `instructions` paths, and a typo there has to exit readably like any
     # other bad config value rather than traceback.
     try:
+        # Before the config: a `.env` may carry `LUCA_CONFIG_PATH`. Skipped
+        # under `--faux`, the offline path that needs no credential at all.
+        if not args.faux:
+            apply_env_file()
         config = load_luca_config(path=resolve_config_path(args.config))
         # Resolved once and threaded everywhere: `build_session` loads before
         # the app exists, and `--pretty-print` never builds one at all.
@@ -452,7 +458,24 @@ def main(argv: list[str] | None = None) -> None:
         auth: dict = {}
         if not args.faux:
             auth = load_auth(resolve_auth_path())
-            validate_provider(config, session.session_config.llm_config.provider)
+            llm_config = session.session_config.llm_config
+            validate_provider(config, llm_config.provider)
+            # And then BUILD it: a missing region or a half-written credential
+            # lives in the provider's constructor, which otherwise runs first
+            # on the opening message of the session.
+            try:
+                check_provider_buildable(
+                    llm_config,
+                    api_key=api_key_for(auth, llm_config.provider),
+                    credentials=credentials_for(auth, llm_config.provider),
+                )
+            except LucaConfigError as exc:
+                # Naming the way out matters most on a resume, where refusing
+                # to start otherwise locks you out of your own transcript.
+                raise LucaConfigError(
+                    f"{exc}\n       (this session is on {llm_config.provider!r}; "
+                    "--provider/--model opens it elsewhere, --faux works offline)"
+                ) from exc
         # After build_session: the filename is the session's, and a resumed
         # session appends to the log it already has.
         setup_logging(
@@ -480,6 +503,7 @@ def main(argv: list[str] | None = None) -> None:
                 config,
                 provider=provider,
                 api_key=api_key_for(auth, session.session_config.llm_config.provider),
+                credentials=credentials_for(auth, session.session_config.llm_config.provider),
                 enabled=args.autocompact,
                 threshold=args.compact_threshold,
                 keep_turns=args.compact_keep_turns,

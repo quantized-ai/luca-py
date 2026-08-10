@@ -1,14 +1,11 @@
 """The `vnd.amazon.eventstream` decoder → RawStreamEvent list.
 
-Frames are built byte by byte here so the buffering and CRC paths are exercised
-for real, not mocked away. The parser is driven directly with a fake response
-whose `iter_bytes` we control, which lets a frame be split across reads or two
-frames arrive in one.
+`eventstream_frame` builds real frames byte by byte, so the buffering and CRC
+paths are exercised rather than mocked away. The parser is driven directly
+with a fake response whose `iter_bytes` we control, which lets a frame be
+split across reads or two frames arrive in one. The transport's HTTP path is
+covered in `test_auth.py`, which uses the same builder over `httpx`.
 """
-
-import json
-import struct
-import zlib
 
 import pytest
 
@@ -24,26 +21,7 @@ from luca.client.types.streaming import (
     RawToolArgumentsDelta,
     RawUsage,
 )
-
-_HEADER_TYPE_STRING = 7
-
-
-def _frame(event_type, payload, *, message_type="event"):
-    headers = {
-        ":message-type": message_type,
-        ":event-type": event_type,
-        ":content-type": "application/json",
-    }
-    header_bytes = b""
-    for name, value in headers.items():
-        nb, vb = name.encode(), value.encode()
-        header_bytes += bytes([len(nb)]) + nb + bytes([_HEADER_TYPE_STRING]) + struct.pack(">H", len(vb)) + vb
-    body = json.dumps(payload).encode()
-    total = 12 + len(header_bytes) + len(body) + 4
-    prelude = struct.pack(">II", total, len(header_bytes))
-    prelude += struct.pack(">I", zlib.crc32(prelude))
-    message = prelude + header_bytes + body
-    return message + struct.pack(">I", zlib.crc32(message))
+from tests.client._helpers.httpx_mocks import eventstream_frame as _frame
 
 
 class _FakeResponse:
