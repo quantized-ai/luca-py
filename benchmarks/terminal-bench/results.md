@@ -11,6 +11,7 @@ may not, so these numbers are for our own iteration rather than for publishing.
 
 | date | model | effort | tasks | k | accuracy | errored | cost | run |
 |---|---|---|---|---|---|---|---|---|
+| 2026-08-10 | openrouter/openai/gpt-5.6-luna | — | 10 | 1 | 0.0% | 10 | $0.00 | [run](https://github.com/quantized-ai/luca-py/actions/runs/31385871115) |
 
 ## Local runs before CI existed
 
