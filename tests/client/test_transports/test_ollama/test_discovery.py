@@ -143,3 +143,23 @@ def test_a_daemon_that_is_not_running_says_so_and_says_what_to_do():
 
     with pytest.raises(ClientConnectionError, match="Is the daemon running"):
         discover("http://localhost:11434", client=make_sync_client(refused))
+
+
+def test_one_undescribable_model_does_not_lose_the_others():
+    # `ollama rm` between the two calls, or a broken manifest. Aborting the
+    # walk would leave every model unregistered and back on the 200k default.
+    tags = {"models": [{"model": "llama3.2:latest"}, {"model": "vanished:latest"}, {"model": "qwen2.5:14b"}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=tags)
+        model = _json.loads(request.content)["model"]
+        if model == "vanished:latest":
+            return httpx.Response(404, json={"error": "model not found"})
+        return httpx.Response(200, json=LLAMA if "llama" in model else QWEN)
+
+    models = discover("http://localhost:11434", client=make_sync_client(handler))
+
+    assert [m.model for m in models] == ["llama3.2:latest", "qwen2.5:14b"]

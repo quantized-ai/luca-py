@@ -447,10 +447,6 @@ def main(argv: list[str] | None = None) -> None:
             print(pretty_print(load_session(resume_id(args), store)))
             return
         session = build_session(args, config, store)
-        # Unconditional: `/model` cannot offer what was never looked for, so a
-        # session on another provider still needs the local list.
-        if not args.faux:
-            register_local_models(config)
         # `--faux` injects a provider INSTANCE and never resolves a name, so it
         # needs neither a credential nor the reachability check. Otherwise both
         # run against the provider this launch will actually call — `--provider`,
@@ -486,6 +482,13 @@ def main(argv: list[str] | None = None) -> None:
                 DEFAULT_LOG_LEVEL,
             ),
         )
+        # After setup_logging, deliberately: "registered N local models" and
+        # "discovery skipped" are the only trace of why /model does or does not
+        # list them, and before the handler is attached they go nowhere.
+        # Unconditional otherwise — /model cannot offer what was never looked
+        # for, so a session on another provider still needs the local list.
+        if not args.faux:
+            register_local_models(config)
         provider = build_faux_provider() if args.faux else None
         config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
         app = AgentApp(

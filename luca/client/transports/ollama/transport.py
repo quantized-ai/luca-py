@@ -147,6 +147,9 @@ class OllamaTransport(OpenAITransport):
         if request.tools:
             payload["tools"] = self._project_tools(request.tools)
         # Only for a model that advertises it; asking otherwise is a 400.
+        # UNVERIFIED: no locally-pulled model on the development machine
+        # advertised `thinking`, so this path is written from the docs and has
+        # never round-tripped live. The capability flag itself is verified.
         if (
             request.reasoning is not None
             and request.reasoning != "provider-default"
@@ -189,8 +192,10 @@ class OllamaTransport(OpenAITransport):
         return resp
 
     def _parse_usage(self, usage_json: dict | None, model_info: Any) -> Usage:
-        """Ollama reports counts on the top-level response, not in a `usage`
-        object, and has no total."""
+        """The WHOLE response, not a `usage` object — Ollama has none, and puts
+        the counts at the top level. Only this class's own
+        `_parse_chat_completion_response` calls it, so the shape is private
+        despite the inherited name."""
         if not usage_json:
             return Usage()
         input_tokens = usage_json.get("prompt_eval_count") or 0

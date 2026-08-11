@@ -13,6 +13,8 @@ the layering arrows pointing inward.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from ...exceptions import ConnectionError as ClientConnectionError, ProviderAPIError
@@ -30,6 +32,8 @@ models built from a bare Modelfile. Conservative on purpose: luca SETS the
 window, so whatever it picks is true."""
 
 CHAT_CAPABILITY = "completion"
+
+logger = logging.getLogger(__name__)
 
 
 def _architectural_context_length(payload: dict) -> int | None:
@@ -97,7 +101,14 @@ def discover(
             name = entry.get("model") or entry.get("name")
             if not name:
                 continue
-            show = _post_json(http, f"{base_url.rstrip('/')}/api/show", {"model": name}, base_url)
+            try:
+                show = _post_json(http, f"{base_url.rstrip('/')}/api/show", {"model": name}, base_url)
+            except ProviderAPIError:
+                # One model that cannot be described — removed between the two
+                # calls, or a broken manifest — must not cost the others. The
+                # daemon itself is still up, so this is not `ConnectionError`.
+                logger.warning("ollama: skipping %s, /api/show failed", name)
+                continue
             info = model_info_from_show(name, show, ceiling=ceiling)
             if info is not None:
                 records.append(info)
