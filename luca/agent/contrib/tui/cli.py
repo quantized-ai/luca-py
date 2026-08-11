@@ -447,6 +447,10 @@ def main(argv: list[str] | None = None) -> None:
             print(pretty_print(load_session(resume_id(args), store)))
             return
         session = build_session(args, config, store)
+        # Unconditional: `/model` cannot offer what was never looked for, so a
+        # session on another provider still needs the local list.
+        if not args.faux:
+            register_local_models(config)
         # `--faux` injects a provider INSTANCE and never resolves a name, so it
         # needs neither a credential nor the reachability check. Otherwise both
         # run against the provider this launch will actually call — `--provider`,
@@ -456,9 +460,6 @@ def main(argv: list[str] | None = None) -> None:
             auth = load_auth(resolve_auth_path())
             llm_config = session.session_config.llm_config
             validate_provider(config, llm_config.provider)
-            # Before the buildable check: a local daemon is the only source of
-            # truth for what it has pulled and how large a window each allows.
-            register_local_models(llm_config)
             # And then BUILD it: a missing region or a half-written credential
             # lives in the provider's constructor, which otherwise runs first
             # on the opening message of the session.

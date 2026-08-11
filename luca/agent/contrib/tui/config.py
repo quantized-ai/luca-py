@@ -435,7 +435,10 @@ def validate_provider(config: LucaConfig, provider: str) -> None:
     )
 
 
-def register_local_models(llm_config: LLMConfig) -> int:
+OLLAMA_DISCOVERY_TIMEOUT = 5.0
+
+
+def register_local_models(config: LucaConfig) -> int:
     """Ask a local Ollama what it has, and put it in the catalog.
 
     models.dev cannot know what you pulled, so without this every ollama model
@@ -443,18 +446,20 @@ def register_local_models(llm_config: LLMConfig) -> int:
     while the server truncates at its own. Registering here makes the window
     the transport asks for and the window the compactor sees the same number.
 
+    Runs on every boot, not only when the session is already on ollama —
+    otherwise `/model` cannot list what it has never looked for, and you can
+    only reach ollama from ollama. Measured cost: ~13ms when nothing is
+    listening (the common case), ~350ms when a daemon answers.
+
     Never fatal: a daemon that is not running is a reason to have no local
     models, not a reason to refuse to start."""
-    if llm_config.provider != "ollama":
-        return 0
-
     from luca.client import catalog
     from luca.client.transports.ollama import discover
 
-    options = completion_options(llm_config)
-    base_url = options.get("base_url") or PROVIDERS["ollama"]["default_base_url"]
+    defn = config.providers.get("ollama")
+    base_url = (defn.base_url if defn else None) or PROVIDERS["ollama"]["default_base_url"]
     try:
-        records = discover(base_url)
+        records = discover(base_url, timeout=OLLAMA_DISCOVERY_TIMEOUT)
     except ClientError as exc:
         logger.info("ollama discovery skipped: %s", exc)
         return 0
