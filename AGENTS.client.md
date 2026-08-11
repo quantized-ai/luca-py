@@ -147,8 +147,8 @@ Providers and transports do **not** import `luca.client.catalog`. They read `req
 ### 5. The catalog is metadata, never a gate
 
 Records are generated from [models.dev](https://models.dev), which cannot be
-complete — a provider's line-up moves faster than a release does, and `ollama`
-and custom hosts are not there at all. So `catalog.get` returning `None` means
+complete — a provider's line-up moves faster than a release does, and custom
+hosts are not there at all. So `catalog.get` returning `None` means
 "no metadata", never "unusable": the request goes out on provider defaults.
 Nothing may start refusing a model because the catalog has not heard of it.
 
@@ -166,6 +166,19 @@ Every call must specify a provider — via the `provider:model` prefix or an exp
 ### 7. Duck-typed composition, no ABC / Protocol
 
 Base classes are concrete. Hook methods `raise NotImplementedError`. Subclasses override specific hooks; no abstract base classes or Protocol declarations.
+
+### Ollama sets the window it also reports
+
+`OllamaTransport` targets the native `/api/chat`, not Ollama's OpenAI-compatible
+`/v1`, because `/v1` silently ignores `options.num_ctx` — a 32k model then runs
+at the daemon's 4k default and truncates with no error and no flag.
+
+It is the ONE transport that reads a `model_info` field other than `cost`. It
+takes `context_window` and sends it as `num_ctx`, so the window the compactor
+sees and the window the server runs are the same number by construction.
+`transports/ollama/discovery.py` produced that number from `/api/show`, and
+returns `ModelInfo` rather than registering anything itself — transports do not
+import the catalog, so the caller does the writing.
 
 ### 8. httpx + pydantic only
 
@@ -259,7 +272,8 @@ published `aws-sig-v4-test-suite` vectors in
 
 `openai` the PROVIDER runs on `/v1/responses` (`OpenAIResponsesTransport`).
 `openai` the TRANSPORT is chat completions, and serves every OpenAI-compatible
-host (`groq`, `deepseek`, `ollama`, and `openrouter` by subclassing). They are
+host (`groq`, `deepseek`, and `openrouter` by subclassing; `ollama` subclasses
+it but retargets the native API). They are
 siblings, not a base and an override: `input` items vs `messages`, `output`
 items vs `choices`, named SSE events vs `delta` chunks, `status` +
 `incomplete_details` vs `finish_reason`. The only genuinely shared piece is the

@@ -92,6 +92,7 @@ from .config import (
     load_luca_config,
     pick,
     picker_models,
+    register_local_models,
     resolve_config_path,
     resolve_llm_config,
     resolve_read_limits,
@@ -455,6 +456,9 @@ def main(argv: list[str] | None = None) -> None:
             auth = load_auth(resolve_auth_path())
             llm_config = session.session_config.llm_config
             validate_provider(config, llm_config.provider)
+            # Before the buildable check: a local daemon is the only source of
+            # truth for what it has pulled and how large a window each allows.
+            register_local_models(llm_config)
             # And then BUILD it: a missing region or a half-written credential
             # lives in the provider's constructor, which otherwise runs first
             # on the opening message of the session.

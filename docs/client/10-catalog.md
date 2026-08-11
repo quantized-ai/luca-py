@@ -36,6 +36,15 @@ uv run python main.py --refresh-models           # the same, from the TUI
 > all — so `catalog.get` returning `None` means "no metadata", not "cannot be
 > used". A request for an unlisted model runs on provider defaults.
 
+models.dev is the default source, not the only one. `catalog.register(...)`
+takes a record from anywhere, which is how a local Ollama gets real numbers:
+`transports.ollama.discover()` reads what the daemon has pulled and the caller
+registers it. For that provider the metadata is load-bearing rather than
+decorative — `context_window` becomes the `num_ctx` the transport asks for, so
+the figure the compactor reads and the window the server runs are the same
+number. See
+[09-providers-and-transports.md](09-providers-and-transports.md#ollama-runs-on-the-native-api-not-v1).
+
 `release_date` and `family` come along for a reason: the TUI sorts "newest
 first" by the former and collapses a host's near-duplicates by the latter,
 which is how bedrock's `us.`/`eu.`/`jp.` copies of one model stop being four

@@ -15,6 +15,7 @@ that discovery, and a path that does not resolve is an error.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Literal
@@ -40,6 +41,8 @@ from luca.client.providers import PROVIDERS, resolve_provider
 from luca.client.types import Reasoning
 
 from .prompt_files import ReadLimits
+
+logger = logging.getLogger(__name__)
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -430,6 +433,35 @@ def validate_provider(config: LucaConfig, provider: str) -> None:
         f'add both to luca.json under providers.{provider} — "base_url" and "transport" '
         f'(e.g. "luca.client.transports.OpenAITransport") — or pick one of: {known}',
     )
+
+
+def register_local_models(llm_config: LLMConfig) -> int:
+    """Ask a local Ollama what it has, and put it in the catalog.
+
+    models.dev cannot know what you pulled, so without this every ollama model
+    has no `context_window` and the compactor falls back to a 200k default
+    while the server truncates at its own. Registering here makes the window
+    the transport asks for and the window the compactor sees the same number.
+
+    Never fatal: a daemon that is not running is a reason to have no local
+    models, not a reason to refuse to start."""
+    if llm_config.provider != "ollama":
+        return 0
+
+    from luca.client import catalog
+    from luca.client.transports.ollama import discover
+
+    options = completion_options(llm_config)
+    base_url = options.get("base_url") or PROVIDERS["ollama"]["default_base_url"]
+    try:
+        records = discover(base_url)
+    except ClientError as exc:
+        logger.info("ollama discovery skipped: %s", exc)
+        return 0
+    for info in records:
+        catalog.register(provider="ollama", model=info.model, info=info)
+    logger.info("ollama: registered %d local model(s) from %s", len(records), base_url)
+    return len(records)
 
 
 def check_provider_buildable(llm_config: LLMConfig, *, api_key=None, credentials=None) -> None:

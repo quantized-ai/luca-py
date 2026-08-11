@@ -35,6 +35,23 @@ def sse_response(
     return handler
 
 
+def ndjson_response(
+    frames: list[dict],
+    status_code: int = 200,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Ollama's streaming reply: one JSON object per line."""
+    body = "".join(json.dumps(frame) + "\n" for frame in frames).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            content=body,
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    return handler
+
+
 def eventstream_frame(event_type: str, payload: dict, *, message_type: str = "event") -> bytes:
     """One `vnd.amazon.eventstream` frame, built byte by byte.
 
