@@ -25,9 +25,12 @@ virtualenv. Direct `python` calls also work after `uv sync`.
 
 ## Environment variables
 
-Providers read their API keys from environment variables by default. A
-`.env` file in the project root is picked up by `python-dotenv` in the demo
-scripts; the SDK itself reads `os.environ` directly.
+Providers read their API keys from environment variables by default. The SDK
+reads `os.environ` and nothing else — it never opens a file looking for a
+credential, and neither does the demo TUI. A `.env` in the project root is
+**not** loaded for you; export the variables yourself, or use the TUI's
+[`auth.json`](../agent/contrib/tui/config.md#credentials). Only the example
+scripts under `specs/` call `python-dotenv`.
 
 | Provider | Env var |
 |---|---|

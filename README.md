@@ -9,11 +9,15 @@ The TUI agent is a work in progress and just a demonstration of Luca's architect
 uv run python main.py --help
 ```
 
-To use it first add your keys to your `.env` and then run:
+To use it, export a provider key and then run:
 
 ```bash
+export OPENROUTER_API_KEY=sk-or-...
 uv run python main.py --model moonshotai/kimi-k2.7-code --reasoning high --provider openrouter
 ```
+
+Nothing reads a `.env` — export the variables yourself, or put the key in
+`~/.local/share/luca/auth.json`.
 
 ### Contributing
 
