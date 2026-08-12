@@ -249,7 +249,7 @@ class FauxTransport(BaseTransport, ChatCompletionTransportMixin):
         message.finish_reason = canonical
         message.provider_finish_reason = scripted.finish_reason
         message.error_message = err_msg
-        resp = ChatCompletionResponse(message=message)
+        resp = ChatCompletionResponse(messages=[message])
         resp._response_format = request.response_format
         return resp
 

@@ -3461,8 +3461,13 @@ class AgentSessionRunner:
                     )
                     if not completed:
                         continue  # nothing recorded; the loop top winds down
-                    message = response.message
-                    finish_reason = response.finish_reason
+                    # The LAST message carries the completion's terminal
+                    # state. This turn model records exactly one assistant
+                    # message per round, so any earlier ones in a
+                    # multi-message response would be dropped here — no
+                    # transport emits more than one today.
+                    message = response.messages[-1]
+                    finish_reason = message.finish_reason
             except Exception as exc:
                 # asyncio.CancelledError passes through untouched (crash
                 # semantics); the client TimeoutError covers both tiers. An

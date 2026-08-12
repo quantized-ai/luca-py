@@ -33,8 +33,8 @@ def test_single_scripted_response():
         ]
     )
     response = faux.completion(_req())
-    assert response.finish_reason == "stop"
-    assert response.message.content[0].text == "hello"
+    assert response.messages[-1].finish_reason == "stop"
+    assert response.messages[-1].content[0].text == "hello"
 
 
 def test_native_tools_pass_through_untouched():
@@ -47,7 +47,7 @@ def test_native_tools_pass_through_untouched():
     request = _req()
     request.tools = [native]
     response = faux.completion(request)
-    assert response.finish_reason == "stop"
+    assert response.messages[-1].finish_reason == "stop"
     assert request.tools == [native]
 
 
@@ -59,8 +59,8 @@ def test_multiple_scripted_responses_in_order():
             faux_assistant_message([faux_text("second")], finish_reason="stop"),
         ]
     )
-    assert faux.completion(_req()).message.content[0].text == "first"
-    assert faux.completion(_req()).message.content[0].text == "second"
+    assert faux.completion(_req()).messages[-1].content[0].text == "first"
+    assert faux.completion(_req()).messages[-1].content[0].text == "second"
 
 
 def test_exhausted_queue_raises():
@@ -82,9 +82,9 @@ def test_thinking_plus_tool_call_response():
         ]
     )
     response = faux.completion(_req("Weather?"))
-    assert response.finish_reason == "tool_use"
-    assert response.tool_calls[0].name == "get_weather"
-    assert response.tool_calls[0].arguments == {"city": "Paris"}
+    assert response.messages[-1].finish_reason == "tool_use"
+    assert response.messages[-1].tool_calls[0].name == "get_weather"
+    assert response.messages[-1].tool_calls[0].arguments == {"city": "Paris"}
 
 
 def test_error_injection_raises_on_completion():
@@ -107,7 +107,7 @@ def test_concurrent_completions_consume_distinct_responses():
     def worker():
         r = faux.completion(_req())
         with lock:
-            seen.append(r.message.content[0].text)
+            seen.append(r.messages[-1].content[0].text)
 
     threads = [threading.Thread(target=worker) for _ in range(n)]
     for t in threads:

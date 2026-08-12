@@ -109,48 +109,22 @@ class ChatCompletionRequest(BaseModel):
         return [Tool.model_validate(t) if isinstance(t, dict) else t for t in value]
 
 
-# pydantic v2 routes its own `__getattribute__` for declared fields and private
-# attrs. To forward unknown attribute lookups to `self.message` we override
-# `__getattr__`, which Python only calls after normal lookup fails.
-_RESPONSE_DECLARED_FIELDS = {"message", "raw"}
-_RESPONSE_DECLARED_METHODS = {"parse"}
-
-
 class ChatCompletionResponse(BaseModel):
-    """Wraps an AssistantMessage. Everything callers commonly read off the
-    response — finish_reason, provider_finish_reason, usage, provider, model,
-    tool_calls, … — lives on self.message and is reached via attribute
-    forwarding (__getattr__ below). No duplicated storage."""
+    """The assistant messages one completion produced, in wire order.
 
-    message: AssistantMessage
+    `messages` is never empty — every transport parses a response into at
+    least one `AssistantMessage`, and the terminal state a caller reads
+    (finish_reason, provider_finish_reason, usage, provider, model,
+    tool_calls, …) lives on the LAST one. There is no attribute forwarding:
+    read `response.messages[-1].finish_reason`, not `response.finish_reason`.
+    No duplicated storage."""
+
+    messages: list[AssistantMessage] = Field(min_length=1)
     raw: Any = Field(default=None, exclude=True)
 
     _response_format: Any | None = PrivateAttr(default=None)
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
-    def __getattr__(self, name: str) -> Any:
-        # Defer to pydantic's __getattr__ for private attrs, declared fields,
-        # declared methods, and dunders — pydantic handles PrivateAttr lookup
-        # in __pydantic_private__ and we MUST NOT intercept that.
-        if name.startswith("_") or name in _RESPONSE_DECLARED_FIELDS or name in _RESPONSE_DECLARED_METHODS:
-            return super().__getattr__(name)
-
-        # Forward unknown attribute lookups to self.message. Reach the message
-        # via object.__getattribute__ to avoid triggering pydantic's recursion
-        # safeguards on partially-constructed instances.
-        message = object.__getattribute__(self, "__dict__").get("message")
-        if message is None:
-            raise AttributeError(name)
-        try:
-            return getattr(message, name)
-        except AttributeError:
-            # `from None`: the delegated lookup failing is the implementation
-            # detail this message already explains; chaining it just adds noise.
-            raise AttributeError(
-                f"{type(self).__name__!r} object has no attribute {name!r} "
-                f"(also not found on self.message: {type(message).__name__})"
-            ) from None
 
     def parse(self) -> Any:
         if self._response_format is None:
@@ -158,8 +132,11 @@ class ChatCompletionResponse(BaseModel):
                 "No response_format was set on the originating request; "
                 "cannot parse(). Set response_format= when calling completion()."
             )
-        # Concatenate text blocks; ignore thinking / refusal / tool_call.
+        # Concatenate text blocks across every message; ignore thinking /
+        # refusal / tool_call.
         from .content import TextBlock as _TextBlock
 
-        text = "".join(block.text for block in self.message.content if isinstance(block, _TextBlock))
+        text = "".join(
+            block.text for message in self.messages for block in message.content if isinstance(block, _TextBlock)
+        )
         return parse_structured_output(text, self._response_format)

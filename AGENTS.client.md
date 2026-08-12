@@ -184,7 +184,9 @@ There is no `SystemMessage` class and no `"system"` role in the message list. Th
 
 ### `ToolCall` is one class, two views
 
-The same `ToolCall` instances live inside `AssistantMessage.content` and are also surfaced via `message.tool_calls`, `response.tool_calls`, `stream.tool_calls`, and `FinishEvent.tool_calls`. These are **filter views**, never copies. Mutating a `ToolCall` through one view mutates it through all others.
+The same `ToolCall` instances live inside `AssistantMessage.content` and are also surfaced via `message.tool_calls`, `stream.tool_calls`, and `FinishEvent.tool_calls`. These are **filter views**, never copies. Mutating a `ToolCall` through one view mutates it through all others.
+
+`ChatCompletionResponse` adds no view of its own: it holds `messages: list[AssistantMessage]` (never empty, wire order) and forwards NOTHING. Read `response.messages[-1].tool_calls`.
 
 ### Provider-native calls have two equivalent forms
 

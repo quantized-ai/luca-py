@@ -62,13 +62,17 @@ def test_openai_completion_smoke(monkeypatch):
     assert captured["url"] == "https://api.openai.com/v1/responses"
     assert captured["body"]["input"] == [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]
     assert captured["body"]["store"] is False
-    assert response.finish_reason == "stop"
-    assert response.provider == "openai"
-    assert response.message.content == [TextBlock(text="Hello!")]
+    assert response.messages[-1].finish_reason == "stop"
+    assert response.messages[-1].provider == "openai"
+    assert response.messages[-1].content == [TextBlock(text="Hello!")]
     # Token counts must match exactly; `cost` is auto-populated from the catalog.
-    assert (response.usage.input_tokens, response.usage.output_tokens, response.usage.total_tokens) == (5, 3, 8)
-    assert response.usage.cost is not None
-    assert response.usage.cost.total > 0
+    assert (
+        response.messages[-1].usage.input_tokens,
+        response.messages[-1].usage.output_tokens,
+        response.messages[-1].usage.total_tokens,
+    ) == (5, 3, 8)
+    assert response.messages[-1].usage.cost is not None
+    assert response.messages[-1].usage.cost.total > 0
 
 
 def test_openai_streaming_smoke(monkeypatch):
@@ -139,9 +143,9 @@ def test_anthropic_completion_smoke(monkeypatch):
         model="anthropic:claude-3-5-sonnet-latest",
         messages=[UserMessage(content="Hi")],
     )
-    assert response.provider == "anthropic"
-    assert response.finish_reason == "stop"
-    assert response.provider_finish_reason == "end_turn"
+    assert response.messages[-1].provider == "anthropic"
+    assert response.messages[-1].finish_reason == "stop"
+    assert response.messages[-1].provider_finish_reason == "end_turn"
 
 
 def test_openai_429_maps_to_rate_limit_error(monkeypatch):
@@ -273,7 +277,7 @@ def test_tool_call_round_trip_smoke(monkeypatch):
             }
         ],
     )
-    assert response.finish_reason == "tool_use"
-    assert response.provider_finish_reason == "completed"
-    assert response.tool_calls[0].name == "get_weather"
-    assert response.tool_calls[0].arguments == {"city": "NYC"}
+    assert response.messages[-1].finish_reason == "tool_use"
+    assert response.messages[-1].provider_finish_reason == "completed"
+    assert response.messages[-1].tool_calls[0].name == "get_weather"
+    assert response.messages[-1].tool_calls[0].arguments == {"city": "NYC"}

@@ -421,7 +421,7 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         # the other order can never surface OpenAI's own code and detail.
         message.error_message = self._response_error_message(data) or error_message
 
-        resp = ChatCompletionResponse(message=message, raw=data)
+        resp = ChatCompletionResponse(messages=[message], raw=data)
         resp._response_format = request.response_format
         return resp
 

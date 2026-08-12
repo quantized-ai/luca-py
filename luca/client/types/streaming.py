@@ -753,14 +753,6 @@ class _ChatCompletionAccumulator:
         )
 
 
-def _to_response(finish: FinishEvent, request: Any, provider: str) -> ChatCompletionResponse:
-    from .completion import ChatCompletionResponse
-
-    response = ChatCompletionResponse(message=finish.message)
-    response._response_format = getattr(request, "response_format", None)
-    return response
-
-
 class ChatCompletionStream(BaseStream):
     """Sync chat-completion stream. Single mutator of self._message via the
     accumulator. Single emitter of public StreamEvents."""
@@ -886,7 +878,7 @@ class ChatCompletionStream(BaseStream):
         with self:
             for event in self:
                 if event.type == "finish":
-                    response = ChatCompletionResponse(message=event.message)
+                    response = ChatCompletionResponse(messages=[event.message])
                     response._response_format = getattr(self._request, "response_format", None)
                     return response
                 if event.type == "error":
@@ -1035,7 +1027,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
         async with self:
             async for event in self:
                 if event.type == "finish":
-                    response = ChatCompletionResponse(message=event.message)
+                    response = ChatCompletionResponse(messages=[event.message])
                     response._response_format = getattr(self._request, "response_format", None)
                     return response
                 if event.type == "error":

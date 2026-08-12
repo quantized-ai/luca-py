@@ -297,7 +297,7 @@ def test_a_redacted_block_survives_a_full_receive_then_send(
             },
         ),
         request,
-    ).message
+    ).messages[-1]
 
     assert transport._project_assistant_message(message, request)["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},

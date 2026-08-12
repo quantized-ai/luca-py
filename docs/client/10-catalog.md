@@ -143,7 +143,7 @@ class UsageCost(BaseModel):
 ```
 
 If the catalog has no entry and you didn't pass `model_info=`,
-`response.usage.cost` is `None`.
+`response.messages[-1].usage.cost` is `None`.
 
 ## Overriding per-call
 

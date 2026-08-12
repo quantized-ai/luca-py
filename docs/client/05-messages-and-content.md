@@ -119,7 +119,7 @@ UserMessage(content=[
 ### Tool calls — one class, two views
 
 `ToolCall` lives both inside `AssistantMessage.content` **and** surfaces via
-`message.tool_calls` / `response.tool_calls` / `stream.tool_calls`. These
+`message.tool_calls` / `stream.tool_calls`. These
 are the **same** instances, filtered out of `content` — never copied.
 Mutating one view mutates the other.
 
@@ -193,7 +193,7 @@ response = completion(
     system_message="You are concise.",
 )
 
-for block in response.message.content:
+for block in response.messages[-1].content:
     if isinstance(block, TextBlock):
         print(block.text)
 ```

@@ -120,7 +120,8 @@ except ClientError as e:
     log.error("provider=%s err=%s", e.provider, e)
     raise
 
-if response.finish_reason == "error":
+answer = response.messages[-1]
+if answer.finish_reason == "error":
     # LLM-side refusal / safety — render to the user, don't retry
-    print("model refused:", response.error_message)
+    print("model refused:", answer.error_message)
 ```

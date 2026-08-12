@@ -7,13 +7,15 @@ from luca.client.types import (
 )
 
 RESP = ChatCompletionResponse(
-    message=AssistantMessage(
-        content=[TextBlock(text="ok")],
-        finish_reason="stop",
-        provider_finish_reason="stop",
-        provider="stub",
-        model="m",
-    ),
+    messages=[
+        AssistantMessage(
+            content=[TextBlock(text="ok")],
+            finish_reason="stop",
+            provider_finish_reason="stop",
+            provider="stub",
+            model="m",
+        )
+    ],
 )
 
 

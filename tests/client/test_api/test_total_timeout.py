@@ -46,8 +46,8 @@ async def test_acompletion_total_timeout_is_inert_on_an_instant_response():
         total_timeout=60.0,
     )
 
-    assert response.message.content == [TextBlock(text="ok")]
-    assert response.finish_reason == "stop"
+    assert response.messages[-1].content == [TextBlock(text="ok")]
+    assert response.messages[-1].finish_reason == "stop"
 
 
 async def test_stream_total_timeout_emits_one_terminal_error_event():

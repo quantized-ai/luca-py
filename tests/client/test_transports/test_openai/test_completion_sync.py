@@ -51,15 +51,17 @@ CASES = [
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="Hi!")],
-                finish_reason="stop",
-                provider_finish_reason="stop",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-abc",
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Hi!")],
+                    finish_reason="stop",
+                    provider_finish_reason="stop",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-abc",
+                    usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+            ],
         ),
     ),
     Case(
@@ -92,22 +94,24 @@ CASES = [
             "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[
-                    ToolCall(
-                        id="call_abc",
-                        name="get_weather",
-                        arguments={"city": "NYC"},
-                        complete=True,
-                    )
-                ],
-                finish_reason="tool_use",
-                provider_finish_reason="tool_calls",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-xyz",
-                usage=Usage(input_tokens=12, output_tokens=8, total_tokens=20),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_abc",
+                            name="get_weather",
+                            arguments={"city": "NYC"},
+                            complete=True,
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    provider_finish_reason="tool_calls",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-xyz",
+                    usage=Usage(input_tokens=12, output_tokens=8, total_tokens=20),
+                )
+            ],
         ),
     ),
     Case(
@@ -130,16 +134,18 @@ CASES = [
             "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[],
-                finish_reason="error",
-                provider_finish_reason="content_filter",
-                error_message="Provider safety filter (content_filter)",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-cf",
-                usage=Usage(input_tokens=10, output_tokens=0, total_tokens=10),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[],
+                    finish_reason="error",
+                    provider_finish_reason="content_filter",
+                    error_message="Provider safety filter (content_filter)",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-cf",
+                    usage=Usage(input_tokens=10, output_tokens=0, total_tokens=10),
+                )
+            ],
         ),
     ),
     Case(
@@ -166,16 +172,18 @@ CASES = [
             "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[RefusalBlock(text="I can't help with that.")],
-                finish_reason="error",
-                provider_finish_reason="stop",
-                error_message="OpenAI refusal: I can't help with that.",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-ref",
-                usage=Usage(input_tokens=5, output_tokens=6, total_tokens=11),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[RefusalBlock(text="I can't help with that.")],
+                    finish_reason="error",
+                    provider_finish_reason="stop",
+                    error_message="OpenAI refusal: I can't help with that.",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-ref",
+                    usage=Usage(input_tokens=5, output_tokens=6, total_tokens=11),
+                )
+            ],
         ),
     ),
     Case(
@@ -207,23 +215,25 @@ CASES = [
             },
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[
-                    ThinkingBlock(text="Let me work through this."),
-                    TextBlock(text="42"),
-                ],
-                finish_reason="stop",
-                provider_finish_reason="stop",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-think",
-                usage=Usage(
-                    input_tokens=4,
-                    output_tokens=9,
-                    total_tokens=13,
-                    reasoning_tokens=7,
-                ),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[
+                        ThinkingBlock(text="Let me work through this."),
+                        TextBlock(text="42"),
+                    ],
+                    finish_reason="stop",
+                    provider_finish_reason="stop",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-think",
+                    usage=Usage(
+                        input_tokens=4,
+                        output_tokens=9,
+                        total_tokens=13,
+                        reasoning_tokens=7,
+                    ),
+                )
+            ],
         ),
     ),
     Case(
@@ -246,15 +256,17 @@ CASES = [
             "usage": {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="partial...")],
-                finish_reason="length",
-                provider_finish_reason="length",
-                provider="openai",
-                model="gpt-4o",
-                response_id="chatcmpl-len",
-                usage=Usage(input_tokens=5, output_tokens=100, total_tokens=105),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="partial...")],
+                    finish_reason="length",
+                    provider_finish_reason="length",
+                    provider="openai",
+                    model="gpt-4o",
+                    response_id="chatcmpl-len",
+                    usage=Usage(input_tokens=5, output_tokens=100, total_tokens=105),
+                )
+            ],
         ),
     ),
 ]

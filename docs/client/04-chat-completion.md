@@ -66,30 +66,43 @@ with `role="system"` raises `BadRequestError` — system prompts live on
 
 ```python
 class ChatCompletionResponse(BaseModel):
-    message: AssistantMessage
+    messages: list[AssistantMessage]   # never empty; wire order
     raw: Any  # raw provider payload, excluded from .model_dump()
     # plus a private _response_format for .parse()
 ```
 
-There is **no** `response.content` / `response.text` / `response.refusal`
-shortcut. The canonical way to read output is to iterate
-`response.message.content` and dispatch on `block.type`.
+One completion returns a **list** of assistant messages. Today every
+transport parses a response into exactly one, so `messages` is a one-element
+list — but the shape is a list so a provider that emits several messages in a
+single turn does not need an API change.
 
-Everything callers commonly read forwards from `response` to
-`response.message` via `__getattr__`:
+The terminal state of the completion — finish reason, usage, tool calls —
+belongs to the **last** message:
 
 ```python
-response.finish_reason          # == response.message.finish_reason
-response.provider_finish_reason # == response.message.provider_finish_reason
-response.usage                  # == response.message.usage
-response.provider               # == response.message.provider
-response.model                  # == response.message.model
-response.tool_calls             # == response.message.tool_calls (filter, not copy)
-response.error_message          # == response.message.error_message
-response.cancelled              # == response.message.cancelled
+last = response.messages[-1]
+last.finish_reason          # SDK-canonical
+last.provider_finish_reason # raw upstream string
+last.usage
+last.provider
+last.model
+last.tool_calls             # filter over last.content, not a copy
+last.error_message
+last.cancelled
 ```
 
-`response.message.tool_calls` is a `@property` that filters `ToolCall`
+There is **no** attribute forwarding: `response.finish_reason` raises
+`AttributeError`. There is likewise no `response.content` / `response.text` /
+`response.refusal` shortcut. The canonical way to read output is to iterate
+the content of each message and dispatch on `block.type`:
+
+```python
+for message in response.messages:
+    for block in message.content:
+        ...
+```
+
+`message.tool_calls` is a `@property` that filters `ToolCall`
 instances out of `self.content` — same objects, never copied.
 
 ## Finish reasons

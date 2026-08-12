@@ -18,7 +18,7 @@ class Movie(BaseModel):
 
 def test_parse_returns_pydantic_instance():
     msg = AssistantMessage(content=[TextBlock(text='{"title":"Hi","year":1999}')])
-    response = ChatCompletionResponse(message=msg)
+    response = ChatCompletionResponse(messages=[msg])
     response._response_format = Movie
     movie = response.parse()
     assert isinstance(movie, Movie)
@@ -28,7 +28,7 @@ def test_parse_returns_pydantic_instance():
 
 def test_parse_with_dict_schema_returns_dict():
     msg = AssistantMessage(content=[TextBlock(text='{"a":1}')])
-    response = ChatCompletionResponse(message=msg)
+    response = ChatCompletionResponse(messages=[msg])
     response._response_format = {"type": "object"}
     result = response.parse()
     assert result == {"a": 1}
@@ -36,14 +36,14 @@ def test_parse_with_dict_schema_returns_dict():
 
 def test_parse_without_response_format_raises_valueerror():
     msg = AssistantMessage(content=[TextBlock(text='{"a":1}')])
-    response = ChatCompletionResponse(message=msg)
+    response = ChatCompletionResponse(messages=[msg])
     with pytest.raises(ValueError, match="response_format"):
         response.parse()
 
 
 def test_parse_with_invalid_json_raises_structured_output_error():
     msg = AssistantMessage(content=[TextBlock(text="not json")])
-    response = ChatCompletionResponse(message=msg)
+    response = ChatCompletionResponse(messages=[msg])
     response._response_format = Movie
     with pytest.raises(StructuredOutputError):
         response.parse()
@@ -51,7 +51,7 @@ def test_parse_with_invalid_json_raises_structured_output_error():
 
 def test_parse_with_invalid_data_raises_structured_output_error():
     msg = AssistantMessage(content=[TextBlock(text='{"title":"Hi"}')])
-    response = ChatCompletionResponse(message=msg)
+    response = ChatCompletionResponse(messages=[msg])
     response._response_format = Movie
     with pytest.raises(StructuredOutputError):
         response.parse()

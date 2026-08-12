@@ -53,12 +53,12 @@ request = ChatCompletionRequest(
     messages=[UserMessage(content="What is 1 + 2?")],
 )
 response = prov.completion(request)
-assert response.finish_reason == "tool_use"
-assert response.tool_calls[0].arguments == {"a": 1, "b": 2}
+assert response.messages[-1].finish_reason == "tool_use"
+assert response.messages[-1].tool_calls[0].arguments == {"a": 1, "b": 2}
 
 # Second call pops the next scripted response.
 response2 = prov.completion(request)
-assert response2.finish_reason == "stop"
+assert response2.messages[-1].finish_reason == "stop"
 ```
 
 ## Streaming

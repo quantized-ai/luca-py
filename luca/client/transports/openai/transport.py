@@ -354,7 +354,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         message.provider_finish_reason = provider_terminal
         message.error_message = error_message
 
-        resp = ChatCompletionResponse(message=message, raw=data)
+        resp = ChatCompletionResponse(messages=[message], raw=data)
         resp._response_format = request.response_format
         return resp
 

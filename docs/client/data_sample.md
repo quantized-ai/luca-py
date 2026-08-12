@@ -1,6 +1,6 @@
 # Data sample — `while True` tool loop, step by step
 
-A complete walk-through of a `while True` tool loop for a single-question interaction (`"What's the weather like in Madrid?"`), showing what the `messages` list looks like at every step. Uses the actual DTOs from `api_prd.md` §12 — unified `ToolCall` (one class, lives both inside `AssistantMessage.content` and as `message.tool_calls` / `response.tool_calls`; field name is `arguments`), canonical `finish_reason` with raw upstream string preserved on `provider_finish_reason`, and the **system prompt as a request-scoped `system_message=` kwarg** (not a message in `messages`). `content` on user/tool messages is `str | list[Block]` — the list form is used throughout.
+A complete walk-through of a `while True` tool loop for a single-question interaction (`"What's the weather like in Madrid?"`), showing what the `messages` list looks like at every step. Uses the actual DTOs from `api_prd.md` §12 — unified `ToolCall` (one class, lives both inside `AssistantMessage.content` and as `message.tool_calls`; field name is `arguments`), canonical `finish_reason` with raw upstream string preserved on `provider_finish_reason`, and the **system prompt as a request-scoped `system_message=` kwarg** (not a message in `messages`). `content` on user/tool messages is `str | list[Block]` — the list form is used throughout.
 
 ## The loop
 
@@ -18,17 +18,18 @@ while True:
         system_message=SYSTEM_PROMPT,                 # request-scoped; not a message in `messages`
         tools=[get_weather_tool],
     )
-    messages.append(response.message)
+    messages.extend(response.messages)                # `messages` is a list; today always one element
+    answer = response.messages[-1]                    # the terminal state is on the last one
 
-    if response.finish_reason != "tool_use":          # SDK-canonical — covers OpenAI "tool_calls", Anthropic "tool_use", …
-        for block in response.message.content:
+    if answer.finish_reason != "tool_use":            # SDK-canonical — covers OpenAI "tool_calls", Anthropic "tool_use", …
+        for block in answer.content:
             if block.type == "text":
                 print(block.text)
         break
 
-    # response.tool_calls forwards to message.tool_calls — same ToolCall instances,
-    # filtered out of message.content, never copied.
-    for tc in response.tool_calls:
+    # answer.tool_calls — same ToolCall instances,
+    # filtered out of answer.content, never copied.
+    for tc in answer.tool_calls:
         result = execute_tool(tc)
         messages.append(ToolMessage(
             tool_call_id=tc.id,
@@ -53,7 +54,7 @@ messages = [
 
 ## Step 1 — After first turn: assistant returns thinking + tool call
 
-`completion()` returns; `response.finish_reason == "tool_use"`, so we append `response.message` and stay in the loop.
+`completion()` returns; `response.messages[-1].finish_reason == "tool_use"`, so we append `response.messages` and stay in the loop.
 
 ```python
 messages = [
@@ -127,7 +128,7 @@ messages = [
 
 ## Step 3 — After second turn: assistant produces the final text answer
 
-The second `completion()` call sees the full conversation (including the tool result), and the model now answers in plain text. `response.finish_reason == "stop"`, so the loop iterates `response.message.content` to print the text and `break`s.
+The second `completion()` call sees the full conversation (including the tool result), and the model now answers in plain text. `response.messages[-1].finish_reason == "stop"`, so the loop iterates that message's `content` to print the text and `break`s.
 
 ```python
 messages = [
@@ -192,5 +193,5 @@ messages = [
 - **`ThinkingBlock.signature` is replayed verbatim.** Per `api_prd.md` §5.9, those opaque bytes ride along on every subsequent turn to the *same* provider. The SDK forwards them as-is; if you switch providers mid-loop, the destination will 400 (that's the caller's job to clean up).
 - **`ToolCall.arguments` is always a parsed dict**, never a JSON string — even on OpenAI where the wire format stringifies it. The transport parses on the way in. The streaming-state fields (`partial_arguments`, `complete`) ride along on the same `ToolCall` object; they're inert here (`partial_arguments=""`, `complete=True`) because this is a non-streamed response.
 - **`finish_reason` is the SDK-canonical value, with the raw upstream string on `provider_finish_reason`.** Per `api_prd.md` §12.1, the loop discriminator is the canonical value (`"tool_use"` here — never the provider's raw `"tool_calls"` on OpenAI or `"tool_use"` on Anthropic). In this Anthropic example the two happen to be equal for the tool-call turn (`"tool_use"` / `"tool_use"`) and differ for the final turn (`"stop"` / `"end_turn"`). The `"error"` axis is the load-bearing normalization — every provider's safety/refusal/content-filter vocabulary collapses to `finish_reason="error"` with a populated `message.error_message`; see `api_prd.md` §12.1's worked-examples table.
-- **`response.tool_calls`** is the unified `ToolCall` content blocks filtered out of `message.content` — same instances either way, never copied. There is no separate `ToolCall` ↔ `ToolUseBlock` rename to worry about anymore: one class, used in both places.
-- **`response.message` *is* the `AssistantMessage`** you append to `messages` — same object, not a copy. `response.finish_reason`, `response.provider_finish_reason`, `response.tool_calls`, `response.usage`, `response.provider`, `response.model`, `response.error_message` all reach the same instances on `response.message` via `__getattr__` forwarding — no duplicated storage, no possibility of drift. The canonical way to read the model's *output* is to iterate `response.message.content` (there is intentionally no `response.content` / `response.text` / `response.refusal` shortcut — those would flatten the typed content-block sequence into a string and hide thinking blocks, refusals, and ordering).
+- **`message.tool_calls`** is the unified `ToolCall` content blocks filtered out of `message.content` — same instances either way, never copied. There is no separate `ToolCall` ↔ `ToolUseBlock` rename to worry about anymore: one class, used in both places.
+- **`response.messages` holds the `AssistantMessage` instances** you append to `messages` — same objects, not copies. The list is never empty and is in wire order; today every transport parses a response into exactly one message, so it is a one-element list, and the shape exists so a provider that emits several in one turn needs no API change. Terminal state (`finish_reason`, `provider_finish_reason`, `tool_calls`, `usage`, `provider`, `model`, `error_message`) lives on the LAST message. The response forwards nothing — `response.finish_reason` raises `AttributeError`, and there is intentionally no `response.content` / `response.text` / `response.refusal` shortcut either; those would flatten the typed content-block sequence into a string and hide thinking blocks, refusals, and ordering. The canonical way to read the model's *output* is to iterate each message's `content`.

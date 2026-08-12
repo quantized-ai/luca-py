@@ -41,9 +41,9 @@ def test_openrouter_transport_completion():
             messages=[UserMessage(content="Hi")],
         )
     )
-    assert resp.provider == "openrouter"  # stamped via __init__, not the class
-    assert resp.message.content == [TextBlock(text="Hi from OpenRouter.")]
-    assert resp.finish_reason == "stop"
+    assert resp.messages[-1].provider == "openrouter"  # stamped via __init__, not the class
+    assert resp.messages[-1].content == [TextBlock(text="Hi from OpenRouter.")]
+    assert resp.messages[-1].finish_reason == "stop"
 
 
 def test_openrouter_inherits_reasoning_parsing():
@@ -78,8 +78,8 @@ def test_openrouter_inherits_reasoning_parsing():
             messages=[UserMessage(content="Hi")],
         )
     )
-    assert resp.message.content == [
+    assert resp.messages[-1].content == [
         ThinkingBlock(text="Reasoning from OpenRouter."),
         TextBlock(text="Done."),
     ]
-    assert resp.finish_reason == "stop"
+    assert resp.messages[-1].finish_reason == "stop"

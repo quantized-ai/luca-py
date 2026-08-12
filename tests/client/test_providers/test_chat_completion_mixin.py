@@ -16,13 +16,15 @@ REQUEST = ChatCompletionRequest(
     messages=[UserMessage(content="hi")],
 )
 RESPONSE = ChatCompletionResponse(
-    message=AssistantMessage(
-        content=[TextBlock(text="ok")],
-        finish_reason="stop",
-        provider_finish_reason="stop",
-        provider="openai",
-        model="gpt-4o",
-    ),
+    messages=[
+        AssistantMessage(
+            content=[TextBlock(text="ok")],
+            finish_reason="stop",
+            provider_finish_reason="stop",
+            provider="openai",
+            model="gpt-4o",
+        )
+    ],
 )
 
 

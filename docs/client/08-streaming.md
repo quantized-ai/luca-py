@@ -114,9 +114,13 @@ Skip the event loop and get a `ChatCompletionResponse` directly:
 with completion_stream(...) as s:
     response = s.collect()
 
-print(response.message.content[0].text)
-print(response.finish_reason)
+print(response.messages[-1].content[0].text)
+print(response.messages[-1].finish_reason)
 ```
+
+A stream always builds exactly one message, so `collect()` returns a
+one-element `messages` list, holding the same deep copy the terminal
+`FinishEvent` carries.
 
 On `ErrorEvent`, `collect()` re-raises the underlying `ClientError`.
 `collect()` consumes the stream — calling iteration afterwards raises

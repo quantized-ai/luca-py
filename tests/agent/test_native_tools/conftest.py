@@ -143,7 +143,7 @@ class MockLLM:
 
     async def acompletion(self, **kwargs) -> ChatCompletionResponse:
         self.calls.append(kwargs)
-        return ChatCompletionResponse(message=self.responses.pop(0))
+        return ChatCompletionResponse(messages=[self.responses.pop(0)])
 
     def acompletion_stream(self, **kwargs) -> _FakeStream:
         self.calls.append(kwargs)

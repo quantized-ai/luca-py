@@ -105,12 +105,13 @@ while True:
         system_message="Use the tools for any arithmetic.",
         tools=TOOLS,
     )
-    messages.append(response.message)
+    messages.extend(response.messages)
+    answer = response.messages[-1]
 
-    if response.finish_reason != "tool_use":
+    if answer.finish_reason != "tool_use":
         break
 
-    for tc in response.tool_calls:
+    for tc in answer.tool_calls:
         result = execute(tc)
         messages.append(ToolMessage(
             tool_call_id=tc.id,
@@ -121,10 +122,10 @@ while True:
 
 Two things to notice:
 
-- `response.message` is appended directly. It's already an
+- `response.messages` is appended directly. Each entry is already an
   `AssistantMessage` with `tool_calls` inside `content` — no manual
-  reconstruction.
-- `response.tool_calls` is a **filter** of `response.message.content` (same
+  reconstruction. The tool calls to execute are on the LAST one.
+- `message.tool_calls` is a **filter** of `message.content` (same
   instances). Mutating a `ToolCall` from either view mutates both.
 
 ## Parsing arguments against a schema
@@ -132,7 +133,7 @@ Two things to notice:
 If you want validated, typed arguments rather than the raw dict:
 
 ```python
-for tc in response.tool_calls:
+for tc in response.messages[-1].tool_calls:
     args = tc.parse_arguments(BinaryOp)  # → BinaryOp instance
     result = add(args.a, args.b)
 ```

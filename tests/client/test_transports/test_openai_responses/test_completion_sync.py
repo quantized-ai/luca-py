@@ -57,16 +57,18 @@ CASES = [
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="Hi!")],
-                finish_reason="stop",
-                provider_finish_reason="completed",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4-2026-01-01",
-                response_id="resp_1",
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Hi!")],
+                    finish_reason="stop",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4-2026-01-01",
+                    response_id="resp_1",
+                    usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+            ],
         ),
     ),
     Case(
@@ -102,29 +104,31 @@ CASES = [
             },
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[
-                    ThinkingBlock(
-                        text="**Reading the puzzle**\n\nThen answering it.",
-                        id="rs_1",
-                        signature="enc-1",
+            messages=[
+                AssistantMessage(
+                    content=[
+                        ThinkingBlock(
+                            text="**Reading the puzzle**\n\nThen answering it.",
+                            id="rs_1",
+                            signature="enc-1",
+                        ),
+                        TextBlock(text="42"),
+                    ],
+                    finish_reason="stop",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_2",
+                    usage=Usage(
+                        input_tokens=10,
+                        output_tokens=20,
+                        total_tokens=30,
+                        cached_input_tokens=4,
+                        reasoning_tokens=16,
                     ),
-                    TextBlock(text="42"),
-                ],
-                finish_reason="stop",
-                provider_finish_reason="completed",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_2",
-                usage=Usage(
-                    input_tokens=10,
-                    output_tokens=20,
-                    total_tokens=30,
-                    cached_input_tokens=4,
-                    reasoning_tokens=16,
-                ),
-            ),
+                )
+            ],
         ),
     ),
     Case(
@@ -146,23 +150,25 @@ CASES = [
             "usage": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[
-                    ToolCall(
-                        id="call_1",
-                        name="get_weather",
-                        arguments={"city": "NYC"},
-                        complete=True,
-                    )
-                ],
-                finish_reason="tool_use",
-                provider_finish_reason="completed",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_3",
-                usage=Usage(input_tokens=5, output_tokens=5, total_tokens=10),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[
+                        ToolCall(
+                            id="call_1",
+                            name="get_weather",
+                            arguments={"city": "NYC"},
+                            complete=True,
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_3",
+                    usage=Usage(input_tokens=5, output_tokens=5, total_tokens=10),
+                )
+            ],
         ),
     ),
     Case(
@@ -183,17 +189,19 @@ CASES = [
             "usage": {"input_tokens": 3, "output_tokens": 3, "total_tokens": 6},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[RefusalBlock(text="I can't help with that.")],
-                finish_reason="error",
-                provider_finish_reason="completed",
-                error_message="OpenAI refusal: I can't help with that.",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_4",
-                usage=Usage(input_tokens=3, output_tokens=3, total_tokens=6),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[RefusalBlock(text="I can't help with that.")],
+                    finish_reason="error",
+                    provider_finish_reason="completed",
+                    error_message="OpenAI refusal: I can't help with that.",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_4",
+                    usage=Usage(input_tokens=3, output_tokens=3, total_tokens=6),
+                )
+            ],
         ),
     ),
     Case(
@@ -215,16 +223,18 @@ CASES = [
             "usage": {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="Once upon a")],
-                finish_reason="length",
-                provider_finish_reason="incomplete:max_output_tokens",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_5",
-                usage=Usage(input_tokens=2, output_tokens=4, total_tokens=6),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Once upon a")],
+                    finish_reason="length",
+                    provider_finish_reason="incomplete:max_output_tokens",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_5",
+                    usage=Usage(input_tokens=2, output_tokens=4, total_tokens=6),
+                )
+            ],
         ),
     ),
     Case(
@@ -239,17 +249,19 @@ CASES = [
             "usage": {"input_tokens": 2, "output_tokens": 0, "total_tokens": 2},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[],
-                finish_reason="error",
-                provider_finish_reason="incomplete:content_filter",
-                error_message="Provider safety filter (content_filter)",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_6",
-                usage=Usage(input_tokens=2, output_tokens=0, total_tokens=2),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[],
+                    finish_reason="error",
+                    provider_finish_reason="incomplete:content_filter",
+                    error_message="Provider safety filter (content_filter)",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_6",
+                    usage=Usage(input_tokens=2, output_tokens=0, total_tokens=2),
+                )
+            ],
         ),
     ),
     Case(
@@ -264,17 +276,19 @@ CASES = [
             "usage": {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[],
-                finish_reason="error",
-                provider_finish_reason="failed",
-                error_message="upstream exploded",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_7",
-                usage=Usage(input_tokens=1, output_tokens=0, total_tokens=1),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[],
+                    finish_reason="error",
+                    provider_finish_reason="failed",
+                    error_message="upstream exploded",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_7",
+                    usage=Usage(input_tokens=1, output_tokens=0, total_tokens=1),
+                )
+            ],
         ),
     ),
     Case(
@@ -296,16 +310,18 @@ CASES = [
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="Found it.")],
-                finish_reason="stop",
-                provider_finish_reason="completed",
-                provider="openai",
-                model="gpt-5.4",
-                response_model="gpt-5.4",
-                response_id="resp_8",
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Found it.")],
+                    finish_reason="stop",
+                    provider_finish_reason="completed",
+                    provider="openai",
+                    model="gpt-5.4",
+                    response_model="gpt-5.4",
+                    response_id="resp_8",
+                    usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+            ],
         ),
     ),
 ]
@@ -343,7 +359,7 @@ def test_valid_but_non_object_tool_arguments_do_not_crash(responses_transport_fa
 
     response = transport.completion(REQUEST)
 
-    assert response.tool_calls == [ToolCall(id="call_1", name="f", arguments={}, complete=True)]
+    assert response.messages[-1].tool_calls == [ToolCall(id="call_1", name="f", arguments={}, complete=True)]
 
 
 def test_cache_write_tokens_are_read_from_the_wire(responses_transport_factory):
@@ -368,7 +384,7 @@ def test_cache_write_tokens_are_read_from_the_wire(responses_transport_factory):
 
     response = transport.completion(REQUEST)
 
-    assert response.usage == Usage(
+    assert response.messages[-1].usage == Usage(
         input_tokens=10,
         output_tokens=1,
         total_tokens=11,
@@ -389,4 +405,4 @@ def test_a_non_terminal_status_does_not_leak_into_the_canonical_finish_reason(st
 
     response = transport.completion(REQUEST)
 
-    assert (response.finish_reason, response.provider_finish_reason) == (None, status)
+    assert (response.messages[-1].finish_reason, response.messages[-1].provider_finish_reason) == (None, status)

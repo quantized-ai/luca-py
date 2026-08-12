@@ -32,7 +32,8 @@ fact = response.parse()        # → CityFact instance
 print(fact.city, fact.population)
 ```
 
-`response.parse()` concatenates the text blocks in `response.message.content`,
+`response.parse()` concatenates the text blocks across every message in
+`response.messages`,
 parses the result as JSON, and validates it against the `response_format`
 that was on the originating request. The schema is stored as a private
 attribute on the response so you don't pass it twice.

@@ -132,7 +132,7 @@ class ThinkingBlock(BaseModel):
 class ToolCall(BaseModel):
     """A tool call emitted by the model. ONE class, two views — same instances
     live in AssistantMessage.content AND surface via message.tool_calls /
-    response.tool_calls / stream.tool_calls (filtered, never copied)."""
+    stream.tool_calls (filtered, never copied)."""
 
     type: Literal["tool_call"] = "tool_call"
     id: str

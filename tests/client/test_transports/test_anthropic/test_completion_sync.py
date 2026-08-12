@@ -43,16 +43,18 @@ CASES = [
             "usage": {"input_tokens": 5, "output_tokens": 2},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="Hi!")],
-                finish_reason="stop",
-                provider_finish_reason="end_turn",
-                provider="anthropic",
-                model="claude-3-5-sonnet-latest",
-                response_model="claude-3-5-sonnet-20241022",
-                response_id="msg_01",
-                usage=Usage(input_tokens=5, output_tokens=2, total_tokens=7),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Hi!")],
+                    finish_reason="stop",
+                    provider_finish_reason="end_turn",
+                    provider="anthropic",
+                    model="claude-3-5-sonnet-latest",
+                    response_model="claude-3-5-sonnet-20241022",
+                    response_id="msg_01",
+                    usage=Usage(input_tokens=5, output_tokens=2, total_tokens=7),
+                )
+            ],
         ),
     ),
     Case(
@@ -80,16 +82,18 @@ CASES = [
             "usage": {"input_tokens": 12, "output_tokens": 8},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[ToolCall(id="toolu_01", name="get_weather", arguments={"city": "NYC"}, complete=True)],
-                finish_reason="tool_use",
-                provider_finish_reason="tool_use",
-                provider="anthropic",
-                model="claude-3-5-sonnet-latest",
-                response_model="claude-3-5-sonnet-20241022",
-                response_id="msg_02",
-                usage=Usage(input_tokens=12, output_tokens=8, total_tokens=20),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[ToolCall(id="toolu_01", name="get_weather", arguments={"city": "NYC"}, complete=True)],
+                    finish_reason="tool_use",
+                    provider_finish_reason="tool_use",
+                    provider="anthropic",
+                    model="claude-3-5-sonnet-latest",
+                    response_model="claude-3-5-sonnet-20241022",
+                    response_id="msg_02",
+                    usage=Usage(input_tokens=12, output_tokens=8, total_tokens=20),
+                )
+            ],
         ),
     ),
     Case(
@@ -110,16 +114,18 @@ CASES = [
             "usage": {"input_tokens": 5, "output_tokens": 100},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="partial...")],
-                finish_reason="length",
-                provider_finish_reason="max_tokens",
-                provider="anthropic",
-                model="claude-3-5-sonnet-latest",
-                response_model="claude-3-5-sonnet-20241022",
-                response_id="msg_03",
-                usage=Usage(input_tokens=5, output_tokens=100, total_tokens=105),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="partial...")],
+                    finish_reason="length",
+                    provider_finish_reason="max_tokens",
+                    provider="anthropic",
+                    model="claude-3-5-sonnet-latest",
+                    response_model="claude-3-5-sonnet-20241022",
+                    response_id="msg_03",
+                    usage=Usage(input_tokens=5, output_tokens=100, total_tokens=105),
+                )
+            ],
         ),
     ),
     Case(
@@ -140,17 +146,19 @@ CASES = [
             "usage": {"input_tokens": 5, "output_tokens": 0},
         },
         expected=ChatCompletionResponse(
-            message=AssistantMessage(
-                content=[TextBlock(text="")],
-                finish_reason="error",
-                provider_finish_reason="refusal",
-                error_message="Anthropic refusal stop reason",
-                provider="anthropic",
-                model="claude-3-5-sonnet-latest",
-                response_model="claude-3-5-sonnet-20241022",
-                response_id="msg_04",
-                usage=Usage(input_tokens=5, output_tokens=0, total_tokens=5),
-            ),
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="")],
+                    finish_reason="error",
+                    provider_finish_reason="refusal",
+                    error_message="Anthropic refusal stop reason",
+                    provider="anthropic",
+                    model="claude-3-5-sonnet-latest",
+                    response_model="claude-3-5-sonnet-20241022",
+                    response_id="msg_04",
+                    usage=Usage(input_tokens=5, output_tokens=0, total_tokens=5),
+                )
+            ],
         ),
     ),
 ]

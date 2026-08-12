@@ -183,7 +183,8 @@ class SummarizingContextManager(ContextManager):
             # the application builds, so it configures both.
             **completion_options(cfg, api_key=self.api_key),
         )
-        return self.text_of(response.message), self.usage_of(response.message)
+        message = response.messages[-1]
+        return self.text_of(message), self.usage_of(message)
 
     async def compact(
         self,
