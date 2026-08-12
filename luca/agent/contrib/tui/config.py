@@ -246,6 +246,8 @@ class LucaConfig(BaseModel):
     additional_directories: list[str] = Field(default_factory=list)
     # Extra roots to scan for `<name>/SKILL.md`; `~` expanded per entry.
     extra_skill_locations: list[str] = Field(default_factory=list)
+    # Extra roots to scan for `<name>.md` slash commands; `~` expanded per entry.
+    extra_command_locations: list[str] = Field(default_factory=list)
     # Extra instruction files, on top of the discovered LUCA.md / AGENTS.md /
     # CLAUDE.md; `~` expanded, relative entries resolved against the workspace.
     instructions: list[str] = Field(default_factory=list)

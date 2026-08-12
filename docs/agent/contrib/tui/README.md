@@ -236,6 +236,37 @@ sent to the agent as a normal message, so `/etc/hosts` is never swallowed.
 Dollar figures anywhere (status counter, sessions, cost screen) are estimates
 from the small `usage.PRICING` table and are omitted for unlisted models.
 
+### 3.1 Your own commands
+
+A command is a saved prompt: one `.md` file whose body is sent as an ordinary
+user message. Drop it in `.claude/commands/` or `.agents/commands/` (project
+first, then the `~` equivalents) and it joins the palette, `/help` and the
+composer's completion beside the built-ins.
+
+```markdown
+---
+description: review the working tree      # shown by /help; defaults to the first body line
+argument-hint: "[path]"                   # makes a palette pick insert "/review " for the argument
+---
+Review $ARGUMENTS and report only real defects.
+```
+
+`/review src/` sends `Review src/ and report only real defects.` The name is
+the file stem unless frontmatter sets `name`.
+
+| Placeholder | Filled with |
+|---|---|
+| `$ARGUMENTS` | Everything typed after the name |
+| `$1` … `$9` | The whitespace-split words, empty when absent |
+| *(none)* | The argument is appended on its own line rather than dropped |
+
+Add roots with `extra_command_locations` in
+[`luca.json`](config.md); turn the whole thing off with `--no-commands`.
+
+> ⚠️ **A built-in always wins.** A file called `quit.md` is ignored, so cloning
+> a repo can never redefine `/quit`. Commands are prompts, not tools — nothing
+> here reaches the model's tool set or changes a permission decision.
+
 ## 4. The design system
 
 The design source of truth is the handoff in `design_handoff_luca_tui/` (the

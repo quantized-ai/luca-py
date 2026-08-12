@@ -151,6 +151,8 @@ class AgentApp(LucaApp):
         subagents: bool = True,
         skills: bool = True,
         extra_skill_locations: list[str] | None = None,
+        commands: bool = True,
+        extra_command_locations: list[str] | None = None,
         instructions: bool = True,
         extra_instructions: list[str] | None = None,
         resume: bool = False,
@@ -178,6 +180,10 @@ class AgentApp(LucaApp):
         self._subagents = subagents
         self._skills = skills
         self._extra_skill_locations = extra_skill_locations
+        # Read once at boot, like `auth.json`. A command is a saved prompt, so
+        # re-reading the directory mid-session would only matter to someone
+        # editing their own files while the TUI is up.
+        self.custom_commands = self._load_custom_commands(commands, workspace, extra_command_locations)
         self._instructions = instructions
         self._extra_instructions = extra_instructions
         self._resume = resume
@@ -232,10 +238,18 @@ class AgentApp(LucaApp):
     def current_run(self) -> AgentRun | None:
         return self._current_run
 
-    def _composer_commands(self) -> list[str]:
-        from .commands import COMMANDS
+    @staticmethod
+    def _load_custom_commands(enabled: bool, workspace: str | Path, extra: list[str] | None) -> tuple:
+        if not enabled:
+            return ()
+        from .commands import load_custom_commands
 
-        return [f"/{command.name}" for command in COMMANDS]
+        return load_custom_commands(workspace, extra)
+
+    def _composer_commands(self) -> list[str]:
+        from .commands import commands_for
+
+        return [f"/{command.name}" for command in commands_for(self)]
 
     # ── mount ─────────────────────────────────────────────────────────────────
 
@@ -1027,7 +1041,7 @@ class AgentApp(LucaApp):
             return
 
         self._composer_prefix = ""  # the palette only opens on a lone `/`
-        self._menu_all_rows = palette_rows()
+        self._menu_all_rows = palette_rows(self)
         self._menu_handler = self._run_palette_choice
         await self._refresh_overlay("palette", "/", query)
         self.set_hints(HINTS["palette"])

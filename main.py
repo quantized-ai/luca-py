@@ -29,6 +29,7 @@ Usage:
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --log-level DEBUG        # verbose session log
     uv run python main.py --no-skills              # ignore SKILL.md skills
+    uv run python main.py --no-commands            # ignore user-defined slash commands
     uv run python main.py --no-instructions        # ignore AGENTS.md
     uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 

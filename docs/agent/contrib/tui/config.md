@@ -128,6 +128,9 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     ".opencode/skills/",
     "~/.config/opencode/skills/"
   ],
+  "extra_command_locations": [   // more places to find <name>.md slash commands
+    "~/.config/opencode/commands/"
+  ],
   "instructions": [              // extra instruction files, on top of AGENTS.md
     "docs/conventions.md"
   ],
@@ -173,6 +176,10 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
 - `extra_skill_locations` adds roots to scan for `<name>/SKILL.md`, on top of
   `.claude/skills`, `.agents/skills` and the `~` equivalents. `~` is expanded per
   entry; see [`skills/`](../skills/README.md).
+- `extra_command_locations` adds roots to scan for `<name>.md` slash commands,
+  on top of `.claude/commands`, `.agents/commands` and the `~` equivalents. `~`
+  is expanded per entry, the first location wins a name collision, and a
+  built-in command is never shadowed; see [the TUI page](README.md#31-your-own-commands).
 - `instructions` adds files to the discovered `LUCA.md` / `AGENTS.md` /
   `CLAUDE.md`, read last so they win. `~` is expanded and a relative entry
   resolves against the workspace. An entry that does not resolve to a readable
@@ -314,5 +321,6 @@ stay out of any root handler your own program installed. See
 `--compact-threshold`, `--compact-keep-turns`,
 `--use-native` / `--no-use-native`.
 
-`--no-skills` and `--no-instructions` withhold skills and the project's
-instruction files entirely, whatever the config says.
+`--no-skills`, `--no-commands` and `--no-instructions` withhold skills,
+user-defined slash commands and the project's instruction files entirely,
+whatever the config says.
