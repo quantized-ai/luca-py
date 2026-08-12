@@ -32,8 +32,9 @@ Usage:
     uv run python main.py --no-instructions        # ignore AGENTS.md
     uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 
-Requires a provider key (OPENROUTER_API_KEY by default) in env or .env,
-except with `--faux`. Sessions persist to
+Requires a provider credential, except with `--faux`: `auth.json`, or an
+exported environment variable (OPENROUTER_API_KEY by default). A `.env` is NOT
+read — export the variables yourself. Sessions persist to
 `~/.luca/projects/<encoded-project-path>/<session-id>.json` after every run —
 one directory per project, so nothing is written next to your code. Requires the `tui` dependency group (installed by
 default with `uv sync`).
