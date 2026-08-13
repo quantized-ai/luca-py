@@ -15,6 +15,7 @@
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui --log-level DEBUG   # verbose session log
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
+    uv run python -m luca.agent.contrib.tui --no-commands       # ignore .md slash commands
     uv run python -m luca.agent.contrib.tui --no-instructions   # ignore AGENTS.md
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high

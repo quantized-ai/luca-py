@@ -93,6 +93,29 @@ def test_extra_skill_locations_default_to_empty():
     assert LucaConfig().extra_skill_locations == []
 
 
+def test_extra_command_locations_parse_as_a_list_of_strings():
+    config = LucaConfig.model_validate(
+        {"extra_command_locations": [".opencode/commands/", "~/.config/opencode/commands/"]}
+    )
+
+    assert config.extra_command_locations == [".opencode/commands/", "~/.config/opencode/commands/"]
+
+
+def test_extra_command_locations_default_to_empty():
+    assert LucaConfig().extra_command_locations == []
+
+
+def test_luca_schema_describes_every_config_field():
+    # The schema is hand-written and `extra="forbid"`, so a field added to
+    # LucaConfig without a schema entry silently makes valid config look
+    # invalid in the user's editor. The per-section tests below each pin one
+    # block; this one pins that no block is missing entirely.
+    schema = json.loads((Path(__file__).parents[4] / "luca.schema.json").read_text())
+    aliases = {"schema_url": "$schema"}
+
+    assert {aliases.get(name, name) for name in LucaConfig.model_fields} == set(schema["properties"])
+
+
 def test_instructions_parse_as_a_list_of_strings():
     config = LucaConfig.model_validate({"instructions": ["docs/conventions.md", "~/notes/style.md"]})
 

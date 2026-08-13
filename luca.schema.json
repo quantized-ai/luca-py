@@ -692,6 +692,13 @@
       "title": "Extra Skill Locations",
       "type": "array"
     },
+    "extra_command_locations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Extra Command Locations",
+      "type": "array"
+    },
     "instructions": {
       "items": {
         "type": "string"
