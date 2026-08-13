@@ -18,6 +18,11 @@ Placeholders in the body are filled from what was typed after the name:
 A body with NO placeholder still gets the argument, appended on its own line
 — dropping what the user typed is worse than putting it somewhere obvious.
 
+Only the `.md` files sitting DIRECTLY in a location are read. Claude Code
+namespaces `commands/team/review.md` as `/team:review`; we do not, and since
+`.claude/commands` is a directory it also owns, a nested file is silently not
+a command here. Flat until someone asks for the colon.
+
 Nothing here raises for a bad file. It is skipped and the rest still load,
 the same contract as skill discovery.
 """

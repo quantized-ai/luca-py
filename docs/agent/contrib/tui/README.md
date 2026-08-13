@@ -267,6 +267,10 @@ Add roots with `extra_command_locations` in
 > a repo can never redefine `/quit`. Commands are prompts, not tools — nothing
 > here reaches the model's tool set or changes a permission decision.
 
+> ⚠️ **Flat only.** Just the `.md` files directly in a location are read.
+> Claude Code namespaces `commands/team/review.md` as `/team:review`; we do
+> not, so a nested file is not a command here.
+
 ## 4. The design system
 
 The design source of truth is the handoff in `design_handoff_luca_tui/` (the

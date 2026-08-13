@@ -19,6 +19,7 @@ from a runner + config.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,6 +51,8 @@ from .sessions import (
 if TYPE_CHECKING:
     from .app import AgentApp
     from .modals import SessionsScreen, SettingsScreen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -321,9 +324,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )
 
-_BY_NAME = {c.name: c for c in COMMANDS}
-
-BUILTIN_NAMES = frozenset(_BY_NAME)
+BUILTIN_NAMES = frozenset(c.name for c in COMMANDS)
 
 
 def _custom_handler(command: CustomCommand) -> Callable[[AgentApp, str], Awaitable[None]]:
@@ -362,11 +363,16 @@ def load_custom_commands(
     extra_locations: list[str] | None = None,
 ) -> tuple[SlashCommand, ...]:
     """Every user-defined command for `workspace`. Never raises: a broken
-    commands directory costs the user their own commands, not their session."""
+    commands directory costs the user their own commands, not their session.
+
+    An unreadable individual file is already dropped by `load_command`, so what
+    reaches here is the directory-level failure — an unresolvable `~user` in a
+    configured location, or a root that cannot be listed."""
     try:
         locations = resolve_locations(workspace, extra_locations)
         return to_slash_commands(discover_commands(locations, reserved=BUILTIN_NAMES))
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("could not read the user-defined commands; continuing with the built-ins", exc_info=True)
         return ()
 
 
