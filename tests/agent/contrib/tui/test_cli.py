@@ -56,12 +56,17 @@ def test_default_args():
     assert args.gallery is None
     assert args.subagents is True
     assert args.skills is True
+    assert args.commands is True
     assert args.instructions is True
     assert args.config is None
 
 
 def test_no_skills_turns_skill_loading_off():
     assert arg_parser().parse_args(["--no-skills"]).skills is False
+
+
+def test_no_commands_turns_user_defined_commands_off():
+    assert arg_parser().parse_args(["--no-commands"]).commands is False
 
 
 def test_no_resume_flag_means_a_fresh_session():

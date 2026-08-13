@@ -1,10 +1,16 @@
 """Slash commands: the palette registry and the live modal-state builders.
 
-A flat, data-driven registry of the 14 commands the palette lists. `dispatch`
-is the single entry point for typed `/name arg` input; `run_palette_choice`
-handles a palette pick (a command that wants an argument is inserted into the
-composer instead of run). Pickers (`/model`, `/reasoning`, `/theme`) use the
-overlay menu — the same shell as the palette — never a stock modal.
+A flat, data-driven registry of the 14 built-in commands the palette lists.
+`dispatch` is the single entry point for typed `/name arg` input;
+`run_palette_choice` handles a palette pick (a command that wants an argument
+is inserted into the composer instead of run). Pickers (`/model`,
+`/reasoning`, `/theme`) use the overlay menu — the same shell as the palette —
+never a stock modal.
+
+A user's own commands (`.md` files, `custom_commands.py`) are appended to that
+registry per app rather than baked into it, which is why the lookups here take
+the app: `COMMANDS` is what this module ships, `commands_for(app)` is what a
+running TUI answers to. Built-ins always win a name collision.
 
 The live builders for the sessions / settings / cost screens live here too,
 so `app.py` stays event wiring and the states stay derivable (and testable)
@@ -13,6 +19,7 @@ from a runner + config.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +33,12 @@ from luca.client.providers import PROVIDERS
 from luca.client.types import Reasoning
 
 from . import state as vm
+from .custom_commands import (
+    CustomCommand,
+    discover_commands,
+    expand,
+    resolve_locations,
+)
 from .format import fmt_cost, fmt_tokens, fmt_when, short_model
 from .sessions import (
     SessionSummary,
@@ -38,6 +51,8 @@ from .sessions import (
 if TYPE_CHECKING:
     from .app import AgentApp
     from .modals import SessionsScreen, SettingsScreen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -159,8 +174,9 @@ def _apply(
 
 
 async def _cmd_help(app: AgentApp, arg: str) -> None:
-    rows = [vm.ListRow(glyph="none", text=f"/{c.name} {c.usage}".rstrip(), annotation=c.summary) for c in COMMANDS]
-    await app.mount_block(vm.ListBlock(label=f"commands · {len(COMMANDS)}", column=24, rows=rows))
+    everything = commands_for(app)
+    rows = [vm.ListRow(glyph="none", text=f"/{c.name} {c.usage}".rstrip(), annotation=c.summary) for c in everything]
+    await app.mount_block(vm.ListBlock(label=f"commands · {len(everything)}", column=24, rows=rows))
 
 
 async def _cmd_model(app: AgentApp, arg: str) -> None:
@@ -308,7 +324,64 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )
 
-_BY_NAME = {c.name: c for c in COMMANDS}
+BUILTIN_NAMES = frozenset(c.name for c in COMMANDS)
+
+
+def _custom_handler(command: CustomCommand) -> Callable[[AgentApp, str], Awaitable[None]]:
+    """Turn a discovered file into a handler. The body goes out as an ordinary
+    user message — the same path `/skill` takes, so the transcript shows what
+    was actually sent rather than the `/name` that stood for it."""
+
+    async def handler(app: AgentApp, arg: str) -> None:
+        text = expand(command.body, arg)
+        app.runner.post_message([TextContent(text=text)])
+        await app.mount_block(vm.UserBlock(text=text))
+        if not app._driving:
+            app._start_drive()
+
+    return handler
+
+
+def to_slash_commands(commands: dict[str, CustomCommand]) -> tuple[SlashCommand, ...]:
+    """Discovered files as palette entries, sorted by name. One that declares an
+    `argument-hint` is inserted rather than run when picked, exactly as `/skill`
+    is — the hint is the file saying it expects to be given something."""
+    return tuple(
+        SlashCommand(
+            name=command.name,
+            usage=command.argument_hint,
+            summary=command.description,
+            handler=_custom_handler(command),
+            insert=bool(command.argument_hint),
+        )
+        for _, command in sorted(commands.items())
+    )
+
+
+def load_custom_commands(
+    workspace: str | Path,
+    extra_locations: list[str] | None = None,
+) -> tuple[SlashCommand, ...]:
+    """Every user-defined command for `workspace`. Never raises: a broken
+    commands directory costs the user their own commands, not their session.
+
+    An unreadable individual file is already dropped by `load_command`, so what
+    reaches here is the directory-level failure — an unresolvable `~user` in a
+    configured location, or a root that cannot be listed."""
+    try:
+        locations = resolve_locations(workspace, extra_locations)
+        return to_slash_commands(discover_commands(locations, reserved=BUILTIN_NAMES))
+    except (OSError, RuntimeError, ValueError):
+        logger.warning("could not read the user-defined commands; continuing with the built-ins", exc_info=True)
+        return ()
+
+
+def commands_for(app: AgentApp | None = None) -> tuple[SlashCommand, ...]:
+    """The built-ins plus whatever `app` loaded from disk. `None` is the bare
+    registry, which is what the component gallery renders."""
+    if app is None:
+        return COMMANDS
+    return COMMANDS + app.custom_commands
 
 
 async def dispatch(app: AgentApp, text: str) -> bool:
@@ -317,7 +390,7 @@ async def dispatch(app: AgentApp, text: str) -> bool:
     parts = text[1:].split(maxsplit=1)
     if not parts:
         return False
-    command = _BY_NAME.get(parts[0])
+    command = next((c for c in commands_for(app) if c.name == parts[0]), None)
     if command is None:
         return False
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -328,12 +401,13 @@ async def dispatch(app: AgentApp, text: str) -> bool:
 # ── palette ───────────────────────────────────────────────────────────────────
 
 
-def palette_rows() -> list[vm.OverlayRow]:
-    return [vm.OverlayRow(primary=f"/{c.name}", secondary=c.summary) for c in COMMANDS]
+def palette_rows(app: AgentApp | None = None) -> list[vm.OverlayRow]:
+    return [vm.OverlayRow(primary=f"/{c.name}", secondary=c.summary) for c in commands_for(app)]
 
 
 async def run_palette_choice(app: AgentApp, primary: str) -> None:
-    command = _BY_NAME.get(primary.lstrip("/"))
+    name = primary.lstrip("/")
+    command = next((c for c in commands_for(app) if c.name == name), None)
     if command is None:
         return
     if command.insert:

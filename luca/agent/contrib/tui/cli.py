@@ -15,6 +15,7 @@
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
     uv run python -m luca.agent.contrib.tui --log-level DEBUG   # verbose session log
     uv run python -m luca.agent.contrib.tui --no-skills         # ignore SKILL.md skills
+    uv run python -m luca.agent.contrib.tui --no-commands       # ignore .md slash commands
     uv run python -m luca.agent.contrib.tui --no-instructions   # ignore AGENTS.md
     uv run python -m luca.agent.contrib.tui \
         --model moonshotai/kimi-k2.7-code --reasoning high
@@ -232,6 +233,14 @@ def arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Do not load SKILL.md skills (they are read from .claude/skills, .agents/skills "
         "and the ~ equivalents by default).",
+    )
+    parser.add_argument(
+        "--no-commands",
+        dest="commands",
+        action="store_false",
+        default=True,
+        help="Do not load user-defined slash commands (they are read from .claude/commands, "
+        ".agents/commands and the ~ equivalents by default).",
     )
     parser.add_argument(
         "--no-instructions",
@@ -482,6 +491,8 @@ def main(argv: list[str] | None = None) -> None:
             subagents=args.subagents,
             skills=args.skills,
             extra_skill_locations=config.extra_skill_locations or None,
+            commands=args.commands,
+            extra_command_locations=config.extra_command_locations or None,
             instructions=args.instructions,
             extra_instructions=config.instructions or None,
         )

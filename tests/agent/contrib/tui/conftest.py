@@ -16,8 +16,8 @@ from luca.client.providers import PROVIDERS
 @pytest.fixture(autouse=True)
 def _isolated_config_environment(monkeypatch, tmp_path):
     """Keep discovery off the contributor's real home: config reads
-    `~/.config/luca/luca.json`, skills read `~/.claude/skills`, and
-    instructions read `~/.config/luca/LUCA.md`."""
+    `~/.config/luca/luca.json`, skills read `~/.claude/skills`, slash commands
+    read `~/.claude/commands`, and instructions read `~/.config/luca/LUCA.md`."""
     monkeypatch.delenv(ENV_CONFIG_PATH, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     # The model catalog layers `$XDG_CACHE_HOME/luca/models.json` over the
