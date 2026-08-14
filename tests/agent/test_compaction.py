@@ -32,9 +32,9 @@ from luca.agent.core.models import (
     CompactionEntry,
     CompactionSource,
     Conversation,
-    ImageBase64,
     ImageContent,
     LLMConfig,
+    MediaBase64,
     SessionConfig,
     TextContent,
     TurnFinish,
@@ -50,7 +50,7 @@ MODEL = LLMConfig(model="test-model", provider="faux")
 CHEAP = LLMConfig(model="cheap-model", provider="faux")
 
 SUMMARY = [TextContent(text="the story so far")]
-IMAGE = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+IMAGE = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
 
 SESSION = AgentSession(
     id="s",

@@ -6,18 +6,21 @@ here. A handler that changes either shows up as a diff.
 """
 
 import base64
+import math
 
 import pytest
 
 from luca.agent.contrib.tui.prompt_files import (
     ReadLimits,
     find_mentions,
+    get_model_info,
     looks_binary,
     parse_prompt,
     process_prompt_file_path,
     sniff,
 )
-from luca.agent.core.models import ImageBase64, ImageContent, TextContent
+from luca.agent.core.models import FileContent, ImageContent, MediaBase64, TextContent
+from luca.client.catalog import ModelInfo
 
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
@@ -86,7 +89,7 @@ def test_an_image_becomes_image_content_not_a_rejection(tmp_path):
     path.write_bytes(PNG)
 
     assert process_prompt_file_path(path) == ImageContent(
-        source=ImageBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
         metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
     )
 
@@ -275,3 +278,154 @@ def test_a_mention_must_start_at_a_word_boundary(tmp_path):
     (tmp_path / "a.py").write_text("a")
 
     assert find_mentions("no@a.py here", tmp_path) == []
+
+
+# ── documents ────────────────────────────────────────────────────────────────
+
+PDF = b"%PDF-1.4\n\x00\x01binary junk"
+READS_PDF = ModelInfo(supports_pdf_input=True)
+NO_PDF = ModelInfo(supports_pdf_input=False)
+
+
+def test_a_pdf_becomes_file_content_when_the_model_reads_pdfs(tmp_path):
+    path = tmp_path / "report.pdf"
+    path.write_bytes(PDF)
+
+    assert process_prompt_file_path(path, model=READS_PDF) == FileContent(
+        source=MediaBase64(data=base64.b64encode(PDF).decode("ascii"), media_type="application/pdf"),
+        name="report.pdf",
+        metadata=mention(
+            path,
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
+
+
+def test_a_pdf_falls_back_to_the_binary_message_when_the_model_cannot_read_it(tmp_path):
+    # the pre-existing behavior, and still the right answer for a model that
+    # would reject the document
+    path = tmp_path / "report.pdf"
+    path.write_bytes(PDF)
+
+    assert process_prompt_file_path(path, model=NO_PDF) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'bytes="{len(PDF)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
+
+
+def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path):
+    path = tmp_path / "huge.pdf"
+    path.write_bytes(PDF)
+
+    part = process_prompt_file_path(path, model=READS_PDF, limits=ReadLimits(max_document_bytes=4))
+
+    assert part == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'bytes="{len(PDF)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
+
+
+def test_the_catalog_record_is_what_gates_a_document():
+    catalogued = get_model_info("anthropic", "claude-sonnet-5")
+
+    assert (catalogued.supports_pdf_input, get_model_info("nowhere", "made-up"), get_model_info(None, None)) == (
+        True,
+        None,
+        None,
+    )
+
+
+NO_IMAGES = ModelInfo(supports_image_input=False)
+READS_IMAGES = ModelInfo(supports_image_input=True)
+
+
+def test_an_image_is_withheld_from_a_model_the_catalog_says_is_text_only(tmp_path):
+    # deepseek-chat rejects the whole request with `unknown variant
+    # 'image_url', expected 'text'`, so the turn fails rather than the image
+    # simply being ignored
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=NO_IMAGES) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="image/png" '
+            f'bytes="{len(PNG)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="image/png",
+            estimated_tokens=len(PNG) // 4,
+            bytes=len(PNG),
+        ),
+    )
+
+
+def test_an_uncatalogued_model_still_gets_the_image(tmp_path):
+    # asymmetric with documents on purpose: images have always been sent, and
+    # a local or custom-base-url model reports nothing, so declining on
+    # "unknown" would stop sending images that work today
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=None) == ImageContent(
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
+    )
+
+
+def test_a_vision_model_still_gets_the_image(tmp_path):
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=READS_IMAGES) == ImageContent(
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
+    )
+
+
+def test_the_document_ceiling_leaves_room_once_base64_encoded():
+    # the ceiling is a WIRE budget, not a file size: base64 inflates by 4/3
+    # and Anthropic caps the whole request at 32MB, so a file at the ceiling
+    # must still leave room for the prompt, history and tool declarations
+    ceiling = ReadLimits().max_document_bytes
+    encoded = math.ceil(ceiling / 3) * 4
+    anthropic_request_cap = 32 * 1024 * 1024
+
+    assert encoded < anthropic_request_cap, f"{encoded} bytes encoded exceeds the 32MB request cap"
+    assert encoded <= anthropic_request_cap * 0.7, "no headroom left for the rest of the request"

@@ -32,11 +32,12 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
+    FileContent,
     ImageContent,
-    ImageFileId,
-    ImageURL,
     LLMConfig,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -55,10 +56,11 @@ from luca.agent.core.projection import (
 )
 from luca.client.types import (
     AssistantMessage as LucaAssistantMessage,
+    FileBlock as LucaFileBlock,
     ImageBlock as LucaImageBlock,
-    MediaBase64,
-    MediaFileId,
-    MediaURL,
+    MediaBase64 as LucaMediaBase64,
+    MediaFileId as LucaMediaFileId,
+    MediaURL as LucaMediaURL,
     TextBlock,
     ThinkingBlock,
     ToolCall as LucaToolCall,
@@ -209,7 +211,7 @@ def test_a_summary_carrying_an_image_projects_both_blocks_in_order():
             parts=[
                 TextContent(text="Earlier: a screenshot of the failure."),
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                 ),
             ],
             compacted_nodes=["u1", "a1"],
@@ -221,7 +223,7 @@ def test_a_summary_carrying_an_image_projects_both_blocks_in_order():
         LucaUserMessage(
             content=[
                 TextBlock(text="Earlier: a screenshot of the failure."),
-                LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+                LucaImageBlock(source=LucaMediaBase64(data="aGk=", media_type="image/png")),
             ]
         ),
     ]
@@ -1300,7 +1302,7 @@ def test_user_message_projects_image_and_text_parts_in_order():
             created_at=1,
             parts=[
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                     metadata={"name": "receipt.jpg"},
                 ),
                 TextContent(text="how much did I tip?"),
@@ -1313,7 +1315,7 @@ def test_user_message_projects_image_and_text_parts_in_order():
         LucaUserMessage(
             content=[
                 LucaImageBlock(
-                    source=MediaBase64(data="aGk=", media_type="image/png"),
+                    source=LucaMediaBase64(data="aGk=", media_type="image/png"),
                 ),
                 TextBlock(text="how much did I tip?"),
             ],
@@ -1323,24 +1325,24 @@ def test_user_message_projects_image_and_text_parts_in_order():
 
 def test_image_url_source_projects_to_a_media_url():
     part = ImageContent(
-        source=ImageURL(url="https://example.com/a.png", media_type="image/png"),
+        source=MediaURL(url="https://example.com/a.png", media_type="image/png"),
     )
 
     assert PROJECTOR._image_block(part) == LucaImageBlock(
-        source=MediaURL(url="https://example.com/a.png", media_type="image/png"),
+        source=LucaMediaURL(url="https://example.com/a.png", media_type="image/png"),
     )
 
 
 def test_image_file_id_source_projects_to_a_media_file_id():
-    part = ImageContent(source=ImageFileId(file_id="file_123"))
+    part = ImageContent(source=MediaFileId(file_id="file_123"))
 
     assert PROJECTOR._image_block(part) == LucaImageBlock(
-        source=MediaFileId(file_id="file_123", media_type=None),
+        source=LucaMediaFileId(file_id="file_123", media_type=None),
     )
 
 
 def test_image_metadata_is_not_projected():
-    source = ImageBase64(data="aGk=", media_type="image/png")
+    source = MediaBase64(data="aGk=", media_type="image/png")
 
     assert PROJECTOR._image_block(
         ImageContent(source=source, metadata={"name": "receipt.jpg"}),
@@ -1355,7 +1357,7 @@ def test_unknown_content_type_still_fails_loudly():
 def test_subclass_can_rewrite_image_media_only():
     class Uploading(ConversationProjector):
         def _image_block(self, part):
-            return LucaImageBlock(source=MediaFileId(file_id="uploaded_1"))
+            return LucaImageBlock(source=LucaMediaFileId(file_id="uploaded_1"))
 
     entries = {
         "u1": UserMessage(
@@ -1363,7 +1365,7 @@ def test_subclass_can_rewrite_image_media_only():
             created_at=1,
             parts=[
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                 ),
                 TextContent(text="what is this?"),
             ],
@@ -1374,7 +1376,7 @@ def test_subclass_can_rewrite_image_media_only():
     assert Uploading().project(conversation.nodes, entries) == [
         LucaUserMessage(
             content=[
-                LucaImageBlock(source=MediaFileId(file_id="uploaded_1")),
+                LucaImageBlock(source=LucaMediaFileId(file_id="uploaded_1")),
                 TextBlock(text="what is this?"),
             ],
         ),
@@ -1396,7 +1398,7 @@ def test_completed_execution_projects_image_result_content():
             result=ExecutionResult(
                 content=[
                     ImageContent(
-                        source=ImageBase64(data="aGk=", media_type="image/png"),
+                        source=MediaBase64(data="aGk=", media_type="image/png"),
                         metadata={"name": "shot.png"},
                     ),
                     TextContent(text="shot.png"),
@@ -1410,7 +1412,7 @@ def test_completed_execution_projects_image_result_content():
     assert PROJECTOR.project_tool_execution(entries["te1"], entries) == ToolMessage(
         tool_call_id="tc1",
         content=[
-            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            LucaImageBlock(source=LucaMediaBase64(data="aGk=", media_type="image/png")),
             TextBlock(text="shot.png"),
         ],
     )
@@ -1420,7 +1422,7 @@ def test_tool_message_text_marks_an_image_rather_than_dropping_it():
     message = ToolMessage(
         tool_call_id="tc1",
         content=[
-            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            LucaImageBlock(source=LucaMediaBase64(data="aGk=", media_type="image/png")),
             TextBlock(text=" shot.png"),
         ],
     )
@@ -1447,7 +1449,7 @@ def test_pruned_entry_can_carry_an_image_replacement():
             pruned_entry_type="tool_execution",
             pruned_entry_id="te1",
             content=[
-                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             ],
         ),
     }
@@ -1455,7 +1457,7 @@ def test_pruned_entry_can_carry_an_image_replacement():
     assert PROJECTOR.project_pruned(entries["p1"], entries) == ToolMessage(
         tool_call_id="tc1",
         content=[
-            LucaImageBlock(source=MediaBase64(data="aGk=", media_type="image/png")),
+            LucaImageBlock(source=LucaMediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
 
@@ -1603,3 +1605,118 @@ def test_a_pruned_private_execution_projects_nothing():
 
     assert PROJECTOR.project_pruned(entries["p1"], entries) is None
     assert PROJECTOR.project(["p1"], entries) == []
+
+
+# ── file parts ────────────────────────────────────────────────────────────────
+
+
+def test_a_file_part_projects_to_a_client_file_block():
+    part = FileContent(
+        source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+        name="report.pdf",
+        metadata={"mention": {"path": "/tmp/report.pdf"}},
+    )
+
+    assert PROJECTOR._file_block(part) == LucaFileBlock(
+        source=LucaMediaBase64(data="JVBERi0=", media_type="application/pdf"),
+        name="report.pdf",
+    )
+
+
+def test_a_file_name_travels_but_metadata_does_not():
+    # `name` is the one thing the model is told about the original file, and
+    # two providers require it; `metadata` follows ImageContent's rule
+    source = MediaBase64(data="JVBERi0=", media_type="application/pdf")
+
+    assert PROJECTOR._file_block(
+        FileContent(source=source, name="report.pdf", metadata={"path": "/tmp/report.pdf"}),
+    ) == PROJECTOR._file_block(FileContent(source=source, name="report.pdf"))
+
+
+def test_every_file_source_projects():
+    assert (
+        PROJECTOR._file_block(FileContent(source=MediaURL(url="https://example.com/a.pdf"))),
+        PROJECTOR._file_block(FileContent(source=MediaFileId(file_id="file_123"))),
+    ) == (
+        LucaFileBlock(source=LucaMediaURL(url="https://example.com/a.pdf", media_type=None), name=None),
+        LucaFileBlock(source=LucaMediaFileId(file_id="file_123", media_type=None), name=None),
+    )
+
+
+def test_a_user_message_projects_file_and_text_parts_in_order():
+    entries = {
+        "u1": UserMessage(
+            id="u1",
+            created_at=1,
+            parts=[
+                FileContent(
+                    source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextContent(text="what does it conclude?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaFileBlock(
+                    source=LucaMediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextBlock(text="what does it conclude?"),
+            ],
+        ),
+    ]
+
+
+def test_subclass_can_rewrite_file_media_only():
+    # `_file_block` is documented as an override point, so it has to actually
+    # be one: the same upload-and-swap policy `_image_block` supports
+    class Uploading(ConversationProjector):
+        def _file_block(self, part):
+            return LucaFileBlock(source=LucaMediaFileId(file_id="uploaded_1"), name=part.name)
+
+    entries = {
+        "u1": UserMessage(
+            id="u1",
+            created_at=1,
+            parts=[
+                FileContent(
+                    source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextContent(text="what does it say?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert Uploading().project(conversation.nodes, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaFileBlock(source=LucaMediaFileId(file_id="uploaded_1"), name="report.pdf"),
+                TextBlock(text="what does it say?"),
+            ],
+        ),
+    ]
+
+
+def test_the_shared_media_mapping_is_one_override_for_every_part_type():
+    # `_media_source` exists so a rewrite policy is written once rather than
+    # once per content part — proving it means one override moving BOTH
+    class Proxying(ConversationProjector):
+        def _media_source(self, source):
+            return LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)
+
+    projector = Proxying()
+
+    assert (
+        projector._image_block(ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))),
+        projector._file_block(FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))),
+    ) == (
+        LucaImageBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)),
+        LucaFileBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None), name=None),
+    )

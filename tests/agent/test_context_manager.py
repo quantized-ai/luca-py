@@ -45,8 +45,9 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
+    FileContent,
     ImageContent,
+    MediaBase64,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -300,7 +301,7 @@ def test_an_image_carrying_summary_counts_text_plus_the_image_constant():
         source=CompactionSource.POLICY,
         parts=[
             TextContent(text="## Goal\nFix the failing test suite."),  # 35
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
         compacted_nodes=["u1", "a1"],
     )
@@ -543,7 +544,7 @@ def test_image_only_message_counts_the_flat_image_constant():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
 
@@ -555,13 +556,40 @@ def test_images_add_to_the_text_estimate():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/jpeg")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/jpeg")),
         ],
     )
 
     assert CM.calculate_context(SESSION, entry) == 2_002  # 2 * 1000 + 11 // 4
+
+
+def test_a_file_counts_the_flat_file_constant_on_top_of_images_and_text():
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[
+            FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="a.pdf"),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="Add 1 and 2"),  # 11 chars
+        ],
+    )
+
+    assert CM.calculate_context(SESSION, entry) == 6_002  # 5000 + 1000 + 11 // 4
+
+
+def test_subclass_can_change_the_per_file_cost():
+    class Free(ContextManager):
+        FILE_TOKENS = 0
+
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))],
+    )
+
+    assert Free().calculate_context(SESSION, entry) == 0
 
 
 def test_subclass_can_change_the_per_image_cost():
@@ -572,7 +600,7 @@ def test_subclass_can_change_the_per_image_cost():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
         ],
     )
@@ -603,7 +631,7 @@ def test_tool_result_images_are_counted():
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(
             content=[
-                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
                 TextContent(text="the answer is 3."),  # 16 chars
             ]
         ),
@@ -621,7 +649,7 @@ def test_pruned_entry_images_are_counted():
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
 

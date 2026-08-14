@@ -39,8 +39,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     SessionConfig,
     TextContent,
     ThinkingContent,
@@ -817,7 +817,7 @@ def test_user_transcript_text_renders_images_as_placeholders():
         user_transcript_text(
             [
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                     metadata={"name": "receipt.jpg"},
                 ),
                 TextContent(text="how much did I tip?"),
@@ -831,7 +831,7 @@ def test_user_transcript_text_falls_back_to_the_media_type():
     assert (
         user_transcript_text(
             [
-                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             ]
         )
         == "[image: image/png]"
@@ -859,7 +859,7 @@ def test_user_prompts_are_what_was_typed_oldest_first():
                 parts=[
                     TextContent(text="read @notes.md"),
                     TextContent(text="# notes", metadata={"mention": {"path": "/w/notes.md", "success": True}}),
-                    ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                    ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
                 ],
             ),
             "u3": UserMessage(id="u3", created_at=530, parts=[TextContent(text="again")]),

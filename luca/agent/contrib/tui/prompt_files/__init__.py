@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 
 from luca.agent.core.models import ContentPart, TextContent
+from luca.client import catalog
+from luca.client.catalog import ModelInfo
 
 from .detection import HEAD_BYTES, looks_binary, read_head, sniff
 from .handlers import (
@@ -48,6 +50,7 @@ __all__ = [
     "ReadLimits",
     "find_mentions",
     "looks_binary",
+    "get_model_info",
     "parse_prompt",
     "probe",
     "process_prompt_file_path",
@@ -101,6 +104,7 @@ def process_prompt_file_path(
     workspace: str | Path = ".",
     limits: ReadLimits | None = None,
     context_window: int | None = None,
+    model: ModelInfo | None = None,
 ) -> ContentPart:
     """One path → one content part, through the handler chain."""
     limits = limits or ReadLimits()
@@ -109,9 +113,17 @@ def process_prompt_file_path(
         target = Path(workspace) / target
     probed = probe(target)
     for handler in HANDLERS:
-        if handler.matches(probed, limits, context_window):
-            return handler.build(probed, limits, context_window)
+        if handler.matches(probed, limits, context_window, model):
+            return handler.build(probed, limits, context_window, model)
     raise AssertionError("TextHandler matches everything")  # pragma: no cover
+
+
+def get_model_info(provider: str | None, model: str | None) -> ModelInfo | None:
+    """The active model's catalog record, or None when it is not catalogued.
+    None is what keeps a document away from a model we know nothing about."""
+    if not provider or not model:
+        return None
+    return catalog.get(provider, model)
 
 
 def parse_prompt(
@@ -120,13 +132,20 @@ def parse_prompt(
     workspace: str | Path = ".",
     limits: ReadLimits | None = None,
     context_window: int | None = None,
+    model: ModelInfo | None = None,
 ) -> list[ContentPart]:
     """The submitted text, then one part per resolvable `@` mention."""
     parts: list[ContentPart] = []
     if prompt.strip():
         parts.append(TextContent(text=prompt))
     parts.extend(
-        process_prompt_file_path(path, workspace=workspace, limits=limits, context_window=context_window)
+        process_prompt_file_path(
+            path,
+            workspace=workspace,
+            limits=limits,
+            context_window=context_window,
+            model=model,
+        )
         for path in find_mentions(prompt, workspace)
     )
     return parts

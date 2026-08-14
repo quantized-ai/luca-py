@@ -34,6 +34,7 @@ from ...types.completion import (
     UsageCost,
 )
 from ...types.content import (
+    FileBlock,
     ImageBlock,
     RefusalBlock,
     TextBlock,
@@ -73,6 +74,31 @@ def _project_image_block(block: ImageBlock) -> dict:
     if isinstance(source, MediaFileId):
         return {"type": "image", "source": {"type": "file", "file_id": source.file_id}}
     raise BadRequestError("Unknown image source type")
+
+
+def _project_file_block(block: FileBlock, *, provider: str | None = None) -> dict:
+    """One file block to Anthropic's `document` shape.
+
+    All three sources are supported here, which is unusual — most APIs take
+    fewer. `name` is not on the wire: Anthropic infers the media type from
+    `media_type` and has no filename field on a document.
+    https://platform.claude.com/docs/en/build-with-claude/pdf-support
+    """
+    source = block.source
+    if isinstance(source, MediaURL):
+        return {"type": "document", "source": {"type": "url", "url": source.url}}
+    if isinstance(source, MediaBase64):
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": source.media_type,
+                "data": source.data,
+            },
+        }
+    if isinstance(source, MediaFileId):
+        return {"type": "document", "source": {"type": "file", "file_id": source.file_id}}
+    raise BadRequestError(f"Unknown file source type {type(source).__name__}", provider=provider)
 
 
 class AnthropicToolProjector(ToolProjector):
@@ -318,13 +344,20 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                 wire_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ImageBlock):
                 wire_blocks.append(self._project_image_block(block))
+            elif isinstance(block, FileBlock):
+                wire_blocks.append(self._project_file_block(block))
             else:
-                # AudioBlock / FileBlock — best-effort
-                wire_blocks.append({"type": "text", "text": str(block)})
+                raise BadRequestError(
+                    f"The Anthropic Messages API has no shape for a {type(block).__name__}.",
+                    provider=self._provider,
+                )
         return {"role": "user", "content": wire_blocks}
 
     def _project_image_block(self, block: ImageBlock) -> dict:
         return _project_image_block(block)
+
+    def _project_file_block(self, block: FileBlock) -> dict:
+        return _project_file_block(block, provider=self._provider)
 
     def _project_assistant_message(
         self,

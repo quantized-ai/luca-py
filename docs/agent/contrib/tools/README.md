@@ -165,7 +165,7 @@ return an image — a screenshot tool, or the shell `read` tool on a png:
 
 ```python
 return ExecutionResult(content=[
-    ImageContent(source=ImageBase64(data=b64, media_type="image/png")),
+    ImageContent(source=MediaBase64(data=b64, media_type="image/png")),
 ])
 ```
 

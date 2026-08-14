@@ -65,9 +65,9 @@ from luca.agent.core.models import (
     ChildConversation,
     ContentPart,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
     LLMConfig,
+    MediaBase64,
     ToolExecution,
     TurnOutcome,
 )
@@ -87,7 +87,7 @@ from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
-from .prompt_files import ReadLimits, parse_prompt
+from .prompt_files import ReadLimits, get_model_info, parse_prompt
 from .render import (
     SCRATCHPAD_STORE_KEY,
     TODO_STORE_KEY,
@@ -338,11 +338,13 @@ class AgentApp(LucaApp):
         for its own tools — so a mention is never silently dropped."""
         if not text:
             return []
+        llm_config = self.runner.session.session_config.llm_config
         return parse_prompt(
             text,
             workspace=self._workspace,
             limits=self._read_limits,
             context_window=get_context_window_size(self.runner.session),
+            model=get_model_info(llm_config.provider, llm_config.model),
         )
 
     async def on_prompt_input_history_requested(self, message: PromptInput.HistoryRequested) -> None:
@@ -1195,9 +1197,18 @@ class AgentApp(LucaApp):
         if data is None:
             await self._notice("no image in the clipboard")
             return
+        # The paste path builds the part itself, so the handler chain's
+        # capability check never sees it. Refuse here instead: a text-only
+        # model rejects the whole request, and failing at paste time says so
+        # while the user is still looking at the composer.
+        llm_config = self.runner.session.session_config.llm_config
+        info = get_model_info(llm_config.provider, llm_config.model)
+        if info is not None and not info.supports_image_input:
+            await self._notice(f"{short_model(llm_config.model)} does not accept images", error=True)
+            return
         self._pending_images.append(
             ImageContent(
-                source=ImageBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
+                source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
                 metadata={
                     "name": f"pasted-{len(self._pending_images) + 1}.png",
                     "size_bytes": len(data),

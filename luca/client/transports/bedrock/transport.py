@@ -17,6 +17,7 @@ see `capabilities.py`. Nova and Llama are verified live.
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 
 import httpx
@@ -40,6 +41,7 @@ from ...types.completion import (
     UsageCost,
 )
 from ...types.content import (
+    FileBlock,
     ImageBlock,
     RefusalBlock,
     TextBlock,
@@ -77,6 +79,63 @@ def _project_image_block(block: ImageBlock) -> dict:
             "Bedrock Converse needs inline image bytes; a URL or file id cannot be sent.",
         )
     raise BadRequestError("Unknown image source type")
+
+
+# Converse restricts a document name to alphanumerics, single spaces, hyphens,
+# parentheses and square brackets — so ordinary filenames (`report_v2.final.pdf`)
+# are rejected outright. Everything else collapses to a space.
+_DOCUMENT_NAME_ALLOWED = re.compile(r"[^A-Za-z0-9\s\-()\[\]]+")
+_DOCUMENT_NAME_SPACES = re.compile(r"\s+")
+_DOCUMENT_NAME_MAX = 200
+_DOCUMENT_NAME_FALLBACK = "document"
+
+# The formats Converse names, keyed by the media type we would see.
+_DOCUMENT_FORMATS = {
+    "application/pdf": "pdf",
+    "text/csv": "csv",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "text/html": "html",
+    "text/plain": "txt",
+    "text/markdown": "md",
+}
+
+
+def _document_name(name: str | None) -> str:
+    """A Converse-legal document name. The field is REQUIRED and validated, so
+    a rejected name fails the whole request — sanitizing beats forwarding."""
+    cleaned = _DOCUMENT_NAME_ALLOWED.sub(" ", name or "")
+    cleaned = _DOCUMENT_NAME_SPACES.sub(" ", cleaned).strip()
+    return cleaned[:_DOCUMENT_NAME_MAX] or _DOCUMENT_NAME_FALLBACK
+
+
+def _project_file_block(block: FileBlock) -> dict:
+    """One file block to its Converse `document` shape.
+
+    https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentBlock.html
+    """
+    source = block.source
+    if isinstance(source, MediaBase64):
+        fmt = _DOCUMENT_FORMATS.get((source.media_type or "").lower())
+        if fmt is None:
+            raise BadRequestError(
+                f"Bedrock Converse has no document format for {source.media_type!r}; "
+                f"it accepts {', '.join(sorted(set(_DOCUMENT_FORMATS.values())))}.",
+            )
+        return {
+            "document": {
+                "format": fmt,
+                "name": _document_name(block.name),
+                "source": {"bytes": source.data},
+            },
+        }
+    if isinstance(source, (MediaURL, MediaFileId)):
+        raise BadRequestError(
+            "Bedrock Converse needs inline document bytes; a URL or file id cannot be sent.",
+        )
+    raise BadRequestError("Unknown file source type")
 
 
 class BedrockToolProjector(ToolProjector):
@@ -318,12 +377,20 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
                 blocks.append({"text": block.text})
             elif isinstance(block, ImageBlock):
                 blocks.append(self._project_image_block(block))
+            elif isinstance(block, FileBlock):
+                blocks.append(self._project_file_block(block))
             else:
-                blocks.append({"text": str(block)})
+                raise BadRequestError(
+                    f"Bedrock Converse has no shape for a {type(block).__name__}.",
+                    provider=self._provider,
+                )
         return blocks
 
     def _project_image_block(self, block: ImageBlock) -> dict:
         return _project_image_block(block)
+
+    def _project_file_block(self, block: FileBlock) -> dict:
+        return _project_file_block(block)
 
     def _project_assistant_content(
         self,

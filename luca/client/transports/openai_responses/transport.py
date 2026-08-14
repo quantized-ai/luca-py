@@ -32,6 +32,7 @@ from ...types.completion import (
     UsageCost,
 )
 from ...types.content import (
+    FileBlock,
     ImageBlock,
     RefusalBlock,
     TextBlock,
@@ -280,8 +281,34 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             return {"type": "input_text", "text": block.text}
         if isinstance(block, ImageBlock):
             return self._project_image_block(block)
-        # AudioBlock / FileBlock — best-effort, as on chat completions.
-        return {"type": "input_text", "text": str(block)}
+        if isinstance(block, FileBlock):
+            return self._project_file_block(block)
+        raise BadRequestError(
+            f"The Responses API has no shape for a {type(block).__name__}.",
+            provider=self._provider,
+        )
+
+    def _project_file_block(self, block: FileBlock) -> dict:
+        """A file on the Responses API: `input_file`, which unlike chat
+        completions takes all three sources — an uploaded id, a URL, or inline
+        base64 as a data URL. `filename` is required beside inline bytes.
+        https://developers.openai.com/api/docs/guides/pdf-files
+        """
+        source = block.source
+        if isinstance(source, MediaFileId):
+            return {"type": "input_file", "file_id": source.file_id}
+        if isinstance(source, MediaURL):
+            return {"type": "input_file", "file_url": source.url}
+        if isinstance(source, MediaBase64):
+            return {
+                "type": "input_file",
+                "filename": block.name or "file.pdf",
+                "file_data": f"data:{source.media_type};base64,{source.data}",
+            }
+        raise BadRequestError(
+            f"Unknown media source type {type(source).__name__}",
+            provider=self._provider,
+        )
 
     def _project_image_block(self, block: ImageBlock) -> dict:
         source = block.source

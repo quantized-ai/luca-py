@@ -21,6 +21,7 @@ from ...types.completion import (
     UsageCost,
 )
 from ...types.content import (
+    FileBlock,
     ImageBlock,
     RefusalBlock,
     TextBlock,
@@ -235,10 +236,41 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             return {"type": "text", "text": block.text}
         if isinstance(block, ImageBlock):
             return {"type": "image_url", "image_url": self._project_media_to_image_url(block.source)}
-        # AudioBlock / FileBlock — best-effort projection (OpenAI accepts inline_data
-        # for some models). For v1 we use the raw provider's hint or fall back to
-        # extra_args; pass through as a dict containing the source.
-        return {"type": "text", "text": str(block)}
+        if isinstance(block, FileBlock):
+            return self._project_file_block(block)
+        raise BadRequestError(
+            f"The chat-completions API has no shape for a {type(block).__name__}.",
+            provider=self._provider,
+        )
+
+    def _project_file_block(self, block: FileBlock) -> dict:
+        """A file part on chat completions: an uploaded id, or inline base64 as
+        a data URL under `file_data`. `filename` travels beside the bytes —
+        OpenAI uses it to pick the parser, so a wrong or missing extension
+        changes how the document is read.
+        https://developers.openai.com/api/docs/guides/pdf-files
+        """
+        source = block.source
+        if isinstance(source, MediaFileId):
+            return {"type": "file", "file": {"file_id": source.file_id}}
+        if isinstance(source, MediaBase64):
+            return {
+                "type": "file",
+                "file": {
+                    "filename": block.name or "file.pdf",
+                    "file_data": f"data:{source.media_type};base64,{source.data}",
+                },
+            }
+        if isinstance(source, MediaURL):
+            raise BadRequestError(
+                "The chat-completions API cannot take a file by URL "
+                f"({source.url!r}); upload it and pass MediaFileId, or inline it as MediaBase64.",
+                provider=self._provider,
+            )
+        raise BadRequestError(
+            f"Unknown media source type {type(source).__name__}",
+            provider=self._provider,
+        )
 
     def _project_media_to_image_url(self, source: Any) -> dict:
         if isinstance(source, MediaURL):

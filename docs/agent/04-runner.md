@@ -50,7 +50,7 @@ union, and empty input (`""`, `[]`) raises `AgentError`:
 
 ```python
 runner.post_message([
-    ImageContent(source=ImageBase64(data=b64_bytes, media_type="image/png")),
+    ImageContent(source=MediaBase64(data=b64_bytes, media_type="image/png")),
     TextContent(text="What is in this screenshot?"),
 ])
 ```

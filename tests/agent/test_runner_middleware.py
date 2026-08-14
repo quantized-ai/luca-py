@@ -51,9 +51,9 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
     LLMConfig,
+    MediaBase64,
     SessionConfig,
     TextContent,
     ToolCall,
@@ -329,7 +329,7 @@ async def test_before_post_message_sees_every_part_including_images():
         now=1000,
         middleware=[middleware],
     )
-    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    image = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
 
     runner.post_message([image, TextContent(text="hi")])
 
@@ -353,7 +353,7 @@ async def test_before_post_message_can_drop_a_part():
         now=1000,
         middleware=[TextOnlyMiddleware()],
     )
-    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    image = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
 
     runner.post_message([image, TextContent(text="hi")])
 
@@ -377,7 +377,7 @@ async def test_before_post_message_can_add_a_part():
         now=1000,
         middleware=[ReminderMiddleware()],
     )
-    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    image = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
 
     runner.post_message([image])
 

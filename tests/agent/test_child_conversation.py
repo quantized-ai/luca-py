@@ -21,8 +21,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     SessionConfig,
     TextContent,
     ToolCall,
@@ -202,7 +202,7 @@ def test_a_spawn_execution_without_a_payload_fails_loud():
 
 
 def test_a_non_text_part_of_a_child_result_survives_beside_the_tag():
-    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    image = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
     resolved = child(
         execution_result=ExecutionResult(content=[TextContent(text="see this"), image]),
         result_execution_id="ter1",
@@ -263,7 +263,7 @@ def test_a_link_that_renders_its_own_result_costs_exactly_that_result():
 def test_an_image_in_a_link_rendered_result_is_counted_as_media():
     resolved = child(
         execution_result=ExecutionResult(
-            content=[ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))],
+            content=[ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))],
         ),
     )
 

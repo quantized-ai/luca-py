@@ -5,10 +5,16 @@ import json as _json
 import httpx
 import pytest
 
-from luca.client.exceptions import UnsupportedParameterError
+from luca.client.exceptions import BadRequestError, UnsupportedParameterError
+from luca.client.transports.anthropic.transport import _project_file_block
 from luca.client.types import (
     AssistantMessage,
+    AudioBlock,
     ChatCompletionRequest,
+    FileBlock,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     TextBlock,
     ThinkingBlock,
     UserMessage,
@@ -507,3 +513,30 @@ def test_structured_output_is_accepted_on_a_4_1_model(anthropic_transport_factor
     )
 
     assert payload["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_a_file_projects_to_the_document_block_from_every_source():
+    # https://platform.claude.com/docs/en/build-with-claude/pdf-support
+    base64_block = FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="report.pdf")
+
+    assert (
+        _project_file_block(base64_block),
+        _project_file_block(FileBlock(source=MediaURL(url="https://example.com/a.pdf"))),
+        _project_file_block(FileBlock(source=MediaFileId(file_id="file_abc"))),
+    ) == (
+        # `name` is deliberately absent — a document block has no filename field
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        },
+        {"type": "document", "source": {"type": "url", "url": "https://example.com/a.pdf"}},
+        {"type": "document", "source": {"type": "file", "file_id": "file_abc"}},
+    )
+
+
+def test_an_audio_block_is_refused_rather_than_stringified(anthropic_transport_factory):
+    transport = anthropic_transport_factory()
+    message = UserMessage(content=[AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg"))])
+
+    with pytest.raises(BadRequestError, match="no shape for a AudioBlock"):
+        transport._project_user_message(message)

@@ -54,8 +54,8 @@ from luca.agent.core import (
     AgentSession,
     CancellationToken,
     ExecutionResult,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     TextContent,
     ToolKind,
 )
@@ -468,7 +468,7 @@ class ReadTool(ShellTool):
         return ExecutionResult(
             content=[
                 ImageContent(
-                    source=ImageBase64(
+                    source=MediaBase64(
                         data=base64.b64encode(data).decode("ascii"),
                         media_type=mime,
                     ),

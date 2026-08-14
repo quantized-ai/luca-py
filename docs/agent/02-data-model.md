@@ -67,17 +67,18 @@ turn_finish     outcome=completed
 |---|---|
 | `text` | prose |
 | `image` | an image the user attached |
+| `file` | a document the user attached — a PDF today |
 | `thinking` | the model's reasoning, when it emits any — plus the provider's `signature` over it, its `id` for the reasoning item (OpenAI's `rs_…`, needed to replay it), and `redacted` when the body was withheld |
 
-An `image` part carries a `source` — one of `ImageURL`, `ImageBase64` or
-`ImageFileId` — plus free-form `metadata`:
+An `image` part carries a `source` — one of `MediaURL`, `MediaBase64` or
+`MediaFileId` — plus free-form `metadata`:
 
 ```python
-from luca.agent.core import ImageBase64, ImageContent, TextContent
+from luca.agent.core import ImageContent, MediaBase64, TextContent
 
 runner.post_message([
     ImageContent(
-        source=ImageBase64(data=b64_bytes, media_type="image/png"),
+        source=MediaBase64(data=b64_bytes, media_type="image/png"),
         metadata={"name": "receipt.jpg"},
     ),
     TextContent(text="how much did I tip here?"),
@@ -90,9 +91,37 @@ since been deleted.
 
 | Source | Support |
 |---|---|
-| `ImageBase64` | everywhere |
-| `ImageURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
-| `ImageFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
+| `MediaBase64` | everywhere |
+| `MediaURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
+| `MediaFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
+
+A `file` part carries the same `MediaSource`, plus a `name`:
+
+```python
+from luca.agent.core import FileContent, MediaBase64
+
+runner.post_message([
+    FileContent(
+        source=MediaBase64(data=b64_pdf, media_type="application/pdf"),
+        name="report.pdf",
+    ),
+    TextContent(text="what does it conclude?"),
+])
+```
+
+Unlike `metadata`, `name` **is** projected: OpenAI wants a filename beside
+inline bytes and Bedrock refuses a document without one.
+
+| Source | Anthropic | OpenAI chat | OpenAI Responses | Bedrock |
+|---|---|---|---|---|
+| `MediaBase64` | ✅ | ✅ | ✅ | ✅ |
+| `MediaURL` | ✅ | raises | ✅ | raises |
+| `MediaFileId` | ✅ | ✅ | ✅ | raises |
+
+> ⚠️ **Whether the MODEL accepts one is a separate question.** 185 of the 450
+> catalogued models take PDFs (`ModelInfo.supports_pdf_input`); the rest will
+> reject the request. The projector does not gate on it — the application
+> decides, as the TUI does before building the part at all.
 
 There are two part unions, and they stay separate so a `tool_call` can never
 land in a user message:

@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from luca.agent.contrib.resource_permissions import ResourcePermission
 from luca.agent.contrib.shell import FileReadTracker, ReadTool
-from luca.agent.core import ImageBase64, ImageContent
+from luca.agent.core import ImageContent, MediaBase64
 from tests.agent.contrib.shell.conftest import CONVERSATION
 
 
@@ -242,7 +242,7 @@ async def test_png_is_returned_as_real_image_content(tmp_path, run):
     assert result.is_error is False
     assert result.content == [
         ImageContent(
-            source=ImageBase64(
+            source=MediaBase64(
                 data=base64.b64encode(data).decode("ascii"),
                 media_type="image/png",
             ),

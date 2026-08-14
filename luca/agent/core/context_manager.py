@@ -80,7 +80,8 @@ is the one that should.
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
 `CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
-per image, pruning supports only terminal tool executions (replacing their
+per image and `FILE_TOKENS` per document, pruning supports only terminal tool
+executions (replacing their
 output with a fixed marker), and compaction is absent — `should_compact`
 declines and `compact` raises, so the shipped default is a pure accountant.
 `luca.agent.contrib.simple_context_manager` ships one that also compacts.
@@ -108,6 +109,7 @@ from .models import (
     CompactionEntry,
     Entry,
     ExecutionResult,
+    FileContent,
     ImageContent,
     PrunedEntry,
     TextContent,
@@ -128,6 +130,7 @@ class ContextManager:
     PRUNED_TOOL_OUTPUT_MARKER: ClassVar[str] = PRUNED_TOOL_OUTPUT_MARKER
     CHARS_PER_TOKEN: ClassVar[int] = 4
     IMAGE_TOKENS: ClassVar[int] = 1_000
+    FILE_TOKENS: ClassVar[int] = 5_000
 
     def calculate_context(self, session: AgentSession, entry: Entry) -> int:
         """Estimate the context tokens of `entry`'s model-facing content.
@@ -283,11 +286,18 @@ class ContextManager:
 
     def _media_tokens(self, entry: Entry) -> int:
         """The entry's non-text context contribution: a flat constant per
-        image, deliberately dimension-blind. A URL source has no local bytes
-        to measure, reading real dimensions would need an image decoder (a
-        new dependency), and the provider formulas disagree by an order of
-        magnitude. Override with a per-provider formula if it matters."""
-        return self.IMAGE_TOKENS * _image_count(self._media_parts(entry))
+        image and per file, deliberately dimension-blind. A URL source has no
+        local bytes to measure, reading real dimensions would need an image
+        decoder (a new dependency), and the provider formulas disagree by an
+        order of magnitude. Override with a per-provider formula if it matters.
+
+        A document is the weaker estimate of the two, and knowingly so: cost
+        scales with PAGE COUNT, which cannot be read without a PDF parser this
+        library will not take a dependency on. `FILE_TOKENS` stands in for a
+        short document; a session of long PDFs will under-count until an
+        application overrides this."""
+        parts = self._media_parts(entry)
+        return self.IMAGE_TOKENS * _image_count(parts) + self.FILE_TOKENS * _file_count(parts)
 
     def _media_parts(self, entry: Entry) -> list:
         """The parts an entry owns that may carry non-text content — the same
@@ -317,3 +327,7 @@ def _text_of(parts) -> str:
 
 def _image_count(parts) -> int:
     return sum(isinstance(part, ImageContent) for part in parts)
+
+
+def _file_count(parts) -> int:
+    return sum(isinstance(part, FileContent) for part in parts)

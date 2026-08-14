@@ -42,12 +42,12 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
-    ImageFileId,
-    ImageURL,
     Inf,
     LLMConfig,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     MilliSeconds,
     PrunedEntry,
     RuntimeConfig,
@@ -1132,16 +1132,16 @@ def test_a_session_written_before_the_field_existed_loads_at_the_first_version()
 
 
 def test_image_content_defaults_to_empty_metadata():
-    source = ImageBase64(data="aGk=", media_type="image/png")
+    source = MediaBase64(data="aGk=", media_type="image/png")
 
     assert ImageContent(source=source) == ImageContent(source=source, metadata={})
 
 
 def test_image_content_round_trips_each_source_kind():
     for source in (
-        ImageURL(url="https://example.com/a.png", media_type="image/png"),
-        ImageBase64(data="aGk=", media_type="image/png"),
-        ImageFileId(file_id="file_123"),
+        MediaURL(url="https://example.com/a.png", media_type="image/png"),
+        MediaBase64(data="aGk=", media_type="image/png"),
+        MediaFileId(file_id="file_123"),
     ):
         part = ImageContent(source=source, metadata={"name": "a.png"})
 
@@ -1151,7 +1151,7 @@ def test_image_content_round_trips_each_source_kind():
 def test_image_content_rejects_unknown_fields():
     with pytest.raises(ValidationError):
         ImageContent(
-            source=ImageBase64(data="aGk=", media_type="image/png"),
+            source=MediaBase64(data="aGk=", media_type="image/png"),
             bogus="nope",
         )
 
@@ -1169,7 +1169,7 @@ def test_user_message_mixes_image_and_text_parts_in_order():
         created_at=1000,
         parts=[
             ImageContent(
-                source=ImageBase64(data="aGk=", media_type="image/png"),
+                source=MediaBase64(data="aGk=", media_type="image/png"),
                 metadata={"name": "receipt.jpg"},
             ),
             TextContent(text="how much did I tip?"),
@@ -1192,7 +1192,7 @@ def test_user_message_parts_require_the_type_discriminator():
 def test_execution_result_carries_the_same_content_union_as_a_message():
     # the conversation is the source of truth: a tool that returns an image
     # stores one, whatever a given provider can receive today
-    image = ImageContent(source=ImageBase64(data="aGk=", media_type="image/png"))
+    image = ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))
     result = ExecutionResult(content=[image, TextContent(text="a screenshot")])
 
     assert ExecutionResult.model_validate_json(result.model_dump_json()) == result
@@ -1220,7 +1220,7 @@ def test_an_assistant_message_cannot_carry_an_image():
             created_at=1000,
             parts=[
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                 ),
             ],
             llm_config=MODEL,
@@ -1380,7 +1380,7 @@ def test_a_committed_compaction_round_trips_inside_a_session():
                 parts=[
                     TextContent(text="the story so far"),
                     ImageContent(
-                        source=ImageBase64(data="aGk=", media_type="image/png"),
+                        source=MediaBase64(data="aGk=", media_type="image/png"),
                     ),
                 ],
                 compacted_nodes=["u0", "a0"],
