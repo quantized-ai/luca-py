@@ -10,6 +10,7 @@ import base64
 from luca.agent.contrib.tui import AgentApp, app as app_module, state as vm
 from luca.agent.contrib.tui.blocks import (
     AssistantText,
+    NoticeLine,
     ThinkingLine,
     ToolBlockView,
     UserTurn,
@@ -17,7 +18,7 @@ from luca.agent.contrib.tui.blocks import (
 from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.contrib.tui.shells import ApprovalPromptView
-from luca.agent.core.models import ConversationStatus
+from luca.agent.core.models import ConversationStatus, LLMConfig
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,
@@ -306,6 +307,24 @@ async def test_escape_clears_a_pending_attachment(tmp_path, monkeypatch):
         await pilot.pause()
 
         assert app._pending_images == []
+
+
+async def test_pasting_an_image_is_refused_on_a_text_only_model(tmp_path, monkeypatch):
+    # the paste path builds the part itself, so the handler chain's capability
+    # check never sees it; deepseek rejects the whole request, not just the image
+    monkeypatch.setattr(app_module, "read_clipboard_image", lambda: PNG)
+    session = fresh_session()
+    session.session_config.llm_config = LLMConfig(model="deepseek-chat", provider="deepseek")
+    app = make_app(session, scripted(), tmp_path)
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await pilot.press("ctrl+v")
+        await pilot.pause()
+
+        assert (app._pending_images, [(line.text, line.error) for line in app.query(NoticeLine)]) == (
+            [],
+            [("deepseek-chat does not accept images", True)],
+        )
 
 
 async def test_ctrl_q_saves_and_quits(tmp_path):

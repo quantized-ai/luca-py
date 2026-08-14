@@ -362,3 +362,57 @@ def test_the_catalog_record_is_what_gates_a_document():
         None,
         None,
     )
+
+
+NO_IMAGES = ModelInfo(supports_image_input=False)
+READS_IMAGES = ModelInfo(supports_image_input=True)
+
+
+def test_an_image_is_withheld_from_a_model_the_catalog_says_is_text_only(tmp_path):
+    # deepseek-chat rejects the whole request with `unknown variant
+    # 'image_url', expected 'text'`, so the turn fails rather than the image
+    # simply being ignored
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=NO_IMAGES) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="image/png" '
+            f'bytes="{len(PNG)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="image/png",
+            estimated_tokens=len(PNG) // 4,
+            bytes=len(PNG),
+        ),
+    )
+
+
+def test_an_uncatalogued_model_still_gets_the_image(tmp_path):
+    # asymmetric with documents on purpose: images have always been sent, and
+    # a local or custom-base-url model reports nothing, so declining on
+    # "unknown" would stop sending images that work today
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=None) == ImageContent(
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
+    )
+
+
+def test_a_vision_model_still_gets_the_image(tmp_path):
+    path = tmp_path / "logo.png"
+    path.write_bytes(PNG)
+
+    assert process_prompt_file_path(path, model=READS_IMAGES) == ImageContent(
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
+    )

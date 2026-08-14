@@ -175,10 +175,24 @@ class UnreadableHandler:
 
 class ImageHandler:
     """Images inline as real image content, so a vision model actually sees
-    them rather than being told one exists."""
+    them rather than being told one exists.
+
+    Declines when the catalog positively says the model has no image input —
+    a text-only model does not ignore an image part, it rejects the whole
+    request (`unknown variant 'image_url', expected 'text'`), so the turn
+    fails instead of the file simply not being inlined.
+
+    The test is deliberately NOT symmetrical with `DocumentHandler`'s. An
+    UNCATALOGUED model still gets the image, because images have always been
+    sent and a local or custom-base-url model reports nothing — declining on
+    "unknown" would quietly stop sending images that work today. A document is
+    the other way round: it has never been sent, so it goes only on a
+    positive yes."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        return (probe.mime or "").startswith("image/")
+        if not (probe.mime or "").startswith("image/"):
+            return False
+        return model is None or model.supports_image_input
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()

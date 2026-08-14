@@ -1197,6 +1197,15 @@ class AgentApp(LucaApp):
         if data is None:
             await self._notice("no image in the clipboard")
             return
+        # The paste path builds the part itself, so the handler chain's
+        # capability check never sees it. Refuse here instead: a text-only
+        # model rejects the whole request, and failing at paste time says so
+        # while the user is still looking at the composer.
+        llm_config = self.runner.session.session_config.llm_config
+        info = model_info_for(llm_config.provider, llm_config.model)
+        if info is not None and not info.supports_image_input:
+            await self._notice(f"{short_model(llm_config.model)} does not accept images", error=True)
+            return
         self._pending_images.append(
             ImageContent(
                 source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
