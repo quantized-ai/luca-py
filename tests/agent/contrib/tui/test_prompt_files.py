@@ -6,14 +6,15 @@ here. A handler that changes either shows up as a diff.
 """
 
 import base64
+import math
 
 import pytest
 
 from luca.agent.contrib.tui.prompt_files import (
     ReadLimits,
     find_mentions,
+    get_model_info,
     looks_binary,
-    model_info_for,
     parse_prompt,
     process_prompt_file_path,
     sniff,
@@ -355,9 +356,9 @@ def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path
 
 
 def test_the_catalog_record_is_what_gates_a_document():
-    catalogued = model_info_for("anthropic", "claude-sonnet-5")
+    catalogued = get_model_info("anthropic", "claude-sonnet-5")
 
-    assert (catalogued.supports_pdf_input, model_info_for("nowhere", "made-up"), model_info_for(None, None)) == (
+    assert (catalogued.supports_pdf_input, get_model_info("nowhere", "made-up"), get_model_info(None, None)) == (
         True,
         None,
         None,
@@ -416,3 +417,15 @@ def test_a_vision_model_still_gets_the_image(tmp_path):
         source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
         metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
     )
+
+
+def test_the_document_ceiling_leaves_room_once_base64_encoded():
+    # the ceiling is a WIRE budget, not a file size: base64 inflates by 4/3
+    # and Anthropic caps the whole request at 32MB, so a file at the ceiling
+    # must still leave room for the prompt, history and tool declarations
+    ceiling = ReadLimits().max_document_bytes
+    encoded = math.ceil(ceiling / 3) * 4
+    anthropic_request_cap = 32 * 1024 * 1024
+
+    assert encoded < anthropic_request_cap, f"{encoded} bytes encoded exceeds the 32MB request cap"
+    assert encoded <= anthropic_request_cap * 0.7, "no headroom left for the rest of the request"

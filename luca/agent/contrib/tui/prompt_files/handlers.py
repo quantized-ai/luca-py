@@ -42,12 +42,19 @@ class ReadLimits:
 
     `max_document_bytes` is a separate, cruder gate for the formats that go to
     the provider as bytes rather than as text: a token estimate says nothing
-    about a PDF, and every provider caps the request anyway (Anthropic at
-    32MB). It is measured on the stat, so an oversized file is never read."""
+    about a PDF. It is measured on the stat, so an oversized file is never
+    read.
+
+    The default is set from the WIRE, not from the file. Base64 inflates by
+    4/3, and Anthropic caps the whole request at 32MB — so a 24MB PDF is
+    already the entire budget once encoded, before the system prompt, the
+    history and the tool declarations. 16MB encodes to ~21MB and leaves room
+    for the conversation around it. Raising this above ~24MB cannot work: the
+    request is rejected no matter what else is in it."""
 
     hard_limit: int = 25_000
     context_percentage: float = 0.05
-    max_document_bytes: int = 30 * 1024 * 1024
+    max_document_bytes: int = 16 * 1024 * 1024
 
     def max_tokens(self, context_window: int | None = None) -> int:
         if not context_window:

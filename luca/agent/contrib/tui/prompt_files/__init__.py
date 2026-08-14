@@ -50,7 +50,7 @@ __all__ = [
     "ReadLimits",
     "find_mentions",
     "looks_binary",
-    "model_info_for",
+    "get_model_info",
     "parse_prompt",
     "probe",
     "process_prompt_file_path",
@@ -118,7 +118,7 @@ def process_prompt_file_path(
     raise AssertionError("TextHandler matches everything")  # pragma: no cover
 
 
-def model_info_for(provider: str | None, model: str | None) -> ModelInfo | None:
+def get_model_info(provider: str | None, model: str | None) -> ModelInfo | None:
     """The active model's catalog record, or None when it is not catalogued.
     None is what keeps a document away from a model we know nothing about."""
     if not provider or not model:

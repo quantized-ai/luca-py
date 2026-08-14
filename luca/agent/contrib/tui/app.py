@@ -87,7 +87,7 @@ from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
-from .prompt_files import ReadLimits, model_info_for, parse_prompt
+from .prompt_files import ReadLimits, get_model_info, parse_prompt
 from .render import (
     SCRATCHPAD_STORE_KEY,
     TODO_STORE_KEY,
@@ -344,7 +344,7 @@ class AgentApp(LucaApp):
             workspace=self._workspace,
             limits=self._read_limits,
             context_window=get_context_window_size(self.runner.session),
-            model=model_info_for(llm_config.provider, llm_config.model),
+            model=get_model_info(llm_config.provider, llm_config.model),
         )
 
     async def on_prompt_input_history_requested(self, message: PromptInput.HistoryRequested) -> None:
@@ -1202,7 +1202,7 @@ class AgentApp(LucaApp):
         # model rejects the whole request, and failing at paste time says so
         # while the user is still looking at the composer.
         llm_config = self.runner.session.session_config.llm_config
-        info = model_info_for(llm_config.provider, llm_config.model)
+        info = get_model_info(llm_config.provider, llm_config.model)
         if info is not None and not info.supports_image_input:
             await self._notice(f"{short_model(llm_config.model)} does not accept images", error=True)
             return
