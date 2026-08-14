@@ -9,7 +9,9 @@ import pytest
 from luca.client.exceptions import BadRequestError, UnsupportedParameterError
 from luca.client.types import (
     AssistantMessage,
+    AudioBlock,
     ChatCompletionRequest,
+    FileBlock,
     ImageBlock,
     MediaBase64,
     MediaFileId,
@@ -402,3 +404,41 @@ def test_a_generic_model_name_is_sanitized_for_the_wire(responses_transport_fact
 
     # `Box[int].__name__` is literally "Box[int]", which the wire rejects.
     assert payload["text"]["format"]["name"] == "Box_int_"
+
+
+def test_a_file_projects_to_input_file_from_every_source(responses_transport_factory):
+    # unlike chat completions, the Responses API takes all three
+    transport = responses_transport_factory()
+
+    assert transport._project_user_block(
+        FileBlock(source=MediaFileId(file_id="file-abc123")),
+    ) == {"type": "input_file", "file_id": "file-abc123"}
+    assert transport._project_user_block(
+        FileBlock(source=MediaURL(url="https://example.com/a.pdf")),
+    ) == {"type": "input_file", "file_url": "https://example.com/a.pdf"}
+    assert transport._project_user_block(
+        FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="report.pdf"),
+    ) == {
+        "type": "input_file",
+        "filename": "report.pdf",
+        "file_data": "data:application/pdf;base64,JVBERi0=",
+    }
+
+
+def test_an_unnamed_inline_file_still_gets_a_filename(responses_transport_factory):
+    # the API requires one beside inline bytes; omitting it is a 400
+    transport = responses_transport_factory()
+
+    assert (
+        transport._project_user_block(
+            FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf")),
+        )["filename"]
+        == "file.pdf"
+    )
+
+
+def test_an_audio_block_is_refused_rather_than_stringified(responses_transport_factory):
+    transport = responses_transport_factory()
+
+    with pytest.raises(BadRequestError, match="no shape for a AudioBlock"):
+        transport._project_user_block(AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg")))

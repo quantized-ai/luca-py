@@ -236,6 +236,29 @@ sent to the agent as a normal message, so `/etc/hosts` is never swallowed.
 Dollar figures anywhere (status counter, sessions, cost screen) are estimates
 from the small `usage.PRICING` table and are omitted for unlisted models.
 
+### 3.0 What an `@` mention becomes
+
+One probe (a stat and an 8KB read), then the first handler in
+`prompt_files.HANDLERS` that claims the file builds the part:
+
+| File | Becomes |
+|---|---|
+| text under the token cap | inlined text in an `<agent-prompt-file>` tag |
+| text over the cap | a note telling the agent to grep or read ranges |
+| an image | real `ImageContent`, so a vision model sees it |
+| a PDF, model reads PDFs | real `FileContent`, so the model reads the document |
+| a PDF, model does not | the binary note — unchanged from before |
+| any other binary | the binary note |
+
+Whether the model reads PDFs comes from the catalog
+(`ModelInfo.supports_pdf_input`, true for 185 of 450 models), re-derived per
+submit — so `/model` to a model that cannot take one silently goes back to the
+note. A PDF over `ReadLimits.max_document_bytes` (30MB default) does the same
+and is never read into memory.
+
+Adding a format is one handler above `BinaryHandler` in the chain; nothing in
+`parse_prompt` or the TUI changes.
+
 ### 3.1 Your own commands
 
 A command is a saved prompt: one `.md` file whose body is sent as an ordinary

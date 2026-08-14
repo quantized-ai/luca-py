@@ -10,14 +10,16 @@ import base64
 import pytest
 
 from luca.agent.contrib.tui.prompt_files import (
+    ModelSupport,
     ReadLimits,
     find_mentions,
     looks_binary,
+    model_support,
     parse_prompt,
     process_prompt_file_path,
     sniff,
 )
-from luca.agent.core.models import ImageContent, MediaBase64, TextContent
+from luca.agent.core.models import FileContent, ImageContent, MediaBase64, TextContent
 
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
@@ -275,3 +277,58 @@ def test_a_mention_must_start_at_a_word_boundary(tmp_path):
     (tmp_path / "a.py").write_text("a")
 
     assert find_mentions("no@a.py here", tmp_path) == []
+
+
+# ── documents ────────────────────────────────────────────────────────────────
+
+PDF = b"%PDF-1.4\n\x00\x01binary junk"
+READS_PDF = ModelSupport(image=True, pdf=True)
+
+
+def test_a_pdf_becomes_file_content_when_the_model_reads_pdfs(tmp_path):
+    path = tmp_path / "report.pdf"
+    path.write_bytes(PDF)
+
+    assert process_prompt_file_path(path, supports=READS_PDF) == FileContent(
+        source=MediaBase64(data=base64.b64encode(PDF).decode("ascii"), media_type="application/pdf"),
+        name="report.pdf",
+        metadata=mention(
+            path,
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
+
+
+def test_a_pdf_falls_back_to_the_binary_message_when_the_model_cannot_read_it(tmp_path):
+    # the pre-existing behavior, and still the right answer for a model that
+    # would reject the document
+    path = tmp_path / "report.pdf"
+    path.write_bytes(PDF)
+
+    part = process_prompt_file_path(path, supports=ModelSupport(pdf=False))
+
+    assert (type(part), part.metadata["mention"]["status"]) == (TextContent, "binary")
+
+
+def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path):
+    path = tmp_path / "huge.pdf"
+    path.write_bytes(PDF)
+
+    part = process_prompt_file_path(path, supports=READS_PDF, limits=ReadLimits(max_document_bytes=4))
+
+    assert (type(part), part.metadata["mention"]["status"]) == (TextContent, "binary")
+
+
+def test_model_support_comes_from_the_catalog():
+    # 185 of the catalogued models take PDFs; an uncatalogued one takes nothing
+    assert (
+        model_support("anthropic", "claude-sonnet-5"),
+        model_support("nowhere", "made-up-model"),
+        model_support(None, None),
+    ) == (
+        ModelSupport(image=True, pdf=True, audio=False),
+        ModelSupport(),
+        ModelSupport(),
+    )

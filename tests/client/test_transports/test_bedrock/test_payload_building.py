@@ -7,9 +7,15 @@ the whole dict.
 import pytest
 
 from luca.client.exceptions import BadRequestError, UnsupportedParameterError
+from luca.client.transports.bedrock.transport import _project_file_block
 from luca.client.types import (
     AssistantMessage,
+    AudioBlock,
     ChatCompletionRequest,
+    FileBlock,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     TextBlock,
     ThinkingBlock,
     ToolMessage,
@@ -413,3 +419,58 @@ def test_a_signature_minted_by_another_pair_is_dropped(bedrock_transport_factory
     assert payload["messages"] == [
         {"role": "assistant", "content": [{"text": "the answer"}]},
     ]
+
+
+def test_a_file_projects_to_the_converse_document_block():
+    block = FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="report.pdf")
+
+    # the dot goes too: Converse's name charset has no punctuation beyond
+    # hyphens, parentheses and brackets
+    assert _project_file_block(block) == {
+        "document": {"format": "pdf", "name": "report pdf", "source": {"bytes": "JVBERi0="}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        # Converse allows only alphanumerics, single spaces, hyphens, parens
+        # and brackets, so an ordinary filename is rejected as-is
+        ("report_v2.final.pdf", "report v2 final pdf"),
+        ("Q3 (draft) [rev-2].pdf", "Q3 (draft) [rev-2] pdf"),
+        ("____.pdf", "pdf"),
+        ("!!!", "document"),
+        (None, "document"),
+    ],
+)
+def test_a_document_name_is_sanitized_to_what_converse_accepts(given, expected):
+    block = FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name=given)
+
+    assert _project_file_block(block)["document"]["name"] == expected
+
+
+def test_a_document_name_is_capped_at_two_hundred_characters():
+    block = FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="a" * 500)
+
+    assert len(_project_file_block(block)["document"]["name"]) == 200
+
+
+def test_an_unsupported_document_format_is_refused_by_name():
+    block = FileBlock(source=MediaBase64(data="aGk=", media_type="application/zip"), name="a.zip")
+
+    with pytest.raises(BadRequestError, match="no document format for 'application/zip'"):
+        _project_file_block(block)
+
+
+def test_a_document_by_url_or_file_id_is_refused():
+    for source in (MediaURL(url="https://example.com/a.pdf"), MediaFileId(file_id="file_1")):
+        with pytest.raises(BadRequestError, match="needs inline document bytes"):
+            _project_file_block(FileBlock(source=source))
+
+
+def test_an_audio_block_is_refused_rather_than_stringified(bedrock_transport_factory):
+    transport = bedrock_transport_factory()
+    message = UserMessage(content=[AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg"))])
+
+    with pytest.raises(BadRequestError, match="no shape for a AudioBlock"):
+        transport._project_user_content(message)

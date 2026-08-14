@@ -87,6 +87,7 @@ from typing import ClassVar
 
 from luca.client.types import (
     AssistantMessage as ClientAssistantMessage,
+    FileBlock as ClientFileBlock,
     ImageBlock as ClientImageBlock,
     MediaBase64 as ClientMediaBase64,
     MediaFileId as ClientMediaFileId,
@@ -109,6 +110,7 @@ from .models import (
     ChildConversation,
     CompactionEntry,
     ExecutionStatus,
+    FileContent,
     ImageContent,
     MediaBase64,
     MediaFileId,
@@ -707,32 +709,33 @@ class ConversationProjector:
             return TextBlock(text=part.text)
         if isinstance(part, ImageContent):
             return self._image_block(part)
+        if isinstance(part, FileContent):
+            return self._file_block(part)
         raise ProjectionError(f"Cannot project content of type {type(part).__name__}.")
+
+    def _media_source(self, source) -> ClientMediaURL | ClientMediaBase64 | ClientMediaFileId:
+        """Core media source → the client's identical union. Shared by every
+        part that carries one, so a new content type adds no new mapping."""
+        if isinstance(source, MediaBase64):
+            return ClientMediaBase64(data=source.data, media_type=source.media_type)
+        if isinstance(source, MediaURL):
+            return ClientMediaURL(url=source.url, media_type=source.media_type)
+        if isinstance(source, MediaFileId):
+            return ClientMediaFileId(file_id=source.file_id, media_type=source.media_type)
+        raise ProjectionError(f"Cannot project media source of type {type(source).__name__}.")
 
     def _image_block(self, part: ImageContent) -> ClientImageBlock:
         """Agent image part → client `ImageBlock`. Override to rewrite media
         (proxy a URL, upload base64 and swap in a file id). `part.metadata` is
         application-owned and is dropped here by design."""
-        source = part.source
-        if isinstance(source, MediaBase64):
-            return ClientImageBlock(
-                source=ClientMediaBase64(
-                    data=source.data,
-                    media_type=source.media_type,
-                ),
-            )
-        if isinstance(source, MediaURL):
-            return ClientImageBlock(
-                source=ClientMediaURL(url=source.url, media_type=source.media_type),
-            )
-        if isinstance(source, MediaFileId):
-            return ClientImageBlock(
-                source=ClientMediaFileId(
-                    file_id=source.file_id,
-                    media_type=source.media_type,
-                ),
-            )
-        raise ProjectionError(f"Cannot project image source of type {type(source).__name__}.")
+        return ClientImageBlock(source=self._media_source(part.source))
+
+    def _file_block(self, part: FileContent) -> ClientFileBlock:
+        """Agent file part → client `FileBlock`. Same override point as
+        `_image_block`, and the same rule about `metadata` — but `name` DOES
+        travel: the providers either want it beside inline bytes or refuse the
+        document without it."""
+        return ClientFileBlock(source=self._media_source(part.source), name=part.name)
 
 
 # Presentation-only stand-in for an image when a tool message is flattened for

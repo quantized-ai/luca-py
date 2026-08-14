@@ -9,7 +9,9 @@ import pytest
 from luca.client.exceptions import BadRequestError
 from luca.client.types import (
     AssistantMessage,
+    AudioBlock,
     ChatCompletionRequest,
+    FileBlock,
     ImageBlock,
     MediaBase64,
     MediaFileId,
@@ -295,3 +297,34 @@ def test_response_format_nests_a_strictified_schema_under_json_schema(openai_tra
             "strict": True,
         },
     }
+
+
+def test_a_file_projects_to_the_file_part(openai_transport_factory):
+    transport = openai_transport_factory()
+
+    assert transport._project_user_block(
+        FileBlock(source=MediaFileId(file_id="file-abc123")),
+    ) == {"type": "file", "file": {"file_id": "file-abc123"}}
+    assert transport._project_user_block(
+        FileBlock(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="report.pdf"),
+    ) == {
+        "type": "file",
+        "file": {"filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERi0="},
+    }
+
+
+def test_a_file_url_is_refused_with_a_useful_message(openai_transport_factory):
+    # chat-completions takes a file by id or inline bytes, never by URL
+    transport = openai_transport_factory()
+
+    with pytest.raises(BadRequestError, match="cannot take a file by URL"):
+        transport._project_user_block(FileBlock(source=MediaURL(url="https://example.com/a.pdf")))
+
+
+def test_an_audio_block_is_refused_rather_than_stringified(openai_transport_factory):
+    # the old fallback was str(block), which put the whole base64 payload into
+    # the prompt as text and billed the user for it
+    transport = openai_transport_factory()
+
+    with pytest.raises(BadRequestError, match="no shape for a AudioBlock"):
+        transport._project_user_block(AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg")))

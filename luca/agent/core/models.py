@@ -160,9 +160,29 @@ class ImageContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FileContent(BaseModel):
+    """A document carried by a `UserMessage` — a PDF today, whatever else a
+    provider learns to read tomorrow.
+
+    `name` IS projected, unlike `metadata`: every provider either wants a
+    filename (OpenAI needs one beside inline base64) or requires one (Bedrock
+    Converse rejects a document without it). It is the only part of the
+    original file the model is told about, so it carries meaning and is not
+    presentation.
+
+    `metadata` follows `ImageContent`'s rule and stays out of the projection."""
+
+    type: Literal["file"] = "file"
+    source: MediaSource
+    name: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # what a user message, a tool result or a pruned replacement carries
 ContentPart = Annotated[
-    TextContent | ImageContent,
+    TextContent | ImageContent | FileContent,
     Field(discriminator="type"),
 ]
 

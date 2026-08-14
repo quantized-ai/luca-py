@@ -32,6 +32,7 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
+    FileContent,
     ImageContent,
     LLMConfig,
     MediaBase64,
@@ -55,6 +56,7 @@ from luca.agent.core.projection import (
 )
 from luca.client.types import (
     AssistantMessage as LucaAssistantMessage,
+    FileBlock as LucaFileBlock,
     ImageBlock as LucaImageBlock,
     MediaBase64 as LucaMediaBase64,
     MediaFileId as LucaMediaFileId,
@@ -1603,3 +1605,68 @@ def test_a_pruned_private_execution_projects_nothing():
 
     assert PROJECTOR.project_pruned(entries["p1"], entries) is None
     assert PROJECTOR.project(["p1"], entries) == []
+
+
+# ── file parts ────────────────────────────────────────────────────────────────
+
+
+def test_a_file_part_projects_to_a_client_file_block():
+    part = FileContent(
+        source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+        name="report.pdf",
+        metadata={"mention": {"path": "/tmp/report.pdf"}},
+    )
+
+    assert PROJECTOR._file_block(part) == LucaFileBlock(
+        source=LucaMediaBase64(data="JVBERi0=", media_type="application/pdf"),
+        name="report.pdf",
+    )
+
+
+def test_a_file_name_travels_but_metadata_does_not():
+    # `name` is the one thing the model is told about the original file, and
+    # two providers require it; `metadata` follows ImageContent's rule
+    source = MediaBase64(data="JVBERi0=", media_type="application/pdf")
+
+    assert PROJECTOR._file_block(
+        FileContent(source=source, name="report.pdf", metadata={"path": "/tmp/report.pdf"}),
+    ) == PROJECTOR._file_block(FileContent(source=source, name="report.pdf"))
+
+
+def test_every_file_source_projects():
+    assert (
+        PROJECTOR._file_block(FileContent(source=MediaURL(url="https://example.com/a.pdf"))),
+        PROJECTOR._file_block(FileContent(source=MediaFileId(file_id="file_123"))),
+    ) == (
+        LucaFileBlock(source=LucaMediaURL(url="https://example.com/a.pdf", media_type=None), name=None),
+        LucaFileBlock(source=LucaMediaFileId(file_id="file_123", media_type=None), name=None),
+    )
+
+
+def test_a_user_message_projects_file_and_text_parts_in_order():
+    entries = {
+        "u1": UserMessage(
+            id="u1",
+            created_at=1,
+            parts=[
+                FileContent(
+                    source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextContent(text="what does it conclude?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaFileBlock(
+                    source=LucaMediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextBlock(text="what does it conclude?"),
+            ],
+        ),
+    ]

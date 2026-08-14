@@ -45,6 +45,7 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
+    FileContent,
     ImageContent,
     MediaBase64,
     PrunedEntry,
@@ -562,6 +563,33 @@ def test_images_add_to_the_text_estimate():
     )
 
     assert CM.calculate_context(SESSION, entry) == 2_002  # 2 * 1000 + 11 // 4
+
+
+def test_a_file_counts_the_flat_file_constant_on_top_of_images_and_text():
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[
+            FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="a.pdf"),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="Add 1 and 2"),  # 11 chars
+        ],
+    )
+
+    assert CM.calculate_context(SESSION, entry) == 6_002  # 5000 + 1000 + 11 // 4
+
+
+def test_subclass_can_change_the_per_file_cost():
+    class Free(ContextManager):
+        FILE_TOKENS = 0
+
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))],
+    )
+
+    assert Free().calculate_context(SESSION, entry) == 0
 
 
 def test_subclass_can_change_the_per_image_cost():
