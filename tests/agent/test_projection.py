@@ -1670,3 +1670,53 @@ def test_a_user_message_projects_file_and_text_parts_in_order():
             ],
         ),
     ]
+
+
+def test_subclass_can_rewrite_file_media_only():
+    # `_file_block` is documented as an override point, so it has to actually
+    # be one: the same upload-and-swap policy `_image_block` supports
+    class Uploading(ConversationProjector):
+        def _file_block(self, part):
+            return LucaFileBlock(source=LucaMediaFileId(file_id="uploaded_1"), name=part.name)
+
+    entries = {
+        "u1": UserMessage(
+            id="u1",
+            created_at=1,
+            parts=[
+                FileContent(
+                    source=MediaBase64(data="JVBERi0=", media_type="application/pdf"),
+                    name="report.pdf",
+                ),
+                TextContent(text="what does it say?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert Uploading().project(conversation.nodes, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaFileBlock(source=LucaMediaFileId(file_id="uploaded_1"), name="report.pdf"),
+                TextBlock(text="what does it say?"),
+            ],
+        ),
+    ]
+
+
+def test_the_shared_media_mapping_is_one_override_for_every_part_type():
+    # `_media_source` exists so a rewrite policy is written once rather than
+    # once per content part — proving it means one override moving BOTH
+    class Proxying(ConversationProjector):
+        def _media_source(self, source):
+            return LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)
+
+    projector = Proxying()
+
+    assert (
+        projector._image_block(ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))),
+        projector._file_block(FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))),
+    ) == (
+        LucaImageBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)),
+        LucaFileBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None), name=None),
+    )

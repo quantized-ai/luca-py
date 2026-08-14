@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from luca.agent.core.models import ContentPart, FileContent, ImageContent, MediaBase64, TextContent
+from luca.client.catalog import ModelInfo
 
 from .detection import looks_binary, read_head, sniff
 
@@ -52,21 +53,6 @@ class ReadLimits:
         if not context_window:
             return self.hard_limit
         return min(self.hard_limit, int(context_window * self.context_percentage))
-
-
-@dataclass(frozen=True)
-class ModelSupport:
-    """What the ACTIVE model can be sent, straight off the catalog record
-    (`luca.client.catalog.ModelInfo`). Handlers take it so the chain can
-    decline a format the model cannot read and fall through to a handler that
-    only describes the file.
-
-    Defaults are all-False so an unknown model is never sent a document it
-    might reject — text is the only thing every model takes."""
-
-    image: bool = False
-    pdf: bool = False
-    audio: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,20 +131,25 @@ def _wrap(body: str, **attributes) -> str:
 
 
 class PromptFileHandler(Protocol):
+    """`model` is the ACTIVE model's catalog record, or None when it is not
+    catalogued. It is passed whole rather than reduced to booleans: the record
+    is already the project's capability table, so a handler for a new format
+    reads the field it needs without widening this signature again."""
+
     def matches(
-        self, probe: FileProbe, limits: ReadLimits, context_window: int | None, supports: ModelSupport
+        self, probe: FileProbe, limits: ReadLimits, context_window: int | None, model: ModelInfo | None
     ) -> bool: ...
 
     def build(
-        self, probe: FileProbe, limits: ReadLimits, context_window: int | None, supports: ModelSupport
+        self, probe: FileProbe, limits: ReadLimits, context_window: int | None, model: ModelInfo | None
     ) -> ContentPart: ...
 
 
 class DirectoryHandler:
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         return probe.is_dir
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         reason = "is a directory"
         return TextContent(
             text=_wrap(f"The path is a directory, not a file. {_FALL_BACK}", path=probe.path, status=STATUS_DIRECTORY),
@@ -167,10 +158,10 @@ class DirectoryHandler:
 
 
 class UnreadableHandler:
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         return probe.error is not None
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         reason = f"unreadable · {probe.error}"
         return TextContent(
             text=_wrap(
@@ -186,10 +177,10 @@ class ImageHandler:
     """Images inline as real image content, so a vision model actually sees
     them rather than being told one exists."""
 
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         return (probe.mime or "").startswith("image/")
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
         return ImageContent(
             source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
@@ -209,14 +200,14 @@ class DocumentHandler:
 
     MEDIA_TYPES = ("application/pdf",)
 
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         if (probe.mime or "") not in self.MEDIA_TYPES:
             return False
-        if not supports.pdf:
+        if model is None or not model.supports_pdf_input:
             return False
         return probe.size_bytes is not None and probe.size_bytes <= limits.max_document_bytes
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
         return FileContent(
             source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
@@ -229,10 +220,10 @@ class BinaryHandler:
     """The day-one fallback for every non-image binary. A format that deserves
     better gets its own handler ABOVE this one; nothing else has to change."""
 
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         return probe.binary or probe.mime is not None
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         reason = "can't read binary files"
         return TextContent(
             text=_wrap(
@@ -250,10 +241,10 @@ class TextHandler:
     """The catch-all: inline under the cap, decline over it. Declining is not a
     failure — the agent is told to grep or read ranges instead."""
 
-    def matches(self, probe, limits, context_window, supports) -> bool:
+    def matches(self, probe, limits, context_window, model) -> bool:
         return True
 
-    def build(self, probe, limits, context_window, supports) -> ContentPart:
+    def build(self, probe, limits, context_window, model) -> ContentPart:
         cap = limits.max_tokens(context_window)
         estimated = probe.estimated_tokens or 0
         if estimated > cap:
@@ -272,7 +263,7 @@ class TextHandler:
             body = probe.path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             failed = FileProbe(**{**probe.__dict__, "error": exc.strerror or "unreadable"})
-            return UnreadableHandler().build(failed, limits, context_window, supports)
+            return UnreadableHandler().build(failed, limits, context_window, model)
         lines = body.count("\n") + (0 if body.endswith("\n") or not body else 1)
         return TextContent(
             text=_wrap(

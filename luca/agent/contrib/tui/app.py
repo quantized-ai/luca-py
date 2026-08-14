@@ -87,7 +87,7 @@ from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
-from .prompt_files import ReadLimits, model_support, parse_prompt
+from .prompt_files import ReadLimits, model_info_for, parse_prompt
 from .render import (
     SCRATCHPAD_STORE_KEY,
     TODO_STORE_KEY,
@@ -344,7 +344,7 @@ class AgentApp(LucaApp):
             workspace=self._workspace,
             limits=self._read_limits,
             context_window=get_context_window_size(self.runner.session),
-            supports=model_support(llm_config.provider, llm_config.model),
+            model=model_info_for(llm_config.provider, llm_config.model),
         )
 
     async def on_prompt_input_history_requested(self, message: PromptInput.HistoryRequested) -> None:

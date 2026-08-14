@@ -10,16 +10,16 @@ import base64
 import pytest
 
 from luca.agent.contrib.tui.prompt_files import (
-    ModelSupport,
     ReadLimits,
     find_mentions,
     looks_binary,
-    model_support,
+    model_info_for,
     parse_prompt,
     process_prompt_file_path,
     sniff,
 )
 from luca.agent.core.models import FileContent, ImageContent, MediaBase64, TextContent
+from luca.client.catalog import ModelInfo
 
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
@@ -282,14 +282,15 @@ def test_a_mention_must_start_at_a_word_boundary(tmp_path):
 # ── documents ────────────────────────────────────────────────────────────────
 
 PDF = b"%PDF-1.4\n\x00\x01binary junk"
-READS_PDF = ModelSupport(image=True, pdf=True)
+READS_PDF = ModelInfo(supports_pdf_input=True)
+NO_PDF = ModelInfo(supports_pdf_input=False)
 
 
 def test_a_pdf_becomes_file_content_when_the_model_reads_pdfs(tmp_path):
     path = tmp_path / "report.pdf"
     path.write_bytes(PDF)
 
-    assert process_prompt_file_path(path, supports=READS_PDF) == FileContent(
+    assert process_prompt_file_path(path, model=READS_PDF) == FileContent(
         source=MediaBase64(data=base64.b64encode(PDF).decode("ascii"), media_type="application/pdf"),
         name="report.pdf",
         metadata=mention(
@@ -307,28 +308,57 @@ def test_a_pdf_falls_back_to_the_binary_message_when_the_model_cannot_read_it(tm
     path = tmp_path / "report.pdf"
     path.write_bytes(PDF)
 
-    part = process_prompt_file_path(path, supports=ModelSupport(pdf=False))
-
-    assert (type(part), part.metadata["mention"]["status"]) == (TextContent, "binary")
+    assert process_prompt_file_path(path, model=NO_PDF) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'bytes="{len(PDF)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
 
 
 def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path):
     path = tmp_path / "huge.pdf"
     path.write_bytes(PDF)
 
-    part = process_prompt_file_path(path, supports=READS_PDF, limits=ReadLimits(max_document_bytes=4))
+    part = process_prompt_file_path(path, model=READS_PDF, limits=ReadLimits(max_document_bytes=4))
 
-    assert (type(part), part.metadata["mention"]["status"]) == (TextContent, "binary")
+    assert part == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'bytes="{len(PDF)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="application/pdf",
+            estimated_tokens=len(PDF) // 4,
+            bytes=len(PDF),
+        ),
+    )
 
 
-def test_model_support_comes_from_the_catalog():
-    # 185 of the catalogued models take PDFs; an uncatalogued one takes nothing
-    assert (
-        model_support("anthropic", "claude-sonnet-5"),
-        model_support("nowhere", "made-up-model"),
-        model_support(None, None),
-    ) == (
-        ModelSupport(image=True, pdf=True, audio=False),
-        ModelSupport(),
-        ModelSupport(),
+def test_the_catalog_record_is_what_gates_a_document():
+    catalogued = model_info_for("anthropic", "claude-sonnet-5")
+
+    assert (catalogued.supports_pdf_input, model_info_for("nowhere", "made-up"), model_info_for(None, None)) == (
+        True,
+        None,
+        None,
     )

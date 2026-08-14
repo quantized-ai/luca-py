@@ -21,6 +21,7 @@ from pathlib import Path
 
 from luca.agent.core.models import ContentPart, TextContent
 from luca.client import catalog
+from luca.client.catalog import ModelInfo
 
 from .detection import HEAD_BYTES, looks_binary, read_head, sniff
 from .handlers import (
@@ -32,7 +33,6 @@ from .handlers import (
     STATUS_UNREADABLE,
     TAG,
     FileProbe,
-    ModelSupport,
     ReadLimits,
     probe,
 )
@@ -47,11 +47,10 @@ __all__ = [
     "STATUS_UNREADABLE",
     "TAG",
     "FileProbe",
-    "ModelSupport",
     "ReadLimits",
     "find_mentions",
     "looks_binary",
-    "model_support",
+    "model_info_for",
     "parse_prompt",
     "probe",
     "process_prompt_file_path",
@@ -105,34 +104,26 @@ def process_prompt_file_path(
     workspace: str | Path = ".",
     limits: ReadLimits | None = None,
     context_window: int | None = None,
-    supports: ModelSupport | None = None,
+    model: ModelInfo | None = None,
 ) -> ContentPart:
     """One path → one content part, through the handler chain."""
     limits = limits or ReadLimits()
-    supports = supports or ModelSupport()
     target = Path(path)
     if not target.is_absolute():
         target = Path(workspace) / target
     probed = probe(target)
     for handler in HANDLERS:
-        if handler.matches(probed, limits, context_window, supports):
-            return handler.build(probed, limits, context_window, supports)
+        if handler.matches(probed, limits, context_window, model):
+            return handler.build(probed, limits, context_window, model)
     raise AssertionError("TextHandler matches everything")  # pragma: no cover
 
 
-def model_support(provider: str | None, model: str | None) -> ModelSupport:
-    """What the catalog says this model accepts. An uncatalogued model reports
-    nothing, which keeps a document away from a model we know nothing about."""
+def model_info_for(provider: str | None, model: str | None) -> ModelInfo | None:
+    """The active model's catalog record, or None when it is not catalogued.
+    None is what keeps a document away from a model we know nothing about."""
     if not provider or not model:
-        return ModelSupport()
-    info = catalog.get(provider, model)
-    if info is None:
-        return ModelSupport()
-    return ModelSupport(
-        image=info.supports_image_input,
-        pdf=info.supports_pdf_input,
-        audio=info.supports_audio_input,
-    )
+        return None
+    return catalog.get(provider, model)
 
 
 def parse_prompt(
@@ -141,7 +132,7 @@ def parse_prompt(
     workspace: str | Path = ".",
     limits: ReadLimits | None = None,
     context_window: int | None = None,
-    supports: ModelSupport | None = None,
+    model: ModelInfo | None = None,
 ) -> list[ContentPart]:
     """The submitted text, then one part per resolvable `@` mention."""
     parts: list[ContentPart] = []
@@ -153,7 +144,7 @@ def parse_prompt(
             workspace=workspace,
             limits=limits,
             context_window=context_window,
-            supports=supports,
+            model=model,
         )
         for path in find_mentions(prompt, workspace)
     )

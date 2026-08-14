@@ -701,7 +701,7 @@ class ConversationProjector:
             return error.error_message
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
-    def _content_block(self, part) -> TextBlock | ClientImageBlock:
+    def _content_block(self, part) -> TextBlock | ClientImageBlock | ClientFileBlock:
         """Agent content value → canonical client content block. Shared by
         every entry projection: user messages, tool results and pruned
         replacements all carry the same `ContentPart` union."""
