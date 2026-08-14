@@ -30,6 +30,15 @@ def _isolated_config_environment(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_local_ollama(monkeypatch):
+    """Boot discovers a local Ollama, which would make these tests depend on
+    whether the contributor happens to be running one — and register its real
+    models and context windows into the catalog. Point it at a closed port so
+    the skip path runs instead."""
+    monkeypatch.setitem(PROVIDERS["ollama"], "default_base_url", "http://127.0.0.1:1")
+
+
+@pytest.fixture(autouse=True)
 def _restore_luca_logger():
     """`main()` points the process-wide `luca` logger at a session file. Left
     attached, it holds a deleted tmp_path open and its `propagate=False` blinds

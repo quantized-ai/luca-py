@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TypedDict
 
 from ..exceptions import ProviderNotFoundError
-from ..transports import OpenAITransport
+from ..transports import OllamaTransport, OpenAITransport
 from .anthropic import AnthropicProvider
 from .base import BaseProvider, ChatCompletionMixin
 from .bedrock import BedrockProvider
@@ -42,10 +42,13 @@ PROVIDERS: dict[str, type | ProviderConfig] = {
         "default_api_key_env_var": "DEEPSEEK_API_KEY",
         "default_transport_class": OpenAITransport,
     },
+    # Native `/api/chat`, not the OpenAI-compatible `/v1`: only the native
+    # endpoint honours `options.num_ctx`, without which a 32k model silently
+    # runs at Ollama's 4k default and truncates the conversation.
     "ollama": {
-        "default_base_url": "http://localhost:11434/v1",
+        "default_base_url": "http://localhost:11434",
         "default_api_key_env_var": None,
-        "default_transport_class": OpenAITransport,
+        "default_transport_class": OllamaTransport,
     },
     "quantized": {
         "default_base_url": "https://api.quantized.us/v1",

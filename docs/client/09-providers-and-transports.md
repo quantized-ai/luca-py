@@ -15,7 +15,7 @@ of new hosts.
 | `bedrock` | `BedrockProvider` | `https://bedrock-runtime.{region}.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK`, or the AWS chain | `BedrockTransport` |
 | `groq` | `GenericProvider` (from dict) | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `OpenAITransport` |
 | `deepseek` | `GenericProvider` (from dict) | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `OpenAITransport` |
-| `ollama` | `GenericProvider` (from dict) | `http://localhost:11434/v1` | (none) | `OpenAITransport` |
+| `ollama` | `GenericProvider` (from dict) | `http://localhost:11434` | (none) | `OllamaTransport` |
 | `quantized` | `GenericProvider` (from dict) | `https://api.quantized.us/v1` | `QUANTIZED_API_KEY` | `OpenAITransport` |
 | `faux` | `FauxProvider` | — | (none) | `FauxTransport` |
 
@@ -96,6 +96,31 @@ those instead.
 `AWS_REGION`, `AWS_DEFAULT_REGION`, then the profile's `region`. It fills the
 `{region}` in the base URL AND is a signing input, so it is required even
 when `base_url=` points at a VPC endpoint or a proxy.
+
+### Ollama runs on the native API, not `/v1`
+
+`OllamaTransport` targets `/api/chat` rather than Ollama's OpenAI-compatible
+`/v1`, for one measured reason: **`/v1` silently ignores `options.num_ctx`.**
+A model whose architecture allows 32k then runs at Ollama's default (4k on an
+ordinary machine) and truncates the conversation with no error, no warning
+field and no `truncated` flag.
+
+The window is not guessed. `luca.client.transports.ollama.discover()` reads
+`/api/tags` and `/api/show`, and the caller registers the results with
+`catalog.register(...)`. The transport then reads
+`request.model_info.context_window` and sends it as `num_ctx`, so the window
+luca reports and the window Ollama runs are the same number by construction.
+This is the only transport that reads a `model_info` field other than `cost`:
+on a local server the context window is a request parameter, not metadata.
+
+The architectural maximum is capped (`OllamaTransport.NUM_CTX_CEILING`,
+32768) because `llama3.2` advertises 131072 and allocating that on a laptop
+either fails to load or spills to CPU. Override per call with
+`provider_options={"ollama": {"options": {"num_ctx": ...}}}`. Changing the
+value forces Ollama to reload the model, so it wants to be stable.
+
+Models without the `completion` capability are not registered — an embedding
+model is not a chat model, whatever context length it reports.
 
 ## Model strings
 

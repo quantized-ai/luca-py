@@ -92,6 +92,7 @@ from .config import (
     load_luca_config,
     pick,
     picker_models,
+    register_local_models,
     resolve_config_path,
     resolve_llm_config,
     resolve_read_limits,
@@ -481,6 +482,13 @@ def main(argv: list[str] | None = None) -> None:
                 DEFAULT_LOG_LEVEL,
             ),
         )
+        # After setup_logging, deliberately: "registered N local models" and
+        # "discovery skipped" are the only trace of why /model does or does not
+        # list them, and before the handler is attached they go nowhere.
+        # Unconditional otherwise — /model cannot offer what was never looked
+        # for, so a session on another provider still needs the local list.
+        if not args.faux:
+            register_local_models(config)
         provider = build_faux_provider() if args.faux else None
         config_mode = config.permissions.mode.value if config.permissions.mode is not None else None
         app = AgentApp(

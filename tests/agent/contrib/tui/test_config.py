@@ -21,6 +21,7 @@ from luca.agent.contrib.tui.config import (
     LucaConfigError,
     ModelConfig,
     PermissionRule,
+    ProviderDef,
     RuntimeSettings,
     ThemeSettings,
     _deep_merge,
@@ -30,6 +31,7 @@ from luca.agent.contrib.tui.config import (
     load_luca_config,
     pick,
     picker_models,
+    register_local_models,
     resolve_config_path,
     resolve_llm_config,
     resolve_model_options,
@@ -902,3 +904,46 @@ def test_luca_schema_describes_the_logging_section():
             },
         },
     )
+
+
+# ── local model discovery ────────────────────────────────────────────────────
+
+
+def test_local_models_are_discovered_even_when_the_session_is_on_another_provider(monkeypatch):
+    # The regression: gating discovery on "am I already on ollama" means
+    # `/model` cannot offer what was never looked for, so ollama is only
+    # reachable from ollama.
+    from luca.client import catalog
+    from luca.client.types import ModelInfo
+
+    monkeypatch.setattr(
+        "luca.client.transports.ollama.discover",
+        lambda base_url, **kw: [ModelInfo(model="llama3.2:latest", provider="ollama", context_window=32_768)],
+    )
+
+    assert register_local_models(LucaConfig(model=ModelConfig(provider="openrouter"))) == 1
+    assert catalog.get("ollama", "llama3.2:latest").context_window == 32_768
+
+
+def test_a_daemon_that_is_not_running_is_not_an_error(monkeypatch):
+    from luca.client.exceptions import ConnectionError as ClientConnectionError
+
+    def refuse(base_url, **kw):
+        raise ClientConnectionError("nothing listening", provider="ollama")
+
+    monkeypatch.setattr("luca.client.transports.ollama.discover", refuse)
+
+    assert register_local_models(LucaConfig()) == 0
+
+
+def test_discovery_follows_a_configured_base_url(monkeypatch):
+    seen = {}
+
+    def capture(base_url, **kw):
+        seen["base_url"] = base_url
+        return []
+
+    monkeypatch.setattr("luca.client.transports.ollama.discover", capture)
+    register_local_models(LucaConfig(providers={"ollama": ProviderDef(base_url="http://gpu-box:11434")}))
+
+    assert seen == {"base_url": "http://gpu-box:11434"}

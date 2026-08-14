@@ -1,5 +1,6 @@
 """Top-level test fixtures."""
 
+import contextlib
 import time
 
 import pytest
@@ -16,16 +17,26 @@ def frozen_time(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_provider_cache():
-    """Helper caches BaseProvider instances. Clear before/after every test."""
+    """Helper caches BaseProvider instances. Close and drop them around every
+    test — dropping alone leaks the http client, which a MockTransport hides
+    and a real socket does not (`-W error::ResourceWarning`)."""
     try:
         from luca.client._client import _provider_cache
     except ImportError:
         _provider_cache = None
-    if _provider_cache is not None:
+
+    def drain():
+        if _provider_cache is None:
+            return
+        for provider in list(_provider_cache.values()):
+            # Teardown must not mask the failure that got us here.
+            with contextlib.suppress(Exception):
+                provider.close()
         _provider_cache.clear()
+
+    drain()
     yield
-    if _provider_cache is not None:
-        _provider_cache.clear()
+    drain()
 
 
 @pytest.fixture(autouse=True)

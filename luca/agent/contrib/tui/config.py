@@ -15,6 +15,7 @@ that discovery, and a path that does not resolve is an error.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Literal
@@ -40,6 +41,8 @@ from luca.client.providers import PROVIDERS, resolve_provider
 from luca.client.types import Reasoning
 
 from .prompt_files import ReadLimits
+
+logger = logging.getLogger(__name__)
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -430,6 +433,40 @@ def validate_provider(config: LucaConfig, provider: str) -> None:
         f'add both to luca.json under providers.{provider} — "base_url" and "transport" '
         f'(e.g. "luca.client.transports.OpenAITransport") — or pick one of: {known}',
     )
+
+
+OLLAMA_DISCOVERY_TIMEOUT = 5.0
+
+
+def register_local_models(config: LucaConfig) -> int:
+    """Ask a local Ollama what it has, and put it in the catalog.
+
+    models.dev cannot know what you pulled, so without this every ollama model
+    has no `context_window` and the compactor falls back to a 200k default
+    while the server truncates at its own. Registering here makes the window
+    the transport asks for and the window the compactor sees the same number.
+
+    Runs on every boot, not only when the session is already on ollama —
+    otherwise `/model` cannot list what it has never looked for, and you can
+    only reach ollama from ollama. Measured cost: ~13ms when nothing is
+    listening (the common case), ~350ms when a daemon answers.
+
+    Never fatal: a daemon that is not running is a reason to have no local
+    models, not a reason to refuse to start."""
+    from luca.client import catalog
+    from luca.client.transports.ollama import discover
+
+    defn = config.providers.get("ollama")
+    base_url = (defn.base_url if defn else None) or PROVIDERS["ollama"]["default_base_url"]
+    try:
+        records = discover(base_url, timeout=OLLAMA_DISCOVERY_TIMEOUT)
+    except ClientError as exc:
+        logger.info("ollama discovery skipped: %s", exc)
+        return 0
+    for info in records:
+        catalog.register(provider="ollama", model=info.model, info=info)
+    logger.info("ollama: registered %d local model(s) from %s", len(records), base_url)
+    return len(records)
 
 
 def check_provider_buildable(llm_config: LLMConfig, *, api_key=None, credentials=None) -> None:
