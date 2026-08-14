@@ -68,8 +68,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     SessionConfig,
     TextContent,
     ThinkingContent,
@@ -1819,7 +1819,7 @@ async def test_post_message_accepts_a_part_list_and_keeps_its_order():
     )
     runner = DeterministicRunner(session, ids=["u1"], now=1000)
     image = ImageContent(
-        source=ImageBase64(data="aGk=", media_type="image/png"),
+        source=MediaBase64(data="aGk=", media_type="image/png"),
         metadata={"name": "a.png"},
     )
 
@@ -1910,7 +1910,7 @@ async def test_post_message_validates_raw_dicts_into_parts():
     )
 
     assert runner.session.entries["u1"].parts == [
-        ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+        ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         TextContent(text="what is this?"),
     ]
 

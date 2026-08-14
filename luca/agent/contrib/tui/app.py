@@ -65,9 +65,9 @@ from luca.agent.core.models import (
     ChildConversation,
     ContentPart,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
     LLMConfig,
+    MediaBase64,
     ToolExecution,
     TurnOutcome,
 )
@@ -1197,7 +1197,7 @@ class AgentApp(LucaApp):
             return
         self._pending_images.append(
             ImageContent(
-                source=ImageBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
+                source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=MEDIA_TYPE),
                 metadata={
                     "name": f"pasted-{len(self._pending_images) + 1}.png",
                     "size_bytes": len(data),

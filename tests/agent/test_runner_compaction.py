@@ -52,8 +52,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     RuntimeConfig,
     SessionConfig,
     TextContent,
@@ -282,7 +282,7 @@ def image_only_summary(session, nodes, entry):
             update={
                 "parts": [
                     ImageContent(
-                        source=ImageBase64(data="aGk=", media_type="image/png"),
+                        source=MediaBase64(data="aGk=", media_type="image/png"),
                     ),
                 ],
                 "llm_config": CHEAP,

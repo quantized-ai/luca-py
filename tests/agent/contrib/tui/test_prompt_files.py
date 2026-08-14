@@ -17,7 +17,7 @@ from luca.agent.contrib.tui.prompt_files import (
     process_prompt_file_path,
     sniff,
 )
-from luca.agent.core.models import ImageBase64, ImageContent, TextContent
+from luca.agent.core.models import ImageContent, MediaBase64, TextContent
 
 # a 1x1 transparent PNG
 PNG = base64.b64decode(
@@ -86,7 +86,7 @@ def test_an_image_becomes_image_content_not_a_rejection(tmp_path):
     path.write_bytes(PNG)
 
     assert process_prompt_file_path(path) == ImageContent(
-        source=ImageBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
+        source=MediaBase64(data=base64.b64encode(PNG).decode("ascii"), media_type="image/png"),
         metadata=mention(path, guessed_mime="image/png", estimated_tokens=len(PNG) // 4, bytes=len(PNG)),
     )
 

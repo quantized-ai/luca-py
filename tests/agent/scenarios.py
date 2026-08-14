@@ -70,9 +70,9 @@ from luca.agent.core.models import (
     ExecutionDeferred,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
     LLMConfig,
+    MediaBase64,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -1008,7 +1008,7 @@ RICH_SESSION = make_session(
             parts=[
                 TextContent(text="Add 1 and 2, and look at this"),
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                 ),
             ],
         ),

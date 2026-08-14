@@ -115,7 +115,7 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ImageURL(BaseModel):
+class MediaURL(BaseModel):
     kind: Literal["url"] = "url"
     url: str
     media_type: str | None = None
@@ -123,7 +123,7 @@ class ImageURL(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ImageBase64(BaseModel):
+class MediaBase64(BaseModel):
     kind: Literal["base64"] = "base64"
     data: str  # base64-encoded bytes, no `data:` prefix
     media_type: str
@@ -131,7 +131,7 @@ class ImageBase64(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ImageFileId(BaseModel):
+class MediaFileId(BaseModel):
     kind: Literal["file"] = "file"
     file_id: str
     media_type: str | None = None
@@ -139,8 +139,8 @@ class ImageFileId(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-ImageSource = Annotated[
-    ImageURL | ImageBase64 | ImageFileId,
+MediaSource = Annotated[
+    MediaURL | MediaBase64 | MediaFileId,
     Field(discriminator="kind"),
 ]
 
@@ -154,7 +154,7 @@ class ImageContent(BaseModel):
     has since been deleted (`name`, `path`, `size_bytes`, …)."""
 
     type: Literal["image"] = "image"
-    source: ImageSource
+    source: MediaSource
     metadata: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")

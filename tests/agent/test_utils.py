@@ -28,8 +28,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -386,7 +386,7 @@ CANCELLED_SESSION = make_session(
             parts=[
                 TextContent(text="check the disk"),
                 ImageContent(
-                    source=ImageBase64(data="aGk=", media_type="image/png"),
+                    source=MediaBase64(data="aGk=", media_type="image/png"),
                     metadata={"name": "screenshot.png"},
                 ),
             ],

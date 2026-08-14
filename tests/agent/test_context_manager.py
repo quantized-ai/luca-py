@@ -45,8 +45,8 @@ from luca.agent.core.models import (
     ExecutionAttemptOutcome,
     ExecutionResult,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
+    MediaBase64,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -300,7 +300,7 @@ def test_an_image_carrying_summary_counts_text_plus_the_image_constant():
         source=CompactionSource.POLICY,
         parts=[
             TextContent(text="## Goal\nFix the failing test suite."),  # 35
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
         compacted_nodes=["u1", "a1"],
     )
@@ -543,7 +543,7 @@ def test_image_only_message_counts_the_flat_image_constant():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
 
@@ -555,9 +555,9 @@ def test_images_add_to_the_text_estimate():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/jpeg")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/jpeg")),
         ],
     )
 
@@ -572,7 +572,7 @@ def test_subclass_can_change_the_per_image_cost():
         id="u1",
         created_at=1000,
         parts=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
             TextContent(text="Add 1 and 2"),  # 11 chars
         ],
     )
@@ -603,7 +603,7 @@ def test_tool_result_images_are_counted():
         status=ExecutionStatus.COMPLETED,
         result=ExecutionResult(
             content=[
-                ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+                ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
                 TextContent(text="the answer is 3."),  # 16 chars
             ]
         ),
@@ -621,7 +621,7 @@ def test_pruned_entry_images_are_counted():
         pruned_entry_type="tool_execution",
         pruned_entry_id="te1",
         content=[
-            ImageContent(source=ImageBase64(data="aGk=", media_type="image/png")),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
         ],
     )
 

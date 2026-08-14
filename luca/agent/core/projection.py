@@ -88,9 +88,9 @@ from typing import ClassVar
 from luca.client.types import (
     AssistantMessage as ClientAssistantMessage,
     ImageBlock as ClientImageBlock,
-    MediaBase64,
-    MediaFileId,
-    MediaURL,
+    MediaBase64 as ClientMediaBase64,
+    MediaFileId as ClientMediaFileId,
+    MediaURL as ClientMediaURL,
     Message,
     TextBlock,
     ThinkingBlock,
@@ -109,10 +109,10 @@ from .models import (
     ChildConversation,
     CompactionEntry,
     ExecutionStatus,
-    ImageBase64,
     ImageContent,
-    ImageFileId,
-    ImageURL,
+    MediaBase64,
+    MediaFileId,
+    MediaURL,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -714,20 +714,20 @@ class ConversationProjector:
         (proxy a URL, upload base64 and swap in a file id). `part.metadata` is
         application-owned and is dropped here by design."""
         source = part.source
-        if isinstance(source, ImageBase64):
+        if isinstance(source, MediaBase64):
             return ClientImageBlock(
-                source=MediaBase64(
+                source=ClientMediaBase64(
                     data=source.data,
                     media_type=source.media_type,
                 ),
             )
-        if isinstance(source, ImageURL):
+        if isinstance(source, MediaURL):
             return ClientImageBlock(
-                source=MediaURL(url=source.url, media_type=source.media_type),
+                source=ClientMediaURL(url=source.url, media_type=source.media_type),
             )
-        if isinstance(source, ImageFileId):
+        if isinstance(source, MediaFileId):
             return ClientImageBlock(
-                source=MediaFileId(
+                source=ClientMediaFileId(
                     file_id=source.file_id,
                     media_type=source.media_type,
                 ),

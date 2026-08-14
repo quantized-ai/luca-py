@@ -69,15 +69,15 @@ turn_finish     outcome=completed
 | `image` | an image the user attached |
 | `thinking` | the model's reasoning, when it emits any — plus the provider's `signature` over it, its `id` for the reasoning item (OpenAI's `rs_…`, needed to replay it), and `redacted` when the body was withheld |
 
-An `image` part carries a `source` — one of `ImageURL`, `ImageBase64` or
-`ImageFileId` — plus free-form `metadata`:
+An `image` part carries a `source` — one of `MediaURL`, `MediaBase64` or
+`MediaFileId` — plus free-form `metadata`:
 
 ```python
-from luca.agent.core import ImageBase64, ImageContent, TextContent
+from luca.agent.core import ImageContent, MediaBase64, TextContent
 
 runner.post_message([
     ImageContent(
-        source=ImageBase64(data=b64_bytes, media_type="image/png"),
+        source=MediaBase64(data=b64_bytes, media_type="image/png"),
         metadata={"name": "receipt.jpg"},
     ),
     TextContent(text="how much did I tip here?"),
@@ -90,9 +90,9 @@ since been deleted.
 
 | Source | Support |
 |---|---|
-| `ImageBase64` | everywhere |
-| `ImageURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
-| `ImageFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
+| `MediaBase64` | everywhere |
+| `MediaURL` | everywhere (the provider fetches it, so it must be publicly reachable) |
+| `MediaFileId` | Anthropic only — the OpenAI chat-completions API has no file-id shape for images and raises |
 
 There are two part unions, and they stay separate so a `tool_call` can never
 land in a user message:

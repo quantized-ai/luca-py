@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from luca.agent.core.models import ContentPart, ImageBase64, ImageContent, TextContent
+from luca.agent.core.models import ContentPart, ImageContent, MediaBase64, TextContent
 
 from .detection import looks_binary, read_head, sniff
 
@@ -167,7 +167,7 @@ class ImageHandler:
     def build(self, probe, limits, context_window) -> ContentPart:
         data = probe.path.read_bytes()
         return ImageContent(
-            source=ImageBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
+            source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
             metadata=_mention(probe, status=STATUS_OK),
         )
 
