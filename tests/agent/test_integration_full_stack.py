@@ -629,6 +629,12 @@ async def test_a_subagents_gate_is_answered_live_while_its_sibling_works(workspa
                     ],
                     finish_reason="tool_use",
                 ),
+                # wake rounds hold until both children's answers are in the
+                # projection — the same thing the other multi-child scripts in
+                # this file do. Two children resolving near-simultaneously may
+                # coalesce into one wake round or not, so a fixed number of
+                # replies is predicting task scheduling.
+                Hold(("alpha", "live!"), "the pair are still working"),
                 faux_assistant_message([faux_text("both done")], finish_reason="stop"),
             ],
             "Read alpha.txt": [

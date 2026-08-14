@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.widgets import TextArea
 
 from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
@@ -269,7 +270,18 @@ class AgentApp(LucaApp):
 
     async def _load_git_info(self) -> None:
         self._git = await asyncio.to_thread(read_git_info, self._workspace)
-        self._refresh_status()
+        self._refresh_status_if_mounted()
+
+    def _refresh_status_if_mounted(self) -> None:
+        """`_refresh_status` for callers that may outlive the screen.
+
+        `read_git_info` runs in a thread, so this worker can resume after a
+        quit has already torn the frame down, and `set_status` queries
+        `#status` strictly. A status bar that is gone has nothing to refresh —
+        but the strictness is right for every other caller, so the tolerance
+        lives here rather than in `frame.set_status`."""
+        with contextlib.suppress(NoMatches):
+            self._refresh_status()
 
     # ── input ─────────────────────────────────────────────────────────────────
 

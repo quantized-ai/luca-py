@@ -41,6 +41,26 @@ class PromptInput(TextArea):
     }
     """
 
+    # Textual's own component class, named here only so the guard below reads
+    # as what it is rather than as a magic string.
+    _THEME_COMPONENT = "text-area--gutter"
+
+    def render_lines(self, crop):
+        """`TextArea.render_lines` runs `theme.apply_css(self)`, which looks
+        `text-area--gutter` up in the widget's RUNTIME component styles. A
+        widget can be asked to render before the stylesheet pass has reached
+        it — a dock swap on a slow terminal is enough — and the lookup then
+        raises `KeyError` and takes the frame down.
+
+        Skipping the theme pass for that one frame is the whole fix: the
+        styles arrive and the next render is themed normally.
+
+        Textualize/textual#6528 and #6208, open against 8.2.x with no released
+        fix. Delete this the moment a Textual release carries one."""
+        if self._THEME_COMPONENT not in self._component_styles:
+            return super(TextArea, self).render_lines(crop)
+        return super().render_lines(crop)
+
     @dataclass
     class Submitted(Message):
         """Posted on Enter with the full (possibly multiline) text."""
