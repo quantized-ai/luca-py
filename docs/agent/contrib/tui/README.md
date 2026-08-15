@@ -230,6 +230,8 @@ sent to the agent as a normal message, so `/etc/hosts` is never swallowed.
 | `/reasoning [level]` | No arg opens the level menu |
 | `/theme` | Pick any registered theme (`luca-dark` ships; see `theme.py`) |
 | `/compact` | Summarize the history and continue ([12](../../12-compaction.md)) |
+| `/undo` | Revert the last turn: the workspace files AND the conversation ([checkpoints](../checkpoints/README.md)) |
+| `/rewind` | Pick an earlier checkpoint to restore, newest first |
 | `/help` | Every command, as a list block |
 | `/quit` | Save and exit |
 

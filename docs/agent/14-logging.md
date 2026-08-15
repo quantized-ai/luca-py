@@ -110,4 +110,4 @@ Lazy `%` arguments, never f-strings — the arguments are not rendered when the
 level is off. And `conv=<id>` first: every tool, middleware hook and registry
 method already receives `conversation_id`.
 
-Next: back to the [index](README.md).
+Next: [`15-rewind.md`](15-rewind.md).

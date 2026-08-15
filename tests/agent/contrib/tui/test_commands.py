@@ -92,7 +92,7 @@ async def wait_until(pilot, condition, timeout: float = 8.0) -> None:
 # ── the registry ─────────────────────────────────────────────────────────────
 
 
-def test_the_registry_lists_the_fourteen_commands():
+def test_the_registry_lists_the_sixteen_commands():
     # Spelled out rather than re-derived: a command added, renamed or
     # re-summarized shows up here as a diff.
     assert [(c.name, c.usage, c.summary, c.insert) for c in COMMANDS] == [
@@ -106,6 +106,8 @@ def test_the_registry_lists_the_fourteen_commands():
         ("reasoning", "[level]", "pick or set the reasoning level", False),
         ("theme", "", "choose the color theme", False),
         ("compact", "", "summarize the history and continue", False),
+        ("undo", "", "revert the last turn's edits and rewind", False),
+        ("rewind", "", "pick an earlier checkpoint to restore", False),
         ("resume", "", "switch to another session in this project", False),
         ("new", "", "save and start a fresh conversation", False),
         ("help", "", "show every command", False),
@@ -428,7 +430,7 @@ async def test_help_mounts_the_command_list_block(tmp_path):
         # too, mounted from the start and hidden until there are todos.
         [view] = list(app.transcript.query(ListBlockView))
         assert view.model == vm.ListBlock(
-            label="commands · 14",
+            label="commands · 16",
             column=24,
             rows=[
                 vm.ListRow(glyph="none", text="/skill [name]", annotation="load a skill into this session"),
@@ -441,6 +443,8 @@ async def test_help_mounts_the_command_list_block(tmp_path):
                 vm.ListRow(glyph="none", text="/reasoning [level]", annotation="pick or set the reasoning level"),
                 vm.ListRow(glyph="none", text="/theme", annotation="choose the color theme"),
                 vm.ListRow(glyph="none", text="/compact", annotation="summarize the history and continue"),
+                vm.ListRow(glyph="none", text="/undo", annotation="revert the last turn's edits and rewind"),
+                vm.ListRow(glyph="none", text="/rewind", annotation="pick an earlier checkpoint to restore"),
                 vm.ListRow(glyph="none", text="/resume", annotation="switch to another session in this project"),
                 vm.ListRow(glyph="none", text="/new", annotation="save and start a fresh conversation"),
                 vm.ListRow(glyph="none", text="/help", annotation="show every command"),

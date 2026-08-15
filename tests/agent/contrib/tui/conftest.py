@@ -7,10 +7,25 @@ import pytest
 
 pytest.importorskip("textual")
 
+from luca.agent.contrib.checkpoints import ShadowGitStore
 from luca.agent.contrib.tui.cli import _remove_log_handlers
 from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.client.catalog import _store
 from luca.client.providers import PROVIDERS
+
+
+@pytest.fixture(autouse=True)
+def _checkpoints_off(request, monkeypatch):
+    """Checkpoints shell out to git and write a shadow repository into the
+    session directory on the first turn. Off for every TUI test that is not
+    explicitly about them: otherwise each one pays for a subprocess, and a test
+    asserting what sits beside the session file finds an extra directory that
+    has nothing to do with what it is checking.
+
+    Opt back in with `@pytest.mark.checkpoints`."""
+    if "checkpoints" in request.keywords:
+        return
+    monkeypatch.setattr(ShadowGitStore, "available", lambda self: False)
 
 
 @pytest.fixture(autouse=True)

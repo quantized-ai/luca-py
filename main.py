@@ -21,6 +21,7 @@ Usage:
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-use-native          # generic shell tools only
+    uv run python main.py --no-checkpoints         # no per-turn workspace snapshots
     uv run python main.py --no-streaming           # block-level rendering
     uv run python main.py --theme luca-dark        # the design theme (default)
     uv run python main.py --gallery                # browse the design-system catalog
@@ -48,6 +49,11 @@ INFO; `--log-level DEBUG` (or `LUCA_LOG_LEVEL`) turns it up, `OFF` turns it off.
 
 The system prompt is picked for the model's family and carries the project's
 `LUCA.md` / `AGENTS.md` / `CLAUDE.md`; `--no-instructions` drops the latter.
+
+The workspace is snapshotted before each turn into a private git repository
+beside the session, so `/undo` and `/rewind` put the FILES back as well as the
+conversation. Nothing is written into the workspace and `.gitignore`d paths are
+never captured; `--no-checkpoints` turns it off, as does having no git binary.
 """
 
 from luca.agent.contrib.tui import main

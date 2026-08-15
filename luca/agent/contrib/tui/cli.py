@@ -10,6 +10,7 @@
     uv run python -m luca.agent.contrib.tui --resume <id>       # resume it by id
     uv run python -m luca.agent.contrib.tui --resume <id> --fork
     uv run python -m luca.agent.contrib.tui --no-use-native     # no provider-native tools
+    uv run python -m luca.agent.contrib.tui --no-checkpoints    # no per-turn snapshots
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
@@ -241,6 +242,14 @@ def arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="Do not load user-defined slash commands (they are read from .claude/commands, "
         ".agents/commands and the ~ equivalents by default).",
+    )
+    parser.add_argument(
+        "--checkpoints",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Snapshot the workspace before each turn, which is what /undo and /rewind "
+        "restore (--no-checkpoints turns it off). Snapshots go to a private git repository "
+        "beside the session, never into the workspace.",
     )
     parser.add_argument(
         "--no-instructions",
@@ -489,6 +498,7 @@ def main(argv: list[str] | None = None) -> None:
             recommended_models=picker_models(config) or None,
             model_options=partial(apply_model_options, config=config),
             subagents=args.subagents,
+            checkpoints=pick(args.checkpoints, config.checkpoints, True),
             skills=args.skills,
             extra_skill_locations=config.extra_skill_locations or None,
             commands=args.commands,

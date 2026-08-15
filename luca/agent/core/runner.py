@@ -228,6 +228,7 @@ from .models import (
     UserMessage,
     declares_spawn,
     is_compaction_bracket,
+    open_turn_index,
     open_turn_unresolved_children,
     open_turn_unseen_material,
     open_turn_unseen_post,
@@ -1377,6 +1378,101 @@ class AgentSessionRunner:
             raise AgentError(f"schedule_compaction requires a closed turn (status={self.status.value}).")
         entry = self._open_compaction_bracket(main, CompactionSource.USER)
         return entry.id
+
+    def rewind_to(self, entry_id: str | None) -> Conversation:
+        """Archive the main conversation and install a successor over its path
+        TRUNCATED so `entry_id` is the last node. `None` rewinds to an empty
+        path. Returns the conversation now named by `main_conversation_id`.
+
+        NOTHING IS DELETED. The predecessor keeps every node it had and stays a
+        first-class row in `AgentSession.conversations`, reachable through the
+        successor's `previous_conversation_id` — the same shape a compaction
+        leaves behind, through the same door
+        (`SessionLedger.transition_conversation`). Rewinding is therefore a
+        change of which path is CURRENT, not a loss of history, and the entries
+        themselves are untouched in the store.
+
+        POLICY-FREE, and deliberately so. The core has no concept of a
+        checkpoint, a workspace or a snapshot: this method answers "make the
+        conversation be this prefix again" and nothing else. What a checkpoint
+        binds to a prefix, when one is taken and what else is restored
+        alongside it are the application's
+        (`luca.agent.contrib.checkpoints` is the shipped one). That split
+        mirrors compaction, where core owns the entry, the bracket and the
+        transition while `ContextManager` owns every decision.
+
+        Refuses, all checked before anything is written:
+
+        - a LIVE RUN on the main conversation. A transition installs a new row
+          and re-points whatever named the old one, and a drive holds its
+          `conversation_id` in a local (`_rebind_run` exists for exactly this
+          moment). Finalize the run first.
+        - an OPEN TURN. The same rule `schedule_compaction` applies and for a
+          related reason: an open bracket means work is in flight or parked,
+          and discarding it silently would strand a gate the registry still
+          answers for or a deferred call a tool still holds. Cancel, flush,
+          then rewind. This is the conservative choice for V0 — relaxing it
+          later is compatible, tightening it would not be.
+        - an `entry_id` that is not on the main conversation's path.
+        - a cut that falls INSIDE a turn bracket, tested by deriving
+          `open_turn_index` over the resulting prefix. A prefix ending
+          mid-bracket would carry an `AssistantMessage` whose `ToolExecution`
+          nodes were dropped, which projects as a `tool_use` with no
+          correlated result — a protocol violation every provider rejects. The
+          derivation is reused rather than reimplemented as a `TurnStart` test,
+          so a trailing queued `UserMessage` (outside any bracket) is correctly
+          droppable while a mid-turn cut is correctly refused.
+
+        Rewinding to the current leaf is a NO-OP: nothing is dropped, no
+        successor is installed, and the current conversation is returned.
+
+        Two consequences, documented rather than coded around:
+
+        - a `ChildConversation` in the dropped span leaves its subagent
+          conversation in the catalog. Nothing drives it again —
+          `_restart_unresolved_children` reads links off the OPEN TURN of the
+          current path, and the rewound path has neither — so it is inert
+          history, exactly like every other archived row.
+        - usage records are untouched. `AgentSession.usages` is keyed by
+          conversation and the archived one keeps its rows, so a session total
+          summed across the catalog still reports what was really spent.
+          Undoing a turn does not refund it, and that is the same answer
+          compaction already gives."""
+        main = self.main_conversation_id
+        conversation = self.ledger.conversation(main)
+        nodes = conversation.nodes
+        if self._runs.get(main) is not None:
+            raise AgentError(
+                f"cannot rewind conversation {main!r} while a run is active on it; finish or finalize it first"
+            )
+        if self.ledger.open_turn_index(main) is not None:
+            raise AgentError(f"rewind_to requires a closed turn (status={self.status.value}); cancel and flush first.")
+        if entry_id is None:
+            cut = 0
+        else:
+            try:
+                cut = nodes.index(entry_id) + 1
+            except ValueError:
+                raise AgentError(
+                    f"cannot rewind to entry {entry_id!r}: it is not on conversation {main!r}'s path."
+                ) from None
+        if cut == len(nodes):
+            return conversation  # already there
+        prefix = list(nodes[:cut])
+        if open_turn_index(prefix, self.session.entries) is not None:
+            raise AgentError(
+                f"cannot rewind to entry {entry_id!r}: the cut falls inside a "
+                f"turn bracket, which would leave an assistant message without "
+                f"the tool executions answering it."
+            )
+        return self.ledger.transition_conversation(
+            main,
+            updates=[],
+            created=[],
+            closing=None,
+            nodes=prefix,
+            ts=self.now_ms(),
+        )
 
     def pending_approvals(self, conversation_id: str | None = None) -> list[ToolExecution]:
         """The open turn's executions awaiting an out-of-band approval — those

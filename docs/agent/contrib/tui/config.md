@@ -142,6 +142,7 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     "file": "~/luca.log"           // default: <session dir>/logs/<session-id>.log
   },
   "streaming": true,
+  "checkpoints": true,           // snapshot the workspace before each turn (/undo, /rewind)
   "use_native_tools": true       // provider-native tools where the model has them
 }
 ```
@@ -194,6 +195,11 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   [`10-catalog.md`](../../../client/10-catalog.md). Anything under
   `providers.<name>.models` is added too, so configuring a model's options is
   enough to make it pickable and you never list it twice.
+- `checkpoints` (default true) snapshots the workspace before each turn into a
+  private git repository at `<session dir>/checkpoints.git`, which is what
+  `/undo` and `/rewind` restore. Nothing is written into the workspace and the
+  user's own `.git` is excluded; `.gitignore`d paths are not captured, so edits
+  to them are not undoable. No git binary switches the feature off on its own.
 - `use_native_tools` (default true) offers the provider's own tools where the
   ACTIVE model supports them — `apply_patch` + `shell` on OpenAI,
   `text_editor` + `bash` on Anthropic — and the generic shell tools they
@@ -319,7 +325,8 @@ stay out of any root handler your own program installed. See
 `--log-level`, `--log-file`,
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
 `--compact-threshold`, `--compact-keep-turns`,
-`--use-native` / `--no-use-native`.
+`--use-native` / `--no-use-native`,
+`--checkpoints` / `--no-checkpoints`.
 
 `--no-skills`, `--no-commands` and `--no-instructions` withhold skills,
 user-defined slash commands and the project's instruction files entirely,
