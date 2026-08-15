@@ -8,6 +8,7 @@ a save/load and its refusal to offer a checkpoint the current path can no
 longer reach.
 """
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -123,6 +124,19 @@ async def test_take_on_an_empty_conversation_anchors_at_none(service: Checkpoint
 
     assert checkpoint is not None
     assert checkpoint.anchor_entry_id is None
+
+
+@needs_git
+async def test_overlapping_takes_each_keep_their_row(service: CheckpointService):
+    """The index is a read-modify-write across an `await`, so two `take()`
+    calls overlapping on their snapshot must not lose one another."""
+    session = empty_session()
+
+    await asyncio.gather(service.take(session, "one"), service.take(session, "two"))
+
+    recorded = read_index(session).checkpoints
+    assert [c.label for c in recorded] == ["one", "two"]
+    assert len({c.commit for c in recorded}) == 2
 
 
 async def test_take_is_a_no_op_when_checkpoints_are_disabled(workspace: Path, tmp_path: Path):

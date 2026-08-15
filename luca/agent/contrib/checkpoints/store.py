@@ -38,6 +38,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +88,23 @@ class ShadowGitStore:
         # a way that makes the store untrustworthy. Never latches back.
         self._disabled = False
         self._ready = False
+        # A git repository has ONE index, and `git` guards it with its own
+        # `index.lock` — two concurrent `add`/`commit` runs make the loser fail
+        # rather than queue. `init` races even harder: the loser dies copying
+        # the template `info/exclude` and, without this, `_disable` would then
+        # switch checkpoints off for the whole session over a collision that
+        # only meant "someone else got here first".
+        #
+        # A `threading.Lock` and not an `asyncio.Lock` because these methods run
+        # inside `asyncio.to_thread` — real parallelism, where the
+        # single-threaded argument buys nothing (`tool_registry` rule 13d).
+        # Held across the subprocess deliberately: serializing snapshots of one
+        # repository is not a cost to avoid, it is what git requires.
+        #
+        # REENTRANT because the lock is taken per OPERATION, not per command —
+        # `add` then `commit` has to be one indivisible unit — and `snapshot` /
+        # `restore` both call `ensure` (and `restore` calls `has`) inside it.
+        self._git_lock = threading.RLock()
 
     # ── availability ─────────────────────────────────────────────────────────
 
@@ -143,6 +161,12 @@ class ShadowGitStore:
             return True
         if not self.available():
             return False
+        with self._git_lock:
+            return self._ensure_locked()
+
+    def _ensure_locked(self) -> bool:
+        if self._ready:  # another thread got here first
+            return True
         if not self.git_dir.exists():
             self.git_dir.parent.mkdir(parents=True, exist_ok=True)
             if not self._git("init", "--quiet").ok:
@@ -172,14 +196,15 @@ class ShadowGitStore:
         `--allow-empty` because a checkpoint is a POSITION, not a diff: two
         consecutive turns that changed nothing must still produce two distinct
         commits, or restoring the second would silently restore the first."""
-        if not self.ensure():
-            return None
-        if not self._git("add", "--all").ok:
-            return None
-        if not self._git("commit", "--allow-empty", "--quiet", "--message", label).ok:
-            return None
-        head = self._git("rev-parse", "HEAD")
-        return head.stdout or None
+        with self._git_lock:
+            if not self.ensure():
+                return None
+            if not self._git("add", "--all").ok:
+                return None
+            if not self._git("commit", "--allow-empty", "--quiet", "--message", label).ok:
+                return None
+            head = self._git("rev-parse", "HEAD")
+            return head.stdout or None
 
     def restore(self, commit: str) -> bool:
         """Put the workspace back to `commit`. True when it happened.
@@ -195,14 +220,15 @@ class ShadowGitStore:
         snapshot — including one a human made by hand. That is inherent to
         restoring a workspace to an earlier moment, and it is exactly the set
         `add -A` would have captured."""
-        if not self.ensure():
-            return False
-        if not self.has(commit):
-            logger.warning("checkpoint commit %s is not in the shadow repository", commit)
-            return False
-        if not self._git("read-tree", "-u", "--reset", commit).ok:
-            return False
-        return self._git("clean", "-fd", "--quiet").ok
+        with self._git_lock:
+            if not self.ensure():
+                return False
+            if not self.has(commit):
+                logger.warning("checkpoint commit %s is not in the shadow repository", commit)
+                return False
+            if not self._git("read-tree", "-u", "--reset", commit).ok:
+                return False
+            return self._git("clean", "-fd", "--quiet").ok
 
     def has(self, commit: str) -> bool:
         """Is `commit` a commit object in the shadow repo? Guards a restore

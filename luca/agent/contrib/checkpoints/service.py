@@ -55,6 +55,14 @@ class CheckpointService:
     def __init__(self, store: ShadowGitStore, *, enabled: bool = True) -> None:
         self.store = store
         self.enabled = enabled
+        # Guards the index READ-MODIFY-WRITE, and only that. `read_index`
+        # returns a fresh object parsed out of `extras`, so two `take()` calls
+        # overlapping across their `to_thread` snapshot would each append to
+        # their own copy and the second write would silently drop the first.
+        # The git call stays OUTSIDE it — holding a lock across a slow await
+        # would serialize snapshots for no reason. This is the shape
+        # `luca.agent.core.tool_registry`'s rule 13c prescribes.
+        self._index_lock = asyncio.Lock()
 
     @property
     def available(self) -> bool:
@@ -86,9 +94,10 @@ class CheckpointService:
             created_at=_now_ms(),
             label=label[:LABEL_LENGTH],
         )
-        index = read_index(session)
-        index.checkpoints.append(checkpoint)
-        write_index(session, index)
+        async with self._index_lock:
+            index = read_index(session)
+            index.checkpoints.append(checkpoint)
+            write_index(session, index)
         return checkpoint
 
     async def restore(self, runner: AgentSessionRunner, checkpoint: Checkpoint) -> bool:

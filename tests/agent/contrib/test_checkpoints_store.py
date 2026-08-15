@@ -9,6 +9,7 @@ store itself degrades under.
 """
 
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,23 @@ def test_nothing_is_written_into_the_workspace(store: ShadowGitStore, workspace:
     store.snapshot("before")
 
     assert sorted(p.name for p in workspace.iterdir()) == ["kept.py"]
+
+
+def test_concurrent_snapshots_all_succeed(store: ShadowGitStore, workspace: Path):
+    """Every operation runs inside `asyncio.to_thread`, so two of them really
+    do land on two OS threads. A git repository has one index and one init:
+    without the store's lock the losers fail, and a failed `init` would latch
+    the whole feature off for the session."""
+    commits: list[str | None] = []
+    threads = [threading.Thread(target=lambda i=i: commits.append(store.snapshot(f"turn {i}"))) for i in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert store.available() is True
+    assert None not in commits
+    assert len(set(commits)) == 6
 
 
 # ── degradation ───────────────────────────────────────────────────────────────

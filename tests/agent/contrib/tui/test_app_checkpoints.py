@@ -19,6 +19,7 @@ import pytest
 from luca.agent.contrib.checkpoints import read_index
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.blocks import NoticeLine
+from luca.agent.contrib.tui.shells import OverlayListView
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from tests.agent.scenarios import main_conversation
 
@@ -180,3 +181,33 @@ async def test_rewind_offers_one_row_per_checkpoint(tmp_path):
 
         # newest first, so the second turn's checkpoint leads
         assert [row.primary for row in app._menu_rows] == ["second", "first"]
+
+
+async def test_picking_an_earlier_checkpoint_drops_every_turn_after_it(tmp_path):
+    """The picker's own callback, and the case `/undo` cannot reach: restoring
+    a checkpoint two turns back rewinds BOTH of them in one cut."""
+    app = build_app(
+        tmp_path,
+        scripted(
+            faux_assistant_message([faux_text("One.")]),
+            faux_assistant_message([faux_text("Two.")]),
+        ),
+    )
+    workspace = tmp_path / "workspace"
+
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "first")
+        await wait_until(pilot, lambda: idle_again(app))
+        (workspace / "kept.py").write_text("after the first turn\n")
+        await submit(pilot, "second")
+        await wait_until(pilot, lambda: idle_again(app))
+        (workspace / "kept.py").write_text("after the second turn\n")
+
+        await submit(pilot, "/rewind")
+        await wait_until(pilot, lambda: bool(app.query(OverlayListView)))
+        view = app.query_one(OverlayListView)
+        view.post_message(OverlayListView.Committed(view, 1))  # "first" — the older one
+        await wait_until(pilot, lambda: main_conversation(app.runner.session).nodes == [])
+
+        assert (workspace / "kept.py").read_text() == "original\n"
+        assert app.runner.idle()
