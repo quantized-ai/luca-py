@@ -36,6 +36,7 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.widgets import TextArea
 
+from luca.agent.contrib.checkpoints import CheckpointService, ShadowGitStore
 from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
@@ -158,12 +159,21 @@ class AgentApp(LucaApp):
         extra_instructions: list[str] | None = None,
         resume: bool = False,
         read_limits: ReadLimits | None = None,
+        checkpoints: bool = True,
     ) -> None:
         super().__init__(theme=theme)
         self._read_limits = read_limits or ReadLimits()
         self._session_dir = Path(session_dir)
         self._streaming = streaming
         self._workspace = workspace
+        # One shadow repo per PROJECT, beside that project's sessions. The
+        # service outlives any single session (`/clear` and `/resume` swap the
+        # runner, not the workspace), so it is built here and not in
+        # `_build_runner`.
+        self.checkpoints = CheckpointService(
+            ShadowGitStore(workspace, self._session_dir / "checkpoints.git"),
+            enabled=checkpoints,
+        )
         self._provider = provider
         # `auth.json`, read once at boot. Kept as the whole map rather than as
         # one resolved key because `/model` can move the session to another
@@ -325,6 +335,14 @@ class AgentApp(LucaApp):
                 error=True,
             )
             return
+        # A CHECKPOINT PER TURN, taken BEFORE the message is appended so its
+        # anchor is the previous turn's last node and `/undo` drops this whole
+        # turn, message included. Only at a turn BOUNDARY: a mid-turn post
+        # (steering a live orchestration) belongs to the turn already running,
+        # and checkpointing it would offer a restore point inside a bracket
+        # that `rewind_to` refuses anyway.
+        if self.runner.idle():
+            await self.checkpoints.take(self.runner.session, label=text)
         try:
             self.runner.post_message(parts)
         except AgentError as exc:
@@ -1338,6 +1356,15 @@ class AgentApp(LucaApp):
         # runner — including the shell plugin's live bash processes.
         await self._close_plugins()
         self.runner, self.strategy, self.questions = self._build_runner(session)
+        await self._reset_view()
+
+    async def _reset_view(self) -> None:
+        """Throw the rendered transcript away and rebuild it from the session.
+
+        Split from `_reset_session` because a REWIND keeps the runner and only
+        moves which conversation is current: there is nothing to rebuild and no
+        plugin to close, but every widget on screen now describes a path that
+        is no longer the one being driven."""
         await self.clear_transcript()
         self._live_thinking.clear()
         self._live_text.clear()

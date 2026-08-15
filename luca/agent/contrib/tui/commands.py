@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, get_args
 
+from luca.agent.contrib.checkpoints import Checkpoint
+from luca.agent.core.exceptions import AgentError
 from luca.agent.core.models import LLMConfig, TextContent
 from luca.agent.core.runner import AgentSessionRunner
 from luca.client import catalog
@@ -262,6 +264,70 @@ async def _cmd_clear(app: AgentApp, arg: str) -> None:
     await app._notice(f"saved {old_id}, started fresh session {new.id}")
 
 
+async def _restore_checkpoint(app: AgentApp, checkpoint: Checkpoint) -> None:
+    """The shared tail of `/undo` and `/rewind`: restore, re-render, persist.
+
+    `_reset_view` and not `_reset_session`: a rewind keeps the runner and only
+    changes which conversation it drives, so there is nothing to rebuild — but
+    every widget on screen still describes the path that was just archived."""
+    try:
+        restored = await app.checkpoints.restore(app.runner, checkpoint)
+    except AgentError as exc:
+        await app._notice(str(exc), error=True)
+        return
+    if not restored:
+        await app._notice("could not restore that checkpoint", error=True)
+        return
+    await app._reset_view()
+    app._save()
+    label = f" to {checkpoint.label!r}" if checkpoint.label else ""
+    await app._notice(f"restored the workspace and rewound the conversation{label}")
+
+
+def _checkpoint_refusal(app: AgentApp) -> str | None:
+    """Why neither checkpoint command can run right now, or None."""
+    if not app.checkpoints.available:
+        return "checkpoints are off — no git binary, or --no-checkpoints"
+    if app._driving:
+        return "cancel the current turn first (esc)"
+    return None
+
+
+async def _cmd_undo(app: AgentApp, arg: str) -> None:
+    if refusal := _checkpoint_refusal(app):
+        await app._notice(refusal, error=True)
+        return
+    points = app.checkpoints.checkpoints(app.runner.session)
+    if not points:
+        await app._notice("nothing to undo", error=True)
+        return
+    await _restore_checkpoint(app, points[0])
+
+
+async def _cmd_rewind(app: AgentApp, arg: str) -> None:
+    if refusal := _checkpoint_refusal(app):
+        await app._notice(refusal, error=True)
+        return
+    points = app.checkpoints.checkpoints(app.runner.session)
+    if not points:
+        await app._notice("no checkpoints in this session", error=True)
+        return
+
+    async def picked(index: int) -> None:
+        await app._restore_composer()
+        await _restore_checkpoint(app, points[index])
+
+    now = datetime.now()
+    rows = [
+        vm.OverlayRow(
+            primary=point.label or "(the start of the session)",
+            secondary=fmt_when(datetime.fromtimestamp(point.created_at / 1000), now) if point.created_at else None,
+        )
+        for point in points
+    ]
+    await app.open_menu(rows, picked, column=44)
+
+
 async def _cmd_sessions(app: AgentApp, arg: str) -> None:
     session = app.runner.session
     if session.conversations[session.main_conversation_id].nodes:
@@ -318,6 +384,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("reasoning", "[level]", "pick or set the reasoning level", _cmd_reasoning),
     SlashCommand("theme", "", "choose the color theme", _cmd_theme),
     SlashCommand("compact", "", "summarize the history and continue", _cmd_compact),
+    SlashCommand("undo", "", "revert the last turn's edits and rewind", _cmd_undo),
+    SlashCommand("rewind", "", "pick an earlier checkpoint to restore", _cmd_rewind),
     SlashCommand("resume", "", "switch to another session in this project", _cmd_sessions),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_clear),
     SlashCommand("help", "", "show every command", _cmd_help),

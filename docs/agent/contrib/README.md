@@ -28,6 +28,7 @@ from luca.agent.contrib.tools import Tool
 | [`skills/`](skills/README.md) | `SKILL.md` instruction sets discovered from the Claude/Agent locations + `SkillsPlugin` — name and description in the prompt, body loaded on demand |
 | [`prompts/`](prompts/README.md) | `SystemPromptPlugin` (a base prompt picked for the model family, plus an environment block) and `InstructionsPlugin` (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`) |
 | [`simple_context_manager/`](simple_context_manager/README.md) | `SummarizingContextManager` — a ready-made compacting `ContextManager` (the context gauge + an LLM summary), with a `keep_turns` knob |
+| [`checkpoints/`](checkpoints/README.md) | Workspace snapshots bound to conversation positions — `/undo` and `/rewind`, git-backed, built on [`15-rewind.md`](../15-rewind.md) |
 | `memory` | An in-memory scratchpad + todo list packaged as `MemoryPlugin` — documented in [`09-plugins.md`](../09-plugins.md) |
 
 Next: [`tools/README.md`](tools/README.md).

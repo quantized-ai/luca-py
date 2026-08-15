@@ -718,6 +718,19 @@
       "default": null,
       "title": "Streaming"
     },
+    "checkpoints": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Snapshot the workspace before each turn so /undo and /rewind can restore it. Needs a git binary. Defaults to true.",
+      "title": "Checkpoints"
+    },
     "use_native_tools": {
       "anyOf": [
         {

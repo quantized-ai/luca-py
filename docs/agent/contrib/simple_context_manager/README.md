@@ -91,4 +91,4 @@ utilization, colored toward red as it nears the threshold.
 | `--compact-threshold F` | auto-compact at this utilization fraction (default 0.8) |
 | `--compact-keep-turns N` | keep the last N exchanges verbatim (0 = summary only) |
 
-Next: back to the [contrib index](../README.md).
+Next: [`checkpoints/README.md`](../checkpoints/README.md).

@@ -44,6 +44,9 @@ addopts = [
     "--strict-config",
 ]
 asyncio_mode = "auto"
+markers = [
+    "checkpoints: a TUI test that needs the real checkpoint store (runs git)",
+]
 filterwarnings = [
     "error",
     "ignore:The frame locals reference is no longer cached.*:DeprecationWarning",
