@@ -230,8 +230,8 @@ def test_the_palette_filters_and_counts():
     overlay = SCREENS["palette"](scene(query="se")).overlay
     assert (overlay.query, overlay.counter, [row.primary for row in overlay.rows]) == (
         "se",
-        "8 of 16",
-        ["/skill", "/session", "/context", "/settings", "/clear", "/reasoning", "/theme", "/resume"],
+        "9 of 17",
+        ["/skill", "/session", "/context", "/settings", "/clear", "/reasoning", "/theme", "/resume", "/mcp"],
     )
 
 

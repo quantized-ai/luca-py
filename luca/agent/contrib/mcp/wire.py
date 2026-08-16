@@ -70,6 +70,11 @@ CLIENT_CAPABILITIES: Final[dict[str, Any]] = {}
 PREFERRED_MODERN_VERSION: Final = LATEST_MODERN_VERSION
 PREFERRED_HANDSHAKE_VERSION: Final = LATEST_HANDSHAKE_VERSION
 
+# Re-exported so the layers above negotiate against one list and never import
+# `mcp_types` themselves.
+MODERN_VERSIONS: Final = MODERN_PROTOCOL_VERSIONS
+HANDSHAKE_VERSIONS: Final = HANDSHAKE_PROTOCOL_VERSIONS
+
 
 class Era(str, Enum):
     """Which shape of the protocol a server speaks.

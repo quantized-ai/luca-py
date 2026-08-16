@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import mcp_types
 
-from luca.agent.contrib.mcp.errors import McpError, McpServerGone
 from luca.agent.contrib.mcp.mapping import (
     approval_context,
     spec_identity,
     to_execution_result,
-    to_tool_execution_error,
     to_tool_spec,
     wire_name,
 )
@@ -20,7 +18,6 @@ from luca.agent.core import (
     ImageContent,
     MediaBase64,
     TextContent,
-    ToolExecutionError,
     ToolKind,
     ToolSpec,
 )
@@ -222,30 +219,6 @@ def test_a_tool_reported_error_completes_with_the_flag_set():
 
 def test_result_meta_is_kept_under_its_own_key():
     assert to_execution_result(result(_meta={"traceparent": "00-x"})).metadata == {"mcp_meta": {"traceparent": "00-x"}}
-
-
-def test_a_jsonrpc_error_keeps_its_code_and_data():
-    assert to_tool_execution_error(McpError(-32602, "bad arg", {"field": "q"})) == ToolExecutionError(
-        error_type="McpError",
-        error_message="bad arg",
-        details={"code": -32602, "data": {"field": "q"}},
-    )
-
-
-def test_a_dead_connection_maps_to_its_own_error_type():
-    assert to_tool_execution_error(McpServerGone("the server restarted mid-call")) == ToolExecutionError(
-        error_type="McpServerGone",
-        error_message="the server restarted mid-call",
-        details={},
-    )
-
-
-def test_an_unexpected_exception_keeps_its_class_name():
-    assert to_tool_execution_error(RuntimeError("boom")) == ToolExecutionError(
-        error_type="RuntimeError",
-        error_message="boom",
-        details={},
-    )
 
 
 def test_the_approval_context_offers_this_tool_and_the_whole_server():

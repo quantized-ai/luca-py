@@ -26,6 +26,7 @@ from luca.agent.contrib.tools import Tool
 | [`tui/`](tui/README.md) | The Textual terminal UI, built as a design system — declarative screen states, a fixture gallery, snapshot tests; the runnable demo behind `main.py` |
 | [`subagents/`](subagents/README.md) | The two subagent tools + `SubagentsPlugin` — parallel subagents, gated by depth and budget ([`13-subagents.md`](../13-subagents.md)) |
 | [`skills/`](skills/README.md) | `SKILL.md` instruction sets discovered from the Claude/Agent locations + `SkillsPlugin` — name and description in the prompt, body loaded on demand |
+| [`mcp/`](mcp/README.md) | External MCP servers and their tools — a first-party client over stdio and Streamable HTTP, both protocol eras, a durable tool catalog, and browser OAuth |
 | [`prompts/`](prompts/README.md) | `SystemPromptPlugin` (a base prompt picked for the model family, plus an environment block) and `InstructionsPlugin` (`LUCA.md` / `AGENTS.md` / `CLAUDE.md`) |
 | [`simple_context_manager/`](simple_context_manager/README.md) | `SummarizingContextManager` — a ready-made compacting `ContextManager` (the context gauge + an LLM summary), with a `keep_turns` knob |
 | [`checkpoints/`](checkpoints/README.md) | Workspace snapshots bound to conversation positions — `/undo` and `/rewind`, git-backed, built on [`15-rewind.md`](../15-rewind.md) |

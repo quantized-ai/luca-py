@@ -142,6 +142,18 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
     "file": "~/luca.log"           // default: <session dir>/logs/<session-id>.log
   },
   "streaming": true,
+  "mcp": {                       // external MCP servers; see docs/agent/contrib/mcp/
+    "enabled": true,
+    "servers": {
+      // either `command` (stdio) or `url` (Streamable HTTP), never both.
+      // `env` and `headers` values may reference an exported ${VAR}.
+      "files":  { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+      "github": { "url": "https://api.githubcopilot.com/mcp/",
+                  "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" } },
+      "linear": { "url": "https://mcp.linear.app/mcp", "oauth": true,
+                  "call_timeout_in_ms": 60000 }
+    }
+  },
   "checkpoints": true,           // snapshot the workspace before each turn (/undo, /rewind)
   "use_native_tools": true       // provider-native tools where the model has them
 }
@@ -326,7 +338,8 @@ stay out of any root handler your own program installed. See
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
 `--compact-threshold`, `--compact-keep-turns`,
 `--use-native` / `--no-use-native`,
-`--checkpoints` / `--no-checkpoints`.
+`--checkpoints` / `--no-checkpoints`,
+`--mcp` / `--no-mcp`.
 
 `--no-skills`, `--no-commands` and `--no-instructions` withhold skills,
 user-defined slash commands and the project's instruction files entirely,

@@ -40,12 +40,9 @@ from luca.agent.core import (
     MediaBase64,
     MediaURL,
     TextContent,
-    ToolExecutionError,
     ToolKind,
     ToolSpec,
 )
-
-from .errors import McpError, McpProtocolError, McpServerGone
 
 PREFIX: Final = "mcp"
 SEPARATOR: Final = "__"
@@ -226,30 +223,6 @@ def resource_link_as_file(block: mcp_types.ResourceLink) -> FileContent:
 def _basename(uri: str) -> str | None:
     tail = uri.rstrip("/").rsplit("/", 1)[-1]
     return tail or None
-
-
-def to_tool_execution_error(exc: Exception) -> ToolExecutionError:
-    """A failure from the MCP layer in the framework's own error vocabulary.
-
-    `code` and `data` are preserved under `details` so an application can react
-    to a specific JSON-RPC code without parsing the message text.
-    """
-    match exc:
-        case McpError():
-            return ToolExecutionError(
-                error_type="McpError",
-                error_message=exc.message,
-                details={"code": exc.code, "data": exc.data},
-            )
-        case McpServerGone():
-            return ToolExecutionError(
-                error_type="McpServerGone",
-                error_message=str(exc) or "The MCP server connection closed while the call was in flight.",
-                details={},
-            )
-        case McpProtocolError():
-            return ToolExecutionError(error_type="McpProtocolError", error_message=str(exc), details={})
-    return ToolExecutionError(error_type=type(exc).__name__, error_message=str(exc) or type(exc).__name__, details={})
 
 
 def approval_context(label: str, tool_name: str) -> dict:

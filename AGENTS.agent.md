@@ -772,7 +772,8 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
 | `tests/agent/contrib/test_skills.py` | Self-scoped contrib tests: frontmatter parsing (incl. the `>` / `\|` block scalars real skills use), the skip-don't-raise rules, location precedence, the `skill` tool, the plugin surface — no runner |
 | `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
-| `tests/agent/contrib/mcp/` | Self-scoped contrib tests for the MCP client's pure layers: the `luca.json` block (incl. the cross-file merge that produces a two-transport server), the three server hashes, the base64 sentinel and `x-mcp-header` rules, the SSE decoder across every chunking of one stream, JSON-RPC framing per protocol era, and the wire→core mapping — no server, no sockets, no runner |
+| `tests/agent/contrib/mcp/` | Self-scoped contrib tests for the MCP client: the pure layers (the `luca.json` block incl. the cross-file merge that produces a two-transport server, the three server hashes, the base64 sentinel and `x-mcp-header` rules, the SSE decoder across every chunking of one stream, JSON-RPC framing per era, the wire→core mapping), the connection and service against a real stdio fixture (`server_fixture.py`, scriptable via argv), Streamable HTTP over `httpx.MockTransport`, and OAuth — no runner |
+| `tests/agent/contrib/tui/test_mcp.py` | The TUI half: the service is app-scoped, so `/clear` keeps its connections, catalog and tokens, and `_close_plugins` does not close them |
 ## When in doubt
 
 | Question | Go to |

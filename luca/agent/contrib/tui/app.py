@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -87,6 +88,7 @@ from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .format import HINTS, home_path, inline_paths, question_hints_for, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
+from .mcp_service import build_mcp_service
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
 from .prompt_files import ReadLimits, get_model_info, parse_prompt
@@ -121,6 +123,8 @@ from .shells import (
 )
 from .usage import status_counter
 from .wiring import build_runner
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["AgentApp", "DEFAULT_THEME"]
 
@@ -160,6 +164,8 @@ class AgentApp(LucaApp):
         resume: bool = False,
         read_limits: ReadLimits | None = None,
         checkpoints: bool = True,
+        mcp: bool = True,
+        mcp_settings=None,
     ) -> None:
         super().__init__(theme=theme)
         self._read_limits = read_limits or ReadLimits()
@@ -174,6 +180,13 @@ class AgentApp(LucaApp):
             ShadowGitStore(workspace, self._session_dir / "checkpoints.git"),
             enabled=checkpoints,
         )
+        # Built here for the same reason, and it matters more: the MCP service
+        # owns live subprocesses, negotiated protocol state, the tool catalog
+        # and the OAuth tokens. `/clear`, `/new`, `/resume` and fork all go
+        # through `_reset_session`, and a service rebuilt there would
+        # re-discover every server and pop a browser mid-message. Constructing
+        # it costs one small file read; nothing connects until `on_mount`.
+        self.mcp = build_mcp_service(mcp_settings) if mcp else None
         self._provider = provider
         # `auth.json`, read once at boot. Kept as the whole map rather than as
         # one resolved key because `/model` can move the session to another
@@ -270,6 +283,10 @@ class AgentApp(LucaApp):
         self.set_hints(HINTS["idle"])
         self._refresh_status()
         self.run_worker(self._load_git_info(), group="git", exclusive=True)
+        # THE ONLY PLACE MCP CONNECTS. `_reset_session` deliberately does not,
+        # because the service outlives the runner it rebuilds.
+        if self.mcp is not None:
+            self.run_worker(self._connect_mcp(), group="mcp", exclusive=True)
         await self._replay_history()
         if self._resume:
             from .commands import dispatch
@@ -281,6 +298,33 @@ class AgentApp(LucaApp):
     async def _load_git_info(self) -> None:
         self._git = await asyncio.to_thread(read_git_info, self._workspace)
         self._refresh_status_if_mounted()
+
+    async def _connect_mcp(self) -> None:
+        """Connect to every configured MCP server and list its tools.
+
+        Reports failures rather than raising them: one unreachable server must
+        not cost the others their tools, and none of it may take the app down.
+        Like `_load_git_info`, this worker can outlive the frame, so the notice
+        goes through a mounted check.
+        """
+        try:
+            await self.mcp.start()
+        except Exception as exc:
+            logger.error("mcp startup failed", exc_info=exc)
+            await self._notice_if_mounted(f"MCP: {exc}", error=True)
+            return
+        connected = [status for status in self.mcp.status() if status.connected]
+        failed = [status for status in self.mcp.status() if status.error]
+        if connected:
+            summary = ", ".join(f"{status.label} ({status.tool_count} tools)" for status in connected)
+            await self._notice_if_mounted(f"MCP connected: {summary}")
+        for status in failed:
+            await self._notice_if_mounted(f"MCP server {status.label!r} failed: {status.error}", error=True)
+
+    async def _notice_if_mounted(self, text: str, *, error: bool = False) -> None:
+        """`_notice` for a worker that may resume after the frame is gone."""
+        with contextlib.suppress(NoMatches):
+            await self._notice(text, error=error)
 
     def _refresh_status_if_mounted(self) -> None:
         """`_refresh_status` for callers that may outlive the screen.
@@ -1284,6 +1328,11 @@ class AgentApp(LucaApp):
     async def _quit(self) -> None:
         self._save()
         await self._close_plugins()
+        # After the plugins, and only here. `_close_plugins` also runs from
+        # `_reset_session`; closing the MCP connections there would tear every
+        # server down on `/clear`, which is why the service is not a plugin.
+        if self.mcp is not None:
+            await self.mcp.aclose()
         self.exit()
 
     # ── session plumbing ──────────────────────────────────────────────────────
@@ -1329,6 +1378,7 @@ class AgentApp(LucaApp):
             instructions=self._instructions,
             extra_instructions=self._extra_instructions,
             questions_store=self._questions_store,
+            mcp=self.mcp,
         )
 
     def _save(self) -> None:
@@ -1352,6 +1402,9 @@ class AgentApp(LucaApp):
             self._start_drive()
 
     async def _reset_session(self, session: AgentSession) -> None:
+        # NOTE: the MCP service is deliberately NOT touched here. It outlives
+        # the runner, so `/clear` keeps its connections, its tool catalog and
+        # its OAuth tokens instead of re-discovering everything mid-session.
         # `/clear`, `/resume` and fork all land here, each discarding a whole
         # runner — including the shell plugin's live bash processes.
         await self._close_plugins()

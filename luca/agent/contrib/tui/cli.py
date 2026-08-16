@@ -11,6 +11,7 @@
     uv run python -m luca.agent.contrib.tui --resume <id> --fork
     uv run python -m luca.agent.contrib.tui --no-use-native     # no provider-native tools
     uv run python -m luca.agent.contrib.tui --no-checkpoints    # no per-turn snapshots
+    uv run python -m luca.agent.contrib.tui --no-mcp            # do not connect to MCP servers
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
     uv run python -m luca.agent.contrib.tui --config ./ci.json  # use THIS config
@@ -98,6 +99,7 @@ from .config import (
     resolve_runtime_config,
     validate_provider,
 )
+from .mcp_service import McpConfigError
 from .sessions import fork_session, load_session, resolve_session_directory
 from .wiring import build_faux_provider, default_model, faux_model
 
@@ -250,6 +252,13 @@ def arg_parser() -> argparse.ArgumentParser:
         help="Snapshot the workspace before each turn, which is what /undo and /rewind "
         "restore (--no-checkpoints turns it off). Snapshots go to a private git repository "
         "beside the session, never into the workspace.",
+    )
+    parser.add_argument(
+        "--mcp",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Connect to the MCP servers configured under `mcp.servers` in luca.json and offer "
+        "their tools to the model, namespaced mcp__<server>__<tool> (--no-mcp turns it off).",
     )
     parser.add_argument(
         "--no-instructions",
@@ -499,6 +508,8 @@ def main(argv: list[str] | None = None) -> None:
             model_options=partial(apply_model_options, config=config),
             subagents=args.subagents,
             checkpoints=pick(args.checkpoints, config.checkpoints, True),
+            mcp=pick(args.mcp, config.mcp.enabled, True),
+            mcp_settings=config.mcp,
             skills=args.skills,
             extra_skill_locations=config.extra_skill_locations or None,
             commands=args.commands,
@@ -506,7 +517,7 @@ def main(argv: list[str] | None = None) -> None:
             instructions=args.instructions,
             extra_instructions=config.instructions or None,
         )
-    except (LucaConfigError, InstructionsError) as exc:
+    except (LucaConfigError, InstructionsError, McpConfigError) as exc:
         sys.stderr.write(f"luca: {exc}\n")
         raise SystemExit(1) from exc
 

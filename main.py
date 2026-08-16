@@ -22,6 +22,7 @@ Usage:
     uv run python main.py --subagents-max-workers 3    # how many work at once
     uv run python main.py --no-use-native          # generic shell tools only
     uv run python main.py --no-checkpoints         # no per-turn workspace snapshots
+    uv run python main.py --no-mcp                 # do not connect to MCP servers
     uv run python main.py --no-streaming           # block-level rendering
     uv run python main.py --theme luca-dark        # the design theme (default)
     uv run python main.py --gallery                # browse the design-system catalog
