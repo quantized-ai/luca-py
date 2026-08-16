@@ -1,19 +1,11 @@
 """An incremental Server-Sent Events decoder. Pure, no I/O.
 
-A Streamable HTTP server answers a POST with either one JSON object or an SSE
-stream carrying progress and log notifications followed by the final response.
-So the client needs a decoder, and it needs one that survives arbitrary chunk
-boundaries: an event can be split anywhere, including between the CR and the LF
-of its own line terminator.
+Survives arbitrary chunk boundaries, including a split between the CR and the LF
+of one line terminator. Kept separate from the transport so that property is
+testable with no server, socket or clock.
 
-Keeping it byte-oriented and separate from the transport is what makes that
-testable. The same stream fed whole, fed one byte at a time, and fed in chunks
-that straddle every frame must produce the same events, and that is a test with
-no server, no socket and no clock in it.
-
-Deliberately NOT handled: `Last-Event-ID` resumption. The 2026-07-28 revision
-removed stream resumability, so `id:` is parsed and carried but never acted on;
-a broken stream loses the in-flight request and the caller re-issues it.
+`Last-Event-ID` resumption is deliberately not handled: the 2026-07-28 revision
+removed stream resumability, so `id:` is parsed and carried but never acted on.
 """
 
 from __future__ import annotations
@@ -34,11 +26,7 @@ class SseEvent:
 
 @dataclass
 class SseDecoder:
-    """Feed it bytes, take events out.
-
-    One instance decodes one response stream and is not reusable, which is the
-    same rule the buffer itself implies.
-    """
+    """Feed it bytes, take events out. One instance decodes one stream."""
 
     _buffer: bytes = b""
     _data: list[str] = field(default_factory=list)
@@ -58,10 +46,9 @@ class SseDecoder:
 
     def flush(self) -> list[SseEvent]:
         """Any event left buffered when the stream ends without a final blank
-        line. The SSE spec says to discard it; we dispatch it instead, because
-        a server that closes right after writing the final response is common
-        and throwing that response away would turn a completed tool call into a
-        transport failure."""
+        line. The SSE spec says to discard it; we dispatch it, because a server
+        that closes right after the final response is common and discarding it
+        would turn a completed tool call into a transport failure."""
         pending = self._dispatch()
         self._buffer = b""
         return [pending] if pending is not None else []
@@ -69,9 +56,8 @@ class SseDecoder:
     def _take_line(self) -> bytes | None:
         """One line, or None when the buffer does not hold a complete one.
 
-        Handles all three terminators. A trailing lone CR is held back rather
-        than treated as a terminator, because the LF that would make it a CRLF
-        may be the first byte of the next chunk.
+        A trailing lone CR is held back: the LF that would make it a CRLF may be
+        the first byte of the next chunk.
         """
         buffer = self._buffer
         newline = buffer.find(b"\n")
@@ -117,7 +103,7 @@ class SseDecoder:
 
     def _dispatch(self) -> SseEvent | None:
         """Emit the buffered frame and reset. A frame with no data lines is not
-        an event: that is what a stream of bare keep-alives decodes to."""
+        an event, which is what a stream of bare keep-alives decodes to."""
         if not self._data:
             self._name = ""
             return None

@@ -1,19 +1,14 @@
 """Where MCP OAuth tokens live.
 
-KEYED BY ISSUER, NOT BY SERVER LABEL. Two labels pointing at the same
-authorization server share one login, renaming a label in `luca.json` does not
-orphan a token, and the 2026-07-28 spec's rule that client credentials are
-bound to the issuer that minted them falls out of the key rather than having to
-be remembered.
+KEYED BY ISSUER, NOT BY SERVER LABEL, so two labels on one authorization server
+share a login, renaming a label does not orphan a token, and the spec's rule
+that credentials are bound to their issuer falls out of the key.
 
-A sibling of `auth.json` rather than a section in it. Different shape, and a
-very different rewrite cadence: `auth.json` is hand-edited and read-only to
-luca, while this file is rewritten on every token refresh.
+A sibling of `auth.json` rather than a section in it: different shape, and a
+very different cadence — `auth.json` is hand-edited and read-only to luca, this
+is rewritten on every refresh.
 
-Every read and write goes through `asyncio.to_thread`. Contract rule 8 is
-explicit that blocking synchronous work must, and the OAuth path runs inside
-the tool call: a synchronous `write_text` there stalls the whole loop,
-including the TUI's repaint, and cancellation cannot interrupt it.
+Every read and write goes through `asyncio.to_thread` (rule 8).
 """
 
 from __future__ import annotations
@@ -74,11 +69,8 @@ class IssuerRecord(BaseModel):
 
 
 class TokenStore:
-    """The token file, read and written off the event loop.
-
-    `path=None` makes it in-memory only, which is what tests and a read-only
-    home directory both get.
-    """
+    """The token file, read and written off the event loop. `path=None` makes it
+    in-memory only."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path
@@ -94,8 +86,7 @@ class TokenStore:
             records = await self._load()
             records[_key(issuer)] = record
             snapshot = {key: value.model_dump(mode="json", exclude_none=True) for key, value in records.items()}
-        # Outside the lock: the write is the slow part and holding a lock
-        # across it would serialize every server's refresh behind one disk.
+        # Outside the lock, or every server's refresh serializes behind one disk.
         await self._write(snapshot)
 
     async def _load(self) -> dict[str, IssuerRecord]:
@@ -135,8 +126,7 @@ class TokenStore:
             temporary.chmod(0o600)  # before it has the real name, so it is never briefly world-readable
             temporary.replace(self.path)
         except OSError as exc:
-            # An unwritable store means logging in again next run, not a broken
-            # session: the token in memory still works.
+            # Logging in again next run, not a broken session.
             logger.warning("could not write the mcp token store to %s", self.path, exc_info=exc)
 
 
@@ -147,9 +137,9 @@ def _key(issuer: str) -> str:
 class Registration(BaseModel):
     """A client registration request body, per RFC 7591.
 
-    `application_type: "native"` is required of MCP clients by the 2026-07-28
-    revision, and it is not cosmetic: without it an OpenID provider applies web
-    redirect rules and rejects the loopback URI this client has to use.
+    `application_type: "native"` is required of MCP clients and is not
+    cosmetic: without it an OpenID provider applies web redirect rules and
+    rejects the loopback URI this client has to use.
     """
 
     client_name: str = "luca"

@@ -1,27 +1,20 @@
 """MCP wire shapes to luca core shapes. Pure functions, no I/O, no state.
 
-Every decision that needs an opinion about the framework lives here, so the
-transport below stays about bytes and the registry above stays about the
-contract.
+TOOL NAMES are `mcp__<label>__<tool>`. The prefix is load-bearing:
+`ProxyToolRegistry` raises on duplicate names across registries and does not use
+`namespace` to disambiguate, so it is the only thing keeping two servers that
+both expose `search` apart. Sanitized and length-capped because providers reject
+the alternative.
 
-TOOL NAMES. A tool is advertised as `mcp__<label>__<tool>`. The prefix is not
-decoration: `ProxyToolRegistry` raises on duplicate names across registries and
-does NOT use `namespace` to disambiguate, so it is the only thing keeping two
-servers that both expose `search` apart. Names are sanitized and length-capped
-because providers reject the alternative.
+The name is never parsed back to find the server; the identity is written into
+`ToolSpec.metadata` instead, which rule 12 permits because it is a pure function
+of the tool definition, and which gives `prepare()` a resolution path needing no
+catalog. Parsing would break on a tool literally called `a__b`, and on any name
+the cap truncated.
 
-The name is never parsed back to find the server. The previous attempt split on
-`__`, which breaks for a server whose tool is literally called `a__b` and for
-any name the cap truncated. Instead the identity is written into
-`ToolSpec.metadata`, which contract rule 12 permits because it is a pure
-function of the tool definition, and which gives `prepare()` a resolution path
-that needs no catalog at all. That is what makes a cold cross-process resume
-dispatch correctly.
-
-CONTENT. Core carries text, image and file, and the projector raises on
-anything else, so audio and unrecognized embedded resources are flattened to
-text with the original block preserved in `ExecutionResult.metadata`. Nothing
-is silently dropped, and nothing that reaches the projector can crash it.
+CONTENT. Core carries text, image and file, and the projector raises on anything
+else, so audio and unrecognized embedded resources are flattened to text with
+the original block kept in `ExecutionResult.metadata`.
 """
 
 from __future__ import annotations
@@ -38,7 +31,6 @@ from luca.agent.core import (
     FileContent,
     ImageContent,
     MediaBase64,
-    MediaURL,
     TextContent,
     ToolKind,
     ToolSpec,
@@ -57,10 +49,8 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 def wire_name(label: str, tool_name: str) -> str:
     """The name the model sees for one server's tool.
 
-    When the composed name is too long the TOOL segment is truncated and a
-    digest of the full name is appended, so two long names that share a prefix
-    stay distinct. The digest covers the untruncated input, which is what makes
-    the mapping injective in practice.
+    Over the cap, the tool segment is truncated and a digest of the UNTRUNCATED
+    name appended, so two long names sharing a prefix stay distinct.
     """
     composed = f"{PREFIX}{SEPARATOR}{_UNSAFE.sub('_', label)}{SEPARATOR}{_UNSAFE.sub('_', tool_name)}"
     if len(composed) <= MAX_NAME_LENGTH:
@@ -72,15 +62,12 @@ def wire_name(label: str, tool_name: str) -> str:
 def to_tool_spec(label: str, tool: mcp_types.Tool, *, timeout_in_ms: int | None = None) -> ToolSpec:
     """One MCP tool as a `ToolSpec`.
 
-    `tool_kind` stays `OTHER` on purpose. Mapping `annotations.readOnlyHint` to
+    `tool_kind` stays `OTHER`: mapping `annotations.readOnlyHint` to
     `ToolKind.READ` would let a `tool_kind: read` allow-rule auto-approve a
-    remote tool on the server's own unverified claim, so the annotations are
-    carried for display and kept away from the decision.
+    remote tool on the server's own unverified claim.
 
-    Everything in `metadata` is a pure function of the tool definition, per
-    contract rule 12. Nothing that varies per call or per listing goes in it:
-    the spec is hashed into `session.tool_specs`, so a volatile field would
-    mint a fresh stored row on every single call.
+    Nothing volatile goes in `metadata` (rule 12) — the spec is hashed into
+    `session.tool_specs`, so a per-call field would mint a row every call.
     """
     annotations = tool.annotations
     return ToolSpec(
@@ -96,8 +83,7 @@ def to_tool_spec(label: str, tool: mcp_types.Tool, *, timeout_in_ms: int | None 
             "mcp": {
                 "server": label,
                 "tool": tool.name,
-                # by_alias, so what is stored is the wire shape the server sent
-                # rather than a luca-invented spelling of it.
+                # by_alias: store the wire shape the server sent.
                 "annotations": annotations.model_dump(mode="json", by_alias=True, exclude_none=True)
                 if annotations
                 else {},
@@ -108,8 +94,7 @@ def to_tool_spec(label: str, tool: mcp_types.Tool, *, timeout_in_ms: int | None 
 
 def spec_identity(spec: ToolSpec) -> tuple[str, str] | None:
     """The (server label, remote tool name) a spec came from, or None when the
-    spec is not ours. The inverse of what `to_tool_spec` wrote, and the reason
-    `prepare()` never has to parse a name."""
+    spec is not ours."""
     entry = (spec.metadata or {}).get("mcp")
     if not isinstance(entry, dict):
         return None
@@ -122,9 +107,8 @@ def spec_identity(spec: ToolSpec) -> tuple[str, str] | None:
 def to_execution_result(result: mcp_types.CallToolResult) -> ExecutionResult:
     """One `tools/call` result as an `ExecutionResult`.
 
-    `isError` becomes `is_error` and nothing more: the execution still
-    COMPLETES, because in this framework `is_error` is the tool's own verdict
-    on its work rather than a failure of the call.
+    `isError` becomes `is_error` and the execution still COMPLETES: it is the
+    tool's verdict on its own work, not a failure of the call.
     """
     content: list[Any] = []
     unmapped: list[dict] = []
@@ -136,15 +120,12 @@ def to_execution_result(result: mcp_types.CallToolResult) -> ExecutionResult:
 
     structured = result.structured_content
     if structured is not None and not isinstance(structured, dict):
-        # 2026-07-28 loosened `structuredContent` to any JSON value, but
-        # `ExecutionResult.structured_content` is a dict. Wrapping keeps the
-        # payload rather than discarding it.
+        # 2026-07-28 allows any JSON value; the core field is a dict.
         structured = {"result": structured}
 
     if not content:
-        # A result with no content blocks shows the model nothing. When there
-        # is structured output, render it; otherwise an empty string still
-        # beats a content list the projector would have to special-case.
+        # No content blocks shows the model nothing, so render the structured
+        # output when there is any.
         text = json.dumps(structured, separators=(",", ":")) if structured is not None else ""
         content = [TextContent(text=text)]
 
@@ -170,8 +151,7 @@ def _content_block(block: mcp_types.ContentBlock) -> tuple[Any, dict | None]:
         case mcp_types.ImageContent():
             return ImageContent(source=MediaBase64(data=block.data, media_type=block.mime_type)), None
         case mcp_types.AudioContent():
-            # Core has no audio part and the projector raises on anything it
-            # does not know, so this is described rather than carried.
+            # Core has no audio part, so describe rather than carry.
             return (
                 TextContent(text=f"[audio content, {block.mime_type}, not rendered]"),
                 block.model_dump(mode="json", by_alias=True, exclude_none=True),
@@ -190,13 +170,8 @@ def _content_block(block: mcp_types.ContentBlock) -> tuple[Any, dict | None]:
 
 
 def _embedded(block: mcp_types.EmbeddedResource) -> tuple[Any, dict | None]:
-    """An embedded resource, mapped by what it actually holds.
-
-    A PDF becomes a real `FileContent`, because luca has a file part and models
-    that read documents will take it. An image blob becomes an image. Anything
-    else keeps its bytes in metadata and shows the model a description, since
-    inventing a media type it cannot read helps nobody.
-    """
+    """An embedded resource, mapped by what it actually holds. A PDF becomes a
+    real `FileContent`; anything unreadable keeps its bytes in metadata."""
     resource = block.resource
     media_type = resource.mime_type or ""
     if isinstance(resource, mcp_types.TextResourceContents):
@@ -213,13 +188,6 @@ def _embedded(block: mcp_types.EmbeddedResource) -> tuple[Any, dict | None]:
     )
 
 
-def resource_link_as_file(block: mcp_types.ResourceLink) -> FileContent:
-    """A resource link as a file part, for the callers that can fetch a URL.
-    Kept separate from `_content_block` because a tool result must not smuggle
-    a remote URL into the model's context as if it were content."""
-    return FileContent(source=MediaURL(url=block.uri, media_type=block.mime_type), name=block.name)
-
-
 def _basename(uri: str) -> str | None:
     tail = uri.rstrip("/").rsplit("/", 1)[-1]
     return tail or None
@@ -228,14 +196,10 @@ def _basename(uri: str) -> str | None:
 def approval_context(label: str, tool_name: str) -> dict:
     """What the shared `PermissionStrategy` decides on for one MCP call.
 
-    Uses the existing `(permission, resource)` vocabulary rather than inventing
-    a per-server trust knob, which means today's `permissions.rules` block
-    already expresses `{"permission": "mcp", "resource": "github/*"}` with the
-    glob semantics it already has, and "always allow" from the prompt writes
-    the same shape back.
-
-    Built as plain dicts so this module stays importable without the
-    `resource_permissions` package; the shape is exactly what
+    Reuses the existing `(permission, resource)` vocabulary, so
+    `permissions.rules` already expresses `{"permission": "mcp", "resource":
+    "github/*"}` with no new schema. Plain dicts, so this module stays
+    importable without `resource_permissions`; the shape is exactly what
     `PermissionRequest.model_dump()` produces.
     """
     resource = f"{label}/{tool_name}"

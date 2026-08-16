@@ -1,19 +1,4 @@
-"""Errors raised by the MCP client, and the JSON-RPC codes worth naming.
-
-The code table matters for one decision in particular. Per the 2026-07-28
-transport spec, a client that supports both protocol eras probes with
-`server/discover` and reads the answer three ways: a `DiscoverResult` means the
-server is modern; a recognized MODERN error means the server is modern but
-disagrees about the version; anything else means the server is legacy and the
-client falls back to the `initialize` handshake.
-
-The spec is explicit that the fallback "MUST NOT be keyed to one specific error
-code", because legacy servers answer an unknown pre-`initialize` request with
-whatever their implementation happens to return. So the discriminator here is
-`is_modern_protocol_error`, a membership test against the codes the spec
-reserves, and every code outside that set is treated as evidence of a legacy
-server rather than as a protocol failure.
-"""
+"""Errors raised by the MCP client, and the JSON-RPC codes worth naming."""
 
 from __future__ import annotations
 
@@ -37,22 +22,16 @@ INVALID_PARAMS: Final = -32602
 
 
 def is_modern_protocol_error(code: int) -> bool:
-    """Whether this error code proves the peer speaks a modern protocol.
+    """Whether this code proves the peer speaks a modern protocol.
 
-    Only the spec-reserved range counts. `-32601` in particular does NOT: it is
-    the most common answer a legacy server gives to `server/discover`, and
-    treating it as modern would strand every pre-2026 server.
+    Only the spec-reserved range counts. `-32601` does NOT: it is the most
+    common answer a legacy server gives to `server/discover`.
     """
     return code in MODERN_PROTOCOL_ERRORS
 
 
 class McpError(Exception):
-    """A JSON-RPC error response from a server.
-
-    `code` and `data` are carried separately from the message because the
-    registry copies them into `ToolExecutionError.details`, where an
-    application can act on the code without parsing prose.
-    """
+    """A JSON-RPC error response from a server."""
 
     def __init__(self, code: int, message: str, data: object = None) -> None:
         super().__init__(message)
@@ -73,11 +52,8 @@ class McpProtocolError(Exception):
 class McpServerGone(Exception):
     """The connection died with the request in flight.
 
-    Raised into every pending caller when a stdio subprocess exits or an HTTP
-    response stream breaks. The 2026-07-28 spec makes this recoverable for
-    idempotent methods (the protocol is stateless, so a restarted server is
-    indistinguishable from the original), which is why it is its own type
-    rather than a generic transport failure.
+    Its own type because it is RECOVERABLE for idempotent methods: the protocol
+    is stateless, so a restarted server is indistinguishable from the original.
     """
 
 
@@ -91,5 +67,4 @@ class McpUnsupportedVersion(Exception):
 
 class McpAuthRequired(Exception):
     """The server answered 401, or refused a token that cannot be refreshed
-    without a human. The caller either runs the single-flight refresh and
-    retries once, or surfaces "log in" to the user."""
+    without a human."""

@@ -1,24 +1,14 @@
 """McpService — everything MCP owns that outlives a session.
 
-This is the structural answer to the review finding that `/new` skipped the
-startup notice and popped an OAuth browser mid-message. The mechanism behind
-that bug was ownership: the connections lived on a plugin, `_reset_session`
-rebuilt the runner for `/clear`, `/new`, `/resume` and fork, and each rebuild
-produced a fresh plugin with empty state that re-discovered everything.
+One `ServerConnection` per configured server, the tool catalog, the refresh
+loop, one shared `httpx.AsyncClient` and the OAuth providers.
 
-The suggested fix was to spawn the same startup worker from `_reset_session`
-too. This does the other thing: the state moves somewhere a session reset
-cannot reach. The service is built once in `AgentApp.__init__`, beside
-`CheckpointService`, which has exactly the same reason to outlive a session.
-The registry and the plugin become stateless views over it, so `_reset_session`
-is left untouched and the bug has nowhere to come back from.
-
-What lives here: one `ServerConnection` per configured server, the tool
-catalog, the refresh loop, one shared `httpx.AsyncClient`, and the OAuth
-providers. All of it process-scoped and none of it per-conversation, which
-matters for registry contract rule 13a: the registry above holds only immutable
-configuration, so nothing it reads after an await can belong to another
-conversation.
+BUILT ONCE, by the application, beside `CheckpointService`. `/clear`, `/new`,
+`/resume` and fork all rebuild the runner through `_reset_session`; anything
+owned by a plugin would reconnect and re-run OAuth on each of them. The registry
+and plugin above are stateless views, which is also what satisfies contract rule
+13a — they hold nothing that could belong to another conversation after an
+await.
 """
 
 from __future__ import annotations
@@ -82,13 +72,8 @@ class McpService:
         self._first_listing: asyncio.Future | None = None
 
     def _build_auth(self, browser) -> dict[str, httpx.Auth]:
-        """One OAuth provider per server, built once and kept.
-
-        Built here rather than per operation, which is what the review asked
-        for: a provider per call re-read the token file and re-ran discovery
-        every time, and two of them could bind the same callback port or race
-        each other's refresh into a rotated-token dead end.
-        """
+        """One OAuth provider per server, built once and kept, so token state
+        and discovery are shared rather than redone per operation."""
         wanted = {
             label: server for label, server in self.servers.items() if isinstance(server, HttpServer) and server.oauth
         }
@@ -101,9 +86,7 @@ class McpService:
 
     @property
     def cold(self) -> bool:
-        """Nothing has ever been listed, so the model would see no MCP tools at
-        all. The application uses this to decide whether the very first turn is
-        worth a short wait."""
+        """Nothing has ever been listed, so the model would see no MCP tools."""
         return bool(self.servers) and self.catalog.cold
 
     def specs(self) -> list[ToolSpec]:
@@ -127,14 +110,9 @@ class McpService:
     async def start(self) -> None:
         """Connect to every server and list it, then keep the catalog fresh.
 
-        Driven from the TUI's mount worker. Never raises: one unreachable
-        server records its reason and leaves its siblings alone.
-
-        Single-flight, and awaited by everyone. A second caller arriving while
-        the first is still listing awaits the SAME work rather than returning
-        early, so `await start()` always means "started" — the alternative
-        makes a concurrent caller believe a listing finished when it has not,
-        which is a race the caller cannot see and cannot fix.
+        Never raises: one unreachable server records its reason and leaves its
+        siblings alone. Single-flight and awaited by everyone, so `await
+        start()` always means started, even for a caller that arrived second.
         """
         if self._starting is None:
             self._starting = asyncio.create_task(self._start())
@@ -154,9 +132,8 @@ class McpService:
         self._resolve_first_listing()
 
     async def _list(self, label: str) -> None:
-        """List one server. Records a failure rather than raising it: nothing
-        MCP does may crash a run, and one dead server must not cost its
-        siblings their tools."""
+        """List one server, recording a failure rather than raising it: one
+        dead server must not cost its siblings their tools."""
         connection = self._connections[label]
         try:
             tools, (ttl_ms, cache_scope) = await connection.list_tools()
@@ -177,10 +154,10 @@ class McpService:
         logger.info("mcp server=%s listed %d tools", label, self.catalog.tool_count(label))
 
     async def _refresh_loop(self) -> None:
-        """Sleep until the earliest slice goes stale, refresh it, repeat.
+        """Sleep until the earliest slice goes stale, refresh, repeat.
 
-        This is the "out of band" half of contract rule 3. Nothing in the tool
-        path ever waits on it.
+        The "out of band" half of contract rule 3; nothing in the tool path
+        waits on it.
         """
         try:
             while True:
@@ -200,12 +177,9 @@ class McpService:
     async def first_listing(self, timeout_ms: int) -> None:
         """Wait for the startup listing, bounded, only while genuinely cold.
 
-        The one place a wait is acceptable, and it is the APPLICATION's wait,
-        not the registry's: the tool path must never block (rule 3), but a user
-        who has just configured their first MCP server is better served by a
-        visible two-second pause than by a first turn where the tools silently
-        do not exist. Every later turn, and every turn of every later run,
-        reads the durable catalog and waits for nothing.
+        The APPLICATION's wait, not the registry's: the tool path may never
+        block (rule 3), but a first run is better served by a visible short
+        pause than by a turn where the tools silently do not exist.
         """
         if not self.cold:
             return
@@ -236,17 +210,16 @@ class McpService:
         connection = self._connections.get(label)
         if connection is None:
             raise McpServerGone(f"MCP server {label!r} is not configured.")
-        # `x-mcp-header` mirroring is required of clients, and the values stay
-        # in the body as well: a server MUST reject a mismatch between them.
+        # Mirrored into headers AND left in the body: a server must reject a
+        # mismatch between the two.
         extra = param_headers(input_schema, arguments) if input_schema else None
         result = await connection.call_tool(tool, arguments, timeout_ms=timeout_ms, extra_headers=extra)
         return to_execution_result(result)
 
     async def aclose(self) -> None:
-        """Shut every connection down. Called from the app's graceful paths.
+        """Shut every connection down, from the app's graceful paths only.
 
-        Not from `_reset_session`: `/clear` swaps the runner, not the servers,
-        and closing here is precisely the bug this design removes.
+        Never from `_reset_session`: `/clear` swaps the runner, not the servers.
         """
         refresher, self._refresher = self._refresher, None
         if refresher is not None:

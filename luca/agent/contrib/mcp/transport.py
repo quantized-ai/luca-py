@@ -1,36 +1,19 @@
 """The two ways to reach an MCP server: a subprocess, or an HTTP endpoint.
 
-Both expose the same three things — `request`, `notify`, `aclose` — so the
-protocol layer above never branches on transport. What differs is what a
-"connection" even is.
+Both expose `request`, `notify` and `aclose`, so the protocol layer above never
+branches on transport.
 
-STDIO is a long-lived subprocess sharing one bidirectional channel. Many
-requests may be in flight at once and are correlated by JSON-RPC id, so this
-class owns a reader task that resolves a future per id. Writes take a lock for
-the microseconds it takes to write and drain, and the response is awaited
-OUTSIDE it: holding a lock across a slow await would re-serialize every
-conversation behind the slowest call, which is exactly what registry contract
-rule 13c warns against.
+stdio is one long-lived subprocess sharing one channel: many requests may be in
+flight and are correlated by JSON-RPC id, so a reader task resolves a future per
+id. The write lock is held for the write and the drain only, never across the
+response wait (contract rule 13c). A crashed server is noticed by the reader
+hitting EOF; the next request spawns a fresh process, which the stateless
+protocol makes safe.
 
-The process is spawned lazily behind an already-connected check, the same shape
-`ShellSession` uses and the one rule 1 explicitly blesses. There is no
-supervisor task and no respawn loop: a crashed server is noticed by the reader
-hitting EOF, every pending caller is failed with `McpServerGone`, and the NEXT
-request spawns a fresh process. The 2026-07-28 spec is what makes that safe —
-"because the protocol is stateless, any in-flight requests are simply lost and
-the client can retry them against the fresh process". A floor between respawns
-keeps a server that dies instantly from spinning.
-
-HTTP has no process, so a "connection" is just state: the negotiated era, the
+HTTP has no process, so a connection is just state: the negotiated era, the
 legacy session id, and a borrowed reference to one shared `httpx.AsyncClient`.
-Every request is its own POST. The answer is either one JSON object or an SSE
-stream scoped to that request, carrying progress notifications before the final
-response. Cancelling closes the stream, which IS the cancellation signal in this
-revision, so nothing extra is sent.
-
-READING STDOUT. Lines are assembled here rather than with `StreamReader.
-readline()`, whose default 64 KiB limit would turn any large tool result into a
-crash. A tool that returns a file's contents blows past that routinely.
+Cancelling closes the response stream, which is itself the cancellation signal
+in this revision.
 """
 
 from __future__ import annotations
@@ -86,12 +69,8 @@ class StdioTransport:
         return self._process is not None and self._process.returncode is None
 
     async def request(self, frame: Mapping[str, Any], *, headers: Mapping[str, str] | None = None, timeout_s: float):
-        """Send a request and await its response.
-
-        `headers` is accepted and ignored: stdio carries all of its metadata in
-        the message body, and the signature is shared with the HTTP transport
-        so the layer above does not branch.
-        """
+        # `headers` is ignored: stdio carries its metadata in the message body.
+        # The signature is shared with HttpTransport so callers do not branch.
         del headers
         request_id = frame["id"]
         waiter = await self._write(frame, request_id=request_id)
@@ -99,9 +78,6 @@ class StdioTransport:
             async with asyncio.timeout(timeout_s):
                 return await waiter
         except (asyncio.CancelledError, TimeoutError):
-            # The peer is still working on it, so tell it to stop. Shielded and
-            # best-effort: a cancellation must not be delayed by a second write,
-            # and a dead server has nothing to tell.
             await self._cancel_remote(request_id)
             raise
         finally:
@@ -114,10 +90,8 @@ class StdioTransport:
     async def _write(self, frame: Mapping[str, Any], *, request_id: int | None = None) -> asyncio.Future | None:
         """Write one frame, registering its waiter if it expects an answer.
 
-        Registration happens inside the lock and AFTER the process is up, so a
-        spawn that tears down a dead predecessor cannot fail a waiter belonging
-        to the process it is about to start. Only the write is under the lock;
-        the answer is awaited by the caller with the lock released.
+        Registration is inside the lock and after the spawn, so tearing down a
+        dead predecessor cannot fail a waiter belonging to its successor.
         """
         async with self._lock:
             process = await self._ensure()
@@ -140,11 +114,7 @@ class StdioTransport:
             await asyncio.shield(self._write(frame))
 
     async def _ensure(self) -> asyncio.subprocess.Process:
-        """The live process, spawning one if there is none.
-
-        Idempotent and cheap when already connected, which is what makes it
-        safe to call from a re-callable `prepare()` closure (rule 1).
-        """
+        """The live process, spawning one if there is none."""
         if self.alive:
             return self._process
         loop = asyncio.get_running_loop()
@@ -178,11 +148,11 @@ class StdioTransport:
                 self._dispatch(line)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # a read failure is indistinguishable from a death
+        except Exception as exc:
             logger.debug("mcp server=%s reader stopped", self.server.label, exc_info=exc)
         finally:
-            # EOF or failure: nobody is coming. Fail every waiter rather than
-            # leaving callers to their timeouts.
+            # EOF: nobody is coming, so fail every waiter rather than leaving
+            # callers to their timeouts.
             self._fail_pending(McpServerGone(f"MCP server {self.server.label!r} exited."))
 
     def _dispatch(self, line: bytes) -> None:
@@ -191,8 +161,7 @@ class StdioTransport:
         try:
             message = wire.decode(line)
         except McpProtocolError as exc:
-            # One unreadable frame does not poison the channel; the request it
-            # belonged to (if any) will time out on its own.
+            # One unreadable frame does not poison the channel.
             logger.warning("mcp server=%s sent an unreadable frame", self.server.label, exc_info=exc)
             return
         if wire.is_notification(message):
@@ -206,9 +175,8 @@ class StdioTransport:
     async def _drain_stderr(self, process: asyncio.subprocess.Process) -> None:
         """Read stderr forever and log it.
 
-        Not optional. An undrained pipe fills its buffer and the server blocks
-        on its next write, which looks exactly like a hang. The spec also says
-        stderr output does not indicate an error, so this logs at debug.
+        Not optional: an undrained pipe fills and the server blocks on its next
+        write, which looks exactly like a hang.
         """
         with contextlib.suppress(Exception):
             async for line in _lines(process.stderr):
@@ -226,9 +194,8 @@ class StdioTransport:
     async def _teardown(self) -> None:
         """Close stdin, wait, then escalate — the spec's shutdown sequence.
 
-        Swap-then-act so a second call finds nothing to do, and no lock: a
-        caller shutting down must not queue behind a call with minutes left on
-        its timeout.
+        Swap-then-act so a second call finds nothing to do, and deliberately
+        unlocked: shutting down must not queue behind a long-running call.
         """
         process, self._process = self._process, None
         reader, self._reader = self._reader, None
@@ -248,8 +215,6 @@ class StdioTransport:
                 _kill_process_group(process)
                 await process.wait()
         if process is not None:
-            # Close the transports we own, or the suite's ResourceWarning-as-error
-            # turns a lingering pipe into a failed build.
             for stream in (process.stdout, process.stderr):
                 with contextlib.suppress(Exception):
                     stream.feed_eof()
@@ -261,9 +226,8 @@ class StdioTransport:
 class HttpTransport:
     """One MCP server behind a Streamable HTTP endpoint.
 
-    Holds no connection of its own: the `httpx.AsyncClient` is owned by the
-    service and shared by every HTTP server, so there is one pool and one
-    close path.
+    The `httpx.AsyncClient` is owned by the service and shared by every HTTP
+    server, so there is one pool and one close path.
     """
 
     def __init__(
@@ -278,8 +242,7 @@ class HttpTransport:
         self._client = client
         self._on_notification = on_notification
         self._auth = auth
-        # Only ever set on a handshake-era connection. The 2026 revision removed
-        # sessions, and a modern server is required to ignore the header.
+        # Handshake-era only; a modern server ignores it.
         self.session_id: str | None = None
         self.restarts = 0
 
@@ -337,11 +300,10 @@ class HttpTransport:
         return wire.decode(response.content)
 
     async def _read_stream(self, response: httpx.Response, request_id):
-        """Consume an SSE response stream until the frame answering this request.
+        """Consume the SSE stream until the frame answering this request.
 
-        Progress and log notifications arrive on the way and are handed to the
-        connection. A stream that ends without the response is a dead request:
-        this revision removed resumability, so there is nothing to reconnect to.
+        A stream that ends without it is a dead request: this revision removed
+        resumability, so there is nothing to reconnect to.
         """
         decoder = SseDecoder()
         async for chunk in response.aiter_bytes():
@@ -368,7 +330,7 @@ class HttpTransport:
         return message if getattr(message, "id", None) == request_id else None
 
     async def aclose(self) -> None:
-        """Nothing to close. The client belongs to the service, and this
+        """Nothing to close: the client belongs to the service, and this
         revision has no session to terminate."""
 
 
@@ -379,8 +341,7 @@ async def _lines(stream: asyncio.StreamReader) -> AsyncIterator[bytes]:
     """Newline-delimited frames, with no length limit.
 
     `StreamReader.readline()` caps a line at 64 KiB and raises past it, which
-    any tool returning a file's contents would trip. Assembling here removes
-    the cap; a `bytearray` keeps the appends amortized.
+    any tool returning a file's contents would trip.
     """
     buffer = bytearray()
     while chunk := await stream.read(READ_SIZE):

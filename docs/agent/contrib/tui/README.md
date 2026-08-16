@@ -296,6 +296,42 @@ Add roots with `extra_command_locations` in
 > Claude Code namespaces `commands/team/review.md` as `/team:review`; we do
 > not, so a nested file is not a command here.
 
+### 3.2 Tools from MCP servers
+
+Name a server under `mcp.servers` in [`luca.json`](config.md) and its tools join
+the model's tool set as `mcp__<server>__<tool>`, behind the same approval gate
+as everything else.
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "files":  { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+      "github": { "url": "https://api.githubcopilot.com/mcp/",
+                  "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" } },
+      "linear": { "url": "https://mcp.linear.app/mcp", "oauth": true }
+    }
+  }
+}
+```
+
+Servers connect in a worker at startup and a notice reports what came up.
+`/mcp` lists them, including any tool the client had to exclude and why;
+`/mcp login <server>` runs the browser flow for an `oauth` server; `--no-mcp`
+skips the lot.
+
+```
+MCP connected: files (14 tools), github (23 tools)
+```
+
+`${VAR}` in `env` and `headers` values is read from the exported environment, so
+a token stays out of a file you commit. Full reference:
+[`contrib/mcp/`](../mcp/README.md).
+
+> ⚠️ **Connections outlive the session.** `/clear`, `/new` and `/resume` swap
+> the runner, not the servers, so nothing reconnects and no browser opens
+> mid-session. Only quitting closes them.
+
 ## 4. The design system
 
 The design source of truth is the handoff in `design_handoff_luca_tui/` (the

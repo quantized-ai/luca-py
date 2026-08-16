@@ -1,31 +1,19 @@
 """The durable tool catalog, and the reason it is durable.
 
-Registry contract rule 3 names this exact case: "A registry fronting a remote
-tool server keeps a cached tool list refreshed out of band and does all of its
-network work inside the callable." So `get_tools` may not list. The previous
-attempt listed inside `get_tools` and was told so.
+Contract rule 3 forbids listing inside `get_tools`. An in-memory cache would
+obey that and still leave the model silently toolless on the first turn of every
+process, so the cache outlives the process instead: the only cold moment left is
+the first run after a server is configured.
 
-But the obvious alternative — an in-memory cache, empty at boot — means the
-model is silently toolless on the first turn of every process. That is worse
-than slow, because nothing reports it.
+WHAT INVALIDATES A SLICE:
 
-Making the cache DURABLE resolves both. A listing survives the process, so the
-only genuinely cold moment in a server's life is the first run after it is
-configured, and the application can make that one visible and bounded instead
-of silent. Every later turn, in every later run, reads a dict.
-
-WHAT INVALIDATES A SLICE, and why each one has to:
-
-- `definition_hash` differs: the command line or URL changed, so the old tool
-  list belongs to a different server and must not be served.
-- `credential_fingerprint` differs AND the server marked the listing
-  `cacheScope: "private"`: those tools were visible to somebody else's token.
-  Absent scope is treated as private, which is the conservative direction.
-- the TTL lapsed: refresh, but keep serving. Stale-while-revalidate is
-  deliberate — losing tools mid-conversation because a freshness hint expired
-  is worse than a slightly out-of-date description.
-
-The clock is injected so TTL behaviour is testable with no elapsed real time.
+- `definition_hash` differs: the command line or URL changed, so the tool list
+  belongs to a different server.
+- `credential_fingerprint` differs and the listing was `cacheScope: "private"`:
+  those tools were visible to somebody else's token. Absent scope counts as
+  private.
+- the TTL lapsed: refresh, but keep serving. Losing tools mid-conversation over
+  a lapsed freshness hint is worse than a stale description.
 """
 
 from __future__ import annotations
@@ -83,9 +71,8 @@ class ToolCatalog:
     def load(self, servers: dict[str, Server]) -> None:
         """Read the file and adopt whatever still applies.
 
-        Synchronous, once, at construction — one small file at boot, alongside
-        `auth.json` and `luca.json`. A missing or corrupt file is not an error;
-        it just means everything is cold.
+        Synchronous, once, at construction, like `auth.json`. A missing or
+        corrupt file just means everything is cold.
         """
         stored = self._read()
         for label, server in servers.items():
@@ -126,8 +113,8 @@ class ToolCatalog:
     ) -> None:
         """Replace one server's slice, atomically, and write the file.
 
-        The lock covers the swap only. Everything slow — the listing that
-        produced these tools, and the disk write — happens outside it.
+        The lock covers the swap only; the listing and the disk write are
+        outside it.
         """
         entry = {
             "definition_hash": server.definition_hash(),
@@ -145,11 +132,10 @@ class ToolCatalog:
     def _rebuild(self, label: str, server: Server) -> None:
         """Derive the specs for one slice from its stored tool definitions.
 
-        Re-derived rather than stored, so the specs are byte-identical across
-        runs and `ToolSpec.spec_id()` normalization holds. A tool whose
-        `x-mcp-header` annotations break the spec's constraints is EXCLUDED,
-        which the 2026-07-28 transport requires of clients, and the reason is
-        kept so `/mcp` can explain the absence.
+        Re-derived rather than stored, so specs stay byte-identical across runs
+        and `ToolSpec.spec_id()` normalization holds. A tool with invalid
+        `x-mcp-header` annotations is excluded, as the transport requires, and
+        the reason kept so `/mcp` can explain the absence.
         """
         specs: list[ToolSpec] = []
         rejected: dict[str, str] = {}
@@ -169,8 +155,8 @@ class ToolCatalog:
         self._rejected[label] = rejected
 
     def specs(self) -> list[ToolSpec]:
-        """Every cached tool. A plain read — no awaits, no I/O, which is what
-        makes it legal inside `get_tools` and `create_execution`."""
+        """Every cached tool. No awaits and no I/O, which is what makes it legal
+        inside `get_tools` and `create_execution`."""
         return [spec for label in sorted(self._specs) for spec in self._specs[label]]
 
     def spec(self, name: str) -> ToolSpec | None:
@@ -191,8 +177,7 @@ class ToolCatalog:
 
     @property
     def cold(self) -> bool:
-        """True when nothing has ever been listed. The application uses this to
-        decide whether the first turn is worth waiting for."""
+        """True when nothing has ever been listed."""
         return not self._slices
 
     def expires_at(self, label: str) -> int:
@@ -214,21 +199,14 @@ class ToolCatalog:
         return min(deadlines) if deadlines else None
 
     def invalidate(self, label: str) -> None:
-        """Mark one server due immediately. Called when a server says its tool
-        list changed, which on stdio arrives as a notification we already
-        read."""
+        """Mark one server due immediately, on a `toolsListChanged`."""
         entry = self._slices.get(label)
         if entry is not None:
             entry["fetched_at"] = 0
 
     async def _write(self) -> None:
         """Persist every slice, keyed by server IDENTITY rather than label, so
-        renaming a server in `luca.json` keeps its cached listing.
-
-        Off the event loop, per contract rule 8, and last in `put` so a
-        cancellation cannot leave memory and disk disagreeing about a slice
-        that was never installed.
-        """
+        renaming a server keeps its cached listing. Off the loop (rule 8)."""
         if self.path is None:
             return
         servers = {self._identities[label]: entry for label, entry in self._slices.items() if label in self._identities}
@@ -242,8 +220,7 @@ class ToolCatalog:
             temporary.replace(self.path)  # atomic, so a crash never leaves a half file
             self.path.chmod(0o600)
         except OSError as exc:
-            # A cache that cannot be written is a slower agent, not a broken
-            # one. Everything still works from memory for this process.
+            # An unwritable cache is a slower agent, not a broken one.
             logger.warning("could not write the mcp catalog to %s", self.path, exc_info=exc)
 
     def track(self, servers: dict[str, Server]) -> None:

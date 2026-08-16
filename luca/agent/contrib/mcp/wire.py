@@ -1,26 +1,16 @@
 """JSON-RPC framing for both MCP protocol eras, and result validation.
 
-This is the only module that imports `mcp-types`, so everything above it can be
-read and tested without the optional group installed. What we take from that
-package is narrow on purpose: the generated wire models and the per-version
-surface map, which together answer "is this a valid `tools/list` result for the
-version this server speaks". Everything about how a frame is BUILT lives here,
-because that is where the two eras differ and where our own decisions are.
+The only module that imports `mcp-types`, so everything above it can be read and
+tested without the optional group installed.
 
-THE TWO ERAS, IN ONE PARAGRAPH. Up to 2025-11-25 a connection began with an
-`initialize` handshake and every later request inherited the version agreed
-there; the request itself carried nothing about the protocol. From 2026-07-28
-there is no handshake and no session, so every request carries its own protocol
-version, client capabilities and client identity in `params._meta`. That is the
-whole difference at this layer, and it is why `request_frame` takes an era: the
-same method and params produce a different frame depending on which one the
-server answered the probe with.
+THE TWO ERAS. Up to 2025-11-25 a connection began with an `initialize`
+handshake and later requests carried nothing about the protocol. From 2026-07-28
+there is no handshake, so every request carries its own version, capabilities
+and identity in `params._meta`. That is the whole difference here, and why
+`request_frame` takes an era.
 
-Result VALIDATION is version-gated by `mcp_types.methods`, which keys its
-surface map on `(method, version)`. A method a version does not define is
-absent from the map, so asking a 2025-era server for `server/discover` fails
-here rather than at the far end, and a 2026-only field arriving from a legacy
-server is rejected rather than quietly believed.
+Result validation is version-gated by `mcp_types.methods`, keyed on `(method,
+version)`, so asking a 2025-era server for `server/discover` fails locally.
 """
 
 from __future__ import annotations
@@ -77,12 +67,8 @@ HANDSHAKE_VERSIONS: Final = HANDSHAKE_PROTOCOL_VERSIONS
 
 
 class Era(str, Enum):
-    """Which shape of the protocol a server speaks.
-
-    Two values rather than a version string because the version alone does not
-    tell the framing layer what to do, and every pre-2026 version is framed
-    identically from a client's point of view.
-    """
+    """Which shape of the protocol a server speaks. Two values rather than a
+    version string: every pre-2026 version is framed identically."""
 
     MODERN = "modern"
     HANDSHAKE = "handshake"
@@ -135,11 +121,7 @@ def _with_meta(
     era: Era,
 ) -> dict[str, Any] | None:
     """Params with the modern `_meta` block merged in, or untouched on a
-    handshake connection where the block does not exist.
-
-    An existing `_meta` is preserved and extended rather than replaced: a
-    caller may already have put a progress token or a trace context there.
-    """
+    handshake connection. An existing `_meta` is extended, never replaced."""
     if era is not Era.MODERN:
         return dict(params) if params is not None else None
     body = dict(params) if params is not None else {}
@@ -160,9 +142,8 @@ def encode(frame: Mapping[str, Any]) -> bytes:
 def decode(raw: str | bytes) -> JSONRPCMessage:
     """One inbound frame as a typed JSON-RPC message.
 
-    A frame that is not JSON, or is JSON that is not JSON-RPC, raises
-    `McpProtocolError`. That is deliberately not `McpError`: the peer has not
-    reported a failure, it has broken the wire contract.
+    Raises `McpProtocolError`, not `McpError`: the peer has not reported a
+    failure, it has broken the wire contract.
     """
     try:
         payload = json.loads(raw)
@@ -176,11 +157,7 @@ def decode(raw: str | bytes) -> JSONRPCMessage:
 
 
 def result_payload(message: JSONRPCResponse | JSONRPCError) -> dict[str, Any]:
-    """The `result` of a response, or the error raised.
-
-    Every JSON-RPC error the client sees funnels through here, which is what
-    lets the call path react to `code` without every caller unpacking a frame.
-    """
+    """The `result` of a response, or the error raised."""
     if isinstance(message, JSONRPCError):
         raise McpError(message.error.code, message.error.message, message.error.data)
     return dict(message.result)
@@ -189,12 +166,9 @@ def result_payload(message: JSONRPCResponse | JSONRPCError) -> dict[str, Any]:
 def parse_result(method: str, protocol_version: str, payload: Mapping[str, Any]) -> mcp_types.Result:
     """A raw result validated against the surface for this method and version.
 
-    Wraps two failures into one: a method the version does not define (absent
-    from the surface map) and a payload that does not fit the schema. Both mean
-    the same thing to a caller, which is that this server did not answer the
-    question that was asked.
-
-    Modern results are filled in before validating; see `_tolerated`.
+    A method the version does not define and a payload that does not fit both
+    mean the same thing: this server did not answer the question asked. Modern
+    results are filled in first; see `_tolerated`.
     """
     if Era.of(protocol_version) is Era.MODERN:
         payload = _tolerated(method, payload)
@@ -209,24 +183,15 @@ def parse_result(method: str, protocol_version: str, payload: Mapping[str, Any])
 def _tolerated(method: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """A modern result with the required-but-unread fields filled in.
 
-    The 2026 schema makes `resultType` required on every result, and `ttlMs`
-    and `cacheScope` required on the cacheable ones. Validating strictly would
-    mean losing a server's whole tool listing over a freshness hint, which is a
-    bad trade for fields this client does not depend on. So absence is
-    interpreted, and only absence: a server that states a value is believed.
+    The 2026 schema requires `resultType` everywhere and `ttlMs` / `cacheScope`
+    on cacheable results. Losing a whole tool listing over a freshness hint this
+    client does not depend on is the wrong trade, so ABSENCE is interpreted and
+    only absence — a stated value is always believed.
 
-    - `resultType` absent means `"complete"`. That is the spec's own rule for
-      clients, written for earlier-protocol servers and applied here to a
-      modern server that simply left it out.
-    - `cacheScope` absent means `"private"`, the conservative reading: a
-      listing is never shared across credentials unless the server says it may
-      be.
-    - `ttlMs` absent means `0`, which the catalog reads the same way it reads a
-      stated `0`: no useful freshness hint, so refresh on the client's own
-      schedule. The two cannot be told apart afterwards, and nothing is lost by
-      that, because a registry fronting a remote server has to keep a cached
-      listing whatever the server would prefer (contract rule 3). The hint sets
-      how eagerly that cache is refreshed, never whether it exists.
+    Absent `resultType` means `"complete"`, which is the spec's own rule for
+    clients. Absent `cacheScope` means `"private"`, the conservative reading.
+    Absent `ttlMs` means `0`, read the same way as a stated `0`: refresh on our
+    own schedule. The cache exists either way, because rule 3 requires it.
     """
     filled = dict(payload)
     filled.setdefault("resultType", "complete")

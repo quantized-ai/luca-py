@@ -1,18 +1,12 @@
 """The loopback listener that catches the authorization redirect.
 
-BINDS PORT 0 AND READS THE PORT BACK. That is the whole reason this is its own
-module. The previous attempt derived the port from a CRC of the server label,
-so two servers authorizing at once bound the same port and the second got
-EADDRINUSE, and it needed a `sleep(0.1)  # let the server bind` because nothing
-told it when the socket was ready.
+BINDS PORT 0 AND READS THE PORT BACK. `start()` returns only once bound and
+exposes the port it got, so the redirect URI is built from a fact, two flows can
+never collide on one port, and nothing has to sleep waiting for a bind.
 
-Both problems are the same problem, and asking the OS for a port solves both:
-`start()` returns only once bound and exposes the port it got, so the redirect
-URI is built from a fact instead of a guess and there is nothing to sleep for.
-RFC 8252 section 7.3 requires authorization servers to accept any port on a
-loopback redirect for a native client, so this is the specified way to do it,
-not a workaround. The escape hatch for servers that violate it is
-`redirect_port` in the config.
+RFC 8252 §7.3 requires authorization servers to accept any loopback port for a
+native client, so this is the specified way rather than a workaround;
+`redirect_port` is the escape hatch for servers that violate it.
 """
 
 from __future__ import annotations
@@ -47,12 +41,9 @@ class LoopbackCallback:
         self.port: int | None = None
 
     async def start(self) -> int:
-        """Bind, and return the port actually bound.
-
-        Everything downstream — the redirect URI, the authorization URL, the
-        browser — is built from the return value, so there is no window in
-        which the port is unknown or the socket is not listening yet.
-        """
+        """Bind, and return the port actually bound. Everything downstream is
+        built from the return value, so there is no window in which the port is
+        unknown or the socket is not listening."""
         self._result = asyncio.get_running_loop().create_future()
         self._server = await asyncio.start_server(self._handle, HOST, self._requested)
         self.port = self._server.sockets[0].getsockname()[1]

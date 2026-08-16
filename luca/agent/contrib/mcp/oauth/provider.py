@@ -1,22 +1,13 @@
 """OAuthProvider — one per server, for the life of the process.
 
-The review of the previous attempt found a fresh provider built for every
-listing and every tool call, and named three consequences: no in-memory token
-state, so every operation re-read the file and re-ran discovery; a callback
-port derived from the label, so two flows collided; and two refreshes racing,
-where a server that rotates refresh tokens leaves the loser permanently
-invalid.
+Built once by `McpService`, so discovery happens once, the live token is in
+memory, and refresh is single-flight through one future every concurrent caller
+awaits. A provider per operation would re-read the token file, redo discovery,
+and let two refreshes race a rotating token into a dead end.
 
-All three are ownership problems, and all three are fixed by owning it once.
-`McpService` builds one of these per server at construction and keeps it, so
-discovery happens once, the live token is in memory, and the refresh is
-single-flight through one future that every concurrent caller awaits.
-
-It is an `httpx.Auth`, so the token is attached by the HTTP layer and nothing
-above has to remember to. The flow itself only ever runs from an explicit
-entry point — the startup worker or `/mcp login` — never from inside a turn:
-the previous attempt authorized inside `get_tools`, which is why a browser
-window opened in the middle of somebody's first message.
+An `httpx.Auth`, so the token is attached by the HTTP layer. The interactive
+flow runs only from an explicit entry point — startup or `/mcp login` — never
+from inside a turn, so a browser cannot open mid-message.
 """
 
 from __future__ import annotations
@@ -67,19 +58,15 @@ class OAuthProvider(httpx.Auth):
         self._metadata: AuthorizationServerMetadata | None = None
         self._registration: ClientRegistration | None = None
         self._loaded = False
-        # The single-flight slot. Everything that notices an expired token
-        # awaits the SAME future, so one refresh happens and a rotated refresh
-        # token cannot be spent twice.
+        # Single-flight: everyone who notices an expired token awaits the SAME
+        # future, so a rotated refresh token cannot be spent twice.
         self._refreshing: asyncio.Future | None = None
         self._lock = asyncio.Lock()
 
     def auth_flow(self, request: httpx.Request):
-        """Attach whatever token is in memory.
-
-        Synchronous by `httpx.Auth`'s contract, so it cannot refresh: it
-        attaches what it has, and a 401 comes back to the caller as
-        `McpAuthRequired` for the async path to deal with.
-        """
+        """Attach whatever token is in memory. Synchronous by `httpx.Auth`'s
+        contract, so it cannot refresh; a 401 comes back as `McpAuthRequired`
+        for the async path to deal with."""
         if self._token is not None:
             request.headers["Authorization"] = f"{self._token.token_type} {self._token.access_token}"
         yield request
@@ -87,9 +74,8 @@ class OAuthProvider(httpx.Auth):
     async def ensure_token(self, client: httpx.AsyncClient, *, interactive: bool) -> None:
         """Make sure a usable token is in memory, refreshing or logging in.
 
-        `interactive=False` is the path a tool call takes: it will refresh
-        silently but never open a browser, because a login prompt appearing
-        mid-turn is the behaviour this design is fixing.
+        `interactive=False` is the path a tool call takes: refresh silently,
+        never open a browser.
         """
         await self._load()
         if self._token is not None and not self._token.expired():
@@ -105,12 +91,7 @@ class OAuthProvider(httpx.Auth):
         await self.authorize(client)
 
     async def _refresh(self, client: httpx.AsyncClient) -> None:
-        """Exchange the refresh token, exactly once however many callers ask.
-
-        The first caller installs the future and does the work; everyone else
-        awaits it. Without this, two concurrent 401s each redeem the same
-        rotating refresh token and whichever lands second is dead.
-        """
+        """Exchange the refresh token, exactly once however many callers ask."""
         if self._refreshing is not None:
             await asyncio.shield(self._refreshing)
             return
@@ -127,9 +108,8 @@ class OAuthProvider(httpx.Auth):
                 },
             )
             token = OAuthToken.from_response(payload)
-            # A server that rotates keeps the old refresh token usable only
-            # until now; one that does not rotate omits it, and dropping ours
-            # would force a browser login on the next expiry.
+            # A server that does not rotate omits it, and dropping ours would
+            # force a browser login on the next expiry.
             if token.refresh_token is None and self._token is not None:
                 token = token.model_copy(update={"refresh_token": self._token.refresh_token})
             self._token = token
@@ -151,8 +131,6 @@ class OAuthProvider(httpx.Auth):
                 raise McpAuthRequired(f"MCP server {self.server.label!r} publishes no authorization endpoint.")
 
             async with LoopbackCallback(port=self.server.redirect_port or 0) as callback:
-                # Bound before the URI exists, so nothing sleeps waiting for it
-                # and two servers can never pick the same port.
                 redirect_uri = callback.redirect_uri
                 await self._register(client, redirect_uri)
                 pkce, state = Pkce.create(), new_state()
@@ -168,8 +146,7 @@ class OAuthProvider(httpx.Auth):
                 )
             if not state_matches(state, query.get("state", "")):
                 raise McpAuthRequired(f"Authorization for {self.server.label!r} came back with the wrong state.")
-            # RFC 9207, before the code goes anywhere.
-            check_issuer(self._issuer or "", query.get("iss"))
+            check_issuer(self._issuer or "", query.get("iss"))  # RFC 9207, before the code goes anywhere
 
             payload = await self._token_request(
                 client,
@@ -209,8 +186,7 @@ class OAuthProvider(httpx.Auth):
         endpoint = self._metadata.token_endpoint if self._metadata else None
         if not endpoint:
             raise McpAuthRequired(f"MCP server {self.server.label!r} publishes no token endpoint.")
-        # `auth=None`: this request must NOT carry the token it is trying to
-        # obtain, and the client's default auth is this very provider.
+        # `auth=None`: this request must not carry the token it is obtaining.
         response = await client.post(endpoint, data=form, auth=None, timeout=DISCOVERY_TIMEOUT_S)
         if response.status_code >= 400:
             raise McpAuthRequired(
@@ -235,7 +211,7 @@ class OAuthProvider(httpx.Auth):
                     return
                 except ValueError:
                     continue
-        # Plenty of small servers publish nothing and still implement the
+        # Many small servers publish nothing and still implement the
         # conventional endpoints under the issuer.
         logger.debug("mcp server=%s publishes no AS metadata; assuming the conventional endpoints", self.server.label)
         self._metadata = fallback_metadata(issuer)
@@ -258,11 +234,9 @@ class OAuthProvider(httpx.Auth):
     async def _register(self, client: httpx.AsyncClient, redirect_uri: str) -> None:
         """Get a client id: configured, remembered, or dynamically registered.
 
-        A configured `client_id` wins and is also the field that will take a
-        Client ID Metadata Document URL, which the 2026-07-28 revision prefers
-        over dynamic registration. CIMD needs a publicly hosted document, which
-        is a project artifact rather than something a client can synthesize, so
-        DCR is what ships here.
+        A configured `client_id` wins, and is the field that will later take a
+        Client ID Metadata Document URL — CIMD needs a publicly hosted document,
+        which is a project artifact rather than something a client synthesizes.
         """
         if self.server.client_id or self._registration is not None:
             return
@@ -307,14 +281,9 @@ class OAuthProvider(httpx.Auth):
 
 
 async def _open_browser(url: str) -> None:
-    """Off the loop.
-
-    `webbrowser.open` is synchronous and slow — on macOS it shells out to
-    `open`, on Linux it may spawn and wait on a browser — and calling it from a
-    coroutine stalls everything: the TUI stops repainting and the cancellation
-    token cannot be observed. This was a review finding on the previous
-    attempt.
-    """
+    """Off the loop: `webbrowser.open` is synchronous and slow (macOS shells out
+    to `open`), and calling it from a coroutine stalls the TUI's repaint and the
+    cancellation token with it."""
     await asyncio.to_thread(webbrowser.open, url)
 
 

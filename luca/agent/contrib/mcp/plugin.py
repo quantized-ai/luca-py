@@ -1,14 +1,11 @@
 """McpPlugin — the registry and a prompt part, bundled for the runner.
 
 Holds two references and no state, because it is rebuilt on every `/clear`,
-`/resume` and fork. Everything durable lives on the `McpService`, which the
-application builds once and keeps.
+`/resume` and fork. Everything durable lives on the `McpService`.
 
-IT HAS NO `aclose`, deliberately. The TUI's `_close_plugins()` runs from
-`_reset_session` as well as from quit, so a plugin that closed its connections
-there would tear down every MCP server on `/clear` and reconnect (and re-run
-OAuth) on the next turn. That is the bug this design exists to remove. The
-service is closed by the application, from `_quit` only.
+IT HAS NO `aclose`, deliberately: `_close_plugins()` runs from `_reset_session`
+as well as from quit, so closing connections here would tear every server down
+on `/clear`. The application closes the service, from `_quit` only.
 """
 
 from __future__ import annotations
@@ -32,13 +29,12 @@ class McpPlugin:
         return [self._prompt_part]
 
     def _prompt_part(self, session: AgentSession, conversation_id: str) -> SystemPromptPart | None:
-        """Name the connected servers, so the model knows where its non-obvious
-        tools came from and can say so.
+        """Name the connected servers, so the model knows where its tools came
+        from.
 
         A callable, so it re-resolves per request: servers connect after the
         first prompt is assembled, and a part fixed at construction would say
-        "no MCP servers" for the rest of the session. Returns None when there is
-        nothing to say rather than an empty heading.
+        "no MCP servers" for the rest of the session.
         """
         connected = [status for status in self._service.status() if status.tool_count]
         if not connected:

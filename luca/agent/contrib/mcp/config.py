@@ -1,30 +1,20 @@
 """The `mcp` block of `luca.json`. Pure pydantic, no `mcp-types`, no SDK.
 
 Import-safe on purpose: `LucaConfig` names these models at module scope, so the
-whole TUI has to parse and run whether or not the optional `mcp` dependency
-group is installed.
+TUI parses and runs whether or not the optional `mcp` group is installed.
 
-WHY ONE FLAT MODEL AND NOT A DISCRIMINATED UNION. `luca.json` is read twice,
-from the user's home and from the project, and merged by `_deep_merge`, which
-merges nested objects key by key. Under a discriminated union a home file
-defining `github` as an http server and a project file redefining it as stdio
-would merge into one dict carrying `type`, `url` AND `command`, which either
-fails with an unreadable pydantic error or validates into the wrong member with
-a stray field. `mcp.servers` is the first `dict[str, <one-of-two-shapes>]` in
-the config, so this is a new failure mode in that file.
-
+ONE FLAT MODEL, NOT A DISCRIMINATED UNION. `luca.json` is read twice and merged
+field by field, so a home file defining `github` as http and a project file
+redefining it as stdio would merge into one dict carrying `type`, `url` AND
+`command` — which either fails unreadably or validates into the wrong member.
 The fix is the shape `PermissionRule` already uses: one strict model, a
-`model_validator`, and a `to_server()` builder. A cross-file redefinition then
-fails loudly, naming the label and saying what to do, and the transport is
-inferred from which fields are present rather than from a `type` tag that can
-survive a merge its siblings did not.
+`model_validator`, and a `to_server()` builder, so the transport is inferred
+from the fields present and a cross-file redefinition fails by name.
 
-ENVIRONMENT REFERENCES. `env` and `headers` values may contain `${VAR}`, which
-is expanded from the process environment when the server is built. This is
-literal substitution, not shell execution, and nothing reads a `.env` file: the
-variable has to be exported already, exactly like every provider API key. It
-exists so that a token does not have to be written into `luca.json`, which is a
-file people commit.
+ENVIRONMENT REFERENCES. `env` and `headers` values may contain `${VAR}`,
+expanded from the process environment when the server is built. Literal
+substitution, not shell execution, and no `.env` is read: the variable has to be
+exported already, exactly like every provider API key.
 """
 
 from __future__ import annotations
@@ -53,8 +43,7 @@ class McpConfigError(ValueError):
 
 def expand(value: str, environ: Mapping[str, str], *, where: str) -> str:
     """Substitute `${VAR}` from `environ`. An unset variable raises rather than
-    expanding to empty: a header that silently becomes `Bearer ` produces a 401
-    at the far end of a connection, and the reason would be invisible."""
+    expanding to empty, which would surface as an unexplained 401."""
     missing: list[str] = []
 
     def replace(match: re.Match[str]) -> str:
@@ -144,21 +133,16 @@ class McpServerSettings(BaseModel):
 
 
 class McpSettings(BaseModel):
-    """The `mcp` block.
-
-    A block rather than a bare `dict[label, server]` so `enabled` has somewhere
-    to live that a server cannot collide with. Under the flat shape, a server
-    labelled `enabled` would be read as the switch.
-    """
+    """The `mcp` block. A block rather than a bare `dict[label, server]` so
+    `enabled` has somewhere to live that a server label cannot collide with."""
 
     enabled: bool | None = None
     servers: dict[str, McpServerSettings] = Field(default_factory=dict)
     model_config = _STRICT
 
     def build(self, *, environ: Mapping[str, str] | None = None) -> dict[str, Server]:
-        """Every enabled server, resolved. Labels are validated here rather
-        than on the model because the label is the dict KEY, which pydantic
-        never sees as a field."""
+        """Every enabled server, resolved. Labels are validated here because the
+        label is the dict KEY, which pydantic never sees as a field."""
         built: dict[str, Server] = {}
         for label, settings in self.servers.items():
             if not settings.enabled:
@@ -177,9 +161,8 @@ _LABEL = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _is_set(settings: McpServerSettings, name: str) -> bool:
-    """Whether a field carries a real value, treating an empty dict or list as
-    unset — pydantic fills those defaults in whether or not the user wrote
-    them, so `{}` cannot be evidence of the wrong transport."""
+    """Whether a field carries a real value. An empty dict or list counts as
+    unset: pydantic fills those in whether or not the user wrote them."""
     value = getattr(settings, name)
     if value is None or value is False:
         return False

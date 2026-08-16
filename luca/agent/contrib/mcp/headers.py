@@ -1,29 +1,20 @@
 """The HTTP header layer of Streamable HTTP. Pure functions, no I/O.
 
-The 2026-07-28 transport mirrors selected body fields into headers so that
-gateways can route and authorize without parsing JSON-RPC. Three things follow,
-and all three are MUST-level for a client:
+The transport mirrors selected body fields into headers so gateways can route
+without parsing JSON-RPC. Three MUST-level consequences for a client:
 
-1. Every POST carries `MCP-Protocol-Version` and `Mcp-Method`, and `Mcp-Name`
-   for `tools/call`, `resources/read` and `prompts/get`. A server that
-   processes the body MUST reject a request whose headers disagree with it, so
-   these are derived from the frame rather than passed alongside it.
-
-2. A header value that is not plain safe ASCII is carried base64-encoded in a
-   sentinel wrapper, `=?base64?...?=`. A plain value that happens to look like
-   the sentinel must be encoded too, or a server would decode something the
-   client never encoded.
-
-3. A tool may annotate its own parameters with `x-mcp-header`, asking for them
-   to be mirrored into `Mcp-Param-{Name}`. Supporting this is not optional for
-   clients, and neither is the other half: a tool whose annotations break the
-   constraints MUST be excluded from the client's view of `tools/list`. So
-   `validate_header_params` returns REASONS rather than a boolean, and the
-   caller records them for `/mcp` to display, because a tool that silently
-   vanishes is worse than one that explains itself.
-
-Nothing here knows about transports, which is why it is all testable without a
-server: header construction is a pure function of a frame plus a schema.
+1. Every POST carries `MCP-Protocol-Version` and `Mcp-Method`, plus `Mcp-Name`
+   for `tools/call`, `resources/read` and `prompts/get`. A server must reject a
+   request whose headers disagree with its body, so these are derived from the
+   frame rather than passed alongside it.
+2. A value that is not plain safe ASCII is base64-encoded in a `=?base64?...?=`
+   wrapper. A plain value that looks like the sentinel is encoded too, or a
+   server would decode something the client never encoded.
+3. `x-mcp-header` annotations are mirrored into `Mcp-Param-{Name}`, and a tool
+   whose annotations break the constraints must be EXCLUDED from `tools/list`.
+   So `validate_header_params` returns reasons rather than a boolean, for
+   `/mcp` to display: a tool that silently vanishes is worse than one that
+   explains itself.
 """
 
 from __future__ import annotations
@@ -82,10 +73,8 @@ _UNREACHABLE_KEYWORDS: Final = (
 def needs_encoding(value: str) -> bool:
     """Whether a value has to go in the sentinel wrapper.
 
-    Plain form is allowed only for visible ASCII, space and horizontal tab, and
-    only when nothing is padded: leading or trailing whitespace does not
-    survive HTTP field-value parsing intact. A value already shaped like the
-    sentinel is encoded so that decoding is unambiguous.
+    Plain form is only for visible ASCII, space and tab, unpadded: leading or
+    trailing whitespace does not survive HTTP field-value parsing.
     """
     if value != value.strip(" \t"):
         return True
@@ -123,12 +112,8 @@ def header_value(value: object) -> str:
 
 
 def request_headers(method: str, params: Mapping[str, Any] | None, *, protocol_version: str) -> dict[str, str]:
-    """The standard headers for one POST, derived from the frame it accompanies.
-
-    Derived, not supplied, because a server MUST reject a request whose headers
-    and body disagree; computing both from one source is what makes that
-    impossible.
-    """
+    """The standard headers for one POST, derived from the frame it accompanies
+    so the two cannot disagree."""
     headers = {PROTOCOL_VERSION_HEADER: protocol_version, METHOD_HEADER: method}
     source = NAME_SOURCES.get(method)
     if source is not None and params is not None:
@@ -139,12 +124,8 @@ def request_headers(method: str, params: Mapping[str, Any] | None, *, protocol_v
 
 
 def validate_header_params(input_schema: Mapping[str, Any]) -> list[str]:
-    """Every way this tool's `x-mcp-header` annotations break the rules.
-
-    An empty list means the tool is safe to expose. A non-empty one means the
-    client MUST exclude it, and each entry says why in a sentence a user can
-    act on.
-    """
+    """Every way this tool's `x-mcp-header` annotations break the rules. Empty
+    means safe to expose; non-empty means the client must exclude it."""
     violations: list[str] = []
     seen: dict[str, str] = {}  # lowercased header name -> the path that claimed it
     for path, node, reachable in _walk(input_schema):
@@ -183,10 +164,8 @@ def validate_header_params(input_schema: Mapping[str, Any]) -> list[str]:
 def param_headers(input_schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> dict[str, str]:
     """The `Mcp-Param-*` mirror for one call.
 
-    Only annotated properties that actually carry a value are mirrored; the
-    spec is explicit that a missing or null argument means the header is
-    omitted rather than sent empty. Assumes the schema already passed
-    `validate_header_params`, since an invalid tool never reaches a call.
+    A missing or null argument omits its header rather than sending it empty.
+    Assumes the schema already passed `validate_header_params`.
     """
     headers: dict[str, str] = {}
     for path, node, reachable in _walk(input_schema):
@@ -206,11 +185,11 @@ def _walk(
     *,
     reachable: bool = True,
 ) -> Iterator[tuple[tuple[str, ...], Mapping[str, Any], bool]]:
-    """Every subschema, with the property path that reaches it and whether that
-    path is made only of `properties` steps.
+    """Every subschema, with the property path reaching it and whether that path
+    is made only of `properties` steps.
 
-    Unreachable branches are still walked, because an annotation hiding under
-    `oneOf` is a violation we have to REPORT, not one we may skip.
+    Unreachable branches are still walked: an annotation under `oneOf` is a
+    violation to REPORT, not one to skip.
     """
     yield path, node, reachable
     properties = node.get("properties")
@@ -226,9 +205,7 @@ def _walk(
 
 
 def _at_path(arguments: Mapping[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
-    """The argument value at a property path, and whether it was there at all —
-    two answers, because a present `null` and an absent key both omit the
-    header but only one of them is worth distinguishing elsewhere."""
+    """The argument value at a property path, and whether it was there at all."""
     current: Any = arguments
     for step in path:
         if not isinstance(current, Mapping) or step not in current:

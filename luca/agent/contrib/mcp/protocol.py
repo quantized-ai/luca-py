@@ -1,25 +1,14 @@
 """Deciding which protocol a server speaks, once per connection.
 
-The 2026-07-28 spec spells the probe out, and the shape of it is load-bearing.
-A client that supports both eras sends `server/discover` first and reads the
-answer three ways:
-
-- a `DiscoverResult`: the server is modern, so pick a mutually supported
-  version from `supportedVersions` and continue;
-- a recognized MODERN JSON-RPC error: the server is modern but disagrees about
-  the version, so retry against the versions it advertises and do NOT fall back;
-- anything else, including `-32601` and a timeout: the server is legacy, so fall
-  back to the `initialize` handshake.
+`server/discover` is sent first and the answer read three ways: a
+`DiscoverResult` means modern; a spec-reserved error code means modern but
+version-mismatched, so retry rather than fall back; anything else, `-32601` and
+a timeout included, means legacy and the `initialize` handshake.
 
 The spec is explicit that the fallback "MUST NOT be keyed to one specific error
-code", because a legacy server answers an unknown pre-`initialize` request with
-whatever its implementation happens to return. So the discriminator is
-membership in the spec-reserved range, and everything else is evidence of age.
-
-Probing is RECOMMENDED even for a modern-only client, and the reason is worth
-keeping in mind: some legacy servers do not check that a request arrived after
-`initialize`, and would process a `tools/call` under legacy semantics. Probing
-turns that silent misinterpretation into a deterministic answer.
+code" — a legacy server answers an unknown pre-`initialize` request with
+whatever it happens to return — so the discriminator is membership in the
+reserved range and everything else is evidence of age.
 """
 
 from __future__ import annotations
@@ -38,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Negotiated:
-    """What one probe settled. Held for the life of a connection and thrown
-    away on reconnect, because a restarted server may have been upgraded."""
+    """What one probe settled. Thrown away on reconnect, because a restarted
+    server may have been upgraded."""
 
     era: Era
     protocol_version: str
@@ -51,9 +40,8 @@ class Negotiated:
 async def negotiate(transport, *, label: str, timeout_s: float, next_id) -> Negotiated:
     """Probe once and settle on an era and a version.
 
-    `next_id` is the connection's id source rather than a local counter, so a
-    probe and the requests that follow it never reuse an id on a shared stdio
-    channel.
+    `next_id` is the connection's id source, so a probe and the requests after
+    it never reuse an id on a shared stdio channel.
     """
     try:
         return await _discover(transport, wire.PREFERRED_MODERN_VERSION, timeout_s=timeout_s, next_id=next_id)
@@ -64,8 +52,7 @@ async def negotiate(transport, *, label: str, timeout_s: float, next_id) -> Nego
         try:
             return await _discover(transport, retry.version, timeout_s=timeout_s, next_id=next_id)
         except _Retry as again:
-            # It asked twice. Renegotiating forever is not a strategy, and an
-            # internal marker must never escape to a caller.
+            # Twice is enough, and an internal marker must not escape.
             raise McpUnsupportedVersion(
                 f"MCP server {label!r} keeps asking for a different protocol version ({again.version}).",
                 supported=(again.version,),
@@ -87,8 +74,6 @@ async def _discover(transport, version: str, *, timeout_s: float, next_id) -> Ne
         payload = wire.result_payload(message)
     except McpError as exc:
         if not is_modern_protocol_error(exc.code):
-            # Could be anything a legacy server invents, which is exactly why
-            # the spec forbids keying the fallback on one code.
             raise _NotModern(f"error {exc.code}") from exc
         raise _mismatch(exc) from exc
     except McpProtocolError as exc:
@@ -108,12 +93,8 @@ async def _discover(transport, version: str, *, timeout_s: float, next_id) -> Ne
 
 
 def _mismatch(exc: McpError) -> Exception:
-    """A modern server that will not speak the version we opened with.
-
-    It advertises what it does support in the error data, so this is a real
-    negotiation rather than a dead end, provided something is common. Returns
-    the exception to raise rather than raising, so the caller keeps `from exc`.
-    """
+    """A modern server that will not speak the version we opened with. Returns
+    the exception to raise rather than raising, so the caller keeps `from exc`."""
     advertised = exc.data.get("supported") if isinstance(exc.data, dict) else None
     if isinstance(advertised, list):
         try:
@@ -132,11 +113,8 @@ class _Retry(Exception):
 
 
 def _mutual(advertised: list[str]) -> str:
-    """The best version both sides speak, preferring the newest.
-
-    Modern beats handshake, because a server offering both is better served by
-    the era that needs no session.
-    """
+    """The best version both sides speak. Modern beats handshake, because a
+    server offering both is better served by the era that needs no session."""
     for candidate in (*wire.MODERN_VERSIONS, *reversed(wire.HANDSHAKE_VERSIONS)):
         if candidate in advertised:
             return candidate
@@ -147,11 +125,8 @@ def _mutual(advertised: list[str]) -> str:
 
 
 async def _handshake(transport, *, timeout_s: float, next_id) -> Negotiated:
-    """The pre-2026 `initialize` exchange.
-
-    The version WE propose is only an opening bid; the server's answer is
-    authoritative, and a server may legitimately answer with an older one.
-    """
+    """The pre-2026 `initialize` exchange. Our version is an opening bid; the
+    server's answer is authoritative and may legitimately be older."""
     proposed = wire.PREFERRED_HANDSHAKE_VERSION
     params = {
         "protocolVersion": proposed,
@@ -168,8 +143,7 @@ async def _handshake(transport, *, timeout_s: float, next_id) -> Negotiated:
             f"The server answered `initialize` with protocol {agreed!r}, which this client does not speak.",
             supported=(agreed,),
         )
-    # A handshake connection is not usable until the server has been told the
-    # client is ready. Notifications carry no reply, so nothing is awaited.
+    # Not usable until the server is told the client is ready.
     await transport.notify(
         wire.notification_frame("notifications/initialized", None, protocol_version=agreed, era=Era.HANDSHAKE),
         headers=_headers("notifications/initialized", None, agreed),
@@ -184,9 +158,7 @@ async def _handshake(transport, *, timeout_s: float, next_id) -> Negotiated:
 
 
 def _headers(method: str, params: dict | None, version: str) -> dict[str, str]:
-    """Standard headers for the HTTP transport, ignored by stdio.
-
-    Computed from the same method and params that built the frame, because a
-    server MUST reject a request whose headers disagree with its body.
-    """
+    """Standard headers for the HTTP transport, ignored by stdio. Computed from
+    the same method and params that built the frame, because a server must
+    reject a request whose headers disagree with its body."""
     return request_headers(method, params, protocol_version=version)

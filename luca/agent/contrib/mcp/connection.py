@@ -1,40 +1,18 @@
 """One long-lived connection per configured MCP server.
 
-This is the piece the previous attempt did not have. It connected per call:
-`prepare()` returned a callable that opened a session, made one request and
-closed it, which respawned a stdio subprocess on every single tool call and
-threw away anything the server was holding. The review called that "a redesign,
-not a patch", and asked for one long-lived task per server owning the
-connection with a response future per request.
+Owns the negotiated era, the request-id sequence, header construction, result
+validation and the retry policy. Not the process or the socket (`transport`),
+and not any notion of a tool (`catalog`, `registry`).
 
-It also named the reason it had not been done: the official SDK's session is an
-anyio context manager that must be entered and exited in the SAME task, so a
-warm connection needed an actor to own the cancel scope. Writing the client on
-asyncio primitives removes that constraint entirely. The reader task owns the
-read side, writes happen in the caller's own task under a lock held for
-microseconds, and there is no cancel scope to be careful with.
+RETRY POLICY, because it is a correctness decision:
 
-The protocol changed underneath the argument as well. 2026-07-28 removed
-sessions outright and requires a server that needs cross-call state to mint an
-explicit handle passed as a tool argument, so "reconnecting loses server state"
-is now a thing the spec forbids servers from having rather than a risk to
-manage.
-
-WHAT THIS LAYER OWNS: the negotiated era, the request-id sequence, header
-construction, result validation, and the retry policy. WHAT IT DOES NOT: the
-process and the socket (that is `transport`), and any notion of a tool (that is
-`catalog` and `registry`).
-
-RETRY POLICY, stated plainly because it is a correctness decision:
-
-- A dropped connection on an IDEMPOTENT method (`server/discover`, the four
+- A dropped connection on an IDEMPOTENT method (`server/discover`, the
   listings) is retried once. The protocol is stateless, so a restarted server
   is indistinguishable from the original and the caller could not tell.
 - `tools/call` is NEVER retried. A tool may have side effects, and "the server
-  restarted mid-call" is an honest failure the model can reason about. Silently
-  running someone's `create_issue` twice is not.
-- A handshake-era connection retries nothing, because its session id died with
-  the process and the reconnect has to start over.
+  restarted mid-call" is an honest failure the model can reason about.
+- A handshake-era connection retries nothing: its session id died with the
+  process.
 """
 
 from __future__ import annotations
@@ -93,9 +71,7 @@ class ServerConnection:
         self._ids = itertools.count(1)
         self._on_tools_changed = on_tools_changed
         self._negotiated: Negotiated | None = None
-        # One lock around negotiation, so ten concurrent first calls probe once.
-        # Held across the probe deliberately: everything behind it is waiting
-        # for the same answer, and a second probe would burn a second id.
+        # Held across the probe, so concurrent first calls share one answer.
         self._connecting = asyncio.Lock()
         self.error: str | None = None
         if isinstance(server, StdioServer):
@@ -118,9 +94,7 @@ class ServerConnection:
         )
 
     async def connect(self) -> Negotiated:
-        """Probe once and cache the answer. Idempotent and safe to call from
-        anywhere, which is what lets a warm-up worker and a first tool call race
-        without either of them noticing."""
+        """Probe once and cache the answer. Idempotent."""
         if self._negotiated is not None and self._transport.alive:
             return self._negotiated
         async with self._connecting:
@@ -167,16 +141,13 @@ class ServerConnection:
         except McpServerGone:
             if method not in IDEMPOTENT or self._era() is not Era.MODERN:
                 raise
-            # Stateless protocol, unchanged state: a caller cannot tell this
-            # from the first attempt, so retrying is honest.
             logger.info("mcp server=%s dropped during %s; retrying once", self.label, method)
             self._negotiated = None
             return await self._request_once(method, params, timeout_s=timeout_s, extra_headers=extra_headers)
         except McpError as exc:
             if exc.code != UNSUPPORTED_PROTOCOL_VERSION:
                 raise
-            # A restarted server may have been upgraded under us. Re-probe once,
-            # then take the answer whatever it is.
+            # A restarted server may have been upgraded under us.
             logger.info("mcp server=%s rejected protocol %s; re-probing", self.label, self._version())
             self._negotiated = None
             return await self._request_once(method, params, timeout_s=timeout_s, extra_headers=extra_headers)
@@ -197,12 +168,7 @@ class ServerConnection:
         return wire.parse_result(method, version, wire.result_payload(message))
 
     async def list_tools(self):
-        """Every tool the server offers, following `nextCursor` to the end.
-
-        Pagination is not optional to get right: the previous attempt stopped
-        after the first page, and a paginated server showed as connected with a
-        wrong tool count and no error anywhere.
-        """
+        """Every tool the server offers, following `nextCursor` to the end."""
         timeout_ms = _ms(self.server.list_timeout_in_ms, DEFAULT_LIST_TIMEOUT_MS)
         tools: list = []
         cursor: str | None = None
@@ -234,11 +200,9 @@ class ServerConnection:
     def _on_notification(self, message) -> None:
         """Inbound server-initiated messages.
 
-        On stdio this is free: the reader already owns the channel, so a
-        `toolsListChanged` costs nothing to honour. Over HTTP the same
-        notification would need a second long-lived `subscriptions/listen`
-        stream, which is not in this version — TTL-driven refresh covers the
-        same need with a staleness bound the server itself chose.
+        Free on stdio, where the reader already owns the channel. The HTTP
+        equivalent needs a `subscriptions/listen` stream and is not implemented;
+        TTL-driven refresh covers the same need.
         """
         if message.method == "notifications/tools/list_changed" and self._on_tools_changed is not None:
             logger.info("mcp server=%s reported a tool-list change", self.label)
@@ -249,8 +213,8 @@ class ServerConnection:
         await self._transport.aclose()
 
 
-# The 2026 methods a pre-2026 server cannot be asked for. Anything not listed
-# here is refused locally rather than sent and misread.
+# What a pre-2026 server may be asked. Anything else is refused locally rather
+# than sent and misread by a server that does not check for `initialize`.
 _HANDSHAKE_METHODS: Final = frozenset(
     {
         "initialize",
