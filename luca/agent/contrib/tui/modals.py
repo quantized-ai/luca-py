@@ -288,6 +288,9 @@ class McpScreen(LucaModalScreen):
         with Vertical(classes="mcp-table"):
             for index, row in enumerate(self.state.rows):
                 yield McpRowView(index, row, selected=index == self.state.selected)
+        if self.state.message:
+            error = " mcp-message--error" if self.state.message_is_error else ""
+            yield SpanLine(self.state.message, classes=f"faint-line mcp-message{error}")
         for note in self.state.notes:
             yield SpanLine(note, classes="faint-line")
 

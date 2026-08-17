@@ -183,7 +183,10 @@ class McpService:
             tools, (ttl_ms, cache_scope) = await connection.list_tools()
         except asyncio.CancelledError:
             raise
-        except McpAuthRequired:
+        except McpAuthRequired as exc:
+            # The 401 names the scopes it wants; the next login asks for them.
+            if provider is not None:
+                provider.observe_challenge(exc.challenge)
             connection.needs_auth = True
             connection.error = None
             logger.info("mcp server=%s needs authorization", label)

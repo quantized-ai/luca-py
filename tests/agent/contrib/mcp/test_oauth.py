@@ -30,6 +30,7 @@ from luca.agent.contrib.mcp.oauth import (
     protected_resource_url,
     state_matches,
 )
+from luca.agent.contrib.mcp.oauth.metadata import canonical_resource, parse_challenge
 from luca.agent.contrib.mcp.oauth.store import ClientRegistration, IssuerRecord
 from luca.agent.contrib.mcp.servers import HttpServer
 
@@ -71,8 +72,17 @@ def test_a_matching_issuer_passes():
     check_issuer(ISSUER, ISSUER)
 
 
-def test_a_trailing_slash_is_not_a_mismatch():
-    check_issuer(ISSUER, ISSUER + "/")
+def test_a_trailing_slash_is_a_mismatch():
+    # RFC 9207 forbids trailing-slash, case and percent-encoding normalization
+    # before this comparison: each one is a way for two different issuers to
+    # look equal.
+    with pytest.raises(IssuerMismatch):
+        check_issuer(ISSUER, ISSUER + "/")
+
+
+def test_an_absent_iss_is_refused_when_the_server_advertises_it():
+    with pytest.raises(IssuerMismatch, match="did not send one"):
+        check_issuer(ISSUER, None, advertised=True)
 
 
 def test_a_different_issuer_stops_the_code_being_redeemed():
@@ -400,3 +410,203 @@ async def test_a_stored_registration_is_reused(tmp_path):
     await provider._load()
 
     assert provider._client_id() == "remembered"
+
+
+# ── RFC 8707 resource indicators ──────────────────────────────────────────────
+
+
+def test_the_canonical_resource_lowercases_and_drops_a_trailing_slash():
+    assert canonical_resource("https://MCP.Linear.app/mcp/") == "https://mcp.linear.app/mcp"
+
+
+def test_the_canonical_resource_drops_a_fragment():
+    # The spec lists a fragment as making a resource URI invalid.
+    assert canonical_resource("https://mcp.example.com/mcp#x") == "https://mcp.example.com/mcp"
+
+
+def test_a_challenge_is_parsed_into_its_parameters():
+    header = 'Bearer resource_metadata="https://x/.well-known/oauth-protected-resource", scope="read write"'
+
+    assert parse_challenge(header) == {
+        "resource_metadata": "https://x/.well-known/oauth-protected-resource",
+        "scope": "read write",
+    }
+
+
+def test_no_challenge_header_parses_to_nothing():
+    assert parse_challenge(None) == {}
+
+
+async def test_the_resource_is_sent_on_both_the_authorization_and_token_requests(auth_client):
+    # The MUST that made a completed login still answer 401: without it the
+    # authorization server mints a token with no audience, and the MCP server
+    # is required to refuse it.
+    server, client = auth_client
+    seen: dict = {}
+
+    async def browser(url: str) -> None:
+        query = httpx.URL(url).params
+        seen.update(query)
+        async with httpx.AsyncClient() as agent:
+            await agent.get(query["redirect_uri"], params={"code": "c", "state": query["state"], "iss": ISSUER})
+
+    await OAuthProvider(SERVER, store=TokenStore(None), browser=browser).authorize(client)
+
+    assert seen["resource"] == "https://api.example.test/mcp"
+    assert server.token_requests[0]["resource"] == "https%3A%2F%2Fapi.example.test%2Fmcp"
+
+
+async def test_a_refresh_also_carries_the_resource(auth_client):
+    server, client = auth_client
+    provider = OAuthProvider(SERVER, store=TokenStore(None))
+    provider._token = OAuthToken(access_token="old", refresh_token="r0", expires_at=0)
+    provider._loaded = True
+
+    await provider.ensure_token(client, interactive=False)
+
+    assert server.token_requests[0]["resource"] == "https%3A%2F%2Fapi.example.test%2Fmcp"
+
+
+async def test_scopes_come_from_the_protected_resource_not_the_authorization_server():
+    # Two documents share the field name and mean different things. The
+    # resource's list is what THIS server needs.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "oauth-protected-resource" in request.url.path:
+            return httpx.Response(
+                200,
+                json={"authorization_servers": [ISSUER], "scopes_supported": ["issues:read"]},
+            )
+        if "oauth-authorization-server" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": ISSUER,
+                    "authorization_endpoint": f"{ISSUER}/authorize",
+                    "token_endpoint": f"{ISSUER}/token",
+                    "scopes_supported": ["something:else"],
+                },
+            )
+        return httpx.Response(200, json={"access_token": "a", "expires_in": 60})
+
+    seen: dict = {}
+
+    async def browser(url: str) -> None:
+        query = httpx.URL(url).params
+        seen.update(query)
+        async with httpx.AsyncClient() as agent:
+            await agent.get(query["redirect_uri"], params={"code": "c", "state": query["state"], "iss": ISSUER})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await OAuthProvider(SERVER, store=TokenStore(None), browser=browser).authorize(client)
+
+    assert seen["scope"] == "issues:read"
+
+
+async def test_a_challenge_scope_wins_over_the_advertised_one(auth_client):
+    _, client = auth_client
+    seen: dict = {}
+
+    async def browser(url: str) -> None:
+        query = httpx.URL(url).params
+        seen.update(query)
+        async with httpx.AsyncClient() as agent:
+            await agent.get(query["redirect_uri"], params={"code": "c", "state": query["state"], "iss": ISSUER})
+
+    provider = OAuthProvider(SERVER, store=TokenStore(None), browser=browser)
+    provider.observe_challenge({"scope": "issues:write"})
+    await provider.authorize(client)
+
+    assert seen["scope"] == "issues:write"
+
+
+async def test_a_login_produces_a_token_the_mcp_server_accepts(tmp_path):
+    """The end-to-end regression: authorize, then list, against a server that
+    enforces audience binding the way the spec requires of it.
+
+    Without the `resource` parameter the authorization server mints a token
+    with no audience, the MCP server refuses it, and the login looks like it
+    silently did nothing — the browser says Authorized and the client still
+    says not authenticated.
+    """
+    import json
+
+    from luca.agent.contrib.mcp.servers import HttpServer, ServerState
+    from luca.agent.contrib.mcp.service import McpService
+
+    MCP_URL = "https://mcp.example.test/mcp"
+    RESOURCE = "https://mcp.example.test/mcp"
+    issued: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "oauth-protected-resource" in path:
+            return httpx.Response(
+                200,
+                json={"resource": RESOURCE, "authorization_servers": [ISSUER], "scopes_supported": ["read"]},
+            )
+        if "oauth-authorization-server" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": ISSUER,
+                    "authorization_endpoint": f"{ISSUER}/authorize",
+                    "token_endpoint": f"{ISSUER}/token",
+                },
+            )
+        if path.endswith("/token"):
+            form = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+            # The audience the token is minted for, exactly as RFC 8707 says.
+            issued["audience"] = form.get("resource", "")
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        # The MCP endpoint: refuse any token not bound to this resource.
+        from urllib.parse import quote
+
+        if request.headers.get("authorization") != "Bearer tok" or issued.get("audience") != quote(RESOURCE, safe=""):
+            return httpx.Response(
+                401,
+                json={},
+                headers={"WWW-Authenticate": f'Bearer resource_metadata="{MCP_URL}", scope="read"'},
+            )
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "resultType": "complete",
+                    "ttlMs": 60000,
+                    "cacheScope": "private",
+                }
+                if body["method"] == "server/discover"
+                else {
+                    "tools": [{"name": "search", "inputSchema": {"type": "object"}}],
+                    "resultType": "complete",
+                    "ttlMs": 60000,
+                    "cacheScope": "private",
+                },
+            },
+        )
+
+    async def browser(url: str) -> None:
+        query = httpx.URL(url).params
+        async with httpx.AsyncClient() as agent:
+            await agent.get(query["redirect_uri"], params={"code": "c", "state": query["state"], "iss": ISSUER})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = McpService(
+            {"remote": HttpServer(label="remote", url=MCP_URL, oauth=True, client_id="fixed")},
+            client=client,
+            token_path=tmp_path / "tokens.json",
+            browser=browser,
+        )
+        await service.start()
+        assert service.status()[0].state is ServerState.NEEDS_AUTH
+
+        await service.login("remote")
+
+        assert service.status()[0].state is ServerState.CONNECTED
+        assert [spec.name for spec in service.specs()] == ["mcp__remote__search"]
+        await service.aclose()

@@ -13,6 +13,7 @@ it cannot be forgotten in the flow.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +34,9 @@ class AuthorizationServerMetadata(BaseModel):
     registration_endpoint: str | None = None
     code_challenge_methods_supported: list[str] = Field(default_factory=list)
     scopes_supported: list[str] = Field(default_factory=list)
+    # RFC 9207. When true, an authorization response with no `iss` MUST be
+    # rejected rather than merely unchecked.
+    authorization_response_iss_parameter_supported: bool = False
     model_config = ConfigDict(extra="ignore")
 
 
@@ -95,23 +99,57 @@ class IssuerMismatch(Exception):
     """The `iss` on the callback is not the issuer the flow started with."""
 
 
-def check_issuer(expected: str, received: str | None) -> None:
-    """RFC 9207. A present `iss` MUST match before the code is redeemed.
+def check_issuer(expected: str, received: str | None, *, advertised: bool = False) -> None:
+    """RFC 9207 §2.4, as the spec's table spells it out.
 
-    An absent one is allowed: the parameter is SHOULD-level for servers, and
-    refusing every authorization server that predates it would lock people out
-    for no security gain. What is not allowed is a present one that disagrees,
-    which is the mix-up attack this exists to stop.
+    A present `iss` is always compared, whether or not the server advertised
+    that it sends one. An ABSENT one is only fatal when the server said it
+    would send it: refusing every authorization server that predates the
+    parameter would lock people out for no gain, but ignoring its absence from
+    a server that promised it is how a mix-up attack gets through.
+
+    Compared verbatim. RFC 9207 forbids case folding, default-port elision,
+    trailing-slash and percent-encoding normalization before this comparison,
+    because each of those is a way for two different issuers to look equal.
     """
     if received is None:
+        if advertised:
+            raise IssuerMismatch(
+                "The authorization server advertises `iss` on responses but did not send one. Not redeeming the code."
+            )
         return
-    if _canonical(received) != _canonical(expected):
+    if received != expected:
         raise IssuerMismatch(
             f"The authorization response came from {received!r}, but the flow started with {expected!r}. "
             "Not redeeming the code."
         )
 
 
-def _canonical(issuer: str) -> str:
-    """Issuers differ only by a trailing slash more often than they should."""
-    return issuer.rstrip("/")
+def canonical_resource(url: str) -> str:
+    """The MCP server's canonical URI, for RFC 8707 `resource`.
+
+    The token's audience. Getting it wrong means the authorization server mints
+    a token the MCP server then refuses, which surfaces as a 401 immediately
+    after a login that looked like it worked.
+
+    Lowercase scheme and host, no fragment, and no trailing slash — the forms
+    the spec calls canonical, and the ones a resource server compares against.
+    """
+    parts = urlsplit(url)
+    path = parts.path.rstrip("/")
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+
+_CHALLENGE_PARAM = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+
+
+def parse_challenge(header: str | None) -> dict[str, str]:
+    """The `Bearer` parameters of a `WWW-Authenticate` header.
+
+    A 401 or 403 from an MCP server carries the two things a client needs to
+    recover: `resource_metadata`, saying where to look up who guards it, and
+    `scope`, which the spec makes authoritative for the operation that failed.
+    """
+    if not header:
+        return {}
+    return {key.lower(): value for key, value in _CHALLENGE_PARAM.findall(header)}

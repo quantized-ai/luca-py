@@ -66,5 +66,14 @@ class McpUnsupportedVersion(Exception):
 
 
 class McpAuthRequired(Exception):
-    """The server answered 401, or refused a token that cannot be refreshed
-    without a human."""
+    """The server answered 401 or 403, or refused a token that cannot be
+    refreshed without a human.
+
+    `challenge` carries the parsed `WWW-Authenticate` parameters when the
+    server sent them: the scopes it wants and where its metadata lives, both of
+    which the next authorization has to use.
+    """
+
+    def __init__(self, message: str, *, challenge: dict[str, str] | None = None) -> None:
+        super().__init__(message)
+        self.challenge = challenge or {}

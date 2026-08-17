@@ -1510,41 +1510,53 @@ class AgentApp(LucaApp):
         )
         await self.push_screen(screen)
 
-    async def open_mcp_screen(self, selected: int = 0) -> None:
+    async def open_mcp_screen(
+        self,
+        selected: int = 0,
+        *,
+        message: str | None = None,
+        error: bool = False,
+    ) -> None:
         if self.mcp is None:
             await self._notice("MCP is off, or no servers are configured under `mcp.servers` in luca.json.")
             return
-        state = build_mcp_state(self.mcp.status(), selected=selected)
+        state = build_mcp_state(self.mcp.status(), selected=selected, message=message, message_is_error=error)
         await self.push_screen(McpScreen(state, self._modal_status("mcp servers"), HINTS["mcp"]))
 
-    async def _mcp_action(self, screen: McpScreen, label: str, doing: str, action) -> None:
-        """Run one server action with the screen dismissed, then reopen it.
+    async def _mcp_action(self, screen: McpScreen, label: str, done: str, action) -> None:
+        """Run one server action with the screen dismissed, then reopen it
+        carrying the outcome.
 
         Dismissed first because authorizing waits on a human in a browser, and
         a modal frozen over the terminal for five minutes is worse than none.
-        The selection is carried back so the row you acted on is still the one
-        under the cursor.
+        The outcome rides back on the STATE rather than a notice: the screen
+        reopens on top of the transcript, so a notice posted here is a report
+        nobody can read.
         """
         selected = screen.state.selected
         screen.dismiss()
-        await self._notice(f"MCP: {doing} {label!r}…")
         try:
             await action()
         except Exception as exc:
             logger.error("mcp server=%s action failed", label, exc_info=exc)
-            await self._notice(f"MCP: {label!r} failed — {exc}", error=True)
-        await self.open_mcp_screen(selected)
+            await self.open_mcp_screen(selected, message=f"{label}: {exc}", error=True)
+            return
+        await self.open_mcp_screen(selected, message=f"{label} {done}")
 
     async def on_mcp_screen_authenticate(self, message: McpScreen.Authenticate) -> None:
         label = message.row.label
-        if message.row.state != "needs_auth" and not self._mcp_is_oauth(label):
-            await self._notice(f"MCP server {label!r} is not configured for oauth.")
+        if not self._mcp_is_oauth(label):
+            message.screen.dismiss()
+            await self.open_mcp_screen(
+                message.screen.state.selected,
+                message=f"{label} does not use oauth — it needs no sign-in",
+            )
             return
-        await self._mcp_action(message.screen, label, "authorizing", lambda: self.mcp.login(label))
+        await self._mcp_action(message.screen, label, "authorized", lambda: self.mcp.login(label))
 
     async def on_mcp_screen_reconnect(self, message: McpScreen.Reconnect) -> None:
         label = message.row.label
-        await self._mcp_action(message.screen, label, "reconnecting", lambda: self.mcp.reconnect(label))
+        await self._mcp_action(message.screen, label, "reconnected", lambda: self.mcp.reconnect(label))
 
     async def on_mcp_screen_toggle(self, message: McpScreen.Toggle) -> None:
         label = message.row.label
@@ -1552,7 +1564,7 @@ class AgentApp(LucaApp):
         await self._mcp_action(
             message.screen,
             label,
-            "enabling" if enable else "disabling",
+            "enabled" if enable else "disabled",
             lambda: self.mcp.set_enabled(label, enable),
         )
 

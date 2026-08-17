@@ -247,3 +247,71 @@ def test_build_runner_installs_the_plugin_with_a_service(tmp_path):
     # The one shared gate, so an MCP tool passes the same approval path as a
     # shell tool rather than a second one of its own.
     assert plugin._policy is strategy
+
+
+async def test_a_failed_action_reports_on_the_screen_not_behind_it(tmp_path):
+    # The screen reopens over the transcript, so a notice posted by an action
+    # is a report nobody can read. This is why an authorize that failed looked
+    # like nothing had happened.
+    app = agent_app(tmp_path, mcp_settings=settings())
+    async with app.run_test(size=(105, 35)) as pilot:
+        await app.mcp.start()
+        from luca.agent.contrib.tui.commands import dispatch
+        from luca.agent.contrib.tui.modals import McpScreen
+
+        await dispatch(app, "/mcp")
+        await pilot.pause()
+        screen = app.screen
+        screen.post_message(McpScreen.Authenticate(screen, screen.state.rows[0]))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen.state.message == "fx does not use oauth — it needs no sign-in"
+        await app.mcp.aclose()
+
+
+async def test_a_successful_action_says_what_it_did(tmp_path):
+    app = agent_app(tmp_path, mcp_settings=settings())
+    async with app.run_test(size=(105, 35)) as pilot:
+        await app.mcp.start()
+        from luca.agent.contrib.tui.commands import dispatch
+        from luca.agent.contrib.tui.modals import McpScreen
+
+        await dispatch(app, "/mcp")
+        await pilot.pause()
+        screen = app.screen
+        screen.post_message(McpScreen.Toggle(screen, screen.state.rows[0]))
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen.state.message == "fx disabled"
+        assert app.screen.state.message_is_error is False
+        await app.mcp.aclose()
+
+
+async def test_a_disabled_row_offers_to_bring_it_back(tmp_path):
+    from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
+    from luca.agent.contrib.tui.mcp_service import build_mcp_state
+
+    state = build_mcp_state([ServerStatus(label="notion", state=ServerState.DISABLED)])
+
+    assert [(row.state, row.detail, row.action) for row in state.rows] == [
+        ("disabled", "disabled for this session", "enable")
+    ]
+
+
+async def test_an_empty_server_list_renders_without_a_selection(tmp_path):
+    from luca.agent.contrib.tui.mcp_service import build_mcp_state
+
+    state = build_mcp_state([])
+
+    assert (state.count_line, state.rows, state.selected) == ("0 of 0 connected · 0 tools", [], 0)
+
+
+async def test_the_selection_is_clamped_when_servers_disappear(tmp_path):
+    from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
+    from luca.agent.contrib.tui.mcp_service import build_mcp_state
+
+    state = build_mcp_state([ServerStatus(label="only", state=ServerState.CONNECTED)], selected=7)
+
+    assert state.selected == 0

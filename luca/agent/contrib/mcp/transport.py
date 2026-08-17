@@ -31,6 +31,7 @@ import httpx
 
 from . import wire
 from .errors import McpAuthRequired, McpProtocolError, McpServerGone
+from .oauth.metadata import parse_challenge
 from .servers import HttpServer, StdioServer
 from .sse import SseDecoder
 
@@ -267,7 +268,8 @@ class HttpTransport:
                 if response.status_code in (401, 403):
                     await response.aread()
                     raise McpAuthRequired(
-                        f"MCP server {self.server.label!r} refused the request ({response.status_code})."
+                        f"MCP server {self.server.label!r} refused the request ({response.status_code}).",
+                        challenge=parse_challenge(response.headers.get("www-authenticate")),
                     )
                 if response.headers.get("content-type", "").startswith("text/event-stream"):
                     return await self._read_stream(response, frame.get("id"))

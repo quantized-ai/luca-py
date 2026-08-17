@@ -27,6 +27,7 @@ from .callback import LoopbackCallback
 from .metadata import (
     AuthorizationServerMetadata,
     ProtectedResourceMetadata,
+    canonical_resource,
     check_issuer,
     fallback_metadata,
     metadata_urls,
@@ -57,6 +58,13 @@ class OAuthProvider(httpx.Auth):
         self._issuer: str | None = None
         self._metadata: AuthorizationServerMetadata | None = None
         self._registration: ClientRegistration | None = None
+        # The token's audience (RFC 8707). A token minted without it is refused
+        # by the MCP server, which looks like a login that silently did nothing.
+        self._resource = canonical_resource(server.url)
+        self._scopes: list[str] = []
+        # The last `WWW-Authenticate` the server sent, which names the scopes it
+        # actually wants and where its metadata lives.
+        self._challenge: dict[str, str] = {}
         self._loaded = False
         # Single-flight: everyone who notices an expired token awaits the SAME
         # future, so a rotated refresh token cannot be spent twice.
@@ -70,6 +78,11 @@ class OAuthProvider(httpx.Auth):
         if self._token is not None:
             request.headers["Authorization"] = f"{self._token.token_type} {self._token.access_token}"
         yield request
+
+    def observe_challenge(self, challenge: dict[str, str]) -> None:
+        """Remember what a 401 or 403 asked for, so the next login requests it."""
+        if challenge:
+            self._challenge = challenge
 
     async def ensure_token(self, client: httpx.AsyncClient, *, interactive: bool) -> None:
         """Make sure a usable token is in memory, refreshing or logging in.
@@ -105,6 +118,7 @@ class OAuthProvider(httpx.Auth):
                     "grant_type": "refresh_token",
                     "refresh_token": self._token.refresh_token,
                     "client_id": self._client_id(),
+                    "resource": self._resource,
                 },
             )
             token = OAuthToken.from_response(payload)
@@ -146,7 +160,12 @@ class OAuthProvider(httpx.Auth):
                 )
             if not state_matches(state, query.get("state", "")):
                 raise McpAuthRequired(f"Authorization for {self.server.label!r} came back with the wrong state.")
-            check_issuer(self._issuer or "", query.get("iss"))  # RFC 9207, before the code goes anywhere
+            # RFC 9207, before the code goes anywhere.
+            check_issuer(
+                self._issuer or "",
+                query.get("iss"),
+                advertised=bool(self._metadata and self._metadata.authorization_response_iss_parameter_supported),
+            )
 
             payload = await self._token_request(
                 client,
@@ -156,6 +175,7 @@ class OAuthProvider(httpx.Auth):
                     "redirect_uri": redirect_uri,
                     "client_id": self._client_id(),
                     "code_verifier": pkce.verifier,
+                    "resource": self._resource,
                 },
             )
             self._token = OAuthToken.from_response(payload)
@@ -176,9 +196,11 @@ class OAuthProvider(httpx.Auth):
             "state": state,
             "code_challenge": pkce.challenge,
             "code_challenge_method": pkce.method,
+            # MUST be sent whether or not the server is known to support it.
+            "resource": self._resource,
         }
-        if metadata.scopes_supported:
-            query["scope"] = " ".join(metadata.scopes_supported)
+        if self._scopes:
+            query["scope"] = " ".join(self._scopes)
         separator = "&" if "?" in (metadata.authorization_endpoint or "") else "?"
         return f"{metadata.authorization_endpoint}{separator}{urlencode(query)}"
 
@@ -217,19 +239,41 @@ class OAuthProvider(httpx.Auth):
         self._metadata = fallback_metadata(issuer)
 
     async def _find_issuer(self, client: httpx.AsyncClient) -> str:
-        """Ask the resource who guards it, falling back to its own origin."""
+        """Ask the RESOURCE who guards it, and what scopes it wants.
+
+        Both come from the protected-resource document, not the authorization
+        server's: `scopes_supported` there is what this MCP server needs, and
+        the authorization server's own list is a different thing that happens
+        to share the field name.
+        """
+        url = self._challenge.get("resource_metadata") or protected_resource_url(self.server.url)
         try:
-            response = await client.get(protected_resource_url(self.server.url), auth=None, timeout=DISCOVERY_TIMEOUT_S)
+            response = await client.get(url, auth=None, timeout=DISCOVERY_TIMEOUT_S)
             if response.status_code == 200:
                 resource = ProtectedResourceMetadata.model_validate(response.json())
+                if resource.resource:
+                    self._resource = canonical_resource(resource.resource)
+                self._scopes = self._select_scopes(resource.scopes_supported)
                 if resource.authorization_servers:
                     return resource.authorization_servers[0]
         except (httpx.HTTPError, ValueError):
             pass
+        self._scopes = self._select_scopes([])
         from urllib.parse import urlsplit, urlunsplit
 
         parts = urlsplit(self.server.url)
         return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+    def _select_scopes(self, advertised: list[str]) -> list[str]:
+        """The spec's priority: the challenge wins, then what the resource says
+        it needs, then nothing. A scope we invent is a scope the user is asked
+        to grant for no reason."""
+        challenged = self._challenge.get("scope", "").split()
+        if challenged:
+            # Authoritative for the operation that failed, and unioned with
+            # what we already asked for so a step-up does not drop a grant.
+            return sorted(set(challenged) | set(self._scopes))
+        return list(advertised)
 
     async def _register(self, client: httpx.AsyncClient, redirect_uri: str) -> None:
         """Get a client id: configured, remembered, or dynamically registered.

@@ -424,6 +424,10 @@ class McpState(BaseModel):
     rows: list[McpRow] = Field(default_factory=list)
     selected: int = 0
     notes: list[str] = Field(default_factory=list)  # excluded tools, with the reason
+    # What the last action did. On the SCREEN rather than in a notice, because
+    # the screen is what covers the transcript when it reopens.
+    message: str | None = None
+    message_is_error: bool = False
     model_config = _STRICT
 
 

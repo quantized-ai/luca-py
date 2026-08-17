@@ -474,6 +474,10 @@ PreviewGutter {
     margin-bottom: 1;
 }
 
+.mcp-message--error {
+    color: $error;
+}
+
 /* settings (1j) */
 
 .group-label {

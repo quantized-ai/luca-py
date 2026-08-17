@@ -128,6 +128,12 @@ Rules use the existing vocabulary, with no new schema:
 
 `"oauth": true` turns on the browser flow: authorization code with PKCE, a loopback redirect on an OS-assigned port, and RFC 9207 `iss` validation before the code is redeemed. Tokens go to `~/.local/share/luca/mcp/mcp-auth.json`, keyed by **issuer** rather than by label, so two servers behind one authorization server share a login and renaming a label does not orphan a token.
 
+Two details the spec makes MUST-level, and both fail the same silent way when you skip them:
+
+**The `resource` parameter** (RFC 8707) goes on the authorization request and both token grants, carrying the server's canonical URI. It is what binds the token to this MCP server, and the server is required to reject a token that is not bound to it. Omit it and the browser says Authorized, the token arrives, and the very next request comes back 401 with nothing to explain it.
+
+**Scopes come from the protected-resource document**, not the authorization server's. Both publish `scopes_supported` and they mean different things: the resource's list is what this MCP server needs. A `WWW-Authenticate` challenge overrides it, since the spec makes the challenged scopes authoritative for the operation that failed.
+
 A server you have not signed into is `not authenticated`, never a failure, and is not even listed — it would only answer 401. The browser opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp`.
 
 Registration is dynamic by default, declaring `application_type: "native"` as the revision requires. Set `client_id` to use a pre-registered client instead.

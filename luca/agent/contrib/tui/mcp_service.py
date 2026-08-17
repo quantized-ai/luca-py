@@ -56,7 +56,13 @@ def build_mcp_service(settings: McpSettings | None, *, home: Path | None = None)
     return McpService(servers, catalog_path=root / "catalog.json", token_path=root / "mcp-auth.json")
 
 
-def build_mcp_state(statuses: list[ServerStatus], *, selected: int = 0) -> vm.McpState:
+def build_mcp_state(
+    statuses: list[ServerStatus],
+    *,
+    selected: int = 0,
+    message: str | None = None,
+    message_is_error: bool = False,
+) -> vm.McpState:
     """The `/mcp` screen's state from what the service knows.
 
     Pure, so the design catalog can render every combination of states without
@@ -83,6 +89,8 @@ def build_mcp_state(statuses: list[ServerStatus], *, selected: int = 0) -> vm.Mc
         rows=rows,
         selected=max(0, min(selected, len(rows) - 1)) if rows else 0,
         notes=notes,
+        message=message,
+        message_is_error=message_is_error,
     )
 
 
