@@ -30,6 +30,7 @@ from luca.agent.contrib.mcp.service import McpService
 from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.simple_tool_registry import YoloPermissionPolicy
 from luca.agent.core import AgentSessionRunner, LLMConfig
+from luca.agent.core.events import TextBlock
 
 
 async def main() -> None:
@@ -43,7 +44,13 @@ async def main() -> None:
 
     session = AgentSessionRunner.new_session(LLMConfig(model="openai/gpt-4o-mini", provider="openrouter"))
     runner = PluginAgentSessionRunner(session, plugins=[McpPlugin(service, YoloPermissionPolicy())])
-    await runner.run("Read note.txt and summarize it.")
+
+    runner.post_message("Read note.txt and summarize it.")
+    async with runner.run() as run:
+        async for event in run:
+            match event:
+                case TextBlock(text=text):
+                    print(text)
 
     await service.aclose()
 
