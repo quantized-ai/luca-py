@@ -202,6 +202,20 @@ async def test_an_unreadable_store_is_treated_as_empty(tmp_path):
     assert (await TokenStore(path).get(ISSUER)) == IssuerRecord()
 
 
+def test_a_lowercase_token_type_is_sent_as_the_canonical_scheme():
+    # THE BUG. RFC 6749 §7.1 makes `token_type` case-insensitive and Linear
+    # answers "bearer", but its resource server accepts only "Bearer" — so
+    # echoing the server's own spelling back at it turned a login that worked
+    # into a 401 on every request after it.
+    token = OAuthToken(access_token="t", token_type="bearer")
+
+    assert token.authorization() == "Bearer t"
+
+
+def test_a_token_type_that_is_not_bearer_is_left_alone():
+    assert OAuthToken(access_token="t", token_type="DPoP").authorization() == "DPoP t"
+
+
 def test_a_token_with_no_expiry_never_expires():
     assert OAuthToken(access_token="t").expired(now=10**12) is False
 
@@ -318,6 +332,17 @@ async def test_a_valid_token_needs_no_network_at_all(auth_client):
 async def test_the_token_is_attached_to_outgoing_requests():
     provider = OAuthProvider(SERVER, store=TokenStore(None))
     provider._token = OAuthToken(access_token="good")
+
+    request = next(provider.auth_flow(httpx.Request("POST", SERVER.url)))
+
+    assert request.headers["authorization"] == "Bearer good"
+
+
+async def test_a_lowercase_token_type_reaches_the_wire_capitalized():
+    # The scheme is canonicalized where the header is built, so a token already
+    # on disk from before the fix works without a fresh login.
+    provider = OAuthProvider(SERVER, store=TokenStore(None))
+    provider._token = OAuthToken(access_token="good", token_type="bearer")
 
     request = next(provider.auth_flow(httpx.Request("POST", SERVER.url)))
 

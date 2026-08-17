@@ -80,7 +80,7 @@ class OAuthProvider(httpx.Auth):
         contract, so it cannot refresh; a 401 comes back as `McpAuthRequired`
         for the async path to deal with."""
         if self._token is not None:
-            request.headers["Authorization"] = f"{self._token.token_type} {self._token.access_token}"
+            request.headers["Authorization"] = self._token.authorization()
         yield request
 
     def observe_challenge(self, challenge: dict[str, str]) -> None:

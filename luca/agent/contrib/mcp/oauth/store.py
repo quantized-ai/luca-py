@@ -38,11 +38,12 @@ STORE_VERSION: Final = 2
 # Refresh this long before the token actually expires, so a call does not race
 # its own credential.
 EXPIRY_SKEW_S: Final = 60
+BEARER: Final = "Bearer"
 
 
 class OAuthToken(BaseModel):
     access_token: str
-    token_type: str = "Bearer"
+    token_type: str = BEARER  # as the server spelled it; `authorization()` canonicalizes
     refresh_token: str | None = None
     expires_at: float | None = None  # epoch seconds, computed from expires_in on receipt
     scope: str | None = None
@@ -53,13 +54,24 @@ class OAuthToken(BaseModel):
             return False
         return (now if now is not None else time.time()) >= self.expires_at - EXPIRY_SKEW_S
 
+    def authorization(self) -> str:
+        """The `Authorization` header value.
+
+        RFC 6749 §7.1 makes `token_type` case-insensitive and Linear answers
+        `"bearer"`, but its resource server accepts only `Bearer` — so echoing
+        the server's own spelling back at it turns a login that worked into a
+        401 on every request after it. Send the canonical scheme.
+        """
+        scheme = BEARER if self.token_type.lower() == BEARER.lower() else self.token_type
+        return f"{scheme} {self.access_token}"
+
     @classmethod
     def from_response(cls, payload: dict, *, now: float | None = None) -> OAuthToken:
         expires_in = payload.get("expires_in")
         moment = now if now is not None else time.time()
         return cls(
             access_token=payload["access_token"],
-            token_type=payload.get("token_type") or "Bearer",
+            token_type=payload.get("token_type") or BEARER,
             refresh_token=payload.get("refresh_token"),
             expires_at=moment + float(expires_in) if expires_in is not None else None,
             scope=payload.get("scope"),

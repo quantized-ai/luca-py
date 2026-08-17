@@ -138,7 +138,9 @@ Two details the spec makes MUST-level, and both fail the same silent way when yo
 
 A server you have not signed into is `not authenticated`, never a failure, and is not even listed — it would only answer 401. The browser opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp <server>`.
 
-A token that lapsed between listings is renewed on the call path, silently, because that renewal needs no human. One that comes back 401 anyway flips the server to `needs_auth` and records the scopes the challenge named, so the row you go to next is already telling you what to do about it.
+A token that lapsed between listings is renewed on the call path, silently, because that renewal needs no human. One that comes back 401 anyway flips the server to `needs_auth` and records the scopes the challenge named, so the row you go to next is already telling you what to do about it. And a login that produced a token the server then refuses is reported as the failure it is, rather than as the authorization that technically succeeded.
+
+One interop trap, met in the wild: the `Authorization` scheme is sent as the canonical `Bearer`, not as whatever case the token response used. RFC 6749 §7.1 makes `token_type` case-insensitive and Linear answers `"bearer"`, but its own resource server accepts only `Bearer` — so echoing the server's spelling back at it turns a login that worked into a 401 on every request after it.
 
 Registration is dynamic by default, declaring `application_type: "native"` as the revision requires. Set `client_id` to use a pre-registered client instead.
 

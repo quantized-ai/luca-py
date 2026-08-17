@@ -512,6 +512,19 @@ class RemoteWithAuth:
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": results[body["method"]]})
 
 
+async def redirect_back(url: str) -> None:
+    """Stand in for the human at the browser: read the state off the
+    authorization URL and complete the redirect, as the server would."""
+    import httpx
+
+    query = httpx.URL(url).params
+    async with httpx.AsyncClient() as agent:
+        await agent.get(
+            query["redirect_uri"],
+            params={"code": "the-code", "state": query["state"], "iss": "https://auth.example.test"},
+        )
+
+
 async def test_a_call_renews_a_token_that_lapsed_since_the_last_listing(service):
     import httpx
 
@@ -531,6 +544,27 @@ async def test_a_call_renews_a_token_that_lapsed_since_the_last_listing(service)
 
         assert result.content == [TextContent(text="found")]
         assert [form["grant_type"] for form in handler.tokens] == ["refresh_token"]
+
+
+async def test_a_login_whose_token_is_then_refused_does_not_report_success(service):
+    # What `/mcp` used to say when Linear minted a token its own resource
+    # server rejected: "linear authorized", with no tools and nothing to
+    # explain why. `refresh` records that failure rather than raising it.
+    import httpx
+
+    from luca.agent.contrib.mcp.errors import McpAuthRequired
+    from luca.agent.contrib.mcp.servers import HttpServer
+
+    handler = RemoteWithAuth(reject=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        started = service(
+            {"remote": HttpServer(label="remote", url=REMOTE_URL, oauth=True, client_id="fixed-client")},
+            client=client,
+            browser=redirect_back,
+        )
+
+        with pytest.raises(McpAuthRequired, match="issued a token and then refused it"):
+            await started.login("remote")
 
 
 async def test_a_call_refused_with_a_401_stops_the_server_claiming_to_be_connected(service):

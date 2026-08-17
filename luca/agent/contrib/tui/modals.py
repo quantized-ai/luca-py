@@ -277,7 +277,9 @@ class McpToolRowView(SelectRow):
         # still call.
         text.append("✗ " if excluded else "  ", style=Style(color=tokens.error))
         text.append(
-            self.row.name.ljust(MCP_TOOL_COLUMN),
+            # `_fit` truncates as well as pads: real servers ship names longer
+            # than the column, and one of them must not shift every summary.
+            _fit(self.row.name, MCP_TOOL_COLUMN, False),
             style=Style(color=tokens.faint if excluded else tokens.foreground),
         )
         text.append(

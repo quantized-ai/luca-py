@@ -332,8 +332,16 @@ class McpService:
         if provider is None:
             raise McpAuthRequired(f"MCP server {label!r} is not configured for oauth.")
         await provider.authorize(self._client)
-        self._connections[label].needs_auth = False
+        connection = self._connections[label]
+        connection.needs_auth = False
         await self.refresh([label])
+        # `refresh` records a failure rather than raising it, so without this a
+        # token the server then refuses reports "authorized" and hands the
+        # model nothing.
+        if connection.needs_auth:
+            raise McpAuthRequired(
+                f"MCP server {label!r} issued a token and then refused it. The token may not be bound to this server."
+            )
 
     async def reconnect(self, label: str) -> None:
         """Drop what was negotiated and list the server again.
