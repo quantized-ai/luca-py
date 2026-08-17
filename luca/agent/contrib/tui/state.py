@@ -408,7 +408,7 @@ class CostState(BaseModel):
     model_config = _STRICT
 
 
-McpRowState = Literal["connected", "needs_auth", "failed", "disabled"]
+McpRowState = Literal["connected", "needs_auth", "inactive", "disabled"]
 
 
 class McpRow(BaseModel):

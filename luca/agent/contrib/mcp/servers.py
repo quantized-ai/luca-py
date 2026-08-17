@@ -100,16 +100,21 @@ Server = StdioServer | HttpServer
 
 
 class ServerState(str, Enum):
-    """Where one server stands.
+    """Whether a server's tools are available to the model, and if not, why.
 
-    NEEDS_AUTH is separate from FAILED on purpose. A server that has simply
-    never been authorized has nothing wrong with it, and reporting it in red
-    beside a genuine connection failure trains people to ignore both.
+    CONNECTED asks exactly that question and not "is a process running": the
+    catalog is durable and transports are spawned lazily, so a server whose
+    tools came off disk and whose subprocess has never started this run is
+    working, not broken.
+
+    The other three are each a different thing for the user to do — sign in,
+    look at the error, or switch it back on — which is why they are separate
+    rather than one failure bucket.
     """
 
     CONNECTED = "connected"
     NEEDS_AUTH = "needs_auth"
-    FAILED = "failed"
+    INACTIVE = "inactive"
     DISABLED = "disabled"
 
 
@@ -118,7 +123,7 @@ class ServerStatus(BaseModel):
     notice. Not persisted; rebuilt from live state on every ask."""
 
     label: str
-    state: ServerState = ServerState.FAILED
+    state: ServerState = ServerState.INACTIVE
     oauth: bool = False  # whether "authenticate" is an action this server has
     protocol_version: str | None = None
     tool_count: int = 0

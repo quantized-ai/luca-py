@@ -209,9 +209,11 @@ async def test_a_status_reports_the_negotiated_version(connect):
     connection = connect()
     await connection.connect()
 
+    # The CONNECTION reports its own facts only; the state a user sees is the
+    # service's, because it depends on the catalog.
     assert connection.status().model_dump() == {
         "label": "fixture",
-        "state": "connected",
+        "state": "inactive",
         "oauth": False,
         "protocol_version": "2026-07-28",
         "tool_count": 0,

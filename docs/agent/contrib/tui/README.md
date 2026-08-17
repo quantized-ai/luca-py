@@ -315,13 +315,17 @@ as everything else.
 }
 ```
 
-Servers connect in a worker at startup and a notice reports what came up. A
-server you have not signed into yet is not reported as a failure:
+Servers connect in a worker at startup, and the notice reports only what
+worked:
 
 ```
 MCP connected: files (14 tools), airtable (16 tools)
-MCP needs authorization: linear — run /mcp to sign in
 ```
+
+A server waiting on a login, or one that could not be reached, says nothing at
+boot. Neither is something you can act on from there, and a red line you cannot
+act on is what stops people reading any of them. Both show up in `/mcp`, which
+is where the fix is.
 
 `/mcp` opens the server list, one row per server with a coloured dot for its
 state:

@@ -65,7 +65,7 @@ Three arguments carry the decisions:
 
 > ⚠️ **Build the service once and keep it.** It owns live subprocesses and
 > negotiated protocol state. Rebuilding it per session reconnects every server
-> and re-runs OAuth — see section 7.
+> and re-runs OAuth — see section 8.
 
 ## 2. Which protocol it speaks
 
@@ -128,17 +128,35 @@ Rules use the existing vocabulary, with no new schema:
 
 `"oauth": true` turns on the browser flow: authorization code with PKCE, a loopback redirect on an OS-assigned port, and RFC 9207 `iss` validation before the code is redeemed. Tokens go to `~/.local/share/luca/mcp/mcp-auth.json`, keyed by **issuer** rather than by label, so two servers behind one authorization server share a login and renaming a label does not orphan a token.
 
-A server you have not signed into is reported as `not authenticated`, never as a failure, and the browser only opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp`.
+A server you have not signed into is `not authenticated`, never a failure, and is not even listed — it would only answer 401. The browser opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp`.
 
 Registration is dynamic by default, declaring `application_type: "native"` as the revision requires. Set `client_id` to use a pre-registered client instead.
 
-## 7. Where the state lives, and why
+## 7. What `connected` means
+
+That the model can call the server's tools, which is true as soon as there is a
+listing for it. Not that a process is running.
+
+The distinction is load-bearing rather than pedantic. Transports are spawned
+lazily and the catalog is durable, so a relaunch inside the TTL serves a
+server's tools straight off disk and never opens a connection at all. Asking
+the transport whether it is alive would report that server as broken while its
+tools work perfectly.
+
+| State | Means | The action |
+| --- | --- | --- |
+| `connected` | its tools are available to the model | reconnect |
+| `needs_auth` | an `oauth` server nobody has signed into | authenticate |
+| `inactive` | it could not be reached, with the reason | retry |
+| `disabled` | switched off for this session | enable |
+
+## 8. Where the state lives, and why
 
 The service that owns the connections, the catalog and the tokens is built once in `AgentApp.__init__`, beside `CheckpointService`, and it outlives every session. `/clear`, `/new`, `/resume` and fork all rebuild the runner through `_reset_session`; none of them touch MCP. The plugin and the registry are stateless views holding two references each.
 
 This is load-bearing rather than tidy. When the connections lived on the plugin, `/clear` re-discovered every server and could open a browser in the middle of someone's next message. The plugin deliberately has no `aclose` for the same reason: `_close_plugins()` runs on `/clear` too, and only `_quit` closes the service.
 
-## 8. Configuration
+## 9. Configuration
 
 | Field | Meaning |
 | --- | --- |
@@ -154,7 +172,7 @@ Give either `command` or `url`, never both. A server defined one way in `~/.conf
 
 `mcp.enabled: false` or `--no-mcp` turns the whole thing off.
 
-## 9. Not implemented
+## 10. Not implemented
 
 **Resources and prompts.** Only tools are exposed. `resources/read` and `prompts/get` are spoken by the client but nothing surfaces them yet.
 

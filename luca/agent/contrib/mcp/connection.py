@@ -89,20 +89,16 @@ class ServerConnection:
         return self._negotiated
 
     def status(self) -> ServerStatus:
+        """What this connection knows. The STATE is the service's to decide —
+        only it knows whether a cached listing makes this server usable without
+        a live connection."""
         return ServerStatus(
             label=self.label,
-            state=self._state(),
+            state=ServerState.NEEDS_AUTH if self.needs_auth else ServerState.INACTIVE,
             oauth=getattr(self.server, "oauth", False),
             protocol_version=self._negotiated.protocol_version if self._negotiated else None,
             error=self.error,
         )
-
-    def _state(self) -> ServerState:
-        if self.needs_auth:
-            return ServerState.NEEDS_AUTH
-        if self._negotiated is not None and self._transport.alive:
-            return ServerState.CONNECTED
-        return ServerState.FAILED
 
     async def connect(self) -> Negotiated:
         """Probe once and cache the answer. Idempotent."""

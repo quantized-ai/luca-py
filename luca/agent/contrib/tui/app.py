@@ -314,20 +314,14 @@ class AgentApp(LucaApp):
             logger.error("mcp startup failed", exc_info=exc)
             await self._notice_if_mounted(f"MCP: {exc}", error=True)
             return
-        statuses = self.mcp.status()
-        connected = [s for s in statuses if s.state is ServerState.CONNECTED]
-        waiting = [s for s in statuses if s.state is ServerState.NEEDS_AUTH]
-        failed = [s for s in statuses if s.state is ServerState.FAILED]
+        # ONLY what worked. A server that needs a login or could not be
+        # reached is left to `/mcp`, which is where you can do something about
+        # it: a red line at boot that the user cannot act on from there is
+        # noise, and noise at boot is what stops people reading any of it.
+        connected = [s for s in self.mcp.status() if s.state is ServerState.CONNECTED]
         if connected:
             summary = ", ".join(f"{status.label} ({status.tool_count} tools)" for status in connected)
             await self._notice_if_mounted(f"MCP connected: {summary}")
-        if waiting:
-            # Not an error: nobody has been offered the login yet. Saying so in
-            # red beside a real failure trains people to ignore both.
-            names = ", ".join(status.label for status in waiting)
-            await self._notice_if_mounted(f"MCP needs authorization: {names} — run /mcp to sign in")
-        for status in failed:
-            await self._notice_if_mounted(f"MCP server {status.label!r} failed: {status.error}", error=True)
 
     async def _notice_if_mounted(self, text: str, *, error: bool = False) -> None:
         """`_notice` for a worker that may resume after the frame is gone."""

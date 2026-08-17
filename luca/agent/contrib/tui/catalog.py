@@ -384,7 +384,7 @@ MCP_SERVERS: tuple[ServerStatus, ...] = (
     ),
     ServerStatus(
         label="staging",
-        state=ServerState.FAILED,
+        state=ServerState.INACTIVE,
         error="Could not start MCP server 'staging': No such file or directory",
     ),
     ServerStatus(label="notion", state=ServerState.DISABLED),

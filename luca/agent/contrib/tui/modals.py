@@ -226,7 +226,7 @@ MCP_LABEL_COLUMN = 18
 MCP_STATE_COLORS: dict[str, str] = {
     "connected": "success",
     "needs_auth": "accent",
-    "failed": "error",
+    "inactive": "error",
     "disabled": "faint",
 }
 

@@ -295,7 +295,7 @@ async def test_an_unauthorized_oauth_server_is_not_a_failure(service):
         assert (status.state, status.error, status.oauth) == (ServerState.NEEDS_AUTH, None, True)
 
 
-async def test_an_unreachable_server_is_still_a_failure(service):
+async def test_an_unreachable_server_is_inactive_and_says_why(service):
     from luca.agent.contrib.mcp.servers import ServerState
 
     started = service({"broken": StdioServer(label="broken", command="/nonexistent/server")})
@@ -303,8 +303,28 @@ async def test_an_unreachable_server_is_still_a_failure(service):
 
     [status] = started.status()
 
-    assert status.state is ServerState.FAILED
+    assert status.state is ServerState.INACTIVE
     assert status.error
+
+
+async def test_a_server_served_from_the_cache_is_connected(service, tmp_path):
+    # The bug this replaced: a relaunch inside the TTL lists nothing, so no
+    # connection is ever opened, and asking the transport whether it was alive
+    # reported a server whose tools work perfectly as failed.
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    catalog = tmp_path / "catalog.json"
+    first = service({"fx": stdio()}, catalog_path=catalog)
+    await first.start()
+    await first.aclose()
+
+    second = service({"fx": stdio()}, catalog_path=catalog)
+    await second.start()
+
+    [status] = second.status()
+
+    assert status.state is ServerState.CONNECTED
+    assert (status.error, status.tool_count) == (None, 1)
 
 
 async def test_a_disabled_server_withholds_its_tools(service):

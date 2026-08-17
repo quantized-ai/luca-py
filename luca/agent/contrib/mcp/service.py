@@ -107,16 +107,33 @@ class McpService:
         return None if found is not None and self._is_disabled(found) else found
 
     def status(self) -> list[ServerStatus]:
-        return [
-            connection.status().model_copy(
-                update={
-                    "state": ServerState.DISABLED if label in self._disabled else connection.status().state,
-                    "tool_count": 0 if label in self._disabled else self.catalog.tool_count(label),
-                    "rejected_tools": self.catalog.rejected(label),
-                }
-            )
-            for label, connection in self._connections.items()
-        ]
+        return [self._status(label, connection) for label, connection in self._connections.items()]
+
+    def _status(self, label: str, connection: ServerConnection) -> ServerStatus:
+        """One server's state, decided here because it depends on the catalog.
+
+        CONNECTED means the model can call this server's tools, which is true
+        as soon as there is a listing for it. A relaunch inside the TTL serves
+        that listing off disk and never opens a connection at all, so asking
+        the transport whether it is alive would report a working server as
+        broken.
+        """
+        reported = connection.status()
+        if label in self._disabled:
+            state = ServerState.DISABLED
+        elif connection.needs_auth:
+            state = ServerState.NEEDS_AUTH
+        elif connection.error is None and self.catalog.has(label):
+            state = ServerState.CONNECTED
+        else:
+            state = ServerState.INACTIVE
+        return reported.model_copy(
+            update={
+                "state": state,
+                "tool_count": 0 if state is ServerState.DISABLED else self.catalog.tool_count(label),
+                "rejected_tools": self.catalog.rejected(label),
+            }
+        )
 
     def status_for(self, label: str) -> ServerStatus | None:
         return next((status for status in self.status() if status.label == label), None)

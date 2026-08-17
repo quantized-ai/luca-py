@@ -25,7 +25,7 @@ from .auth import auth_home
 ACTIONS: dict[ServerState, str] = {
     ServerState.CONNECTED: "reconnect",
     ServerState.NEEDS_AUTH: "authenticate",
-    ServerState.FAILED: "retry",
+    ServerState.INACTIVE: "retry",
     ServerState.DISABLED: "enable",
 }
 
@@ -95,7 +95,7 @@ def _detail(status: ServerStatus) -> str:
             return "not authenticated"
         case ServerState.DISABLED:
             return "disabled for this session"
-    return status.error or "not connected"
+    return status.error or "not connected yet"
 
 
 __all__ = ["McpConfigError", "build_mcp_service", "build_mcp_state", "mcp_home"]
