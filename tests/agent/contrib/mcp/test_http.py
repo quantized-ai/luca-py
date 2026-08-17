@@ -216,3 +216,16 @@ async def test_an_annotated_argument_is_mirrored_into_a_param_header(http):
     await conn.call_tool("sql", {"region": "us-west1"}, extra_headers={"Mcp-Param-Region": "us-west1"})
 
     assert recorder.sent("tools/call").headers["mcp-param-region"] == "us-west1"
+
+
+async def test_a_server_that_never_stops_paginating_is_cut_off(http):
+    # The refresh loop awaits this listing, so an endless cursor would not just
+    # hang one server: every other server stops refreshing behind it.
+    from luca.agent.contrib.mcp.connection import MAX_PAGES
+
+    endless = dict(TOOLS)
+    endless["nextCursor"] = "always-more"
+
+    tools, _ = await http(Recorder({"server/discover": DISCOVER, "tools/list": endless})).list_tools()
+
+    assert len(tools) == MAX_PAGES

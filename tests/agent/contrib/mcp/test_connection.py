@@ -12,6 +12,7 @@ concurrency by the order the answers come back — all facts, not durations.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -229,3 +230,32 @@ async def test_a_server_that_cannot_start_records_why(connect):
         await connection.connect()
 
     assert "broken" in connection.error
+
+
+async def test_closing_mid_spawn_leaves_no_subprocess_behind(connect):
+    # `_teardown` runs unlocked so shutdown never queues behind a long call,
+    # which means it can land while `_ensure` is still starting a process.
+    # That one had nothing left to close it, and `start_new_session=True` keeps
+    # it alive through the terminal's own Ctrl-C.
+    connection = connect()
+    listing = asyncio.create_task(connection.list_tools())
+    await asyncio.sleep(0)  # inside `_ensure`, before the spawn returns
+
+    await connection.aclose()
+    with contextlib.suppress(Exception):
+        await listing
+
+    assert connection._transport._process is None
+
+
+async def test_reconnecting_after_a_close_still_starts_a_server(connect):
+    # The flag says "a close arrived while a spawn was in flight", not "closed
+    # forever": `/mcp` reconnect closes and re-lists, and a permanent flag
+    # would leave it unable to start.
+    connection = connect()
+    await connection.list_tools()
+
+    await connection.aclose()
+    tools, _ = await connection.list_tools()
+
+    assert [tool.name for tool in tools] == ["tool_0"]

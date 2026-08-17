@@ -13,7 +13,10 @@ network, whether a cached slice still applies:
   drops the slice: a changed `command` must never serve the old tool list.
 - `credential_fingerprint()` names WHO IS ASKING — the env and header VALUES.
   A `cacheScope: "private"` listing is keyed by this too, so one user's cached
-  listing is never served to another.
+  listing is never served to another. It covers what is CONFIGURED, which is
+  every credential except an OAuth token: that one arrives from a browser, is
+  not on this model, and is not known until it has been read off disk, so
+  `ToolCatalog.verify_credential` checks it at the first listing instead.
 
 Values are hashed, never stored, so a fingerprint can go in the catalog file
 without putting a token in it.

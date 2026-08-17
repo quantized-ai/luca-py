@@ -13,6 +13,7 @@ from inside a turn, so a browser cannot open mid-message.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import webbrowser
 from collections.abc import Callable
@@ -73,6 +74,10 @@ class OAuthProvider(httpx.Auth):
         # Single-flight: everyone who notices an expired token awaits the SAME
         # future, so a rotated refresh token cannot be spent twice.
         self._refreshing: asyncio.Future | None = None
+        # The same shape for the first read off disk, and for the same reason:
+        # a flag set before the await lets the second caller through with no
+        # token in memory yet, which reads as "never authorized".
+        self._loading: asyncio.Future | None = None
         self._lock = asyncio.Lock()
 
     def auth_flow(self, request: httpx.Request):
@@ -82,6 +87,19 @@ class OAuthProvider(httpx.Auth):
         if self._token is not None:
             request.headers["Authorization"] = self._token.authorization()
         yield request
+
+    def credential_fingerprint(self) -> str | None:
+        """Who the live token says we are, as a hash. None when there is none.
+
+        `HttpServer.credential_fingerprint` covers static headers and cannot
+        cover this: the token is not configuration, it arrives from a browser.
+        Without it a `cacheScope: "private"` listing made under one login is
+        served to the next, which is the one promise that file's docstring
+        makes and could not keep.
+        """
+        if self._token is None:
+            return None
+        return hashlib.sha256(self._token.access_token.encode("utf-8")).hexdigest()
 
     def observe_challenge(self, challenge: dict[str, str]) -> None:
         """Remember what a 401 or 403 asked for, so the next login requests it."""
@@ -324,11 +342,21 @@ class OAuthProvider(httpx.Auth):
         """
         if self._loaded:
             return
-        self._loaded = True
-        issuer = self._issuer or await self._store.issuer_for(self._server_resource) or _origin(self.server.url)
-        self._issuer = self._issuer or issuer
-        record = await self._store.get(issuer)
-        self._token, self._registration = record.token, record.registration
+        if self._loading is not None:
+            await asyncio.shield(self._loading)
+            return
+        loop = asyncio.get_running_loop()
+        self._loading = loop.create_future()
+        try:
+            issuer = self._issuer or await self._store.issuer_for(self._server_resource) or _origin(self.server.url)
+            self._issuer = self._issuer or issuer
+            record = await self._store.get(issuer)
+            self._token, self._registration = record.token, record.registration
+            self._loaded = True
+        finally:
+            future, self._loading = self._loading, None
+            if not future.done():
+                future.set_result(None)
 
     async def _persist(self) -> None:
         await self._store.put(

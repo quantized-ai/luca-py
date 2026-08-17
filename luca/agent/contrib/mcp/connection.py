@@ -37,6 +37,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONNECT_TIMEOUT_MS: Final = 30_000
 DEFAULT_LIST_TIMEOUT_MS: Final = 30_000
 DEFAULT_REQUEST_TIMEOUT_MS: Final = 120_000
+# Pages of `tools/list` to follow before giving up on the cursor. Far above any
+# real server (100 pages is thousands of tools, well past what a model can be
+# offered) and low enough that a cursor loop ends.
+MAX_PAGES: Final = 100
+# And a wall-clock bound on the whole listing, because 100 pages that each
+# answer just inside their own timeout is still most of an hour.
+MAX_LISTING_MS: Final = 120_000
 
 # Methods safe to re-send against a fresh process, because they change nothing.
 IDEMPOTENT: Final = frozenset(
@@ -181,20 +188,35 @@ class ServerConnection:
         return wire.parse_result(method, version, wire.result_payload(message))
 
     async def list_tools(self):
-        """Every tool the server offers, following `nextCursor` to the end."""
+        """Every tool the server offers, following `nextCursor` to the end.
+
+        BOUNDED TWICE. Each page has its own timeout, which says nothing about
+        how many pages there are: a server that keeps handing back cursors
+        would loop here forever, and since the refresh loop awaits this, one
+        such server stops every other server from ever refreshing again.
+        """
         timeout_ms = _ms(self.server.list_timeout_in_ms, DEFAULT_LIST_TIMEOUT_MS)
         tools: list = []
         cursor: str | None = None
         hints: tuple[int, str] = (0, "private")
-        while True:
-            params = {"cursor": cursor} if cursor else None
-            page = await self.request("tools/list", params, timeout_ms=timeout_ms)
-            tools.extend(page.tools)
-            if not cursor:  # the first page's hints describe the whole listing
-                hints = (getattr(page, "ttl_ms", 0) or 0, getattr(page, "cache_scope", None) or "private")
-            cursor = page.next_cursor
-            if not cursor:
-                return tools, hints
+        async with asyncio.timeout(MAX_LISTING_MS / 1000):
+            for page_number in range(MAX_PAGES):
+                params = {"cursor": cursor} if cursor else None
+                page = await self.request("tools/list", params, timeout_ms=timeout_ms)
+                tools.extend(page.tools)
+                if not cursor:  # the first page's hints describe the whole listing
+                    hints = (getattr(page, "ttl_ms", 0) or 0, getattr(page, "cache_scope", None) or "private")
+                cursor = page.next_cursor
+                if not cursor:
+                    return tools, hints
+                if page_number == MAX_PAGES - 1:
+                    logger.warning(
+                        "mcp server=%s still had pages after %d; keeping the %d tools listed so far",
+                        self.label,
+                        MAX_PAGES,
+                        len(tools),
+                    )
+        return tools, hints
 
     async def call_tool(self, name: str, arguments: dict, *, timeout_ms: int | None = None, extra_headers=None):
         return await self.request(

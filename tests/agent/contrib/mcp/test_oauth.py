@@ -338,6 +338,33 @@ async def test_the_token_is_attached_to_outgoing_requests():
     assert request.headers["authorization"] == "Bearer good"
 
 
+async def test_concurrent_first_reads_all_see_the_stored_token(tmp_path):
+    # THE RACE. `_loaded` was set before the await, so a second caller arriving
+    # inside that window returned with no token in memory and raised
+    # `McpAuthRequired` — a failed tool call over a token that was on disk all
+    # along. Two parallel calls to one server is a thing models do constantly.
+    path = tmp_path / "mcp-auth.json"
+    seeded = OAuthProvider(SERVER, store=TokenStore(path))
+    seeded._issuer = ISSUER
+    seeded._token = OAuthToken(access_token="on-disk")
+    await seeded._persist()
+
+    provider = OAuthProvider(SERVER, store=TokenStore(path))
+    await asyncio.gather(*(provider.ensure_token(None, interactive=False) for _ in range(5)))
+
+    assert provider._token == OAuthToken(access_token="on-disk")
+
+
+async def test_a_credential_fingerprint_follows_the_token(tmp_path):
+    # What `HttpServer.credential_fingerprint` cannot see: the token is not
+    # configuration, so two logins to one URL look identical to it.
+    one, two = OAuthProvider(SERVER, store=TokenStore(None)), OAuthProvider(SERVER, store=TokenStore(None))
+    one._token, two._token = OAuthToken(access_token="account-a"), OAuthToken(access_token="account-b")
+
+    assert one.credential_fingerprint() != two.credential_fingerprint()
+    assert OAuthProvider(SERVER, store=TokenStore(None)).credential_fingerprint() is None
+
+
 async def test_a_lowercase_token_type_reaches_the_wire_capitalized():
     # The scheme is canonicalized where the header is built, so a token already
     # on disk from before the fix works without a fresh login.

@@ -546,6 +546,60 @@ async def test_a_call_renews_a_token_that_lapsed_since_the_last_listing(service)
         assert [form["grant_type"] for form in handler.tokens] == ["refresh_token"]
 
 
+async def test_a_slice_listed_under_another_login_is_dropped(service, tmp_path):
+    # `HttpServer.credential_fingerprint` hashes configured headers, and an
+    # OAuth token is not configuration, so two accounts on one URL look
+    # identical to `_applies` and the previous one's tools were served.
+    import httpx
+
+    from luca.agent.contrib.mcp.oauth.store import OAuthToken
+    from luca.agent.contrib.mcp.servers import HttpServer
+
+    catalog = tmp_path / "catalog.json"
+    remote = {"remote": HttpServer(label="remote", url=REMOTE_URL, oauth=True, client_id="fixed-client")}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(RemoteWithAuth())) as client:
+        first = service(remote, client=client, catalog_path=catalog)
+        first._auth["remote"]._token = OAuthToken(access_token="account-a")
+        first._auth["remote"]._loaded = True
+        await first.start()
+        assert [spec.name for spec in first.specs()] == ["mcp__remote__search"]
+        await first.aclose()
+
+        # A second run, same URL and same config, signed in as somebody else.
+        second = service(remote, client=client, catalog_path=catalog)
+        second._auth["remote"]._token = OAuthToken(access_token="account-b")
+        second._auth["remote"]._loaded = True
+        assert [spec.name for spec in second.specs()] == ["mcp__remote__search"]  # adopted at boot
+
+        second.catalog.verify_credential("remote", second._auth["remote"].credential_fingerprint())
+
+        assert second.specs() == []
+
+
+async def test_a_slice_listed_under_the_same_login_survives(service, tmp_path):
+    import httpx
+
+    from luca.agent.contrib.mcp.oauth.store import OAuthToken
+    from luca.agent.contrib.mcp.servers import HttpServer
+
+    catalog = tmp_path / "catalog.json"
+    remote = {"remote": HttpServer(label="remote", url=REMOTE_URL, oauth=True, client_id="fixed-client")}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(RemoteWithAuth())) as client:
+        first = service(remote, client=client, catalog_path=catalog)
+        first._auth["remote"]._token = OAuthToken(access_token="account-a")
+        first._auth["remote"]._loaded = True
+        await first.start()
+        await first.aclose()
+
+        second = service(remote, client=client, catalog_path=catalog)
+        second._auth["remote"]._token = OAuthToken(access_token="account-a")
+        second._auth["remote"]._loaded = True
+
+        second.catalog.verify_credential("remote", second._auth["remote"].credential_fingerprint())
+
+        assert [spec.name for spec in second.specs()] == ["mcp__remote__search"]
+
+
 async def test_a_login_whose_token_is_then_refused_does_not_report_success(service):
     # What `/mcp` used to say when Linear minted a token its own resource
     # server rejected: "linear authorized", with no tools and nothing to

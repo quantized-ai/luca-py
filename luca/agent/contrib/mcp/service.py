@@ -207,6 +207,11 @@ class McpService:
                 connection.error = None
                 logger.info("mcp server=%s needs authorization", label)
                 return
+            # The token is only knowable now, so this is the first moment a
+            # slice listed under somebody else's login can be caught. Before
+            # the listing, so a server that then fails to answer stops serving
+            # the wrong account's tools rather than keeping them as STALE.
+            self.catalog.verify_credential(label, provider.credential_fingerprint())
         try:
             tools, (ttl_ms, cache_scope) = await connection.list_tools()
         except asyncio.CancelledError:
@@ -231,6 +236,7 @@ class McpService:
             tools,
             ttl_ms=ttl_ms or DEFAULT_TTL_MS,
             cache_scope=cache_scope,
+            credential=provider.credential_fingerprint() if provider is not None else None,
         )
         logger.info("mcp server=%s listed %d tools", label, self.catalog.tool_count(label))
 
@@ -262,7 +268,7 @@ class McpService:
         deadline = self.catalog.next_refresh_at(self.servers)
         if deadline is None:
             return DEFAULT_TTL_MS
-        remaining = deadline - self.catalog._now_ms()
+        remaining = deadline - self.catalog.now_ms()
         return max(remaining, MIN_TTL_MS)
 
     async def first_listing(self, timeout_ms: int) -> None:
@@ -301,15 +307,16 @@ class McpService:
         connection = self._connections.get(label)
         if connection is None:
             raise McpServerGone(f"MCP server {label!r} is not configured.")
-        provider = self._auth.get(label)
-        if provider is not None:
-            # A token that lapsed since the last listing is ours to renew.
-            # Never interactive: no browser opens mid-message.
-            await provider.ensure_token(self._client, interactive=False)
         # Mirrored into headers AND left in the body: a server must reject a
         # mismatch between the two.
         extra = param_headers(input_schema, arguments) if input_schema else None
+        provider = self._auth.get(label)
         try:
+            if provider is not None:
+                # A token that lapsed since the last listing is ours to renew.
+                # Never interactive: no browser opens mid-message. INSIDE the
+                # try, so a refusal here is recorded like one from the call.
+                await provider.ensure_token(self._client, interactive=False)
             result = await connection.call_tool(tool, arguments, timeout_ms=timeout_ms, extra_headers=extra)
         except McpAuthRequired as exc:
             # The call fails either way, but the server stops claiming to be

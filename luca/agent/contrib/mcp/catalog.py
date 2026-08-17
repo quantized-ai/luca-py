@@ -111,11 +111,13 @@ class ToolCatalog:
         *,
         ttl_ms: int,
         cache_scope: str,
+        credential: str | None = None,
     ) -> None:
         """Replace one server's slice, atomically, and write the file.
 
         The lock covers the swap only; the listing and the disk write are
-        outside it.
+        outside it. `credential` fingerprints a secret the SERVER model cannot
+        see, which today means an OAuth access token; see `verify_credential`.
         """
         entry = {
             "definition_hash": server.definition_hash(),
@@ -125,6 +127,8 @@ class ToolCatalog:
             "fetched_at": self._now_ms(),
             "tools": [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in tools],
         }
+        if credential is not None:
+            entry["credential"] = credential
         async with self._lock:
             self._slices[label] = entry
             self._rebuild(label, server)
@@ -184,6 +188,11 @@ class ToolCatalog:
         """True when nothing has ever been listed."""
         return not self._slices
 
+    def now_ms(self) -> int:
+        """The catalog's clock, which is injected. Public so a caller comparing
+        against `expires_at` reads the same one rather than `time.time()`."""
+        return self._now_ms()
+
     def expires_at(self, label: str) -> int:
         entry = self._slices.get(label)
         if entry is None:
@@ -201,6 +210,29 @@ class ToolCatalog:
         cached to go stale."""
         deadlines = [self.expires_at(label) for label in labels if self.has(label)]
         return min(deadlines) if deadlines else None
+
+    def verify_credential(self, label: str, credential: str | None) -> bool:
+        """Drop a slice that was listed under a different login. True if it
+        survived.
+
+        SEPARATE FROM `_applies` because of when each can run. The three hashes
+        there are pure functions of the configuration, so `load` checks them at
+        boot with no network. An OAuth token is not on the server model and is
+        not known until it has been read off disk, so the only honest moment to
+        compare it is the first listing after that read — which is why an
+        `oauth` server's slice is checked here instead.
+        """
+        entry = self._slices.get(label)
+        if entry is None or credential is None:
+            return True
+        stored = entry.get("credential")
+        if stored is None or stored == credential:
+            return True
+        logger.info("mcp server=%s was listed under a different login; dropping the cached tools", label)
+        self._slices.pop(label, None)
+        self._specs.pop(label, None)
+        self._rejected.pop(label, None)
+        return False
 
     def invalidate(self, label: str) -> None:
         """Mark one server due immediately, on a `toolsListChanged`."""

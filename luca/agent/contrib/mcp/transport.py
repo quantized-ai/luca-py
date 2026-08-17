@@ -64,6 +64,13 @@ class StdioTransport:
         self._lock = asyncio.Lock()  # guards spawn and stdin writes, never a response wait
         self._last_spawn = 0.0
         self.restarts = 0
+        # Set by `aclose`, cleared by a spawn: true only for a close that
+        # landed WHILE one was in flight. `_teardown` runs unlocked so shutdown
+        # never queues behind a long call, so it can swap `_process` to None
+        # before `_ensure` assigns the process it just started — one nothing
+        # will ever close, which `start_new_session=True` then keeps alive
+        # through the terminal's own Ctrl-C.
+        self._closed = False
 
     @property
     def alive(self) -> bool:
@@ -126,6 +133,10 @@ class StdioTransport:
                 await asyncio.sleep(RESPAWN_FLOOR_S - since)
             await self._teardown()
         self._last_spawn = loop.time()
+        # A spawn was asked for, so any close BEFORE this point is spent; only
+        # one arriving while the spawn is in flight has a process to catch.
+        # `reconnect` closes and re-lists, and would otherwise never start.
+        self._closed = False
         try:
             self._process = await asyncio.create_subprocess_exec(
                 self.server.command,
@@ -138,6 +149,13 @@ class StdioTransport:
             )
         except OSError as exc:
             raise McpServerGone(f"Could not start MCP server {self.server.label!r}: {exc}") from exc
+        if self._closed:
+            # Shut down while this one was spawning. Nothing above will ever
+            # ask for it again, so kill it here or it outlives the process.
+            spawned, self._process = self._process, None
+            _kill_process_group(spawned)
+            await spawned.wait()
+            raise McpServerGone(f"MCP server {self.server.label!r} was shut down.")
         self._reader = asyncio.create_task(self._read_loop(self._process))
         self._draining = asyncio.create_task(self._drain_stderr(self._process))
         return self._process
@@ -190,6 +208,7 @@ class StdioTransport:
                 waiter.set_exception(error)
 
     async def aclose(self) -> None:
+        self._closed = True
         await self._teardown()
 
     async def _teardown(self) -> None:
