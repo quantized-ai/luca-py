@@ -25,10 +25,10 @@ from typing import Any, Final
 import httpx
 
 from . import wire
-from .errors import UNSUPPORTED_PROTOCOL_VERSION, McpError, McpServerGone, McpUnsupportedVersion
+from .errors import UNSUPPORTED_PROTOCOL_VERSION, McpAuthRequired, McpError, McpServerGone, McpUnsupportedVersion
 from .headers import request_headers
 from .protocol import Negotiated, negotiate
-from .servers import HttpServer, Server, ServerStatus, StdioServer
+from .servers import HttpServer, Server, ServerState, ServerStatus, StdioServer
 from .transport import HttpTransport, StdioTransport
 from .wire import Era
 
@@ -74,6 +74,9 @@ class ServerConnection:
         # Held across the probe, so concurrent first calls share one answer.
         self._connecting = asyncio.Lock()
         self.error: str | None = None
+        # Distinct from `error`: nothing is wrong, it has just never been
+        # authorized, and the UI offers a different action for it.
+        self.needs_auth = False
         if isinstance(server, StdioServer):
             self._transport = StdioTransport(server, on_notification=self._on_notification)
         elif client is None:
@@ -88,10 +91,18 @@ class ServerConnection:
     def status(self) -> ServerStatus:
         return ServerStatus(
             label=self.label,
-            connected=self._negotiated is not None and self._transport.alive,
+            state=self._state(),
+            oauth=getattr(self.server, "oauth", False),
             protocol_version=self._negotiated.protocol_version if self._negotiated else None,
             error=self.error,
         )
+
+    def _state(self) -> ServerState:
+        if self.needs_auth:
+            return ServerState.NEEDS_AUTH
+        if self._negotiated is not None and self._transport.alive:
+            return ServerState.CONNECTED
+        return ServerState.FAILED
 
     async def connect(self) -> Negotiated:
         """Probe once and cache the answer. Idempotent."""
@@ -108,11 +119,17 @@ class ServerConnection:
                     timeout_s=timeout_s,
                     next_id=lambda: next(self._ids),
                 )
+            except McpAuthRequired:
+                # Not a failure and not worth a traceback: the user has simply
+                # not logged in yet.
+                self.needs_auth = True
+                raise
             except Exception as exc:
                 self.error = str(exc) or type(exc).__name__
                 logger.error("mcp server=%s failed to connect", self.label, exc_info=exc)
                 raise
             self.error = None
+            self.needs_auth = False
             logger.info(
                 "mcp server=%s connected (%s, protocol %s)",
                 self.label,

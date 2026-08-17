@@ -182,6 +182,7 @@ HINTS: dict[str, list[str]] = {
     "menu": ["↑↓ move", "enter pick", "esc dismiss"],
     "sessions": ["↑↓ move", "enter resume", "f fork", "d delete", "esc back"],
     "settings": ["↑↓ move", "← → change", "enter edit", "esc save & close"],
+    "mcp": ["↑↓ move", "a authenticate", "r reconnect", "d disable", "esc back"],
     "cost": ["^k compact context", "esc back"],
     # The agent's question set. `N` is filled per question by
     # `question_hints`; these are the shapes.

@@ -408,12 +408,32 @@ class CostState(BaseModel):
     model_config = _STRICT
 
 
+McpRowState = Literal["connected", "needs_auth", "failed", "disabled"]
+
+
+class McpRow(BaseModel):
+    label: str
+    state: McpRowState
+    detail: str  # tool count and protocol, the error, or why there is neither
+    action: str  # what enter does to THIS row
+    model_config = _STRICT
+
+
+class McpState(BaseModel):
+    count_line: str
+    rows: list[McpRow] = Field(default_factory=list)
+    selected: int = 0
+    notes: list[str] = Field(default_factory=list)  # excluded tools, with the reason
+    model_config = _STRICT
+
+
 class ModalState(BaseModel):
-    """Exactly one of the three full-screen modals."""
+    """Exactly one of the full-screen modals."""
 
     sessions: SessionsState | None = None
     settings: SettingsState | None = None
     cost: CostState | None = None
+    mcp: McpState | None = None
     model_config = _STRICT
 
 

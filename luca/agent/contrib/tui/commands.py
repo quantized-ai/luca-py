@@ -370,57 +370,9 @@ async def _cmd_compact(app: AgentApp, arg: str) -> None:
 
 
 async def _cmd_mcp(app: AgentApp, arg: str) -> None:
-    """`/mcp` reports; `/mcp login <label>` authorizes; `/mcp reconnect` re-lists.
-
-    Read-only by default, because the interesting question is almost always
-    "why can the model not see that tool", and the answer is usually a server
-    that failed or a tool the client had to exclude.
-    """
-    if app.mcp is None:
-        await app._notice("MCP is off, or no servers are configured under `mcp.servers` in luca.json.")
-        return
-
-    action, _, label = arg.strip().partition(" ")
-    if action == "login":
-        await _mcp_login(app, label.strip())
-        return
-    if action == "reconnect":
-        app.run_worker(app._connect_mcp(), group="mcp", exclusive=True)
-        await app._notice("MCP: reconnecting.")
-        return
-
-    lines: list[str] = []
-    for status in app.mcp.status():
-        if status.error:
-            lines.append(f"- {status.label}: failed — {status.error}")
-            continue
-        where = status.protocol_version or "not connected"
-        lines.append(f"- {status.label}: {status.tool_count} tools ({where})")
-        for tool, why in status.rejected_tools.items():
-            # A tool the spec required us to exclude. Saying so beats leaving
-            # someone to notice an absence.
-            lines.append(f"    excluded {tool}: {why}")
-    await app._notice("\n".join(lines) or "No MCP servers are configured.")
-
-
-async def _mcp_login(app: AgentApp, label: str) -> None:
-    """Run the browser flow for one server, on purpose and never mid-turn."""
-    provider = app.mcp._auth.get(label) if app.mcp else None
-    if provider is None:
-        await app._notice(f"MCP server {label!r} is not configured for oauth.", error=True)
-        return
-    await app._notice(f"MCP: opening a browser to authorize {label!r}.")
-    app.run_worker(_mcp_authorize(app, label, provider), group="mcp-login", exclusive=True)
-
-
-async def _mcp_authorize(app: AgentApp, label: str, provider) -> None:
-    try:
-        await provider.authorize(app.mcp._client)
-    except Exception as exc:
-        await app._notice(f"MCP login for {label!r} failed: {exc}", error=True)
-        return
-    await app._notice(f"MCP: {label!r} authorized.")
-    app.run_worker(app._connect_mcp(), group="mcp", exclusive=True)
+    """Open the MCP server list: what is connected, what is waiting on a login,
+    and what failed, with the action for each on the row."""
+    await app.open_mcp_screen()
 
 
 async def _cmd_quit(app: AgentApp, arg: str) -> None:
@@ -442,7 +394,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("rewind", "", "pick an earlier checkpoint to restore", _cmd_rewind),
     SlashCommand("resume", "", "switch to another session in this project", _cmd_sessions),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_clear),
-    SlashCommand("mcp", "[login <server>]", "MCP server status", _cmd_mcp),
+    SlashCommand("mcp", "", "MCP servers: status, sign in, reconnect", _cmd_mcp),
     SlashCommand("help", "", "show every command", _cmd_help),
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )

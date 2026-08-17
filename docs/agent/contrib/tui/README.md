@@ -315,14 +315,38 @@ as everything else.
 }
 ```
 
-Servers connect in a worker at startup and a notice reports what came up.
-`/mcp` lists them, including any tool the client had to exclude and why;
-`/mcp login <server>` runs the browser flow for an `oauth` server; `--no-mcp`
-skips the lot.
+Servers connect in a worker at startup and a notice reports what came up. A
+server you have not signed into yet is not reported as a failure:
 
 ```
-MCP connected: files (14 tools), github (23 tools)
+MCP connected: files (14 tools), airtable (16 tools)
+MCP needs authorization: linear — run /mcp to sign in
 ```
+
+`/mcp` opens the server list, one row per server with a coloured dot for its
+state:
+
+```
+mcp servers                        2 of 5 connected · 30 tools
+
+● files      14 tools · 2025-11-25
+● linear     not authenticated
+● airtable   16 tools · 2026-07-28
+● staging    Could not start MCP server 'staging': No such file or directory
+● notion     disabled for this session
+
+airtable/bulk_upsert excluded: 'x-mcp-header' at rows is on a 'array' parameter
+
+↑↓ move   a authenticate   r reconnect   d disable   esc back
+```
+
+`a` runs the browser flow, `r` reconnects and re-lists, and `d` withholds a
+server's tools for the rest of the session (its cached listing is kept, so
+turning it back on costs nothing). Enter runs whichever of those the selected
+row needs. Any tool the client had to exclude is listed underneath with the
+reason, so a missing tool explains itself instead of just being absent.
+
+`--no-mcp` skips the lot.
 
 `${VAR}` in `env` and `headers` values is read from the exported environment, so
 a token stays out of a file you commit. Full reference:

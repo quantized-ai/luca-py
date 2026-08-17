@@ -135,3 +135,7 @@
 - name: modal/sessions
   screen: sessions
   session: conversation
+
+- name: modal/mcp
+  screen: mcp
+  session: conversation

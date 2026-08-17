@@ -211,7 +211,8 @@ async def test_a_status_reports_the_negotiated_version(connect):
 
     assert connection.status().model_dump() == {
         "label": "fixture",
-        "connected": True,
+        "state": "connected",
+        "oauth": False,
         "protocol_version": "2026-07-28",
         "tool_count": 0,
         "error": None,

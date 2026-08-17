@@ -271,3 +271,86 @@ async def test_first_listing_is_released_by_the_startup_listing(service):
     await started.start()
 
     await asyncio.wait_for(waiting, timeout=5)
+
+
+async def test_an_unauthorized_oauth_server_is_not_a_failure(service):
+    # It has never been logged into. Reporting that in red beside a real
+    # connection failure is what this state exists to avoid.
+    import httpx
+
+    from luca.agent.contrib.mcp.servers import HttpServer, ServerState
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(refuse)) as client:
+        started = service(
+            {"remote": HttpServer(label="remote", url="https://example.test/mcp", oauth=True)},
+            client=client,
+        )
+        await started.start()
+
+        [status] = started.status()
+
+        assert (status.state, status.error, status.oauth) == (ServerState.NEEDS_AUTH, None, True)
+
+
+async def test_an_unreachable_server_is_still_a_failure(service):
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    started = service({"broken": StdioServer(label="broken", command="/nonexistent/server")})
+    await started.start()
+
+    [status] = started.status()
+
+    assert status.state is ServerState.FAILED
+    assert status.error
+
+
+async def test_a_disabled_server_withholds_its_tools(service):
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    started = service({"fx": stdio()})
+    await started.start()
+
+    await started.set_enabled("fx", False)
+
+    assert started.specs() == []
+    assert started.status()[0].state is ServerState.DISABLED
+
+
+async def test_re_enabling_serves_the_cached_listing_again(service, tmp_path):
+    started = service({"fx": stdio()}, catalog_path=tmp_path / "c.json")
+    await started.start()
+    await started.set_enabled("fx", False)
+
+    await started.set_enabled("fx", True)
+
+    assert [spec.name for spec in started.specs()] == ["mcp__fx__tool_0"]
+
+
+async def test_a_disabled_tool_cannot_be_resolved_by_name(service):
+    started = service({"fx": stdio()})
+    await started.start()
+
+    await started.set_enabled("fx", False)
+
+    assert started.spec("mcp__fx__tool_0") is None
+
+
+async def test_reconnecting_lists_the_server_again(service):
+    started = service({"fx": stdio()})
+    await started.start()
+
+    await started.reconnect("fx")
+
+    assert [spec.name for spec in started.specs()] == ["mcp__fx__tool_0"]
+
+
+async def test_login_on_a_server_without_oauth_says_so(service):
+    from luca.agent.contrib.mcp.errors import McpAuthRequired
+
+    started = service({"fx": stdio()})
+
+    with pytest.raises(McpAuthRequired, match="not configured for oauth"):
+        await started.login("fx")

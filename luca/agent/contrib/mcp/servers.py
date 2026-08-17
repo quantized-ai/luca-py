@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -98,12 +99,27 @@ class HttpServer(BaseModel):
 Server = StdioServer | HttpServer
 
 
+class ServerState(str, Enum):
+    """Where one server stands.
+
+    NEEDS_AUTH is separate from FAILED on purpose. A server that has simply
+    never been authorized has nothing wrong with it, and reporting it in red
+    beside a genuine connection failure trains people to ignore both.
+    """
+
+    CONNECTED = "connected"
+    NEEDS_AUTH = "needs_auth"
+    FAILED = "failed"
+    DISABLED = "disabled"
+
+
 class ServerStatus(BaseModel):
     """What the service knows about one server, for `/mcp` and the startup
     notice. Not persisted; rebuilt from live state on every ask."""
 
     label: str
-    connected: bool = False
+    state: ServerState = ServerState.FAILED
+    oauth: bool = False  # whether "authenticate" is an action this server has
     protocol_version: str | None = None
     tool_count: int = 0
     error: str | None = None

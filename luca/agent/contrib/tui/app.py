@@ -38,6 +38,7 @@ from textual.css.query import NoMatches
 from textual.widgets import TextArea
 
 from luca.agent.contrib.checkpoints import CheckpointService, ShadowGitStore
+from luca.agent.contrib.mcp.servers import ServerState
 from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
@@ -88,8 +89,8 @@ from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .format import HINTS, home_path, inline_paths, question_hints_for, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
-from .mcp_service import build_mcp_service
-from .modals import CostScreen, SessionsScreen, SettingsScreen
+from .mcp_service import build_mcp_service, build_mcp_state
+from .modals import CostScreen, McpScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
 from .prompt_files import ReadLimits, get_model_info, parse_prompt
 from .render import (
@@ -313,11 +314,18 @@ class AgentApp(LucaApp):
             logger.error("mcp startup failed", exc_info=exc)
             await self._notice_if_mounted(f"MCP: {exc}", error=True)
             return
-        connected = [status for status in self.mcp.status() if status.connected]
-        failed = [status for status in self.mcp.status() if status.error]
+        statuses = self.mcp.status()
+        connected = [s for s in statuses if s.state is ServerState.CONNECTED]
+        waiting = [s for s in statuses if s.state is ServerState.NEEDS_AUTH]
+        failed = [s for s in statuses if s.state is ServerState.FAILED]
         if connected:
             summary = ", ".join(f"{status.label} ({status.tool_count} tools)" for status in connected)
             await self._notice_if_mounted(f"MCP connected: {summary}")
+        if waiting:
+            # Not an error: nobody has been offered the login yet. Saying so in
+            # red beside a real failure trains people to ignore both.
+            names = ", ".join(status.label for status in waiting)
+            await self._notice_if_mounted(f"MCP needs authorization: {names} — run /mcp to sign in")
         for status in failed:
             await self._notice_if_mounted(f"MCP server {status.label!r} failed: {status.error}", error=True)
 
@@ -1507,6 +1515,56 @@ class AgentApp(LucaApp):
             HINTS["cost"],
         )
         await self.push_screen(screen)
+
+    async def open_mcp_screen(self, selected: int = 0) -> None:
+        if self.mcp is None:
+            await self._notice("MCP is off, or no servers are configured under `mcp.servers` in luca.json.")
+            return
+        state = build_mcp_state(self.mcp.status(), selected=selected)
+        await self.push_screen(McpScreen(state, self._modal_status("mcp servers"), HINTS["mcp"]))
+
+    async def _mcp_action(self, screen: McpScreen, label: str, doing: str, action) -> None:
+        """Run one server action with the screen dismissed, then reopen it.
+
+        Dismissed first because authorizing waits on a human in a browser, and
+        a modal frozen over the terminal for five minutes is worse than none.
+        The selection is carried back so the row you acted on is still the one
+        under the cursor.
+        """
+        selected = screen.state.selected
+        screen.dismiss()
+        await self._notice(f"MCP: {doing} {label!r}…")
+        try:
+            await action()
+        except Exception as exc:
+            logger.error("mcp server=%s action failed", label, exc_info=exc)
+            await self._notice(f"MCP: {label!r} failed — {exc}", error=True)
+        await self.open_mcp_screen(selected)
+
+    async def on_mcp_screen_authenticate(self, message: McpScreen.Authenticate) -> None:
+        label = message.row.label
+        if message.row.state != "needs_auth" and not self._mcp_is_oauth(label):
+            await self._notice(f"MCP server {label!r} is not configured for oauth.")
+            return
+        await self._mcp_action(message.screen, label, "authorizing", lambda: self.mcp.login(label))
+
+    async def on_mcp_screen_reconnect(self, message: McpScreen.Reconnect) -> None:
+        label = message.row.label
+        await self._mcp_action(message.screen, label, "reconnecting", lambda: self.mcp.reconnect(label))
+
+    async def on_mcp_screen_toggle(self, message: McpScreen.Toggle) -> None:
+        label = message.row.label
+        enable = message.row.state == "disabled"
+        await self._mcp_action(
+            message.screen,
+            label,
+            "enabling" if enable else "disabling",
+            lambda: self.mcp.set_enabled(label, enable),
+        )
+
+    def _mcp_is_oauth(self, label: str) -> bool:
+        status = self.mcp.status_for(label) if self.mcp else None
+        return bool(status and status.oauth)
 
     def _modal_status(self, label: str) -> vm.StatusState:
         return vm.StatusState(cwd=home_path(self._workspace), label=label)

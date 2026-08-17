@@ -30,6 +30,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
 from luca.agent.contrib.questions import QuestionsTool
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.core.exceptions import ProjectionError
@@ -46,6 +47,7 @@ from .approvals import build_approval_prompts
 from .commands import build_sessions_state, build_settings_state, palette_rows
 from .files import rank_files
 from .format import HINTS, approval_hints, question_hints_for, short_model
+from .mcp_service import build_mcp_state
 from .render import (
     filter_rows,
     is_questions_tool,
@@ -64,7 +66,7 @@ SESSIONS_DIR = Path(__file__).parent / "fixtures" / "sessions"
 # NOW that never moves or its snapshots would rot overnight.
 NOW = datetime(2026, 3, 14, 9, 30, 0)
 
-ScreenName = Literal["chat", "approval", "questions", "palette", "picker", "cost", "settings", "sessions"]
+ScreenName = Literal["chat", "approval", "questions", "palette", "picker", "cost", "settings", "sessions", "mcp"]
 
 
 class CatalogError(Exception):
@@ -359,6 +361,46 @@ def cost_screen(scene: Scene) -> vm.ScreenState:
     )
 
 
+# One of each state, so the catalog shows what every colour means side by side
+# and a snapshot catches a regression in any of them.
+MCP_SERVERS: tuple[ServerStatus, ...] = (
+    ServerStatus(
+        label="files",
+        state=ServerState.CONNECTED,
+        tool_count=14,
+        protocol_version="2025-11-25",
+    ),
+    ServerStatus(
+        label="linear",
+        state=ServerState.NEEDS_AUTH,
+        oauth=True,
+    ),
+    ServerStatus(
+        label="airtable",
+        state=ServerState.CONNECTED,
+        tool_count=16,
+        protocol_version="2026-07-28",
+        rejected_tools={"bulk_upsert": "'x-mcp-header' at rows is on a 'array' parameter"},
+    ),
+    ServerStatus(
+        label="staging",
+        state=ServerState.FAILED,
+        error="Could not start MCP server 'staging': No such file or directory",
+    ),
+    ServerStatus(label="notion", state=ServerState.DISABLED),
+)
+
+
+def mcp_screen(scene: Scene) -> vm.ScreenState:
+    """1l — MCP servers, one row per state: connected, waiting on a login,
+    failed, and switched off."""
+    return vm.ScreenState(
+        **_base(scene, label="mcp servers"),
+        modal=vm.ModalState(mcp=build_mcp_state(list(MCP_SERVERS), selected=scene.world.selected)),
+        hints=HINTS["mcp"],
+    )
+
+
 def settings_screen(scene: Scene) -> vm.ScreenState:
     """1j — model, permissions, appearance."""
     return vm.ScreenState(
@@ -437,6 +479,7 @@ SCREENS: dict[ScreenName, Callable[[Scene], vm.ScreenState]] = {
     "cost": cost_screen,
     "settings": settings_screen,
     "sessions": sessions_screen,
+    "mcp": mcp_screen,
 }
 
 

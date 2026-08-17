@@ -16,8 +16,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from luca.agent.contrib.mcp.config import McpConfigError, McpSettings
+from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
 
+from . import state as vm
 from .auth import auth_home
+
+# What enter does to a row, per state.
+ACTIONS: dict[ServerState, str] = {
+    ServerState.CONNECTED: "reconnect",
+    ServerState.NEEDS_AUTH: "authenticate",
+    ServerState.FAILED: "retry",
+    ServerState.DISABLED: "enable",
+}
 
 
 def mcp_home() -> Path:
@@ -46,4 +56,46 @@ def build_mcp_service(settings: McpSettings | None, *, home: Path | None = None)
     return McpService(servers, catalog_path=root / "catalog.json", token_path=root / "mcp-auth.json")
 
 
-__all__ = ["McpConfigError", "build_mcp_service", "mcp_home"]
+def build_mcp_state(statuses: list[ServerStatus], *, selected: int = 0) -> vm.McpState:
+    """The `/mcp` screen's state from what the service knows.
+
+    Pure, so the design catalog can render every combination of states without
+    a live service or a network.
+    """
+    rows = [
+        vm.McpRow(
+            label=status.label,
+            state=status.state.value,
+            detail=_detail(status),
+            action=ACTIONS[status.state],
+        )
+        for status in statuses
+    ]
+    notes = [
+        f"{status.label}/{tool} excluded: {why}"
+        for status in statuses
+        for tool, why in sorted(status.rejected_tools.items())
+    ]
+    live = sum(1 for status in statuses if status.state is ServerState.CONNECTED)
+    tools = sum(status.tool_count for status in statuses)
+    return vm.McpState(
+        count_line=f"{live} of {len(statuses)} connected · {tools} tools",
+        rows=rows,
+        selected=max(0, min(selected, len(rows) - 1)) if rows else 0,
+        notes=notes,
+    )
+
+
+def _detail(status: ServerStatus) -> str:
+    match status.state:
+        case ServerState.CONNECTED:
+            protocol = f" · {status.protocol_version}" if status.protocol_version else ""
+            return f"{status.tool_count} tools{protocol}"
+        case ServerState.NEEDS_AUTH:
+            return "not authenticated"
+        case ServerState.DISABLED:
+            return "disabled for this session"
+    return status.error or "not connected"
+
+
+__all__ = ["McpConfigError", "build_mcp_service", "build_mcp_state", "mcp_home"]

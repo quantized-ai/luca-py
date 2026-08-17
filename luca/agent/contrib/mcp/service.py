@@ -26,10 +26,10 @@ from luca.agent.core import ExecutionResult, ToolSpec
 
 from .catalog import DEFAULT_TTL_MS, MIN_TTL_MS, ToolCatalog
 from .connection import ServerConnection
-from .errors import McpServerGone
+from .errors import McpAuthRequired, McpServerGone
 from .headers import param_headers
-from .mapping import to_execution_result
-from .servers import HttpServer, Server, ServerStatus
+from .mapping import spec_identity, to_execution_result
+from .servers import HttpServer, Server, ServerState, ServerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,9 @@ class McpService:
         }
         self._refresher: asyncio.Task | None = None
         self._starting: asyncio.Task | None = None
+        # Turned off for this process only. Nothing is written back to
+        # `luca.json`, which luca reads and never edits.
+        self._disabled: set[str] = set()
         self._first_listing: asyncio.Future | None = None
 
     def _build_auth(self, browser) -> dict[str, httpx.Auth]:
@@ -91,21 +94,32 @@ class McpService:
 
     def specs(self) -> list[ToolSpec]:
         """Local read. No awaits, no I/O — see the catalog module docstring."""
-        return self.catalog.specs()
+        if not self._disabled:
+            return self.catalog.specs()
+        return [spec for spec in self.catalog.specs() if not self._is_disabled(spec)]
+
+    def _is_disabled(self, spec: ToolSpec) -> bool:
+        identity = spec_identity(spec)
+        return identity is not None and identity[0] in self._disabled
 
     def spec(self, name: str) -> ToolSpec | None:
-        return self.catalog.spec(name)
+        found = self.catalog.spec(name)
+        return None if found is not None and self._is_disabled(found) else found
 
     def status(self) -> list[ServerStatus]:
         return [
             connection.status().model_copy(
                 update={
-                    "tool_count": self.catalog.tool_count(label),
+                    "state": ServerState.DISABLED if label in self._disabled else connection.status().state,
+                    "tool_count": 0 if label in self._disabled else self.catalog.tool_count(label),
                     "rejected_tools": self.catalog.rejected(label),
                 }
             )
             for label, connection in self._connections.items()
         ]
+
+    def status_for(self, label: str) -> ServerStatus | None:
+        return next((status for status in self.status() if status.label == label), None)
 
     async def start(self) -> None:
         """Connect to every server and list it, then keep the catalog fresh.
@@ -125,6 +139,7 @@ class McpService:
     async def refresh(self, labels: list[str] | None = None) -> None:
         """List the named servers, or every stale one, concurrently."""
         due = labels if labels is not None else self.catalog.stale(self.servers)
+        due = [label for label in due if label not in self._disabled]
         if not due:
             self._resolve_first_listing()
             return
@@ -135,15 +150,33 @@ class McpService:
         """List one server, recording a failure rather than raising it: one
         dead server must not cost its siblings their tools."""
         connection = self._connections[label]
+        provider = self._auth.get(label)
+        if provider is not None:
+            # Ask BEFORE listing. A server that has never been authorized would
+            # otherwise answer 401 and be reported as a failure, which it is
+            # not — it is waiting for a login nobody has been offered yet.
+            try:
+                await provider.ensure_token(self._client, interactive=False)
+            except McpAuthRequired:
+                connection.needs_auth = True
+                connection.error = None
+                logger.info("mcp server=%s needs authorization", label)
+                return
         try:
             tools, (ttl_ms, cache_scope) = await connection.list_tools()
         except asyncio.CancelledError:
             raise
+        except McpAuthRequired:
+            connection.needs_auth = True
+            connection.error = None
+            logger.info("mcp server=%s needs authorization", label)
+            return
         except Exception as exc:
             connection.error = str(exc) or type(exc).__name__
             logger.error("mcp server=%s could not be listed", label, exc_info=exc)
             return
         connection.error = None
+        connection.needs_auth = False
         await self.catalog.put(
             label,
             self.servers[label],
@@ -215,6 +248,43 @@ class McpService:
         extra = param_headers(input_schema, arguments) if input_schema else None
         result = await connection.call_tool(tool, arguments, timeout_ms=timeout_ms, extra_headers=extra)
         return to_execution_result(result)
+
+    async def login(self, label: str) -> None:
+        """Run the browser flow for one server, then list it.
+
+        The only interactive entry point besides startup, and never reached
+        from a turn: a browser opening mid-message is the behaviour this
+        avoids.
+        """
+        provider = self._auth.get(label)
+        if provider is None:
+            raise McpAuthRequired(f"MCP server {label!r} is not configured for oauth.")
+        await provider.authorize(self._client)
+        self._connections[label].needs_auth = False
+        await self.refresh([label])
+
+    async def reconnect(self, label: str) -> None:
+        """Drop what was negotiated and list the server again."""
+        connection = self._connections.get(label)
+        if connection is None:
+            return
+        self._disabled.discard(label)
+        await connection.aclose()
+        self.catalog.invalidate(label)
+        await self.refresh([label])
+
+    async def set_enabled(self, label: str, enabled: bool) -> None:
+        """Withhold a server's tools from the model, for this process only.
+
+        Its cached listing is kept, so re-enabling costs nothing.
+        """
+        if enabled:
+            self._disabled.discard(label)
+            if not self.catalog.has(label):
+                await self.refresh([label])
+            return
+        self._disabled.add(label)
+        await self._connections[label].aclose()
 
     async def aclose(self) -> None:
         """Shut every connection down, from the app's graceful paths only.

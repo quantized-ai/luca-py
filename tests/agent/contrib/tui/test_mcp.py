@@ -141,19 +141,59 @@ async def test_closing_the_plugins_does_not_close_the_connections(tmp_path):
         await app.mcp.aclose()
 
 
-async def test_mcp_reports_its_servers(tmp_path):
+async def test_mcp_opens_a_screen_listing_the_servers(tmp_path):
     app = agent_app(tmp_path, mcp_settings=settings())
     async with app.run_test(size=(105, 35)) as pilot:
         await app.mcp.start()
         from luca.agent.contrib.tui.commands import dispatch
+        from luca.agent.contrib.tui.modals import McpScreen
 
         await dispatch(app, "/mcp")
         await pilot.pause()
 
-        from luca.agent.contrib.tui.blocks import NoticeLine
-
-        assert "fx: 1 tools (2026-07-28)" in "\n".join(line.text for line in app.query(NoticeLine))
+        screen = app.screen
+        assert isinstance(screen, McpScreen)
+        assert [(row.label, row.state, row.detail) for row in screen.state.rows] == [
+            ("fx", "connected", "1 tools · 2026-07-28")
+        ]
         await app.mcp.aclose()
+
+
+async def test_the_screen_offers_a_login_for_an_unauthenticated_server(tmp_path):
+    # The row a 401 used to render in red. It is an action, not a failure.
+    from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
+    from luca.agent.contrib.tui.mcp_service import build_mcp_state
+
+    state = build_mcp_state(
+        [
+            ServerStatus(label="files", state=ServerState.CONNECTED, tool_count=14, protocol_version="2025-11-25"),
+            ServerStatus(label="linear", state=ServerState.NEEDS_AUTH, oauth=True),
+        ]
+    )
+
+    assert [(row.label, row.state, row.detail, row.action) for row in state.rows] == [
+        ("files", "connected", "14 tools · 2025-11-25", "reconnect"),
+        ("linear", "needs_auth", "not authenticated", "authenticate"),
+    ]
+    assert state.count_line == "1 of 2 connected · 14 tools"
+
+
+async def test_an_excluded_tool_is_explained_on_the_screen(tmp_path):
+    from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
+    from luca.agent.contrib.tui.mcp_service import build_mcp_state
+
+    state = build_mcp_state(
+        [
+            ServerStatus(
+                label="airtable",
+                state=ServerState.CONNECTED,
+                tool_count=16,
+                rejected_tools={"bulk": "'x-mcp-header' at rows is on a 'array' parameter"},
+            )
+        ]
+    )
+
+    assert state.notes == ["airtable/bulk excluded: 'x-mcp-header' at rows is on a 'array' parameter"]
 
 
 async def test_mcp_says_so_when_it_is_off(tmp_path):
@@ -167,6 +207,26 @@ async def test_mcp_says_so_when_it_is_off(tmp_path):
         from luca.agent.contrib.tui.blocks import NoticeLine
 
         assert "MCP is off" in "\n".join(line.text for line in app.query(NoticeLine))
+
+
+async def test_disabling_a_server_from_the_screen_withholds_its_tools(tmp_path):
+    app = agent_app(tmp_path, mcp_settings=settings())
+    async with app.run_test(size=(105, 35)) as pilot:
+        await app.mcp.start()
+        from luca.agent.contrib.tui.commands import dispatch
+        from luca.agent.contrib.tui.modals import McpScreen
+
+        await dispatch(app, "/mcp")
+        await pilot.pause()
+        screen = app.screen
+        screen.post_message(McpScreen.Toggle(screen, screen.state.rows[0]))
+        await pilot.pause()
+        await pilot.pause()
+
+        specs = await app.runner.tool_registry.get_tools(app.runner.session, app.runner.session.main_conversation_id)
+
+        assert [spec.name for spec in specs if spec.name.startswith("mcp__")] == []
+        await app.mcp.aclose()
 
 
 def test_build_runner_installs_the_plugin_only_when_a_service_is_given(tmp_path):

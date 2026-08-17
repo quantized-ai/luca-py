@@ -15,7 +15,7 @@ Connect the agent to external [Model Context Protocol](https://modelcontextproto
 }
 ```
 
-The model then sees `mcp__files__read_file`, `mcp__github__create_issue`, and so on. `/mcp` says what is connected.
+The model then sees `mcp__files__read_file`, `mcp__github__create_issue`, and so on. `/mcp` lists the servers and lets you sign in, reconnect or switch one off.
 
 ## 1. Using it from your own agent
 
@@ -128,7 +128,7 @@ Rules use the existing vocabulary, with no new schema:
 
 `"oauth": true` turns on the browser flow: authorization code with PKCE, a loopback redirect on an OS-assigned port, and RFC 9207 `iss` validation before the code is redeemed. Tokens go to `~/.local/share/luca/mcp/mcp-auth.json`, keyed by **issuer** rather than by label, so two servers behind one authorization server share a login and renaming a label does not orphan a token.
 
-The browser only ever opens from startup or an explicit `/mcp login <server>`, never from inside a turn. A call that finds no usable token fails telling you to run that command.
+A server you have not signed into is reported as `not authenticated`, never as a failure, and the browser only opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp`.
 
 Registration is dynamic by default, declaring `application_type: "native"` as the revision requires. Set `client_id` to use a pre-registered client instead.
 

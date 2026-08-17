@@ -156,6 +156,7 @@ def test_hints_covers_every_focus_context():
         "menu",
         "sessions",
         "settings",
+        "mcp",
         "cost",
         "questions-single",
         "questions-multi",

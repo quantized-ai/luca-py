@@ -1,4 +1,4 @@
-"""The three modal screens: sessions (1i), settings (1j), cost (1k).
+"""The modal screens: sessions (1i), settings (1j), cost (1k), mcp (1l).
 
 Presentation-first: each screen renders its `state` view-model and posts
 intent messages (`Resume`, `Adjusted`, `CompactRequested`, …) for the app to
@@ -215,6 +215,123 @@ class SessionsScreen(LucaModalScreen):
 
     def notify_delete_cleared(self) -> None:
         self.query_one(HintLegend).set_hints(self._hints)
+
+
+# ── mcp (1l) ──────────────────────────────────────────────────────────────────
+
+MCP_LABEL_COLUMN = 18
+
+# The dot beside each server. Colour carries the state, so the row reads at a
+# glance and "not authenticated" never looks like a failure.
+MCP_STATE_COLORS: dict[str, str] = {
+    "connected": "success",
+    "needs_auth": "accent",
+    "failed": "error",
+    "disabled": "faint",
+}
+
+
+class McpRowView(SelectRow):
+    has_caret: ClassVar[bool] = False
+
+    def __init__(self, index: int, row: vm.McpRow, *, selected: bool) -> None:
+        super().__init__(selected=selected)
+        self.index = index
+        self.row = row
+
+    def body(self, tokens: Tokens) -> Text:
+        colour = getattr(tokens, MCP_STATE_COLORS[self.row.state], tokens.muted)
+        text = Text()
+        text.append("● ", style=Style(color=colour))
+        text.append(self.row.label.ljust(MCP_LABEL_COLUMN), style=Style(color=tokens.foreground))
+        text.append(
+            self.row.detail,
+            style=Style(color=tokens.muted if self.selected else tokens.faint),
+        )
+        text.no_wrap = True
+        text.overflow = "ellipsis"
+        return text
+
+
+class McpScreen(LucaModalScreen):
+    """`↑↓ move · enter <action> · d disable · esc back`.
+
+    Enter runs the selected row's own action, which is why the row carries it:
+    an unauthenticated server logs in, a connected one reconnects, a disabled
+    one comes back. `a` and `r` name the two explicitly.
+    """
+
+    class Authenticate(Message):
+        def __init__(self, screen: McpScreen, row: vm.McpRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    class Reconnect(Message):
+        def __init__(self, screen: McpScreen, row: vm.McpRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    class Toggle(Message):
+        def __init__(self, screen: McpScreen, row: vm.McpRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    def __init__(self, state: vm.McpState, status: vm.StatusState, hints: list[str]) -> None:
+        super().__init__(status, hints)
+        self.state = state
+
+    def compose_body(self) -> ComposeResult:
+        yield SpanLine(self.state.count_line, classes="faint-line count-line")
+        with Vertical(classes="mcp-table"):
+            for index, row in enumerate(self.state.rows):
+                yield McpRowView(index, row, selected=index == self.state.selected)
+        for note in self.state.notes:
+            yield SpanLine(note, classes="faint-line")
+
+    def _move(self, delta: int) -> None:
+        count = len(self.state.rows)
+        if count == 0:
+            return
+        selected = (self.state.selected + delta) % count
+        self.state = self.state.model_copy(update={"selected": selected})
+        for row in self.query(McpRowView):
+            row.set_selected(row.index == selected)
+
+    def _selected_row(self) -> vm.McpRow | None:
+        if not self.state.rows:
+            return None
+        return self.state.rows[self.state.selected]
+
+    async def on_key(self, event: events.Key) -> None:
+        key = event.key
+        row = self._selected_row()
+        if key == "up":
+            self._move(-1)
+        elif key == "down":
+            self._move(1)
+        elif row is None:
+            return
+        elif key == "enter":
+            self.post_message(
+                self.Toggle(self, row)
+                if row.state == "disabled"
+                else self.Authenticate(self, row)
+                if row.state == "needs_auth"
+                else self.Reconnect(self, row)
+            )
+        elif key == "a":
+            self.post_message(self.Authenticate(self, row))
+        elif key == "r":
+            self.post_message(self.Reconnect(self, row))
+        elif key == "d":
+            self.post_message(self.Toggle(self, row))
+        else:
+            return
+        event.stop()
+        event.prevent_default()
 
 
 # ── settings (1j) ─────────────────────────────────────────────────────────────
