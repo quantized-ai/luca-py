@@ -501,11 +501,7 @@ class FauxAsyncChatCompletionStream(AsyncChatCompletionStream):
             return
         if isinstance(exc, SDKTimeoutError):  # total_timeout expiry
             self._acc._message.error_message = str(exc)
-            yield ErrorEvent(
-                error=exc,
-                partial_message=self._acc._message.model_copy(deep=True),
-                usage=self._acc._usage,
-            )
+            yield ErrorEvent(error=exc, usage=self._acc._usage)
             return
         if isinstance(exc, StreamError):
             yield self._acc.build_error_event(exc)

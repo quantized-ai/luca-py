@@ -7,7 +7,6 @@ from luca.client.types import (
     UserMessage,
 )
 from tests.client._helpers.httpx_mocks import make_sync_client, sse_response
-from tests.client._helpers.stream_iteration import collect_events_with_snapshots
 
 
 def _sse(event_type: str, data: str) -> bytes:
@@ -45,7 +44,7 @@ def test_anthropic_streaming_text_block(anthropic_transport_factory):
         messages=[UserMessage(content="hi")],
     )
     with transport.completion_stream(req) as s:
-        events = collect_events_with_snapshots(s)
+        events = list(s)
 
     types = [e.type for e in events]
     assert types[0] == "start"
@@ -93,7 +92,7 @@ def test_anthropic_streaming_tool_use(anthropic_transport_factory):
         messages=[UserMessage(content="weather?")],
     )
     with transport.completion_stream(req) as s:
-        events = collect_events_with_snapshots(s)
+        events = list(s)
 
     finish = events[-1]
     assert finish.type == "finish"
@@ -140,7 +139,7 @@ def test_anthropic_streaming_thinking_carries_the_signature(anthropic_transport_
             messages=[UserMessage(content="hi")],
         ),
     ) as stream:
-        collect_events_with_snapshots(stream)
+        list(stream)
         [block] = stream.message.content
 
     assert block == ThinkingBlock(
@@ -181,7 +180,7 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
             messages=[UserMessage(content="hi")],
         ),
     ) as stream:
-        collect_events_with_snapshots(stream)
+        list(stream)
         [block] = stream.message.content
 
     assert block == ThinkingBlock(

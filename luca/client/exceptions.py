@@ -10,11 +10,6 @@ exceptions — they arrive as a normal ChatCompletionResponse / FinishEvent with
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .types.messages import AssistantMessage
-
 
 class ClientError(Exception):
     """Base exception. Every SDK exception inherits from this."""
@@ -97,18 +92,8 @@ class StructuredOutputError(ClientError):
 
 
 class StreamError(ClientError):
-    """Mid-stream failure. `partial_message` carries everything received so far."""
-
-    def __init__(
-        self,
-        message: str = "",
-        *,
-        provider: str | None = None,
-        original_exception: BaseException | None = None,
-        partial_message: AssistantMessage | None = None,
-    ) -> None:
-        super().__init__(message, provider=provider, original_exception=original_exception)
-        self.partial_message = partial_message
+    """Mid-stream failure. Everything received so far stays readable on the
+    stream object (`s.message`)."""
 
 
 __all__ = [

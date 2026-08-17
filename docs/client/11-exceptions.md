@@ -33,8 +33,6 @@ Extra fields per subclass:
 
 - `RateLimitError.retry_after: float | None` — seconds, when the upstream
   provides it.
-- `StreamError.partial_message: AssistantMessage | None` — everything
-  received before the protocol violation.
 
 ## What is and isn't an exception
 
@@ -92,8 +90,9 @@ except ProviderAPIError as e:
 
 **Broken after it opened** — a transport error or protocol violation mid-flight
 flows through `_handle_iter_exception` and surfaces as a terminal `ErrorEvent`
-carrying the typed `ClientError`. There is a partial message to hand back, so
-there is an event to carry it. Iteration ends after that event — the stream is
+carrying the typed `ClientError`. By then a stream exists to terminate, so
+there is an event to do it with; everything received before the break stays
+readable on `stream.message`. Iteration ends after that event — the stream is
 single-use.
 
 Calling `stream.collect()` re-raises the `error` from the `ErrorEvent`

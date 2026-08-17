@@ -1,6 +1,6 @@
 # Data sample — `while True` tool loop with **streaming**, event by event
 
-A streaming version of the same `"What's the weather like in Madrid?"` walk-through from `data_sample.md`. Shows the per-event timeline of two `completion_stream()` calls (one per turn), how `event.partial` evolves as fragments arrive, and the terminal `FinishEvent` at the end of each turn. Uses the actual event types from `api_prd.md` §12.6 — unified `ToolCall` blocks carry their streaming state (`partial_arguments`, `complete`) inline, the terminal carries both the SDK-canonical `finish_reason` and the raw upstream string on `provider_finish_reason`, and the system prompt rides on the **request-scoped `system_message=` kwarg** rather than as a message in `messages`.
+A streaming version of the same `"What's the weather like in Madrid?"` walk-through from `data_sample.md`. Shows the per-event timeline of two `completion_stream()` calls (one per turn), how the live `s.message` evolves as fragments arrive, and the terminal `FinishEvent` at the end of each turn. Uses the actual event types from `api_prd.md` §12.6 — unified `ToolCall` blocks carry their streaming state (`partial_arguments`, `complete`) inline, the terminal carries both the SDK-canonical `finish_reason` and the raw upstream string on `provider_finish_reason`, and the system prompt rides on the **request-scoped `system_message=` kwarg** rather than as a message in `messages`.
 
 ## The loop
 
@@ -63,7 +63,7 @@ The `with` block guarantees the upstream HTTP connection is closed even if the c
 The stream opens with `StartEvent`, walks through two content blocks (`thinking` then `tool_call`), each bracketed by `_start` / `_delta` / `_end` events, emits a `UsageEvent`, and terminates with exactly one `FinishEvent` (or `ErrorEvent`, if the *stream* itself broke).
 
 ```
-[tick]  [event]                                                [partial.content[] snapshot]
+[tick]  [event]                                                [s.message.content[] after the event]
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
    1    StartEvent                                             []
    2    ThinkingStartEvent(index=0)                            [ThinkingBlock(text="", signature=None)]
@@ -90,41 +90,39 @@ The stream opens with `StartEvent`, walks through two content blocks (`thinking`
   12    ToolCallEndEvent(1, tool_call=                         [..., ToolCall(arguments={"city": "Madrid"},
                               ToolCall(arguments={"city":                     partial_arguments="",
                               "Madrid"}, complete=True, ...))                 complete=True)]
-  13    UsageEvent(usage=Usage(input_tokens=87,                (content unchanged; partial.usage now populated)
+  13    UsageEvent(usage=Usage(input_tokens=87,                (content unchanged; s.usage now populated)
                                output_tokens=64, total=151))
   14    FinishEvent(finish_reason="tool_use",                  (final deep snapshot — see "Zooming in" below)
                     provider_finish_reason="tool_use",
                     cancelled=False, ...)
 ```
 
-Three load-bearing rules from `api_prd.md` §5.4 to keep in mind while reading the table:
+Three load-bearing rules to keep in mind while reading the table:
 
-- **`partial` is a SHARED REFERENCE on `*_delta` events.** Snapshot tick #5's `event.partial` and tick #6 mutates it underneath you. Read fields immediately, or `event.partial.model_copy(deep=True)` if you must store.
-- **`partial` is a DEEP SNAPSHOT on `*_start`, `*_end`, `UsageEvent`, `FinishEvent`, `ErrorEvent`.** Safe to store, serialize, or send across threads.
-- **A streaming `ToolCall` block in `partial.content[i]` has `complete=False`** and accumulates raw JSON fragments into `partial_arguments`. Only `ToolCallEndEvent` resolves the buffer: `arguments` becomes the parsed dict, `partial_arguments` resets to `""`, `complete=True`. Same `ToolCall` object throughout — two phases, never two classes.
+- **The state column is `s.message` — one LIVE object.** Events carry only what changed (`delta`, `content`, `tool_call`); the growing message lives on the stream and keeps mutating as you iterate. Read fields immediately, or `s.message.model_copy(deep=True)` if you must store what you saw at a given event.
+- **`FinishEvent.message` is a DEEP SNAPSHOT.** Safe to store, serialize, or send across threads.
+- **A streaming `ToolCall` block in `s.message.content[i]` has `complete=False`** and accumulates raw JSON fragments into `partial_arguments`. Only `ToolCallEndEvent` resolves the buffer: `arguments` becomes the parsed dict, `partial_arguments` resets to `""`, `complete=True`. Same `ToolCall` object throughout — two phases, never two classes.
 
-### Zooming in — three representative events
+### Zooming in — two representative moments
 
-**`StartEvent`** — provenance is already populated; content is empty:
+**At `StartEvent`** — no block has streamed yet, but `s.message` already carries its provenance:
 
 ```python
-StartEvent(
-    partial=AssistantMessage(
-        content=[],
-        finish_reason=None,                  # not set until FinishEvent
-        provider_finish_reason=None,
-        cancelled=False,
-        error_message=None,
-        provider="anthropic",
-        model="claude-3-5-sonnet-20241022",
-        response_id="msg_01XY...",
-        usage=None,
-        timestamp=1748361000123,
-    ),
+s.message == AssistantMessage(
+    content=[],
+    finish_reason=None,                  # not set until FinishEvent
+    provider_finish_reason=None,
+    cancelled=False,
+    error_message=None,
+    provider="anthropic",
+    model="claude-3-5-sonnet-20241022",
+    response_id="msg_01XY...",
+    usage=None,
+    timestamp=1748361000123,
 )
 ```
 
-**`ToolCallEndEvent`** — the `tool_call` field IS the same `ToolCall` instance that lives in `partial.content[1]` (one object, two views):
+**`ToolCallEndEvent`** — the `tool_call` field IS the same `ToolCall` instance that lives in `s.message.content[1]` (one object, two views):
 
 ```python
 ToolCallEndEvent(
@@ -136,28 +134,6 @@ ToolCallEndEvent(
         partial_arguments="",               # reset
         complete=True,
         thought_signature=None,
-    ),
-    partial=AssistantMessage(               # deep snapshot
-        content=[
-            ThinkingBlock(
-                text="The user wants current weather in Madrid. I should call get_weather.",
-                signature="eyJhbGciOi...opaque...",
-            ),
-            ToolCall(                       # same instance as ToolCallEndEvent.tool_call above
-                id="toolu_01ABcdEFghIJklMN",
-                name="get_weather",
-                arguments={"city": "Madrid"},
-                partial_arguments="",
-                complete=True,
-            ),
-        ],
-        finish_reason=None,                 # not yet — only FinishEvent sets these
-        provider_finish_reason=None,
-        provider="anthropic",
-        model="claude-3-5-sonnet-20241022",
-        response_id="msg_01XY...",
-        usage=None,                         # populated by the upcoming UsageEvent
-        timestamp=1748361000123,
     ),
 )
 ```
@@ -233,7 +209,7 @@ ToolMessage(
 The second stream runs against the 4-message conversation. The model emits a short thinking block and then the answer text.
 
 ```
-[tick]  [event]                                                [partial.content[] snapshot]
+[tick]  [event]                                                [s.message.content[] after the event]
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
    1    StartEvent                                             []
    2    ThinkingStartEvent(index=0)                            [ThinkingBlock(text="", signature=None)]
@@ -252,7 +228,7 @@ The second stream runs against the 4-message conversation. The model emits a sho
   11    TextEndEvent(1, content="It's 18 °C and sunny in       [..., TextBlock(text="It's 18 °C and sunny in Madrid
         Madrid right now, with a light breeze from              right now, with a light breeze from the southwest.")]
         the southwest.")
-  12    UsageEvent(usage=Usage(input_tokens=158,                (content unchanged; partial.usage populated)
+  12    UsageEvent(usage=Usage(input_tokens=158,                (content unchanged; s.usage populated)
                                output_tokens=42, total=200))
   13    FinishEvent(finish_reason="stop",                       (final deep snapshot — see below)
                     provider_finish_reason="end_turn",
@@ -331,9 +307,9 @@ The model successfully produced a turn — the turn just happens to be a refusal
 
 ## Things worth noticing (streaming-specific)
 
-- **The system prompt rides on the request, not in `messages`.** There is no `SystemMessage` class and no `"system"` role; the `system_message=` kwarg on `completion_stream()` (or `ChatCompletionRequest.system_message` at the DTO level) is what the model sees as its system prompt. The transport projects it into Anthropic's top-level `system` field on the wire, or OpenAI's prepended `role: "system"` message, etc. Streaming behaviour is otherwise identical: the prompt is sent once at the start of the call, and never appears in the per-event stream — `StartEvent.partial.content` is empty and grows from there.
-- **One `ToolCall` class, two phases.** While arguments stream in, `partial_arguments` accumulates fragments and `complete=False`. `ToolCallEndEvent` flips it to the resolved state: `arguments` is the parsed dict, `partial_arguments=""`, `complete=True`. The same `ToolCall` object lives in `partial.content[i]` throughout — and is the same instance handed to you in `ToolCallEndEvent.tool_call` and in `FinishEvent.tool_calls`. Mutating it through any one view mutates it through all of them.
-- **`partial` snapshot rules are deliberate** (see the three bullets after the turn-1 table). The shared-reference vs deep-snapshot distinction is the difference between O(N) and O(N²) memory pressure on long streams; the SDK splits at the natural read/write boundaries (`_start`/`_end`/`finish`/`error` = stable, `_delta` = hot loop).
+- **The system prompt rides on the request, not in `messages`.** There is no `SystemMessage` class and no `"system"` role; the `system_message=` kwarg on `completion_stream()` (or `ChatCompletionRequest.system_message` at the DTO level) is what the model sees as its system prompt. The transport projects it into Anthropic's top-level `system` field on the wire, or OpenAI's prepended `role: "system"` message, etc. Streaming behaviour is otherwise identical: the prompt is sent once at the start of the call, and never appears in the per-event stream — `s.message.content` is empty at `StartEvent` and grows from there.
+- **One `ToolCall` class, two phases.** While arguments stream in, `partial_arguments` accumulates fragments and `complete=False`. `ToolCallEndEvent` flips it to the resolved state: `arguments` is the parsed dict, `partial_arguments=""`, `complete=True`. The same `ToolCall` object lives in `s.message.content[i]` throughout — and is the same instance handed to you in `ToolCallEndEvent.tool_call` and in `FinishEvent.tool_calls`. Mutating it through any one view mutates it through all of them.
+- **Events carry deltas; the stream carries state.** No event duplicates the growing message — `s.message` is the single live object, and only the terminal `FinishEvent.message` is a deep snapshot. That split is the difference between O(N) and O(N²) memory pressure on long streams.
 - **`FinishEvent` for a refusal/safety outcome is still a `FinishEvent`.** Check `s.finish_reason == "error"` (one canonical check across every provider) and read `s.message.error_message` for the human-readable description; the raw upstream string is on `s.message.provider_finish_reason` for telemetry / branching. `ErrorEvent` means the stream itself broke — HTTP error, malformed JSON mid-stream, parser bug.
 - **Cancellation is a `FinishEvent(cancelled=True)`** when invoked via `s.cancel()` / `await s.cancel()`; it's `CancelledError` (re-raised) when invoked via `task.cancel()` / `asyncio.timeout()`. The two paths are intentional; see `api_prd.md` §5.4.1.
 - **`s.finish_reason`, `s.tool_calls`, `s.message`, `s.usage`** are live accessors on the stream. They reflect the current accumulator state during iteration, and after the iterator terminates they hold the final assembled values. After the `with` block exits, those live accessors still work — what's closed is the HTTP connection, not the stream's Python state.

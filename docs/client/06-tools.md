@@ -151,248 +151,538 @@ mutates a single `ToolCall` instance per call:
 - `tool_call_end` — `arguments` parsed from `partial_arguments`,
   `complete=True`, `partial_arguments=""`.
 
-`stream.tool_calls` and `partial.tool_calls` are filter views over the same
-instances, so they always reflect the live state. See
+`stream.tool_calls` and `stream.message.tool_calls` are filter views over the
+same instances, so they always reflect the live state. See
 [`08-streaming.md`](08-streaming.md) for the full event vocabulary and
 [`main.py`](../../main.py) (run with `--streaming`) for a streaming agent loop.
 
 ## Provider-native tools
 
-Some tools are built into the provider: the model is trained against them and
-the declaration is a type marker, not a schema. Declare them as instances
-alongside your own tools — the loop above works unchanged, and the client
-still only *describes* tools; **you execute** (apply the diffs, own the shell
-session, report honest failures). For the two file-editing tools you don't
-have to write that yourself: see
-[`luca.client.native`](#executing-them-lucaclientnative).
+### Quick intro
 
-| Tool | Provider | Call arrives as | Result you return |
-|---|---|---|---|
-| `ApplyPatchTool()` | OpenAI (Responses) | `ApplyPatchToolCall`, name `"apply_patch"` | plain `ToolMessage` (`is_error` → wire status) |
-| `LocalShellTool()` | OpenAI (Responses) | `ShellToolCall`, name `"shell"` | `ShellToolMessage` (structured, required) |
-| `TextEditorTool(max_characters=...)` | Anthropic | base `ToolCall`, name `"str_replace_based_edit_tool"` | plain `ToolMessage` |
-| `BashTool()` | Anthropic | base `ToolCall`, name `"bash"` | plain `ToolMessage` |
+Native tools are defined by a provider instead of a JSON schema. You still
+run them: the client declares them, gives you the model's calls, and sends
+your results back on the next request.
 
-Every typed class above has an equivalent canonical-types-only form — see
-[the generic form](#the-generic-form-extras).
+The examples below leave execution unimplemented on purpose. Replace the
+`NotImplementedError` functions with code that applies patches, owns the
+shell session, enforces permissions, and reports failures honestly.
 
-### OpenAI: apply_patch + shell
+### OpenAI
 
-Calls surface as **typed `ToolCall` subclasses** with synthesized names (the
-wire items carry none) and a typed accessor over `arguments`:
+OpenAI provides `apply_patch` and a local `shell` on the Responses API. Calls
+arrive as typed subclasses: `ApplyPatchToolCall` and `ShellToolCall`.
+`apply_patch` returns a regular `ToolMessage`; `shell` must return the
+structured `ShellToolMessage`.
+
+#### Non-streaming
 
 ```python
+from luca.client import completion
 from luca.client.providers.openai import (
-    ApplyPatchTool, ApplyPatchToolCall,
-    LocalShellTool, ShellToolCall, ShellToolMessage,
-    ShellCommandResult, ShellExitOutcome, ShellTimeoutOutcome,
+    ApplyPatchTool,
+    ApplyPatchToolCall,
+    LocalShellTool,
+    ShellCommandResult,
+    ShellExitOutcome,
+    ShellTimeoutOutcome,
+    ShellToolCall,
+    ShellToolMessage,
 )
-from luca.client.types import TextBlock, ToolMessage
+from luca.client.types import TextBlock, ToolMessage, UserMessage
+
+MODEL = "openai:gpt-5.1"
+SYSTEM = "Use apply_patch for file edits and shell for shell commands."
+TOOLS = [ApplyPatchTool(), LocalShellTool()]
+
+
+def apply_v4a(operation: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def run_shell(action: dict) -> list[dict]:
+    raise NotImplementedError
+
 
 def handle_apply_patch(tc: ApplyPatchToolCall) -> ToolMessage:
-    op = tc.operation      # {"type": "create_file"|"update_file"|"delete_file", "path", "diff"?}
-    ok, detail = apply_v4a(op)
-    return ToolMessage(tool_call_id=tc.id, name=tc.name,
-                       content=[TextBlock(text=detail)], is_error=not ok)
+    operation = tc.operation
+    # {"type": "create_file"|"update_file"|"delete_file",
+    #  "path": str, "diff"?: str}
+    ok, detail = apply_v4a(operation)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
 
 def handle_shell(tc: ShellToolCall) -> ShellToolMessage:
-    action = tc.action     # {"commands": [...], "timeout_ms"?, "max_output_length"?}
-    results = [
-        ShellCommandResult(
-            stdout=r.stdout, stderr=r.stderr,
-            outcome=ShellExitOutcome(exit_code=r.code) if not r.timed_out
-                    else ShellTimeoutOutcome(),
+    action = tc.action
+    # {"commands": list[str], "timeout_ms"?: int,
+    #  "max_output_length"?: int}
+    results = []
+    for result in run_shell(action):
+        outcome = (
+            ShellTimeoutOutcome()
+            if result["timed_out"]
+            else ShellExitOutcome(exit_code=result["exit_code"])
         )
-        for r in (run(cmd, timeout_ms=action.get("timeout_ms")) for cmd in action["commands"])
-    ]
-    return ShellToolMessage(tool_call_id=tc.id, name=tc.name, results=results)
+        results.append(
+            ShellCommandResult(
+                stdout=result["stdout"],
+                stderr=result["stderr"],
+                outcome=outcome,
+            )
+        )
+    return ShellToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        results=results,
+    )
+
+
+def execute(tc: ApplyPatchToolCall | ShellToolCall) -> ToolMessage:
+    if isinstance(tc, ApplyPatchToolCall):
+        return handle_apply_patch(tc)
+    if isinstance(tc, ShellToolCall):
+        return handle_shell(tc)
+    raise ValueError(f"unknown tool: {tc.name}")
+
+
+messages = []
+
+while True:
+    prompt = input("You: ")
+    if prompt.strip().lower() in {"q", "quit"}:
+        break
+
+    messages.append(UserMessage(content=[TextBlock(text=prompt)]))
+
+    while True:
+        response = completion(
+            MODEL,
+            messages,
+            system_message=SYSTEM,
+            tools=TOOLS,
+        )
+        messages.extend(response.messages)
+        answer = response.messages[-1]
+
+        for block in answer.content:
+            if isinstance(block, TextBlock):
+                print(block.text, end="", flush=True)
+        print()
+
+        if answer.finish_reason != "tool_use":
+            break
+
+        for tc in answer.tool_calls:
+            messages.append(execute(tc))
 ```
 
-> ⚠️ **Shell results are structured.** Per-command stdout/stderr/exit codes
-> cannot ride prose — answering a shell call with a plain `ToolMessage`
-> raises `BadRequestError` at projection.
+> ⚠️ **Shell results are structured.** A plain `ToolMessage` cannot carry
+> the per-command stdout, stderr, and outcome required by OpenAI. Returning
+> one for a shell call raises `BadRequestError` before the request is sent.
 
-### Anthropic: text editor + bash
+#### Streaming
 
-Only the declaration is special. Calls are ordinary `ToolCall`s (wire names
-kept), results ordinary `ToolMessage`s:
+This is the same conversation loop using `completion_stream`. The event
+dispatch includes every public event so you can see which ones carry display
+text, tool arguments, usage, and terminal state.
 
 ```python
+from luca.client import completion_stream
+from luca.client.providers.openai import (
+    ApplyPatchTool,
+    ApplyPatchToolCall,
+    LocalShellTool,
+    ShellCommandResult,
+    ShellExitOutcome,
+    ShellTimeoutOutcome,
+    ShellToolCall,
+    ShellToolMessage,
+)
+from luca.client.types import (
+    FinishEvent,
+    TextBlock,
+    ToolMessage,
+    UserMessage,
+)
+
+MODEL = "openai:gpt-5.1"
+SYSTEM = "Use apply_patch for file edits and shell for shell commands."
+TOOLS = [ApplyPatchTool(), LocalShellTool()]
+
+
+def apply_v4a(operation: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def run_shell(action: dict) -> list[dict]:
+    raise NotImplementedError
+
+
+def handle_apply_patch(tc: ApplyPatchToolCall) -> ToolMessage:
+    operation = tc.operation
+    # {"type": "create_file"|"update_file"|"delete_file",
+    #  "path": str, "diff"?: str}
+    ok, detail = apply_v4a(operation)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
+
+def handle_shell(tc: ShellToolCall) -> ShellToolMessage:
+    action = tc.action
+    # {"commands": list[str], "timeout_ms"?: int,
+    #  "max_output_length"?: int}
+    results = []
+    for result in run_shell(action):
+        outcome = (
+            ShellTimeoutOutcome()
+            if result["timed_out"]
+            else ShellExitOutcome(exit_code=result["exit_code"])
+        )
+        results.append(
+            ShellCommandResult(
+                stdout=result["stdout"],
+                stderr=result["stderr"],
+                outcome=outcome,
+            )
+        )
+    return ShellToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        results=results,
+    )
+
+
+def execute(tc: ApplyPatchToolCall | ShellToolCall) -> ToolMessage:
+    if isinstance(tc, ApplyPatchToolCall):
+        return handle_apply_patch(tc)
+    if isinstance(tc, ShellToolCall):
+        return handle_shell(tc)
+    raise ValueError(f"unknown tool: {tc.name}")
+
+
+messages = []
+
+while True:
+    prompt = input("You: ")
+    if prompt.strip().lower() in {"q", "quit"}:
+        break
+
+    messages.append(UserMessage(content=[TextBlock(text=prompt)]))
+
+    while True:
+        finish: FinishEvent | None = None
+
+        with completion_stream(
+            MODEL,
+            messages,
+            system_message=SYSTEM,
+            tools=TOOLS,
+        ) as stream:
+            for event in stream:
+                match event.type:
+                    case "start":
+                        pass
+                    case "text_start":
+                        pass
+                    case "text_delta":
+                        print(event.delta, end="", flush=True)
+                    case "text_end":
+                        print()
+                    case "thinking_start":
+                        pass
+                    case "thinking_delta":
+                        pass
+                    case "thinking_end":
+                        pass
+                    case "tool_call_start":
+                        print(f"\n[tool] {event.name}")
+                    case "tool_call_delta":
+                        print(event.arguments_delta, end="", flush=True)
+                    case "tool_call_end":
+                        print(event.tool_call.arguments)
+                    case "refusal_start":
+                        pass
+                    case "refusal_delta":
+                        print(event.delta, end="", flush=True)
+                    case "refusal_end":
+                        print()
+                    case "usage":
+                        pass
+                    case "finish":
+                        finish = event
+                    case "error":
+                        raise event.error
+
+        if finish is None:
+            raise RuntimeError("stream ended without a finish event")
+
+        messages.append(finish.message)
+
+        if finish.finish_reason != "tool_use":
+            break
+
+        for tc in finish.tool_calls:
+            messages.append(execute(tc))
+```
+
+OpenAI native calls normally emit `tool_call_start` and `tool_call_end`
+without argument deltas between them. The completed typed call is always on
+`tool_call_end.tool_call` and the terminal `finish.tool_calls`.
+
+### Anthropic
+
+Anthropic provides a text editor and a persistent bash session. Only their
+declarations are provider-specific: calls are regular `ToolCall` objects and
+results are regular `ToolMessage` objects.
+
+The editor's `arguments` use these commands:
+
+| `command` | Other fields |
+|---|---|
+| `view` | `path`, optional `view_range: [start, end]` (`-1` means the last line) |
+| `create` | `path`, `file_text` |
+| `str_replace` | `path`, `old_str`, `new_str` |
+| `insert` | `path`, `insert_line` (`0` means the top), `insert_text` |
+
+#### Non-streaming
+
+```python
+from luca.client import completion
 from luca.client.providers.anthropic import BashTool, TextEditorTool
-from luca.client.types import TextBlock, ToolCall, ToolMessage
+from luca.client.types import TextBlock, ToolCall, ToolMessage, UserMessage
+
+MODEL = "anthropic:claude-sonnet-4-5"
+SYSTEM = "Use the text editor for file contents and bash for shell commands."
+TOOLS = [TextEditorTool(max_characters=10_000), BashTool()]
+
+
+def run_text_editor(arguments: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def run_bash(arguments: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def handle_text_editor(tc: ToolCall) -> ToolMessage:
+    arguments = tc.arguments
+    # {"command": "view"|"create"|"str_replace"|"insert", "path": str,
+    #  "view_range"?: list[int], "file_text"?: str, "old_str"?: str,
+    #  "new_str"?: str, "insert_line"?: int, "insert_text"?: str}
+    ok, detail = run_text_editor(arguments)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
 
 def handle_bash(tc: ToolCall) -> ToolMessage:
-    if tc.arguments.get("restart"):          # {"restart": true} — no command key
-        SHELL.restart()
-        return ToolMessage(tool_call_id=tc.id, name=tc.name,
-                           content=[TextBlock(text="shell session restarted")])
-    r = SHELL.run(tc.arguments["command"])   # caller owns the persistent session
-    return ToolMessage(tool_call_id=tc.id, name=tc.name,
-                       content=[TextBlock(text=r.stdout + r.stderr)],
-                       is_error=r.exit_code != 0)
+    arguments = tc.arguments
+    # {"command": str} or {"restart": True}
+    ok, detail = run_bash(arguments)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
+
+HANDLERS = {
+    TextEditorTool.name: handle_text_editor,
+    BashTool.name: handle_bash,
+}
+
+
+def execute(tc: ToolCall) -> ToolMessage:
+    return HANDLERS[tc.name](tc)
+
+
+messages = []
+
+while True:
+    prompt = input("You: ")
+    if prompt.strip().lower() in {"q", "quit"}:
+        break
+
+    messages.append(UserMessage(content=[TextBlock(text=prompt)]))
+
+    while True:
+        response = completion(
+            MODEL,
+            messages,
+            system_message=SYSTEM,
+            tools=TOOLS,
+            max_tokens=2_048,
+        )
+        messages.extend(response.messages)
+        answer = response.messages[-1]
+
+        for block in answer.content:
+            if isinstance(block, TextBlock):
+                print(block.text, end="", flush=True)
+        print()
+
+        if answer.finish_reason != "tool_use":
+            break
+
+        for tc in answer.tool_calls:
+            messages.append(execute(tc))
 ```
 
-The text editor's `arguments` carry the `text_editor_20250728` command set —
-each command has `path` plus its own fields:
+The caller owns one persistent bash session and must implement
+`{"restart": True}`. For `str_replace`, return an error unless `old_str`
+matches exactly once. For `insert`, the text field is `insert_text`, not
+`new_str`.
 
-| `command` | Fields | What the caller returns |
-|---|---|---|
-| `view` | `view_range?: [start, end]` (`-1` = last line) | file contents `cat -n` style, or the directory listing |
-| `create` | `file_text` | a confirmation |
-| `str_replace` | `old_str`, `new_str` | a confirmation; `is_error` when `old_str` does not match exactly once |
-| `insert` | `insert_line` (0 = top of file), `insert_text` | a confirmation |
+#### Streaming
 
-> ⚠️ `insert` carries **`insert_text`**, not `new_str` — only `str_replace`
-> uses `new_str`. Verified live against claude-sonnet-4-5.
-
-Runnable end to end (all four commands, plus bash):
-[`anthropic_example_non_streaming.py`](../../specs/0009-provider-native-tools/examples/anthropic_example_non_streaming.py).
-
-### Executing them: `luca.client.native`
-
-The two file-editing tools ship with a working caller-side implementation:
-`luca.client.native`, opt-in (nothing else in the SDK imports it) and
-standard-library-only. Give it a root directory and the call's `arguments`:
+Anthropic streams native calls exactly like schema-defined tools: start, JSON
+argument deltas, then a completed regular `ToolCall`.
 
 ```python
-from luca.client.native import NativeToolError, execute_apply_patch, execute_text_editor
-from luca.client.types import TextBlock, ToolCall, ToolMessage
-
-WORKSPACE = "./workspace"
-HANDLERS = {"apply_patch": execute_apply_patch, "str_replace_based_edit_tool": execute_text_editor}
-
-def handle_edit(tc: ToolCall) -> ToolMessage:
-    try:
-        output, failed = HANDLERS[tc.name](tc.arguments, root=WORKSPACE), False
-    except NativeToolError as exc:
-        output, failed = str(exc), True     # the message is written for the model
-    return ToolMessage(tool_call_id=tc.id, name=tc.name,
-                       content=[TextBlock(text=output)], is_error=failed)
-```
-
-| Function | Runs | Returns |
-|---|---|---|
-| `execute_apply_patch(operation, *, root)` | one `apply_patch` operation | `Created/Updated/Deleted <path>`, plus a second `Moved <path> to <move_to>` line |
-| `execute_text_editor(command, *, root)` | one `str_replace_based_edit_tool` command | the `view` render, else `Created <path>` / `Updated <path>` |
-
-Underneath sit the pure transforms — no filesystem, no IO, useful on their own:
-
-| Function | Does |
-|---|---|
-| `native.apply_diff(text, diff, mode="default")` | the V4A grammar an `apply_patch` `diff` carries; `mode="create"` for the add-file syntax |
-| `native.text_editor.view(text, view_range=None)` | `cat -n` numbering; `view_range=[start, end]`, `-1` = last line |
-| `native.text_editor.str_replace(text, old_str, new_str)` | replace the one match |
-| `native.text_editor.insert(text, insert_line, insert_text)` | insert after that line; `0` = top |
-
-```python
-from luca.client.native import apply_diff
-
-apply_diff("alpha\nbeta\n", "@@ alpha\n-beta\n+BETA")   # -> "alpha\nBETA\n"
-```
-
-> ⚠️ **`root` is the boundary, and the only one.** A model path — relative or
-> absolute — is fully resolved and then must be inside `root`, so a symlink
-> pointing out of it is refused. `view` on a directory names symlinks with a
-> trailing `@` and never descends into them, for the same reason. `root="/"`
-> turns confinement off. Nothing else here is a sandbox: `create` overwrites,
-> `delete_file` deletes.
-
-Everything a model can recover from — a missing file, an `old_str` matching
-zero or three times, a diff whose context is gone — raises `NativeToolError`,
-whose message is the text to send back. It sits deliberately **outside** the
-[`ClientError` hierarchy](11-exceptions.md): those mean transport or network
-failure, and none of this code touches the network.
-
-### The generic form: `extras`
-
-Every native call and result has a second, equivalent representation that uses
-**only the canonical types**. `ToolCall.extras` and `ToolMessage.extras` are
-free-form dicts with one reserved key, `custom_type`, naming the native type;
-every other key is a field of that class.
-
-```python
-from luca.client.types import ToolCall, ToolMessage
-
-# identical to ApplyPatchToolCall(item_id="apc_1", status="completed", …)
-ToolCall(
-    id="call_1",
-    name="apply_patch",
-    arguments={"type": "create_file", "path": "hello.txt", "diff": "+hi\n"},
-    extras={"custom_type": "apply_patch_call", "item_id": "apc_1", "status": "completed"},
+from luca.client import completion_stream
+from luca.client.providers.anthropic import BashTool, TextEditorTool
+from luca.client.types import (
+    FinishEvent,
+    TextBlock,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
 )
 
-# identical to ShellToolMessage(results=[ShellCommandResult(…)])
-ToolMessage(
-    tool_call_id="call_2",
-    content="",
-    extras={
-        "custom_type": "shell_call_output",
-        "results": [{"stdout": "5\n", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}],
-    },
-)
+MODEL = "anthropic:claude-sonnet-4-5"
+SYSTEM = "Use the text editor for file contents and bash for shell commands."
+TOOLS = [TextEditorTool(max_characters=10_000), BashTool()]
+
+
+def run_text_editor(arguments: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def run_bash(arguments: dict) -> tuple[bool, str]:
+    raise NotImplementedError
+
+
+def handle_text_editor(tc: ToolCall) -> ToolMessage:
+    arguments = tc.arguments
+    # {"command": "view"|"create"|"str_replace"|"insert", "path": str,
+    #  "view_range"?: list[int], "file_text"?: str, "old_str"?: str,
+    #  "new_str"?: str, "insert_line"?: int, "insert_text"?: str}
+    ok, detail = run_text_editor(arguments)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
+
+def handle_bash(tc: ToolCall) -> ToolMessage:
+    arguments = tc.arguments
+    # {"command": str} or {"restart": True}
+    ok, detail = run_bash(arguments)
+    return ToolMessage(
+        tool_call_id=tc.id,
+        name=tc.name,
+        content=[TextBlock(text=detail)],
+        is_error=not ok,
+    )
+
+
+HANDLERS = {
+    TextEditorTool.name: handle_text_editor,
+    BashTool.name: handle_bash,
+}
+
+
+def execute(tc: ToolCall) -> ToolMessage:
+    return HANDLERS[tc.name](tc)
+
+
+messages = []
+
+while True:
+    prompt = input("You: ")
+    if prompt.strip().lower() in {"q", "quit"}:
+        break
+
+    messages.append(UserMessage(content=[TextBlock(text=prompt)]))
+
+    while True:
+        finish: FinishEvent | None = None
+
+        with completion_stream(
+            MODEL,
+            messages,
+            system_message=SYSTEM,
+            tools=TOOLS,
+            max_tokens=2_048,
+        ) as stream:
+            for event in stream:
+                match event.type:
+                    case "start":
+                        pass
+                    case "text_start":
+                        pass
+                    case "text_delta":
+                        print(event.delta, end="", flush=True)
+                    case "text_end":
+                        print()
+                    case "thinking_start":
+                        pass
+                    case "thinking_delta":
+                        pass
+                    case "thinking_end":
+                        pass
+                    case "tool_call_start":
+                        print(f"\n[tool] {event.name} ", end="", flush=True)
+                    case "tool_call_delta":
+                        print(event.arguments_delta, end="", flush=True)
+                    case "tool_call_end":
+                        print()
+                    case "refusal_start":
+                        pass
+                    case "refusal_delta":
+                        print(event.delta, end="", flush=True)
+                    case "refusal_end":
+                        print()
+                    case "usage":
+                        pass
+                    case "finish":
+                        finish = event
+                    case "error":
+                        raise event.error
+
+        if finish is None:
+            raise RuntimeError("stream ended without a finish event")
+
+        messages.append(finish.message)
+
+        if finish.finish_reason != "tool_use":
+            break
+
+        for tc in finish.tool_calls:
+            messages.append(execute(tc))
 ```
 
-The transports normalize before projecting, so the two forms produce the
-**same wire payload** — including the shell-result requirement, the
-`max_output_length` echo, and the foreign-drop policy. Converting between them
-is one call each way, and lossless:
+A native tool declared on the wrong transport raises `BadRequestError` before
+any HTTP request. OpenAI native tools require the OpenAI Responses transport;
+Anthropic native tools require the Anthropic transport.
 
-```python
-call.as_generic()      # ApplyPatchToolCall -> base ToolCall + extras
-call.as_native()       # base ToolCall + extras -> ApplyPatchToolCall
-```
+Native calls and results survive `model_dump()` and validation. OpenAI's typed
+calls and shell results also have lossless `as_generic()` / `as_native()`
+forms for storage or tool-agnostic plumbing.
 
-Use the typed classes when you are writing Python against a known tool — they
-give you `tc.operation`, `tc.action`, and validation. Use the generic form
-when you would rather not import a provider class at all: storing a session,
-crossing a process or language boundary, or writing tool-agnostic plumbing.
-Nothing else changes: **responses always come back as the typed subclass**,
-whichever form you sent.
-
-An unregistered `custom_type` raises `BadRequestError` at projection — the
-generic form removes the need to *import* a native class, not the need for one
-to exist.
-
-### Compatibility and provider switches
-
-A native tool declared on the wrong transport fails **before any HTTP** with
-`BadRequestError` — `BashTool()` on OpenAI, `ApplyPatchTool()` on Anthropic
-(or on chat completions: OpenAI native tools exist only on the Responses
-wire).
-
-> ⚠️ **Switching providers mid-conversation.** A native call already in
-> history (and its result) is silently dropped when the history is replayed
-> to another provider — same policy as foreign thinking-block attestations:
-> one lost exchange beats a 400 that kills the conversation.
-
-Forcing works through the provider-agnostic `tool_choice={"name": ...}` form:
-`{"name": "apply_patch"}` projects to `{"type": "apply_patch"}` on OpenAI;
-`{"name": "bash"}` to `{"type": "tool", "name": "bash"}` on Anthropic.
-
-### Streaming semantics
-
-Anthropic native calls stream like any tool call — full
-`tool_call_delta` JSON fragments. OpenAI native calls stream **start → end
-only**: the in-progress payload arrives as raw text (not JSON), so there are
-no public deltas; `tool_call_end.tool_call` always carries the complete
-typed call.
-
-### Persistence
-
-Native calls and results survive a JSON round trip: `model_dump()` keeps the
-subclass fields, and validating against the base classes
-(`AssistantMessage` / `ToolMessage`) restores the typed subclasses —
-provided `luca.client` is imported, which registers every first-party native
-type. Store `as_generic()` instead and that import stops mattering: the
-generic form reloads as a plain `ToolCall` / `ToolMessage` and projects the
-same.
-
-### Extending: your own native tool
-
-The same machinery is public: subclass `BaseTool` and return a
-`ToolProjector` (subclassing the target transport's projector base) from
-`get_projector()`; a typed call is a `ToolCall` subclass with a distinct
-`type` literal, which registers itself for parsing and persistence at import.
-The four first-party tools in
-`luca/client/transports/*/native_tools.py` are the reference
-implementations.
+**Next:** [Structured output](07-structured-output.md)

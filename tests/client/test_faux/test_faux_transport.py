@@ -145,4 +145,4 @@ def test_streaming_error_injection_emits_error_event():
         events = list(s)
     assert events[-1].type == "error"
     assert "upstream timeout" in str(events[-1].error)
-    assert events[-1].partial_message.content[0].text == "partial"
+    assert s.message.content[0].text == "partial"

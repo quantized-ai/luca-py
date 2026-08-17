@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 
 class StartEvent(BaseModel):
     type: Literal["start"] = "start"
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -42,7 +41,6 @@ class StartEvent(BaseModel):
 class TextStartEvent(BaseModel):
     type: Literal["text_start"] = "text_start"
     index: int
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -51,7 +49,6 @@ class TextDeltaEvent(BaseModel):
     type: Literal["text_delta"] = "text_delta"
     index: int
     delta: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -60,7 +57,6 @@ class TextEndEvent(BaseModel):
     type: Literal["text_end"] = "text_end"
     index: int
     content: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -68,7 +64,6 @@ class TextEndEvent(BaseModel):
 class ThinkingStartEvent(BaseModel):
     type: Literal["thinking_start"] = "thinking_start"
     index: int
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -77,7 +72,6 @@ class ThinkingDeltaEvent(BaseModel):
     type: Literal["thinking_delta"] = "thinking_delta"
     index: int
     delta: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,7 +80,6 @@ class ThinkingEndEvent(BaseModel):
     type: Literal["thinking_end"] = "thinking_end"
     index: int
     content: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,7 +89,6 @@ class ToolCallStartEvent(BaseModel):
     index: int
     id: str
     name: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -105,7 +97,6 @@ class ToolCallDeltaEvent(BaseModel):
     type: Literal["tool_call_delta"] = "tool_call_delta"
     index: int
     arguments_delta: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -116,7 +107,6 @@ class ToolCallEndEvent(BaseModel):
     # SerializeAsAny: native ToolCall subclass fields must survive a dump,
     # same rule as AssistantMessage.content.
     tool_call: SerializeAsAny[ToolCall]
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -124,7 +114,6 @@ class ToolCallEndEvent(BaseModel):
 class RefusalStartEvent(BaseModel):
     type: Literal["refusal_start"] = "refusal_start"
     index: int
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -133,7 +122,6 @@ class RefusalDeltaEvent(BaseModel):
     type: Literal["refusal_delta"] = "refusal_delta"
     index: int
     delta: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -142,7 +130,6 @@ class RefusalEndEvent(BaseModel):
     type: Literal["refusal_end"] = "refusal_end"
     index: int
     content: str
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -150,7 +137,6 @@ class RefusalEndEvent(BaseModel):
 class UsageEvent(BaseModel):
     type: Literal["usage"] = "usage"
     usage: Usage
-    partial: AssistantMessage
 
     model_config = ConfigDict(extra="forbid")
 
@@ -180,7 +166,6 @@ class FinishEvent(BaseModel):
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     error: ClientError
-    partial_message: AssistantMessage
     usage: Usage | None = None
     raw: Any = Field(default=None, exclude=True)
 
@@ -539,7 +524,7 @@ class _ChatCompletionAccumulator:
         return "".join(b.text for b in self._message.content if isinstance(b, TextBlock))
 
     def start_event(self) -> StartEvent:
-        return StartEvent(partial=self._message.model_copy(deep=True))
+        return StartEvent()
 
     def handle_raw(self, raw: RawStreamEvent) -> Iterator[Any]:
         # Single mutator + single emitter; same logic across sync/async streams.
@@ -549,25 +534,21 @@ class _ChatCompletionAccumulator:
                 raise StreamError(
                     f"RawBlockStart.index={i} does not match expected next index "
                     f"{len(self._message.content)} (block indices must be dense and ordered)",
-                    partial_message=self._message,
                 )
             if i in self._open_block_indices:
                 raise StreamError(
                     f"RawBlockStart.index={i} is already an open block",
-                    partial_message=self._message,
                 )
 
         def _check_delta(i: int, expected_type: type) -> None:
             if i not in self._open_block_indices:
                 raise StreamError(
                     f"Delta references index {i} which is not an open block (open: {sorted(self._open_block_indices)})",
-                    partial_message=self._message,
                 )
             block = self._message.content[i]
             if not isinstance(block, expected_type):
                 raise StreamError(
                     f"Delta type does not match block type {type(block).__name__} at index {i}",
-                    partial_message=self._message,
                 )
 
         if isinstance(raw, RawBlockStart):
@@ -575,7 +556,7 @@ class _ChatCompletionAccumulator:
             if raw.block_type == "text":
                 self._message.content.append(TextBlock(text=""))
                 self._open_block_indices.add(raw.index)
-                yield TextStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
+                yield TextStartEvent(index=raw.index)
             elif raw.block_type == "thinking":
                 self._message.content.append(
                     ThinkingBlock(
@@ -586,11 +567,11 @@ class _ChatCompletionAccumulator:
                     ),
                 )
                 self._open_block_indices.add(raw.index)
-                yield ThinkingStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
+                yield ThinkingStartEvent(index=raw.index)
             elif raw.block_type == "refusal":
                 self._message.content.append(RefusalBlock(text=""))
                 self._open_block_indices.add(raw.index)
-                yield RefusalStartEvent(index=raw.index, partial=self._message.model_copy(deep=True))
+                yield RefusalStartEvent(index=raw.index)
             elif raw.block_type == "tool_call":
                 if raw.prebuilt is not None:
                     # Transport-built typed call (native tools), still
@@ -601,12 +582,10 @@ class _ChatCompletionAccumulator:
                         index=raw.index,
                         id=raw.prebuilt.id,
                         name=raw.prebuilt.name,
-                        partial=self._message.model_copy(deep=True),
                     )
                 elif raw.tool_id is None or raw.tool_name is None:
                     raise StreamError(
                         f"RawBlockStart(tool_call, index={raw.index}) missing tool_id or tool_name",
-                        partial_message=self._message,
                     )
                 else:
                     self._message.content.append(
@@ -623,12 +602,10 @@ class _ChatCompletionAccumulator:
                         index=raw.index,
                         id=raw.tool_id,
                         name=raw.tool_name,
-                        partial=self._message.model_copy(deep=True),
                     )
             else:
                 raise StreamError(
                     f"Unknown block_type={raw.block_type!r}",
-                    partial_message=self._message,
                 )
 
         elif isinstance(raw, RawTextDelta):
@@ -636,7 +613,7 @@ class _ChatCompletionAccumulator:
             block = self._message.content[raw.index]
             assert isinstance(block, TextBlock)
             block.text += raw.text
-            yield TextDeltaEvent(index=raw.index, delta=raw.text, partial=self._message)
+            yield TextDeltaEvent(index=raw.index, delta=raw.text)
 
         elif isinstance(raw, RawThinkingDelta):
             _check_delta(raw.index, ThinkingBlock)
@@ -645,41 +622,35 @@ class _ChatCompletionAccumulator:
             block.text += raw.text
             if raw.signature is not None:
                 block.signature = raw.signature
-            yield ThinkingDeltaEvent(index=raw.index, delta=raw.text, partial=self._message)
+            yield ThinkingDeltaEvent(index=raw.index, delta=raw.text)
 
         elif isinstance(raw, RawToolArgumentsDelta):
             _check_delta(raw.index, ToolCall)
             block = self._message.content[raw.index]
             assert isinstance(block, ToolCall)
             block.partial_arguments += raw.arguments_delta
-            yield ToolCallDeltaEvent(
-                index=raw.index,
-                arguments_delta=raw.arguments_delta,
-                partial=self._message,
-            )
+            yield ToolCallDeltaEvent(index=raw.index, arguments_delta=raw.arguments_delta)
 
         elif isinstance(raw, RawRefusalDelta):
             _check_delta(raw.index, RefusalBlock)
             block = self._message.content[raw.index]
             assert isinstance(block, RefusalBlock)
             block.text += raw.text
-            yield RefusalDeltaEvent(index=raw.index, delta=raw.text, partial=self._message)
+            yield RefusalDeltaEvent(index=raw.index, delta=raw.text)
 
         elif isinstance(raw, RawBlockStop):
             if raw.index not in self._open_block_indices:
                 raise StreamError(
                     f"RawBlockStop.index={raw.index} is not an open block (open: {sorted(self._open_block_indices)})",
-                    partial_message=self._message,
                 )
             self._open_block_indices.remove(raw.index)
             block = self._message.content[raw.index]
-            snapshot = self._message.model_copy(deep=True)
             if isinstance(block, TextBlock):
-                yield TextEndEvent(index=raw.index, content=block.text, partial=snapshot)
+                yield TextEndEvent(index=raw.index, content=block.text)
             elif isinstance(block, ThinkingBlock):
-                yield ThinkingEndEvent(index=raw.index, content=block.text, partial=snapshot)
+                yield ThinkingEndEvent(index=raw.index, content=block.text)
             elif isinstance(block, RefusalBlock):
-                yield RefusalEndEvent(index=raw.index, content=block.text, partial=snapshot)
+                yield RefusalEndEvent(index=raw.index, content=block.text)
             elif isinstance(block, ToolCall):
                 if raw.replacement is not None:
                     # The complete native call: final arguments arrive whole,
@@ -688,7 +659,6 @@ class _ChatCompletionAccumulator:
                     yield ToolCallEndEvent(
                         index=raw.index,
                         tool_call=raw.replacement,
-                        partial=self._message.model_copy(deep=True),
                     )
                 else:
                     try:
@@ -696,14 +666,12 @@ class _ChatCompletionAccumulator:
                     except json.JSONDecodeError as e:
                         raise StreamError(
                             f"Tool call {raw.index} ({block.name!r}) returned malformed JSON",
-                            partial_message=self._message,
                         ) from e
                     block.complete = True
                     block.partial_arguments = ""
                     yield ToolCallEndEvent(
                         index=raw.index,
                         tool_call=block,
-                        partial=self._message.model_copy(deep=True),
                     )
 
         elif isinstance(raw, RawFinish):
@@ -711,12 +679,11 @@ class _ChatCompletionAccumulator:
 
         elif isinstance(raw, RawUsage):
             self._usage = raw.usage
-            yield UsageEvent(usage=raw.usage, partial=self._message.model_copy(deep=True))
+            yield UsageEvent(usage=raw.usage)
 
         else:
             raise StreamError(
                 f"Unknown raw event type {type(raw).__name__!r}",
-                partial_message=self._message,
             )
 
     def build_terminal_finish(self, *, classify_finish: Any, cancelled: bool = False) -> FinishEvent:
@@ -746,11 +713,7 @@ class _ChatCompletionAccumulator:
 
     def build_error_event(self, exc: StreamError) -> ErrorEvent:
         self._message.error_message = str(exc)
-        return ErrorEvent(
-            error=exc,
-            partial_message=self._message.model_copy(deep=True),
-            usage=self._usage,
-        )
+        return ErrorEvent(error=exc, usage=self._usage)
 
 
 class ChatCompletionStream(BaseStream):
@@ -808,7 +771,7 @@ class ChatCompletionStream(BaseStream):
         rejection must not change shape just because `stream=True` — the
         non-streaming path raises the same mapped error
         (`transports/base.py`). Mid-stream failures keep their `ErrorEvent`
-        (`_handle_iter_exception`), where a partial message exists to carry.
+        (`_handle_iter_exception`): by then a stream exists to terminate.
 
         Here and not in `BaseStream`, because `_transport` — and therefore a
         mapper — only exists from this class down."""
@@ -833,7 +796,6 @@ class ChatCompletionStream(BaseStream):
             if self._acc._terminal is None:
                 raise StreamError(
                     "Stream ended without RawFinish — provider closed the wire without sending a finish reason",
-                    partial_message=self._acc._message,
                 )
 
             yield self._acc.build_terminal_finish(
@@ -863,11 +825,7 @@ class ChatCompletionStream(BaseStream):
         if isinstance(exc, _httpx.HTTPError):
             err = self._transport._map_chat_completion_http_error(exc)
             self._acc._message.error_message = str(err)
-            yield ErrorEvent(
-                error=err,
-                partial_message=self._acc._message.model_copy(deep=True),
-                usage=self._acc._usage,
-            )
+            yield ErrorEvent(error=err, usage=self._acc._usage)
             return
 
         raise exc
@@ -885,7 +843,6 @@ class ChatCompletionStream(BaseStream):
                     raise event.error
         raise StreamError(
             "Stream ended without terminal event",
-            partial_message=self._acc._message,
         )
 
 
@@ -957,7 +914,6 @@ class AsyncChatCompletionStream(AsyncBaseStream):
             if self._acc._terminal is None:
                 raise StreamError(
                     "Stream ended without RawFinish — provider closed the wire without sending a finish reason",
-                    partial_message=self._acc._message,
                 )
 
             yield self._acc.build_terminal_finish(
@@ -996,11 +952,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
 
         if isinstance(exc, SDKTimeoutError):  # total_timeout expiry
             self._acc._message.error_message = str(exc)
-            yield ErrorEvent(
-                error=exc,
-                partial_message=self._acc._message.model_copy(deep=True),
-                usage=self._acc._usage,
-            )
+            yield ErrorEvent(error=exc, usage=self._acc._usage)
             return
 
         if isinstance(exc, StreamError):
@@ -1012,11 +964,7 @@ class AsyncChatCompletionStream(AsyncBaseStream):
         if isinstance(exc, _httpx.HTTPError):
             err = self._transport._map_chat_completion_http_error(exc)
             self._acc._message.error_message = str(err)
-            yield ErrorEvent(
-                error=err,
-                partial_message=self._acc._message.model_copy(deep=True),
-                usage=self._acc._usage,
-            )
+            yield ErrorEvent(error=err, usage=self._acc._usage)
             return
 
         raise exc
@@ -1034,5 +982,4 @@ class AsyncChatCompletionStream(AsyncBaseStream):
                     raise event.error
         raise StreamError(
             "Stream ended without terminal event",
-            partial_message=self._acc._message,
         )

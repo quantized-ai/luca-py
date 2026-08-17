@@ -31,7 +31,6 @@ from luca.client.types import (
     UserMessage,
 )
 from tests.client._helpers.httpx_mocks import make_sync_client, sse_response
-from tests.client._helpers.stream_iteration import collect_events_with_snapshots
 
 
 def _data(payload: str) -> bytes:
@@ -76,25 +75,11 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
-            TextStartEvent(
-                index=0,
-                partial=AssistantMessage(content=[TextBlock(text="")], provider="openai", model="gpt-5.4"),
-            ),
-            TextDeltaEvent(
-                index=0,
-                delta="Hi",
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-5.4"),
-            ),
-            TextEndEvent(
-                index=0,
-                content="Hi",
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-5.4"),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-5.4"),
-            ),
+            StartEvent(),
+            TextStartEvent(index=0),
+            TextDeltaEvent(index=0, delta="Hi"),
+            TextEndEvent(index=0, content="Hi"),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[TextBlock(text="Hi")],
@@ -145,68 +130,16 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
-            ThinkingStartEvent(
-                index=0,
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="", id="rs_1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ThinkingDeltaEvent(
-                index=0,
-                delta="First.",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.", id="rs_1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ThinkingDeltaEvent(
-                index=0,
-                delta="\n\n",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.\n\n", id="rs_1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ThinkingDeltaEvent(
-                index=0,
-                delta="Second.",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.\n\nSecond.", id="rs_1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ThinkingDeltaEvent(
-                index=0,
-                delta="",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.\n\nSecond.", id="rs_1", signature="enc-1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ThinkingEndEvent(
-                index=0,
-                content="First.\n\nSecond.",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.\n\nSecond.", id="rs_1", signature="enc-1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=9, total_tokens=10, reasoning_tokens=8),
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="First.\n\nSecond.", id="rs_1", signature="enc-1")],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
+            StartEvent(),
+            ThinkingStartEvent(index=0),
+            ThinkingDeltaEvent(index=0, delta="First."),
+            ThinkingDeltaEvent(index=0, delta="\n\n"),
+            ThinkingDeltaEvent(index=0, delta="Second."),
+            # The empty delta is the encrypted payload landing at item done
+            # (signature applied, no visible text).
+            ThinkingDeltaEvent(index=0, delta=""),
+            ThinkingEndEvent(index=0, content="First.\n\nSecond."),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=9, total_tokens=10, reasoning_tokens=8)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[ThinkingBlock(text="First.\n\nSecond.", id="rs_1", signature="enc-1")],
@@ -244,52 +177,15 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
-            ToolCallStartEvent(
-                index=0,
-                id="call_1",
-                name="add",
-                partial=AssistantMessage(
-                    content=[ToolCall(id="call_1", name="add", complete=False)],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ToolCallDeltaEvent(
-                index=0,
-                arguments_delta='{"a":1',
-                partial=AssistantMessage(
-                    content=[ToolCall(id="call_1", name="add", partial_arguments='{"a":1', complete=False)],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
-            ToolCallDeltaEvent(
-                index=0,
-                arguments_delta=',"b":2}',
-                partial=AssistantMessage(
-                    content=[ToolCall(id="call_1", name="add", partial_arguments='{"a":1,"b":2}', complete=False)],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
+            StartEvent(),
+            ToolCallStartEvent(index=0, id="call_1", name="add"),
+            ToolCallDeltaEvent(index=0, arguments_delta='{"a":1'),
+            ToolCallDeltaEvent(index=0, arguments_delta=',"b":2}'),
             ToolCallEndEvent(
                 index=0,
                 tool_call=ToolCall(id="call_1", name="add", arguments={"a": 1, "b": 2}, complete=True),
-                partial=AssistantMessage(
-                    content=[ToolCall(id="call_1", name="add", arguments={"a": 1, "b": 2}, complete=True)],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
             ),
-            UsageEvent(
-                usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4),
-                partial=AssistantMessage(
-                    content=[ToolCall(id="call_1", name="add", arguments={"a": 1, "b": 2}, complete=True)],
-                    provider="openai",
-                    model="gpt-5.4",
-                ),
-            ),
+            UsageEvent(usage=Usage(input_tokens=2, output_tokens=2, total_tokens=4)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[ToolCall(id="call_1", name="add", arguments={"a": 1, "b": 2}, complete=True)],
@@ -329,25 +225,11 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
-            TextStartEvent(
-                index=0,
-                partial=AssistantMessage(content=[TextBlock(text="")], provider="openai", model="gpt-5.4"),
-            ),
-            TextDeltaEvent(
-                index=0,
-                delta="ok",
-                partial=AssistantMessage(content=[TextBlock(text="ok")], provider="openai", model="gpt-5.4"),
-            ),
-            TextEndEvent(
-                index=0,
-                content="ok",
-                partial=AssistantMessage(content=[TextBlock(text="ok")], provider="openai", model="gpt-5.4"),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-                partial=AssistantMessage(content=[TextBlock(text="ok")], provider="openai", model="gpt-5.4"),
-            ),
+            StartEvent(),
+            TextStartEvent(index=0),
+            TextDeltaEvent(index=0, delta="ok"),
+            TextEndEvent(index=0, content="ok"),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[TextBlock(text="ok")],
@@ -386,25 +268,11 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-5.4")),
-            TextStartEvent(
-                index=0,
-                partial=AssistantMessage(content=[TextBlock(text="")], provider="openai", model="gpt-5.4"),
-            ),
-            TextDeltaEvent(
-                index=0,
-                delta="Once",
-                partial=AssistantMessage(content=[TextBlock(text="Once")], provider="openai", model="gpt-5.4"),
-            ),
-            TextEndEvent(
-                index=0,
-                content="Once",
-                partial=AssistantMessage(content=[TextBlock(text="Once")], provider="openai", model="gpt-5.4"),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-                partial=AssistantMessage(content=[TextBlock(text="Once")], provider="openai", model="gpt-5.4"),
-            ),
+            StartEvent(),
+            TextStartEvent(index=0),
+            TextDeltaEvent(index=0, delta="Once"),
+            TextEndEvent(index=0, content="Once"),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[TextBlock(text="Once")],
@@ -430,6 +298,6 @@ def test_responses_transport_completion_stream(case, responses_transport_factory
     transport = responses_transport_factory(http_client=client)
 
     with transport.completion_stream(case.request) as s:
-        events = collect_events_with_snapshots(s)
+        events = list(s)
 
     assert events == case.expected_events

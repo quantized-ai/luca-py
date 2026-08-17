@@ -35,8 +35,8 @@ def test_premature_finish_emits_error_event(openai_transport_factory):
 
     assert events[-1].type == "error"
     assert "RawFinish" in str(events[-1].error)
-    # Partial content should still be present.
-    assert events[-1].partial_message.content[0].text == "oops"
+    # Partial content should still be readable on the stream object.
+    assert s.message.content[0].text == "oops"
 
 
 def test_cancellation_path_via_accumulator():

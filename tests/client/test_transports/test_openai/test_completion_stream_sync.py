@@ -31,7 +31,6 @@ from luca.client.types import (
     UserMessage,
 )
 from tests.client._helpers.httpx_mocks import make_sync_client, sse_response
-from tests.client._helpers.stream_iteration import collect_events_with_snapshots
 
 
 def _data(payload: str) -> bytes:
@@ -64,24 +63,11 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-            TextStartEvent(
-                index=0, partial=AssistantMessage(content=[TextBlock(text="")], provider="openai", model="gpt-4o")
-            ),
-            TextDeltaEvent(
-                index=0,
-                delta="Hi",
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
-            ),
-            TextEndEvent(
-                index=0,
-                content="Hi",
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
-                partial=AssistantMessage(content=[TextBlock(text="Hi")], provider="openai", model="gpt-4o"),
-            ),
+            StartEvent(),
+            TextStartEvent(index=0),
+            TextDeltaEvent(index=0, delta="Hi"),
+            TextEndEvent(index=0, content="Hi"),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[TextBlock(text="Hi")],
@@ -114,58 +100,14 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-            ThinkingStartEvent(
-                index=0, partial=AssistantMessage(content=[ThinkingBlock(text="")], provider="openai", model="gpt-4o")
-            ),
-            ThinkingDeltaEvent(
-                index=0,
-                delta="Let me think.",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think.")], provider="openai", model="gpt-4o"
-                ),
-            ),
-            TextStartEvent(
-                index=1,
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="")], provider="openai", model="gpt-4o"
-                ),
-            ),
-            TextDeltaEvent(
-                index=1,
-                delta="Hi",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
-            ThinkingEndEvent(
-                index=0,
-                content="Let me think.",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
-            TextEndEvent(
-                index=1,
-                content="Hi",
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
-            UsageEvent(
-                usage=Usage(input_tokens=1, output_tokens=3, total_tokens=4, reasoning_tokens=2),
-                partial=AssistantMessage(
-                    content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
+            StartEvent(),
+            ThinkingStartEvent(index=0),
+            ThinkingDeltaEvent(index=0, delta="Let me think."),
+            TextStartEvent(index=1),
+            TextDeltaEvent(index=1, delta="Hi"),
+            ThinkingEndEvent(index=0, content="Let me think."),
+            TextEndEvent(index=1, content="Hi"),
+            UsageEvent(usage=Usage(input_tokens=1, output_tokens=3, total_tokens=4, reasoning_tokens=2)),
             FinishEvent(
                 message=AssistantMessage(
                     content=[ThinkingBlock(text="Let me think."), TextBlock(text="Hi")],
@@ -201,59 +143,10 @@ CASES = [
             _data("[DONE]"),
         ],
         expected_events=[
-            StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-            ToolCallStartEvent(
-                index=0,
-                id="call_abc",
-                name="get_weather",
-                partial=AssistantMessage(
-                    content=[
-                        ToolCall(
-                            id="call_abc",
-                            name="get_weather",
-                            arguments={},
-                            partial_arguments="",
-                            complete=False,
-                        )
-                    ],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
-            ToolCallDeltaEvent(
-                index=0,
-                arguments_delta='{"loca',
-                partial=AssistantMessage(
-                    content=[
-                        ToolCall(
-                            id="call_abc",
-                            name="get_weather",
-                            arguments={},
-                            partial_arguments='{"loca',
-                            complete=False,
-                        )
-                    ],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
-            ToolCallDeltaEvent(
-                index=0,
-                arguments_delta='tion":"NYC"}',
-                partial=AssistantMessage(
-                    content=[
-                        ToolCall(
-                            id="call_abc",
-                            name="get_weather",
-                            arguments={},
-                            partial_arguments='{"location":"NYC"}',
-                            complete=False,
-                        )
-                    ],
-                    provider="openai",
-                    model="gpt-4o",
-                ),
-            ),
+            StartEvent(),
+            ToolCallStartEvent(index=0, id="call_abc", name="get_weather"),
+            ToolCallDeltaEvent(index=0, arguments_delta='{"loca'),
+            ToolCallDeltaEvent(index=0, arguments_delta='tion":"NYC"}'),
             ToolCallEndEvent(
                 index=0,
                 tool_call=ToolCall(
@@ -262,19 +155,6 @@ CASES = [
                     arguments={"location": "NYC"},
                     partial_arguments="",
                     complete=True,
-                ),
-                partial=AssistantMessage(
-                    content=[
-                        ToolCall(
-                            id="call_abc",
-                            name="get_weather",
-                            arguments={"location": "NYC"},
-                            partial_arguments="",
-                            complete=True,
-                        )
-                    ],
-                    provider="openai",
-                    model="gpt-4o",
                 ),
             ),
             FinishEvent(
@@ -331,50 +211,16 @@ def test_streamed_refusal_is_preserved_and_classified_as_an_error(openai_transpo
     transport = openai_transport_factory(http_client=client)
 
     with transport.completion_stream(_REQ) as stream:
-        events = collect_events_with_snapshots(stream)
+        events = list(stream)
 
     refusal = "I'm sorry, I cannot assist with that request."
     assert events == [
-        StartEvent(partial=AssistantMessage(content=[], provider="openai", model="gpt-4o")),
-        RefusalStartEvent(
-            index=0,
-            partial=AssistantMessage(content=[RefusalBlock(text="")], provider="openai", model="gpt-4o"),
-        ),
-        RefusalDeltaEvent(
-            index=0,
-            delta="I'm sorry",
-            partial=AssistantMessage(
-                content=[RefusalBlock(text="I'm sorry")],
-                provider="openai",
-                model="gpt-4o",
-            ),
-        ),
-        RefusalDeltaEvent(
-            index=0,
-            delta=", I cannot assist with that request.",
-            partial=AssistantMessage(
-                content=[RefusalBlock(text=refusal)],
-                provider="openai",
-                model="gpt-4o",
-            ),
-        ),
-        RefusalEndEvent(
-            index=0,
-            content=refusal,
-            partial=AssistantMessage(
-                content=[RefusalBlock(text=refusal)],
-                provider="openai",
-                model="gpt-4o",
-            ),
-        ),
-        UsageEvent(
-            usage=Usage(input_tokens=1, output_tokens=2, total_tokens=3),
-            partial=AssistantMessage(
-                content=[RefusalBlock(text=refusal)],
-                provider="openai",
-                model="gpt-4o",
-            ),
-        ),
+        StartEvent(),
+        RefusalStartEvent(index=0),
+        RefusalDeltaEvent(index=0, delta="I'm sorry"),
+        RefusalDeltaEvent(index=0, delta=", I cannot assist with that request."),
+        RefusalEndEvent(index=0, content=refusal),
+        UsageEvent(usage=Usage(input_tokens=1, output_tokens=2, total_tokens=3)),
         FinishEvent(
             message=AssistantMessage(
                 content=[RefusalBlock(text=refusal)],
@@ -400,5 +246,5 @@ def test_openai_transport_completion_stream(case, openai_transport_factory):
     client = make_sync_client(sse_response(case.sse_chunks))
     transport = openai_transport_factory(http_client=client)
     with transport.completion_stream(case.request) as s:
-        events = collect_events_with_snapshots(s)
+        events = list(s)
     assert events == case.expected_events

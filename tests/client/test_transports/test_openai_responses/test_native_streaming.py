@@ -34,21 +34,23 @@ def test_apply_patch_stream_is_start_then_end_with_full_operation(responses_tran
         http_client=_capture_client("openai_apply_patch_stream.sse"),
     )
     with transport.completion_stream(_request(ApplyPatchTool())) as stream:
-        events = list(stream)
+        it = iter(stream)
+        head = [next(it), next(it)]  # start, tool_call_start
+        # At tool_call_start the live message already holds the typed
+        # in-progress skeleton (type + path known, diff empty).
+        assert stream.message.content[0] == ApplyPatchToolCall(
+            id="call_bNSZXJtrFzni0yQhLu4BOkFQ",
+            name="apply_patch",
+            arguments={"type": "create_file", "diff": "", "path": "hello.txt"},
+            item_id="apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f",
+            status="in_progress",
+            complete=False,
+        )
+        events = [*head, *it]
 
     assert [e.type for e in events] == ["start", "tool_call_start", "tool_call_end", "usage", "finish"]
     start = events[1]
     assert (start.id, start.name) == ("call_bNSZXJtrFzni0yQhLu4BOkFQ", "apply_patch")
-    # The in-progress skeleton is already typed and carries the partial
-    # operation (type + path known, diff empty).
-    assert start.partial.content[0] == ApplyPatchToolCall(
-        id="call_bNSZXJtrFzni0yQhLu4BOkFQ",
-        name="apply_patch",
-        arguments={"type": "create_file", "diff": "", "path": "hello.txt"},
-        item_id="apc_078e3489cb16e5e4016a74c4c4041c819da54557a9ff83b34f",
-        status="in_progress",
-        complete=False,
-    )
     end = events[2]
     assert end.tool_call == ApplyPatchToolCall(
         id="call_bNSZXJtrFzni0yQhLu4BOkFQ",

@@ -33,9 +33,9 @@ nobody has to grep to find out whether a feature is real.
 - Reasoning: `ThinkingBlock`, `reasoning=`, signature and item-id
   preservation per-transport, including replay across a mid-session model
   switch (a foreign attestation is dropped rather than sent).
-- Streaming: full `StreamEvent` union, `partial: AssistantMessage` snapshot
-  policy, cancellation as `FinishEvent(cancelled=True)`, terminal
-  `FinishEvent` / `ErrorEvent` split, `ResourceWarning` safety net.
+- Streaming: full `StreamEvent` union, live accessors on the stream object
+  (`s.message`, `s.text`, …), cancellation as `FinishEvent(cancelled=True)`,
+  terminal `FinishEvent` / `ErrorEvent` split, `ResourceWarning` safety net.
 - Typed error hierarchy under `ClientError`.
 - Catalog: `catalog.get`, `catalog.list`, `catalog.register`. Ships with a
   curated set of records.

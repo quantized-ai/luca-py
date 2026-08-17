@@ -115,7 +115,7 @@ def test_a_stream_that_ends_without_a_terminal_emits_an_error_event(responses_tr
 
     assert events[-1].type == "error"
     assert "RawFinish" in str(events[-1].error)
-    assert events[-1].partial_message.content == [TextBlock(text="Once")]
+    assert s.message.content == [TextBlock(text="Once")]
 
 
 def test_malformed_json_is_a_stream_error(responses_transport_factory):

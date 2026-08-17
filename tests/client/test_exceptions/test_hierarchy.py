@@ -48,14 +48,6 @@ def test_rate_limit_error_carries_retry_after():
     assert e.retry_after == 30.0
 
 
-def test_stream_error_carries_partial_message():
-    from luca.client.types import AssistantMessage, TextBlock
-
-    msg = AssistantMessage(content=[TextBlock(text="partial")])
-    e = StreamError("oops", provider="openai", partial_message=msg)
-    assert e.partial_message is msg
-
-
 def test_client_error_carries_original_exception():
     base = ValueError("bad")
     e = ClientError("wrap", provider="openai", original_exception=base)

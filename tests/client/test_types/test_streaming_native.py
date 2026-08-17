@@ -131,7 +131,7 @@ def test_event_and_finish_dumps_keep_subclass_fields():
     )
     end_dump = events[-1].model_dump()
     assert end_dump["tool_call"]["item_id"] == "item_1"
-    assert end_dump["partial"]["content"][0]["status"] == "completed"
 
     finish = acc.build_terminal_finish(classify_finish=lambda terminal, message: ("tool_use", None))
     assert finish.model_dump()["tool_calls"][0]["item_id"] == "item_1"
+    assert finish.model_dump()["message"]["content"][0]["status"] == "completed"
