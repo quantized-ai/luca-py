@@ -63,7 +63,7 @@ class McpService:
                 server,
                 client=self._client,
                 auth=self._auth.get(label),
-                on_tools_changed=self.catalog.invalidate,
+                on_tools_changed=self._tools_changed,
             )
             for label, server in servers.items()
         }
@@ -73,6 +73,12 @@ class McpService:
         # `luca.json`, which luca reads and never edits.
         self._disabled: set[str] = set()
         self._first_listing: asyncio.Future | None = None
+        # Being listed right now, so `/mcp` says "connecting" rather than
+        # passing a verdict on an unfinished question.
+        self._listing: set[str] = set()
+        # Cuts the refresh loop's sleep short, so a `toolsListChanged` is acted
+        # on now rather than at the next TTL.
+        self._wake = asyncio.Event()
 
     def _build_auth(self, browser) -> dict[str, httpx.Auth]:
         """One OAuth provider per server, built once and kept, so token state
@@ -106,6 +112,12 @@ class McpService:
         found = self.catalog.spec(name)
         return None if found is not None and self._is_disabled(found) else found
 
+    def tools_for(self, label: str) -> list[ToolSpec]:
+        """One server's cached tools, for a UI that wants to show them. A
+        disabled server still answers: what it would offer is what somebody
+        deciding to switch it back on is asking about."""
+        return self.catalog.specs_for(label)
+
     def status(self) -> list[ServerStatus]:
         return [self._status(label, connection) for label, connection in self._connections.items()]
 
@@ -117,13 +129,22 @@ class McpService:
         that listing off disk and never opens a connection at all, so asking
         the transport whether it is alive would report a working server as
         broken.
+
+        A failed refresh over a listing we still hold is STALE, not INACTIVE:
+        those tools are still being offered to the model, and calling the
+        server unreachable leaves the calls it will fail unexplained.
         """
         reported = connection.status()
+        cached = self.catalog.has(label)
         if label in self._disabled:
             state = ServerState.DISABLED
         elif connection.needs_auth:
             state = ServerState.NEEDS_AUTH
-        elif connection.error is None and self.catalog.has(label):
+        elif label in self._listing and not cached:
+            state = ServerState.CONNECTING
+        elif connection.error is not None:
+            state = ServerState.STALE if cached else ServerState.INACTIVE
+        elif cached:
             state = ServerState.CONNECTED
         else:
             state = ServerState.INACTIVE
@@ -166,6 +187,13 @@ class McpService:
     async def _list(self, label: str) -> None:
         """List one server, recording a failure rather than raising it: one
         dead server must not cost its siblings their tools."""
+        self._listing.add(label)
+        try:
+            await self._list_once(label)
+        finally:
+            self._listing.discard(label)
+
+    async def _list_once(self, label: str) -> None:
         connection = self._connections[label]
         provider = self._auth.get(label)
         if provider is not None:
@@ -206,15 +234,25 @@ class McpService:
         )
         logger.info("mcp server=%s listed %d tools", label, self.catalog.tool_count(label))
 
+    def _tools_changed(self, label: str) -> None:
+        """A server said its tool list moved: mark the slice due and wake the
+        loop, or "immediately" would mean "within a TTL"."""
+        self.catalog.invalidate(label)
+        self._wake.set()
+
     async def _refresh_loop(self) -> None:
-        """Sleep until the earliest slice goes stale, refresh, repeat.
+        """Wait until the earliest slice goes stale or a server says otherwise,
+        refresh, repeat.
 
         The "out of band" half of contract rule 3; nothing in the tool path
         waits on it.
         """
         try:
             while True:
-                await asyncio.sleep(self._sleep_for() / 1000)
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(self._sleep_for() / 1000):
+                        await self._wake.wait()
+                self._wake.clear()
                 with contextlib.suppress(Exception):
                     await self.refresh()
         except asyncio.CancelledError:
@@ -263,10 +301,24 @@ class McpService:
         connection = self._connections.get(label)
         if connection is None:
             raise McpServerGone(f"MCP server {label!r} is not configured.")
+        provider = self._auth.get(label)
+        if provider is not None:
+            # A token that lapsed since the last listing is ours to renew.
+            # Never interactive: no browser opens mid-message.
+            await provider.ensure_token(self._client, interactive=False)
         # Mirrored into headers AND left in the body: a server must reject a
         # mismatch between the two.
         extra = param_headers(input_schema, arguments) if input_schema else None
-        result = await connection.call_tool(tool, arguments, timeout_ms=timeout_ms, extra_headers=extra)
+        try:
+            result = await connection.call_tool(tool, arguments, timeout_ms=timeout_ms, extra_headers=extra)
+        except McpAuthRequired as exc:
+            # The call fails either way, but the server stops claiming to be
+            # connected, and the next login asks for the scopes this 401 named.
+            if provider is not None:
+                provider.observe_challenge(exc.challenge)
+            connection.needs_auth = True
+            logger.info("mcp server=%s refused a call and needs authorization", label)
+            raise
         return to_execution_result(result)
 
     async def login(self, label: str) -> None:
@@ -284,11 +336,13 @@ class McpService:
         await self.refresh([label])
 
     async def reconnect(self, label: str) -> None:
-        """Drop what was negotiated and list the server again."""
+        """Drop what was negotiated and list the server again.
+
+        Does NOT re-enable a disabled one: `set_enabled` is the way back.
+        """
         connection = self._connections.get(label)
-        if connection is None:
+        if connection is None or label in self._disabled:
             return
-        self._disabled.discard(label)
         await connection.aclose()
         self.catalog.invalidate(label)
         await self.refresh([label])

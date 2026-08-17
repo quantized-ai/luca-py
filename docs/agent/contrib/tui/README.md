@@ -315,40 +315,64 @@ as everything else.
 }
 ```
 
-Servers connect in a worker at startup, and the notice reports only what
-worked:
+In the transcript those calls read `files:read_file`, not `mcp__files__read_file`
+and not whatever title the server gave the tool: whose tool it is happens to be
+what somebody deciding whether to approve the call needs to know.
+
+Servers connect in a worker at startup, and the notice leads with what worked
+and trails what still needs doing:
 
 ```
-MCP connected: files (14 tools), airtable (16 tools)
+MCP connected: files (14 tools), airtable (3 tools) · linear needs a login · staging failed — /mcp
 ```
 
-A server waiting on a login, or one that could not be reached, says nothing at
-boot. Neither is something you can act on from there, and a red line you cannot
-act on is what stops people reading any of them. Both show up in `/mcp`, which
-is where the fix is.
+One line and one colour. Reporting only successes left a server waiting on a
+login invisible until somebody thought to type `/mcp`, and a red line at boot is
+what stops people reading any of them.
 
 `/mcp` opens the server list, one row per server with a coloured dot for its
-state:
+state. `/mcp <server>` opens it on that row, which is what a failed call's own
+error message tells you to type:
 
 ```
-mcp servers                        2 of 5 connected · 30 tools
+mcp servers                        2 of 6 connected · 26 tools
 
-● files      14 tools · 2025-11-25
+● files      14 tools · 2025-11-25                                 ▸
 ● linear     not authenticated
-● airtable   16 tools · 2026-07-28
+● airtable   3 tools · 1 excluded · 2026-07-28                     ▸
 ● staging    Could not start MCP server 'staging': No such file or directory
 ● notion     disabled for this session
+● github     9 tools · last refresh failed: unreachable            ▸
 
-airtable/bulk_upsert excluded: 'x-mcp-header' at rows is on a 'array' parameter
-
-↑↓ move   a authenticate   r reconnect   d disable   esc back
+↑↓ move   enter tools   a authenticate   r reconnect   d disable   esc back
 ```
 
 `a` runs the browser flow, `r` reconnects and re-lists, and `d` withholds a
 server's tools for the rest of the session (its cached listing is kept, so
-turning it back on costs nothing). Enter runs whichever of those the selected
-row needs. Any tool the client had to exclude is listed underneath with the
-reason, so a missing tool explains itself instead of just being absent.
+turning it back on costs nothing). Enter does whatever the row's own state makes
+useful, and the legend follows the selection rather than offering to disable
+something already disabled.
+
+A `▸` means there are tools to look at, which enter opens:
+
+```
+airtable · 3 tools · 1 excluded
+
+  create_record             Create one record in a table.
+  list_records              List records in a table, with optional filtering and sorting.
+  search_records            Full-text search across a table's records.
+✗ bulk_upsert               'x-mcp-header' at rows is on a 'array' parameter
+
+↑↓ move   esc back
+```
+
+The tools the client had to exclude sit with the ones it kept, each carrying its
+reason. As a footnote under the server list they were a reason with no subject.
+
+An action leaves the screen up. Authorizing waits on a human in a browser, so
+the row says `authorizing… finish in the browser` while it does, and `esc`
+cancels it rather than closing the screen — `esc` walks back out one step at a
+time: out of a tool list, then out of an action, then out of the screen.
 
 `--no-mcp` skips the lot.
 

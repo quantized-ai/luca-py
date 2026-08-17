@@ -26,6 +26,7 @@ from . import state as vm
 from .blocks import ListBlockView, TaskBlockView, build_block
 from .chrome import Composer, HintLegend, StatusBar
 from .format import HINTS, MIN_COLUMNS, question_hints_for
+from .mcp_service import mcp_hints
 from .modals import CostScreen, McpScreen, SessionsScreen, SettingsScreen
 from .shells import (
     ApprovalPromptView,
@@ -253,7 +254,9 @@ class LucaApp(App):
             if state.modal.settings is not None:
                 return HINTS["settings"]
             if state.modal.mcp is not None:
-                return HINTS["mcp"]
+                # The only modal whose keys depend on what is selected, so
+                # there is no constant list to fall back to.
+                return mcp_hints(state.modal.mcp)
             return HINTS["cost"]
         dock = state.dock()
         if dock == "approval":

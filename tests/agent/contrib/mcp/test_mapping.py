@@ -236,7 +236,14 @@ def test_the_approval_context_offers_this_tool_and_the_whole_server():
                         "metadata": {"label": "Allow every tool from github"},
                     },
                 ],
-                "metadata": {"server": "github", "tool": "create_issue"},
+                "metadata": {
+                    "server": "github",
+                    "tool": "create_issue",
+                    # Without a preview the prompt asks you to approve
+                    # `mcp__github__create_issue`, which names the wire format
+                    # rather than the thing being approved.
+                    "preview": "Run create_issue on the github MCP server",
+                },
             }
         ]
     }
@@ -260,5 +267,9 @@ def test_the_approval_context_is_a_real_permission_request():
                 metadata={"label": "Allow every tool from github"},
             ),
         ],
-        metadata={"server": "github", "tool": "create_issue"},
+        metadata={
+            "server": "github",
+            "tool": "create_issue",
+            "preview": "Run create_issue on the github MCP server",
+        },
     )

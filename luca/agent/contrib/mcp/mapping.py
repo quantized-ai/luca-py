@@ -217,7 +217,14 @@ def approval_context(label: str, tool_name: str) -> dict:
                         "metadata": {"label": f"Allow every tool from {label}"},
                     },
                 ],
-                "metadata": {"server": label, "tool": tool_name},
+                # `preview` is what the approval prompt reads; without one it
+                # asks you to approve `mcp__airtable__list_records`, which
+                # names the wire format rather than the thing being approved.
+                "metadata": {
+                    "server": label,
+                    "tool": tool_name,
+                    "preview": f"Run {tool_name} on the {label} MCP server",
+                },
             }
         ]
     }

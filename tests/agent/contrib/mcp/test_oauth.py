@@ -154,6 +154,40 @@ async def test_a_token_store_is_keyed_by_issuer_not_by_label(tmp_path):
     assert (await store.get(ISSUER + "/")).token.access_token == "t1"
 
 
+async def test_a_login_is_still_there_after_a_restart(tmp_path):
+    # THE REGRESSION. The record is keyed by the ISSUER, which takes a network
+    # round trip to learn, while a cold process knows only the server's own
+    # URL. Without the index the token was written under `auth.example.test`
+    # and looked for under `api.example.test`, so every relaunch demanded a
+    # browser login for a token that was sitting on disk the whole time.
+    path = tmp_path / "mcp-auth.json"
+    first = OAuthProvider(SERVER, store=TokenStore(path))
+    first._issuer = ISSUER  # as discovery would have set it
+    first._token = OAuthToken(access_token="tok", refresh_token="r")
+    await first._persist()
+
+    second = OAuthProvider(SERVER, store=TokenStore(path))
+    await second._load()
+
+    assert second._token == OAuthToken(access_token="tok", refresh_token="r")
+
+
+async def test_the_index_names_the_issuer_that_guards_a_server(tmp_path):
+    store = TokenStore(tmp_path / "mcp-auth.json")
+    await store.put(ISSUER, IssuerRecord(token=OAuthToken(access_token="t1")), resource="https://api.example.test/mcp")
+
+    reread = TokenStore(tmp_path / "mcp-auth.json")
+
+    assert await reread.issuer_for("https://api.example.test/mcp") == ISSUER
+
+
+async def test_an_unknown_server_has_no_issuer_in_the_index(tmp_path):
+    store = TokenStore(tmp_path / "mcp-auth.json")
+    await store.put(ISSUER, IssuerRecord(token=OAuthToken(access_token="t1")))
+
+    assert await store.issuer_for("https://other.example.test/mcp") is None
+
+
 async def test_the_token_file_is_not_world_readable(tmp_path):
     path = tmp_path / "mcp-auth.json"
     await TokenStore(path).put(ISSUER, IssuerRecord(token=OAuthToken(access_token="t1")))
@@ -263,7 +297,8 @@ async def test_a_call_never_opens_a_browser(auth_client):
     opened: list[str] = []
     provider = OAuthProvider(SERVER, store=TokenStore(None), browser=lambda url: opened.append(url))
 
-    with pytest.raises(McpAuthRequired, match="/mcp login remote"):
+    # And the failure names a command that exists: there is no `/mcp login`.
+    with pytest.raises(McpAuthRequired, match="`/mcp remote`"):
         await provider.ensure_token(client, interactive=False)
 
     assert opened == []

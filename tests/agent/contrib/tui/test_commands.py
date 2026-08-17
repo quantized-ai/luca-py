@@ -110,7 +110,7 @@ def test_the_registry_lists_the_seventeen_commands():
         ("rewind", "", "pick an earlier checkpoint to restore", False),
         ("resume", "", "switch to another session in this project", False),
         ("new", "", "save and start a fresh conversation", False),
-        ("mcp", "", "MCP servers: status, sign in, reconnect", False),
+        ("mcp", "[server]", "MCP servers: status, tools, sign in, reconnect", False),
         ("help", "", "show every command", False),
         ("quit", "", "save and exit", False),
     ]
@@ -448,7 +448,9 @@ async def test_help_mounts_the_command_list_block(tmp_path):
                 vm.ListRow(glyph="none", text="/rewind", annotation="pick an earlier checkpoint to restore"),
                 vm.ListRow(glyph="none", text="/resume", annotation="switch to another session in this project"),
                 vm.ListRow(glyph="none", text="/new", annotation="save and start a fresh conversation"),
-                vm.ListRow(glyph="none", text="/mcp", annotation="MCP servers: status, sign in, reconnect"),
+                vm.ListRow(
+                    glyph="none", text="/mcp [server]", annotation="MCP servers: status, tools, sign in, reconnect"
+                ),
                 vm.ListRow(glyph="none", text="/help", annotation="show every command"),
                 vm.ListRow(glyph="none", text="/quit", annotation="save and exit"),
             ],

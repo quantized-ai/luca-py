@@ -38,7 +38,6 @@ from textual.css.query import NoMatches
 from textual.widgets import TextArea
 
 from luca.agent.contrib.checkpoints import CheckpointService, ShadowGitStore
-from luca.agent.contrib.mcp.servers import ServerState
 from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
@@ -89,7 +88,7 @@ from .clipboard import MEDIA_TYPE, ClipboardUnavailable, read_clipboard_image
 from .format import HINTS, home_path, inline_paths, question_hints_for, short_model
 from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
-from .mcp_service import build_mcp_service, build_mcp_state
+from .mcp_service import build_mcp_detail, build_mcp_service, build_mcp_state, mcp_boot_notice, mcp_hints
 from .modals import CostScreen, McpScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
 from .prompt_files import ReadLimits, get_model_info, parse_prompt
@@ -126,6 +125,11 @@ from .usage import status_counter
 from .wiring import build_runner
 
 logger = logging.getLogger(__name__)
+
+# How long the first turn of a cold run waits for MCP to list: enough for a
+# subprocess to spawn and answer, little enough that a server which is never
+# coming back costs one pause rather than the session.
+MCP_FIRST_LISTING_TIMEOUT_MS = 10_000
 
 __all__ = ["AgentApp", "DEFAULT_THEME"]
 
@@ -314,14 +318,20 @@ class AgentApp(LucaApp):
             logger.error("mcp startup failed", exc_info=exc)
             await self._notice_if_mounted(f"MCP: {exc}", error=True)
             return
-        # ONLY what worked. A server that needs a login or could not be
-        # reached is left to `/mcp`, which is where you can do something about
-        # it: a red line at boot that the user cannot act on from there is
-        # noise, and noise at boot is what stops people reading any of it.
-        connected = [s for s in self.mcp.status() if s.state is ServerState.CONNECTED]
-        if connected:
-            summary = ", ".join(f"{status.label} ({status.tool_count} tools)" for status in connected)
-            await self._notice_if_mounted(f"MCP connected: {summary}")
+        notice = mcp_boot_notice(self.mcp.status())
+        if notice:
+            await self._notice_if_mounted(notice)
+
+    async def _mcp_first_listing(self) -> None:
+        """Hold the first turn while a genuinely cold catalog fills.
+
+        Returns at once on every run but the first after a server is
+        configured, and the composer already reads `working…` here, so the
+        alternative is not a faster turn but one where the model silently has
+        none of the MCP tools it was told about.
+        """
+        if self.mcp is not None:
+            await self.mcp.first_listing(MCP_FIRST_LISTING_TIMEOUT_MS)
 
     async def _notice_if_mounted(self, text: str, *, error: bool = False) -> None:
         """`_notice` for a worker that may resume after the frame is gone."""
@@ -469,6 +479,7 @@ class AgentApp(LucaApp):
         """THE DRIVE COMES BEFORE THE PROMPT: answering writes to the
         permission strategy, so only a drive can consume it — still-BLOCKED
         after a drive is a genuinely unanswered gate."""
+        await self._mcp_first_listing()
         runner = self.runner
         try:
             while True:
@@ -1514,49 +1525,66 @@ class AgentApp(LucaApp):
         self,
         selected: int = 0,
         *,
+        label: str | None = None,
         message: str | None = None,
         error: bool = False,
     ) -> None:
+        """The server list. `label` selects one row, which is what `/mcp
+        <server>` and a failed call's own error message both point at."""
         if self.mcp is None:
             await self._notice("MCP is off, or no servers are configured under `mcp.servers` in luca.json.")
             return
-        state = build_mcp_state(self.mcp.status(), selected=selected, message=message, message_is_error=error)
-        await self.push_screen(McpScreen(state, self._modal_status("mcp servers"), HINTS["mcp"]))
+        statuses = self.mcp.status()
+        if label is not None:
+            found = next((index for index, status in enumerate(statuses) if status.label == label), None)
+            if found is None:
+                await self._notice(f"No MCP server called {label!r} is configured.", error=True)
+                return
+            selected = found
+        state = build_mcp_state(statuses, selected=selected, message=message, message_is_error=error)
+        await self.push_screen(McpScreen(state, self._modal_status("mcp servers"), mcp_hints(state)))
 
-    async def _mcp_action(self, screen: McpScreen, label: str, done: str, action) -> None:
-        """Run one server action with the screen dismissed, then reopen it
-        carrying the outcome.
+    def _mcp_state(self, screen: McpScreen, **over) -> vm.McpState:
+        return build_mcp_state(self.mcp.status(), selected=screen.state.selected, **over)
 
-        Dismissed first because authorizing waits on a human in a browser, and
-        a modal frozen over the terminal for five minutes is worse than none.
-        The outcome rides back on the STATE rather than a notice: the screen
-        reopens on top of the transcript, so a notice posted here is a report
-        nobody can read.
+    async def _redraw_mcp(self, screen: McpScreen, **over) -> None:
+        if not screen.is_mounted:  # an action outlived the screen that started it
+            return
+        state = self._mcp_state(screen, **over)
+        await screen.set_state(state, mcp_hints(state))
+
+    async def _mcp_action(self, screen: McpScreen, label: str, verb: str, done: str, action) -> None:
+        """Run one server action WITH THE SCREEN STILL UP, then redraw it.
+
+        THE HANDLER MUST RETURN. Awaiting the action here would hold the app's
+        message pump, and the `esc` that cancels it is a message — so the one
+        key that gets you out would be the one key that could not be
+        delivered.
         """
-        selected = screen.state.selected
-        screen.dismiss()
+        await self._redraw_mcp(screen, busy=(label, verb))
+        self.run_worker(self._mcp_action_body(screen, label, done, action), group="mcp-action", exclusive=True)
+
+    async def _mcp_action_body(self, screen: McpScreen, label: str, done: str, action) -> None:
         try:
             await action()
         except Exception as exc:
             logger.error("mcp server=%s action failed", label, exc_info=exc)
-            await self.open_mcp_screen(selected, message=f"{label}: {exc}", error=True)
+            await self._redraw_mcp(screen, message=f"{label}: {exc}", message_is_error=True)
             return
-        await self.open_mcp_screen(selected, message=f"{label} {done}")
+        await self._redraw_mcp(screen, message=f"{label} {done}")
 
     async def on_mcp_screen_authenticate(self, message: McpScreen.Authenticate) -> None:
         label = message.row.label
         if not self._mcp_is_oauth(label):
-            message.screen.dismiss()
-            await self.open_mcp_screen(
-                message.screen.state.selected,
-                message=f"{label} does not use oauth — it needs no sign-in",
-            )
+            await self._redraw_mcp(message.screen, message=f"{label} does not use oauth — it needs no sign-in")
             return
-        await self._mcp_action(message.screen, label, "authorized", lambda: self.mcp.login(label))
+        await self._mcp_action(
+            message.screen, label, "authorizing… finish in the browser", "authorized", lambda: self.mcp.login(label)
+        )
 
     async def on_mcp_screen_reconnect(self, message: McpScreen.Reconnect) -> None:
         label = message.row.label
-        await self._mcp_action(message.screen, label, "reconnected", lambda: self.mcp.reconnect(label))
+        await self._mcp_action(message.screen, label, "reconnecting…", "reconnected", lambda: self.mcp.reconnect(label))
 
     async def on_mcp_screen_toggle(self, message: McpScreen.Toggle) -> None:
         label = message.row.label
@@ -1564,9 +1592,27 @@ class AgentApp(LucaApp):
         await self._mcp_action(
             message.screen,
             label,
+            "enabling…" if enable else "disabling…",
             "enabled" if enable else "disabled",
             lambda: self.mcp.set_enabled(label, enable),
         )
+
+    async def on_mcp_screen_inspect(self, message: McpScreen.Inspect) -> None:
+        label = message.row.label
+        status = self.mcp.status_for(label)
+        if status is None:
+            return
+        detail = build_mcp_detail(status, self.mcp.tools_for(label))
+        await self._redraw_mcp(message.screen, detail=detail)
+
+    async def on_mcp_screen_cancelled(self, message: McpScreen.Cancelled) -> None:
+        """`esc` during an action. Cancelling the worker closes the loopback
+        listener with it, so an abandoned login leaves no socket behind, and the
+        report is written here because a cancelled task cannot await a redraw.
+        """
+        busy = next((row.label for row in message.screen.state.rows if row.busy), None)
+        self.workers.cancel_group(self, "mcp-action")
+        await self._redraw_mcp(message.screen, message=f"{busy}: cancelled" if busy else None)
 
     def _mcp_is_oauth(self, label: str) -> bool:
         status = self.mcp.status_for(label) if self.mcp else None

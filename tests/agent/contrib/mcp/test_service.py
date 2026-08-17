@@ -40,6 +40,23 @@ class Clock:
         return self.now
 
 
+def watch_refresh(service: McpService) -> asyncio.Event:
+    """An event that fires the next time the refresh LOOP runs a refresh.
+
+    A test waits on the thing happening rather than on time passing, so
+    nothing here races a clock.
+    """
+    fired = asyncio.Event()
+    original = service.refresh
+
+    async def watched(labels=None):
+        await original(labels)
+        fired.set()
+
+    service.refresh = watched
+    return fired
+
+
 @pytest.fixture
 async def service():
     """Hands out services and closes every one of them."""
@@ -374,3 +391,165 @@ async def test_login_on_a_server_without_oauth_says_so(service):
 
     with pytest.raises(McpAuthRequired, match="not configured for oauth"):
         await started.login("fx")
+
+
+async def test_reconnecting_a_disabled_server_leaves_it_disabled(service):
+    # `r` used to discard the disable as a side effect, so the row you asked to
+    # reconnect came back switched on with nothing saying it had been.
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    started = service({"fx": stdio()})
+    await started.start()
+    await started.set_enabled("fx", False)
+
+    await started.reconnect("fx")
+
+    assert started.status()[0].state is ServerState.DISABLED
+    assert started.specs() == []
+
+
+async def test_a_tool_list_change_relists_without_waiting_out_the_ttl(service, tmp_path):
+    # `invalidate` marked the slice due, but the refresh loop was asleep on the
+    # deadline it computed before that, so "immediately" meant "within a TTL".
+    clock = Clock()
+    started = service({"fx": stdio()}, catalog_path=tmp_path / "c.json", now_ms=clock)
+    await started.start()
+    relisted = watch_refresh(started)
+    clock.now += 1
+
+    started._tools_changed("fx")
+
+    await asyncio.wait_for(relisted.wait(), timeout=5)
+    assert started.catalog._slices["fx"]["fetched_at"] == clock.now
+
+
+async def test_a_failed_refresh_over_a_cached_listing_is_stale_not_inactive(service):
+    # The tools are genuinely still being offered to the model, so reporting
+    # this server as merely unreachable leaves every call it fails unexplained.
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    started = service({"fx": stdio()})
+    await started.start()
+
+    started._connections["fx"].error = "connection reset"
+
+    [status] = started.status()
+    assert (status.state, status.tool_count, status.error) == (ServerState.STALE, 1, "connection reset")
+    assert [spec.name for spec in started.specs()] == ["mcp__fx__tool_0"]
+
+
+async def test_a_server_being_listed_for_the_first_time_is_connecting(service):
+    # Opening `/mcp` during boot used to paint every server red, which is a
+    # verdict on a question that has not finished being asked.
+    from luca.agent.contrib.mcp.servers import ServerState
+
+    started = service({"fx": stdio()})
+    started._listing.add("fx")
+
+    [status] = started.status()
+
+    assert (status.state, status.error) == (ServerState.CONNECTING, None)
+
+
+# ── the oauth call path ───────────────────────────────────────────────────────
+#
+# A lapsed token used to be nobody's to renew: `_list` refreshed, `call` did
+# not, so the call failed and the server went on reporting itself connected.
+
+REMOTE_URL = "https://example.test/mcp"
+_DISCOVER = {
+    "supportedVersions": ["2026-07-28"],
+    "capabilities": {"tools": {}},
+    "resultType": "complete",
+    "ttlMs": 60000,
+    "cacheScope": "public",
+}
+_TOOLS = {
+    "tools": [{"name": "search", "inputSchema": {"type": "object"}}],
+    "resultType": "complete",
+    "ttlMs": 60000,
+    "cacheScope": "public",
+}
+_CALL = {"content": [{"type": "text", "text": "found"}], "resultType": "complete"}
+
+
+class RemoteWithAuth:
+    """One handler for both halves of an authorized server: the OAuth metadata
+    and token endpoints, and the MCP endpoint itself.
+
+    `reject` makes the MCP endpoint answer 401 however good the token is, which
+    is how a revoked grant looks from here.
+    """
+
+    def __init__(self, *, reject: bool = False) -> None:
+        self.reject = reject
+        self.tokens: list[dict] = []
+
+    def __call__(self, request):
+        import json
+
+        import httpx
+
+        path = request.url.path
+        if path.endswith("/.well-known/oauth-protected-resource/mcp"):
+            return httpx.Response(200, json={"authorization_servers": ["https://auth.example.test"]})
+        if "oauth-authorization-server" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": "https://auth.example.test",
+                    "authorization_endpoint": "https://auth.example.test/authorize",
+                    "token_endpoint": "https://auth.example.test/token",
+                },
+            )
+        if path.endswith("/token"):
+            self.tokens.append(dict(pair.split("=", 1) for pair in request.content.decode().split("&")))
+            return httpx.Response(200, json={"access_token": "fresh", "expires_in": 3600})
+        if self.reject:
+            return httpx.Response(401, json={"error": "unauthorized"})
+        body = json.loads(request.content)
+        results = {"server/discover": _DISCOVER, "tools/list": _TOOLS, "tools/call": _CALL}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": results[body["method"]]})
+
+
+async def test_a_call_renews_a_token_that_lapsed_since_the_last_listing(service):
+    import httpx
+
+    from luca.agent.contrib.mcp.oauth.store import OAuthToken
+    from luca.agent.contrib.mcp.servers import HttpServer
+
+    handler = RemoteWithAuth()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        started = service(
+            {"remote": HttpServer(label="remote", url=REMOTE_URL, oauth=True, client_id="fixed-client")}, client=client
+        )
+        await started.start()
+        provider = started._auth["remote"]
+        provider._token = OAuthToken(access_token="stale", refresh_token="r0", expires_at=0)
+
+        result = await started.call("remote", "search", {})
+
+        assert result.content == [TextContent(text="found")]
+        assert [form["grant_type"] for form in handler.tokens] == ["refresh_token"]
+
+
+async def test_a_call_refused_with_a_401_stops_the_server_claiming_to_be_connected(service):
+    import httpx
+
+    from luca.agent.contrib.mcp.errors import McpAuthRequired
+    from luca.agent.contrib.mcp.oauth.store import OAuthToken
+    from luca.agent.contrib.mcp.servers import HttpServer, ServerState
+
+    handler = RemoteWithAuth()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        started = service(
+            {"remote": HttpServer(label="remote", url=REMOTE_URL, oauth=True, client_id="fixed-client")}, client=client
+        )
+        await started.start()
+        started._auth["remote"]._token = OAuthToken(access_token="revoked")
+        handler.reject = True
+
+        with pytest.raises(McpAuthRequired):
+            await started.call("remote", "search", {})
+
+        assert started.status()[0].state is ServerState.NEEDS_AUTH

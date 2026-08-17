@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -159,6 +160,9 @@ class ToolCatalog:
         inside `get_tools` and `create_execution`."""
         return [spec for label in sorted(self._specs) for spec in self._specs[label]]
 
+    def specs_for(self, label: str) -> list[ToolSpec]:
+        return list(self._specs.get(label, ()))
+
     def spec(self, name: str) -> ToolSpec | None:
         for specs in self._specs.values():
             for spec in specs:
@@ -213,15 +217,18 @@ class ToolCatalog:
         await asyncio.to_thread(self._write_sync, {"version": CATALOG_VERSION, "servers": servers})
 
     def _write_sync(self, document: dict) -> None:
+        # Named for THIS process: the path is shared by every luca on the
+        # machine, and one fixed name lets two of them interleave into it.
+        temporary = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            temporary = self.path.with_suffix(".tmp")
             temporary.write_text(json.dumps(document, indent=2))
+            temporary.chmod(0o600)  # before it has the real name, never briefly world-readable
             temporary.replace(self.path)  # atomic, so a crash never leaves a half file
-            self.path.chmod(0o600)
         except OSError as exc:
             # An unwritable cache is a slower agent, not a broken one.
             logger.warning("could not write the mcp catalog to %s", self.path, exc_info=exc)
+            temporary.unlink(missing_ok=True)
 
     def track(self, servers: dict[str, Server]) -> None:
         """Remember which identity each label maps to, for the write path."""

@@ -220,15 +220,22 @@ class SessionsScreen(LucaModalScreen):
 # ── mcp (1l) ──────────────────────────────────────────────────────────────────
 
 MCP_LABEL_COLUMN = 18
+MCP_TOOL_COLUMN = 26
 
 # The dot beside each server. Colour carries the state, so the row reads at a
-# glance and "not authenticated" never looks like a failure.
+# glance and "not authenticated" never looks like a failure. `stale` sits muted
+# between the green and the red: its tools still work.
 MCP_STATE_COLORS: dict[str, str] = {
     "connected": "success",
+    "stale": "muted",
+    "connecting": "accent",
     "needs_auth": "accent",
     "inactive": "error",
     "disabled": "faint",
 }
+
+# Which states have tools to show. Enter drills into these and acts on the rest.
+MCP_HAS_TOOLS = ("connected", "stale")
 
 
 class McpRowView(SelectRow):
@@ -240,12 +247,41 @@ class McpRowView(SelectRow):
         self.row = row
 
     def body(self, tokens: Tokens) -> Text:
-        colour = getattr(tokens, MCP_STATE_COLORS[self.row.state], tokens.muted)
+        colour = tokens.accent if self.row.busy else getattr(tokens, MCP_STATE_COLORS[self.row.state], tokens.muted)
         text = Text()
         text.append("● ", style=Style(color=colour))
         text.append(self.row.label.ljust(MCP_LABEL_COLUMN), style=Style(color=tokens.foreground))
         text.append(
             self.row.detail,
+            style=Style(color=tokens.muted if self.selected or self.row.busy else tokens.faint),
+        )
+        if self.row.state in MCP_HAS_TOOLS and not self.row.busy:
+            text.append("  ▸", style=Style(color=tokens.faint))
+        text.no_wrap = True
+        text.overflow = "ellipsis"
+        return text
+
+
+class McpToolRowView(SelectRow):
+    has_caret: ClassVar[bool] = False
+
+    def __init__(self, index: int, row: vm.McpToolRow, *, selected: bool) -> None:
+        super().__init__(selected=selected)
+        self.index = index
+        self.row = row
+
+    def body(self, tokens: Tokens) -> Text:
+        excluded = self.row.excluded is not None
+        text = Text()
+        # Marked, not merely dimmed: a greyed row reads as a tool the model can
+        # still call.
+        text.append("✗ " if excluded else "  ", style=Style(color=tokens.error))
+        text.append(
+            self.row.name.ljust(MCP_TOOL_COLUMN),
+            style=Style(color=tokens.faint if excluded else tokens.foreground),
+        )
+        text.append(
+            self.row.excluded or self.row.summary,
             style=Style(color=tokens.muted if self.selected else tokens.faint),
         )
         text.no_wrap = True
@@ -254,11 +290,14 @@ class McpRowView(SelectRow):
 
 
 class McpScreen(LucaModalScreen):
-    """`↑↓ move · enter <action> · d disable · esc back`.
+    """`↑↓ move · enter tools · a authenticate · r reconnect · d disable`.
 
-    Enter runs the selected row's own action, which is why the row carries it:
-    an unauthenticated server logs in, a connected one reconnects, a disabled
-    one comes back. `a` and `r` name the two explicitly.
+    Two views on one screen, the server list and one server's tools, so `esc`
+    walks back out the way it came in.
+
+    An action does NOT dismiss the screen: authorizing waits on a human in a
+    browser, and the row saying `authorizing…` while `esc` cancels is the thing
+    a dismissed screen could not do.
     """
 
     class Authenticate(Message):
@@ -279,11 +318,29 @@ class McpScreen(LucaModalScreen):
             self.screen = screen
             self.row = row
 
+    class Inspect(Message):
+        """Show me what this server actually gives the model."""
+
+        def __init__(self, screen: McpScreen, row: vm.McpRow) -> None:
+            super().__init__()
+            self.screen = screen
+            self.row = row
+
+    class Cancelled(Message):
+        """`esc` while an action is in flight."""
+
+        def __init__(self, screen: McpScreen) -> None:
+            super().__init__()
+            self.screen = screen
+
     def __init__(self, state: vm.McpState, status: vm.StatusState, hints: list[str]) -> None:
         super().__init__(status, hints)
         self.state = state
 
     def compose_body(self) -> ComposeResult:
+        if self.state.detail is not None:
+            yield from self._compose_detail(self.state.detail)
+            return
         yield SpanLine(self.state.count_line, classes="faint-line count-line")
         with Vertical(classes="mcp-table"):
             for index, row in enumerate(self.state.rows):
@@ -291,17 +348,40 @@ class McpScreen(LucaModalScreen):
         if self.state.message:
             error = " mcp-message--error" if self.state.message_is_error else ""
             yield SpanLine(self.state.message, classes=f"faint-line mcp-message{error}")
-        for note in self.state.notes:
-            yield SpanLine(note, classes="faint-line")
+
+    def _compose_detail(self, detail: vm.McpDetail) -> ComposeResult:
+        yield SpanLine(f"{detail.label} · {detail.count_line}", classes="faint-line count-line")
+        with Vertical(classes="mcp-table"):
+            for index, row in enumerate(detail.rows):
+                yield McpToolRowView(index, row, selected=index == detail.selected)
+
+    @property
+    def busy(self) -> bool:
+        return any(row.busy for row in self.state.rows)
+
+    async def set_state(self, state: vm.McpState, hints: list[str] | None = None) -> None:
+        """Redraw in place. The screen stays up across an action, so this is how
+        an outcome reaches it."""
+        self.state = state
+        if hints is not None:
+            self._hints = hints
+        await self.recompose()
 
     def _move(self, delta: int) -> None:
-        count = len(self.state.rows)
-        if count == 0:
+        detail = self.state.detail
+        rows = detail.rows if detail is not None else self.state.rows
+        if not rows:
             return
-        selected = (self.state.selected + delta) % count
+        if detail is not None:
+            moved = detail.model_copy(update={"selected": (detail.selected + delta) % len(rows)})
+            self.state = self.state.model_copy(update={"detail": moved})
+            for view in self.query(McpToolRowView):
+                view.set_selected(view.index == moved.selected)
+            return
+        selected = (self.state.selected + delta) % len(rows)
         self.state = self.state.model_copy(update={"selected": selected})
-        for row in self.query(McpRowView):
-            row.set_selected(row.index == selected)
+        for view in self.query(McpRowView):
+            view.set_selected(view.index == selected)
 
     def _selected_row(self) -> vm.McpRow | None:
         if not self.state.rows:
@@ -309,22 +389,30 @@ class McpScreen(LucaModalScreen):
         return self.state.rows[self.state.selected]
 
     async def on_key(self, event: events.Key) -> None:
-        key = event.key
+        if await self._handle_key(event.key):
+            event.stop()
+            event.prevent_default()
+
+    async def _handle_key(self, key: str) -> bool:
+        if key in ("up", "down"):
+            self._move(-1 if key == "up" else 1)
+            return True
+        if key == "escape":
+            # The drill-in first, then an action in flight, then the screen.
+            if self.state.detail is not None:
+                await self.set_state(self.state.model_copy(update={"detail": None}))
+                return True
+            if self.busy:
+                self.post_message(self.Cancelled(self))
+                return True
+            return False  # the base screen dismisses
+        if self.state.detail is not None or self.busy:
+            return False  # nothing else acts on a server from here
         row = self._selected_row()
-        if key == "up":
-            self._move(-1)
-        elif key == "down":
-            self._move(1)
-        elif row is None:
-            return
-        elif key == "enter":
-            self.post_message(
-                self.Toggle(self, row)
-                if row.state == "disabled"
-                else self.Authenticate(self, row)
-                if row.state == "needs_auth"
-                else self.Reconnect(self, row)
-            )
+        if row is None:
+            return False
+        if key == "enter":
+            self.post_message(self._enter_action(row))
         elif key == "a":
             self.post_message(self.Authenticate(self, row))
         elif key == "r":
@@ -332,9 +420,19 @@ class McpScreen(LucaModalScreen):
         elif key == "d":
             self.post_message(self.Toggle(self, row))
         else:
-            return
-        event.stop()
-        event.prevent_default()
+            return False
+        return True
+
+    def _enter_action(self, row: vm.McpRow) -> Message:
+        """Whatever the row's own `action` names, because the useful thing to do
+        to a server depends on the state it is in."""
+        if row.state in MCP_HAS_TOOLS:
+            return self.Inspect(self, row)
+        if row.state == "disabled":
+            return self.Toggle(self, row)
+        if row.state == "needs_auth":
+            return self.Authenticate(self, row)
+        return self.Reconnect(self, row)
 
 
 # ── settings (1j) ─────────────────────────────────────────────────────────────

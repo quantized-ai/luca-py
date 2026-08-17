@@ -107,12 +107,21 @@ class ServerState(str, Enum):
     tools came off disk and whose subprocess has never started this run is
     working, not broken.
 
-    The other three are each a different thing for the user to do — sign in,
-    look at the error, or switch it back on — which is why they are separate
-    rather than one failure bucket.
+    STALE is that answer with a caveat: the tools are still there, from a
+    listing that outlived the refresh which failed. Keeping them is what the
+    durable catalog is for, but calling that CONNECTED would hide a server that
+    has gone away until every call fails.
+
+    CONNECTING is a listing in flight, which without it the boot window reports
+    as unreachable — a verdict on a question that has not finished being asked.
+
+    The rest are each a different thing for the user to do: sign in, look at
+    the error, or switch it back on.
     """
 
     CONNECTED = "connected"
+    STALE = "stale"
+    CONNECTING = "connecting"
     NEEDS_AUTH = "needs_auth"
     INACTIVE = "inactive"
     DISABLED = "disabled"

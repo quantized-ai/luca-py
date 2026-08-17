@@ -139,3 +139,7 @@
 - name: modal/mcp
   screen: mcp
   session: conversation
+
+- name: modal/mcp-detail
+  screen: mcp-detail
+  session: conversation

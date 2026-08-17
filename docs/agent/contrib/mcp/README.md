@@ -15,7 +15,7 @@ Connect the agent to external [Model Context Protocol](https://modelcontextproto
 }
 ```
 
-The model then sees `mcp__files__read_file`, `mcp__github__create_issue`, and so on. `/mcp` lists the servers and lets you sign in, reconnect or switch one off.
+The model then sees `mcp__files__read_file`, `mcp__github__create_issue`, and so on; the transcript shows them as `files:read_file`. `/mcp` lists the servers, opens the tools any one of them is offering, and lets you sign in, reconnect or switch one off. `/mcp <server>` opens it on that row.
 
 ## 1. Using it from your own agent
 
@@ -99,9 +99,9 @@ The framework's registry contract is explicit that a registry fronting a remote 
 
 So the catalog is written to `~/.local/share/luca/mcp/catalog.json` and read back at startup. A slice is dropped when the server's command line or URL changed, or when the listing was marked `cacheScope: "private"` and the credentials are different. An expired slice is still served while it refreshes, because losing tools mid-conversation over a lapsed freshness hint is worse than a slightly stale description.
 
-The only genuinely cold moment is the first run after a server is configured. The TUI makes that one visible and bounded rather than silent.
+The only genuinely cold moment is the first run after a server is configured. The TUI holds that turn — and only that turn — until the listing lands or ten seconds pass, so the alternative is not a faster first message but one where the model silently has none of the tools it was told about.
 
-Refreshing happens on the server's own `ttlMs`, and a stdio server that sends `notifications/tools/list_changed` invalidates its slice immediately. The equivalent over HTTP needs a second long-lived `subscriptions/listen` stream and is not implemented.
+Refreshing happens on the server's own `ttlMs`, and a stdio server that sends `notifications/tools/list_changed` invalidates its slice and cuts the refresh loop's sleep short, so the new listing arrives in the time one round trip takes rather than at the next TTL. The equivalent over HTTP needs a second long-lived `subscriptions/listen` stream and is not implemented.
 
 ## 5. Permissions
 
@@ -128,13 +128,17 @@ Rules use the existing vocabulary, with no new schema:
 
 `"oauth": true` turns on the browser flow: authorization code with PKCE, a loopback redirect on an OS-assigned port, and RFC 9207 `iss` validation before the code is redeemed. Tokens go to `~/.local/share/luca/mcp/mcp-auth.json`, keyed by **issuer** rather than by label, so two servers behind one authorization server share a login and renaming a label does not orphan a token.
 
+Beside the records sits a small `resources` index, mapping each MCP server's canonical URI to the issuer that guards it. The issuer takes a network round trip to learn and a fresh process has not made it yet, so without the index a token written under `auth.linear.app` was looked for under `mcp.linear.app` and never found — every relaunch demanding a browser login for a token already on disk.
+
 Two details the spec makes MUST-level, and both fail the same silent way when you skip them:
 
 **The `resource` parameter** (RFC 8707) goes on the authorization request and both token grants, carrying the server's canonical URI. It is what binds the token to this MCP server, and the server is required to reject a token that is not bound to it. Omit it and the browser says Authorized, the token arrives, and the very next request comes back 401 with nothing to explain it.
 
 **Scopes come from the protected-resource document**, not the authorization server's. Both publish `scopes_supported` and they mean different things: the resource's list is what this MCP server needs. A `WWW-Authenticate` challenge overrides it, since the spec makes the challenged scopes authoritative for the operation that failed.
 
-A server you have not signed into is `not authenticated`, never a failure, and is not even listed — it would only answer 401. The browser opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp`.
+A server you have not signed into is `not authenticated`, never a failure, and is not even listed — it would only answer 401. The browser opens when you ask for it from `/mcp` (or, if a stored token can be refreshed silently, at startup). It never opens from inside a turn: a call that finds no usable token fails telling you to run `/mcp <server>`.
+
+A token that lapsed between listings is renewed on the call path, silently, because that renewal needs no human. One that comes back 401 anyway flips the server to `needs_auth` and records the scopes the challenge named, so the row you go to next is already telling you what to do about it.
 
 Registration is dynamic by default, declaring `application_type: "native"` as the revision requires. Set `client_id` to use a pre-registered client instead.
 
@@ -149,12 +153,18 @@ server's tools straight off disk and never opens a connection at all. Asking
 the transport whether it is alive would report that server as broken while its
 tools work perfectly.
 
-| State | Means | The action |
+| State | Means | Enter does |
 | --- | --- | --- |
-| `connected` | its tools are available to the model | reconnect |
+| `connected` | its tools are available to the model | opens them |
+| `stale` | its tools are still available, from a listing that outlived a failed refresh | opens them |
+| `connecting` | a listing is in flight | nothing yet |
 | `needs_auth` | an `oauth` server nobody has signed into | authenticate |
 | `inactive` | it could not be reached, with the reason | retry |
 | `disabled` | switched off for this session | enable |
+
+`stale` exists because the two halves of the answer disagree. A refresh that fails does not withdraw the tools — losing them mid-conversation over one bad round trip is what the durable catalog is for — so the model goes on calling a server that may have gone away. Reporting that as `connected` hides it, and reporting it as `inactive` contradicts the tools still on offer. Naming it is the only honest option, and the row carries the failure alongside the count.
+
+`a` authenticates, `r` reconnects, `d` toggles, `enter` does whatever the row's own state makes useful, and `esc` walks back out: out of a tool list, then out of an action in flight, then out of the screen. An action does not dismiss the screen — the row says `authorizing…` while it runs, and `esc` cancels it, which closes the loopback listener with it.
 
 ## 8. Where the state lives, and why
 

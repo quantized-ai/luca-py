@@ -61,6 +61,10 @@ class OAuthProvider(httpx.Auth):
         # The token's audience (RFC 8707). A token minted without it is refused
         # by the MCP server, which looks like a login that silently did nothing.
         self._resource = canonical_resource(server.url)
+        # The same URI, kept: `_resource` may be replaced by what the
+        # protected-resource document names, and the store's index has to key
+        # on something a cold process can compute with no network.
+        self._server_resource = self._resource
         self._scopes: list[str] = []
         # The last `WWW-Authenticate` the server sent, which names the scopes it
         # actually wants and where its metadata lives.
@@ -99,7 +103,8 @@ class OAuthProvider(httpx.Auth):
                 return
         if not interactive:
             raise McpAuthRequired(
-                f"MCP server {self.server.label!r} needs authorization. Run `/mcp login {self.server.label}`."
+                f"MCP server {self.server.label!r} needs authorization. "
+                f"Run `/mcp {self.server.label}` and press `a` to sign in."
             )
         await self.authorize(client)
 
@@ -310,10 +315,18 @@ class OAuthProvider(httpx.Auth):
         raise McpAuthRequired(f"MCP server {self.server.label!r} has no client id.")
 
     async def _load(self) -> None:
+        """Adopt whatever this server's issuer already has stored.
+
+        The issuer comes from the store's index first. Discovery has not run
+        yet on a cold process, and the server's own origin is the right guess
+        only when the resource is its own authorization server — which is why a
+        hosted server's token used to be written once and never read again.
+        """
         if self._loaded:
             return
         self._loaded = True
-        issuer = self._issuer or _origin(self.server.url)
+        issuer = self._issuer or await self._store.issuer_for(self._server_resource) or _origin(self.server.url)
+        self._issuer = self._issuer or issuer
         record = await self._store.get(issuer)
         self._token, self._registration = record.token, record.registration
 
@@ -321,6 +334,7 @@ class OAuthProvider(httpx.Auth):
         await self._store.put(
             self._issuer or _origin(self.server.url),
             IssuerRecord(token=self._token, registration=self._registration),
+            resource=self._server_resource,
         )
 
 

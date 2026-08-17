@@ -408,7 +408,7 @@ class CostState(BaseModel):
     model_config = _STRICT
 
 
-McpRowState = Literal["connected", "needs_auth", "inactive", "disabled"]
+McpRowState = Literal["connected", "stale", "connecting", "needs_auth", "inactive", "disabled"]
 
 
 class McpRow(BaseModel):
@@ -416,6 +416,28 @@ class McpRow(BaseModel):
     state: McpRowState
     detail: str  # tool count and protocol, the error, or why there is neither
     action: str  # what enter does to THIS row
+    busy: bool = False  # an action is running; `detail` says which
+    model_config = _STRICT
+
+
+class McpToolRow(BaseModel):
+    """One tool on the drill-in. `excluded` is why a tool the server offered is
+    not being offered to the model, which a count can never say."""
+
+    name: str  # the remote name, which is what the server's own docs use
+    summary: str
+    excluded: str | None = None
+    model_config = _STRICT
+
+
+class McpDetail(BaseModel):
+    """One server's tools, because the question a count answers is not the one
+    anybody asks: not how many, which."""
+
+    label: str
+    count_line: str
+    rows: list[McpToolRow] = Field(default_factory=list)
+    selected: int = 0
     model_config = _STRICT
 
 
@@ -423,11 +445,12 @@ class McpState(BaseModel):
     count_line: str
     rows: list[McpRow] = Field(default_factory=list)
     selected: int = 0
-    notes: list[str] = Field(default_factory=list)  # excluded tools, with the reason
     # What the last action did. On the SCREEN rather than in a notice, because
     # the screen is what covers the transcript when it reopens.
     message: str | None = None
     message_is_error: bool = False
+    # The drilled-in server, or None for the list: one screen, two views.
+    detail: McpDetail | None = None
     model_config = _STRICT
 
 
