@@ -56,9 +56,22 @@ def test_a_file_never_reaches_the_wire_as_a_python_repr():
         assert "type='file'" not in rendered, transport.transport_id
 
 
-def test_audio_is_refused_by_every_transport_rather_than_stringified():
+def test_audio_is_refused_by_every_transport_that_has_no_shape_for_it():
+    # chat completions is the only wire with an audio input part; Anthropic and
+    # Bedrock Converse have no audio content block, and the Responses API's
+    # own guide sends callers to chat completions for audio
     block = AudioBlock(source=AUDIO)
 
     for transport in _transports():
+        if isinstance(transport, OpenAITransport):
+            continue
         with pytest.raises(BadRequestError, match="AudioBlock"):
             _payloads(transport, [block])
+
+
+def test_audio_reaches_chat_completions_as_a_real_wire_shape():
+    transport = OpenAITransport(provider="openai", base_url="https://api.openai.com/v1", api_key="k")
+
+    assert _payloads(transport, [AudioBlock(source=AUDIO)]) == [
+        {"type": "input_audio", "input_audio": {"data": "SUQzBAAAAAAA", "format": "mp3"}}
+    ]

@@ -336,6 +336,8 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         return out
 
     def _project_user_message(self, msg: UserMessage) -> dict:
+        """An `AudioBlock` raises: no Claude model reads audio, so the Messages
+        API has no content block for it."""
         if isinstance(msg.content, str):
             return {"role": "user", "content": msg.content}
         wire_blocks: list[dict] = []

@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from luca.agent.core.models import ContentPart, FileContent, ImageContent, MediaBase64, TextContent
+from luca.agent.core.models import (
+    AudioContent,
+    ContentPart,
+    FileContent,
+    ImageContent,
+    MediaBase64,
+    TextContent,
+)
 from luca.client.catalog import ModelInfo
 
 from .detection import looks_binary, read_head, sniff
@@ -40,10 +47,10 @@ class ReadLimits:
     """The inline ceiling. `min` of the two knobs, so a small-context model is
     never handed a 25k-token file just because the hard limit allows it.
 
-    `max_document_bytes` is a separate, cruder gate for the formats that go to
+    `max_media_bytes` is a separate, cruder gate for the formats that go to
     the provider as bytes rather than as text: a token estimate says nothing
-    about a PDF. It is measured on the stat, so an oversized file is never
-    read.
+    about a PDF or a recording. It is measured on the stat, so an oversized
+    file is never read.
 
     The default is set from the WIRE, not from the file. Base64 inflates by
     4/3, and Anthropic caps the whole request at 32MB — so a 24MB PDF is
@@ -54,7 +61,7 @@ class ReadLimits:
 
     hard_limit: int = 25_000
     context_percentage: float = 0.05
-    max_document_bytes: int = 16 * 1024 * 1024
+    max_media_bytes: int = 16 * 1024 * 1024
 
     def max_tokens(self, context_window: int | None = None) -> int:
         if not context_window:
@@ -209,13 +216,42 @@ class ImageHandler:
         )
 
 
+class AudioHandler:
+    """Recordings inline as real audio content, so a model that listens gets
+    the sound rather than a note saying a file exists.
+
+    Gated like `DocumentHandler` and for the same reason: audio has never been
+    sent, so it goes only on a positive `supports_audio_input`, and an
+    uncatalogued model does not get it. Only 27 of the catalogued models take
+    audio at all, and only the OpenAI chat-completions wire (OpenRouter
+    included) can carry it — everything else raises at projection time, which
+    would cost the turn.
+
+    Declines fall through to `BinaryHandler`, whose "not inlined, use your own
+    tools" message is still the right answer."""
+
+    def matches(self, probe, limits, context_window, model) -> bool:
+        if not (probe.mime or "").startswith("audio/"):
+            return False
+        if model is None or not model.supports_audio_input:
+            return False
+        return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
+
+    def build(self, probe, limits, context_window, model) -> ContentPart:
+        data = probe.path.read_bytes()
+        return AudioContent(
+            source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
+            metadata=_mention(probe, status=STATUS_OK),
+        )
+
+
 class DocumentHandler:
     """PDFs inline as real file content, so a model that reads documents gets
     the document rather than a note saying one exists.
 
     Declines in two cases, and falls through to `BinaryHandler` in both: the
     model does not advertise PDF input, or the file is over
-    `limits.max_document_bytes`. Declining is the whole reason this sits above
+    `limits.max_media_bytes`. Declining is the whole reason this sits above
     `BinaryHandler` rather than replacing it — the old message is still the
     right answer when the document cannot be sent."""
 
@@ -226,7 +262,7 @@ class DocumentHandler:
             return False
         if model is None or not model.supports_pdf_input:
             return False
-        return probe.size_bytes is not None and probe.size_bytes <= limits.max_document_bytes
+        return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
@@ -304,6 +340,7 @@ HANDLERS: tuple[PromptFileHandler, ...] = (
     DirectoryHandler(),
     UnreadableHandler(),
     ImageHandler(),
+    AudioHandler(),
     DocumentHandler(),
     BinaryHandler(),
     TextHandler(),

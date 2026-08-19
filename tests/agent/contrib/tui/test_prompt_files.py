@@ -19,7 +19,7 @@ from luca.agent.contrib.tui.prompt_files import (
     process_prompt_file_path,
     sniff,
 )
-from luca.agent.core.models import FileContent, ImageContent, MediaBase64, TextContent
+from luca.agent.core.models import AudioContent, FileContent, ImageContent, MediaBase64, TextContent
 from luca.client.catalog import ModelInfo
 
 # a 1x1 transparent PNG
@@ -333,7 +333,7 @@ def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path
     path = tmp_path / "huge.pdf"
     path.write_bytes(PDF)
 
-    part = process_prompt_file_path(path, model=READS_PDF, limits=ReadLimits(max_document_bytes=4))
+    part = process_prompt_file_path(path, model=READS_PDF, limits=ReadLimits(max_media_bytes=4))
 
     assert part == TextContent(
         text=(
@@ -419,11 +419,158 @@ def test_a_vision_model_still_gets_the_image(tmp_path):
     )
 
 
+# ── audio ────────────────────────────────────────────────────────────────────
+
+MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90d"
+HEARS_AUDIO = ModelInfo(supports_audio_input=True)
+NO_AUDIO = ModelInfo(supports_audio_input=False)
+
+
+def test_a_recording_becomes_audio_content_when_the_model_listens(tmp_path):
+    path = tmp_path / "clip.mp3"
+    path.write_bytes(MP3)
+
+    assert process_prompt_file_path(path, model=HEARS_AUDIO) == AudioContent(
+        source=MediaBase64(data=base64.b64encode(MP3).decode("ascii"), media_type="audio/mpeg"),
+        metadata=mention(
+            path,
+            guessed_mime="audio/mpeg",
+            estimated_tokens=len(MP3) // 4,
+            bytes=len(MP3),
+        ),
+    )
+
+
+def test_a_recording_falls_back_to_the_binary_message_when_the_model_cannot_hear_it(tmp_path):
+    path = tmp_path / "clip.mp3"
+    path.write_bytes(MP3)
+
+    assert process_prompt_file_path(path, model=NO_AUDIO) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'bytes="{len(MP3)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="audio/mpeg",
+            estimated_tokens=len(MP3) // 4,
+            bytes=len(MP3),
+        ),
+    )
+
+
+def test_an_uncatalogued_model_does_not_get_the_recording(tmp_path):
+    # symmetric with documents, not with images: audio has never been sent, and
+    # only the chat-completions wire can carry it at all
+    path = tmp_path / "clip.mp3"
+    path.write_bytes(MP3)
+
+    assert process_prompt_file_path(path, model=None) == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'bytes="{len(MP3)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="audio/mpeg",
+            estimated_tokens=len(MP3) // 4,
+            bytes=len(MP3),
+        ),
+    )
+
+
+def test_an_oversized_recording_falls_back_rather_than_being_read_into_memory(tmp_path):
+    path = tmp_path / "long.mp3"
+    path.write_bytes(MP3)
+
+    part = process_prompt_file_path(path, model=HEARS_AUDIO, limits=ReadLimits(max_media_bytes=4))
+
+    assert part == TextContent(
+        text=(
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'bytes="{len(MP3)}">\n'
+            "The file is binary and was not inlined. "
+            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "</agent-prompt-file>"
+        ),
+        metadata=mention(
+            path,
+            status="binary",
+            success=False,
+            reason="can't read binary files",
+            guessed_mime="audio/mpeg",
+            estimated_tokens=len(MP3) // 4,
+            bytes=len(MP3),
+        ),
+    )
+
+
+def test_the_audio_formats_the_wire_takes_are_all_sniffable():
+    # a format the sniffer misses reaches BinaryHandler and is never sent, so
+    # detection and the transport's format table have to agree
+    wav = b"RIFF\x24\x00\x00\x00WAVEfmt "
+    m4a = b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00"
+
+    assert (
+        sniff(wav),
+        sniff(m4a),
+        sniff(b"\xff\xfb\x90d"),  # mp3 with no ID3 tag
+        sniff(b"ID3\x04\x00"),
+        sniff(b"OggS\x00\x02"),
+        sniff(b"fLaC\x00\x00"),
+        sniff(b"\xff\xf1X@"),  # ADTS aac, no CRC
+    ) == (
+        "audio/wav",
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/flac",
+        "audio/aac",
+    )
+
+
+def test_every_spelling_of_the_mpeg_sync_word_is_read_not_matched():
+    # real encoders disagree on the bits after the sync word: afconvert writes
+    # ADTS with a CRC (\xff\xf9) where OpenAI's writes none (\xff\xf1), and a
+    # literal table missed the first. The LAYER bits are what pick mp3 vs aac.
+    assert (
+        sniff(b"\xff\xf9\x5c\x60"),  # ADTS with CRC
+        sniff(b"\xff\xf8\x5c\x60"),  # ADTS, MPEG-4 no CRC
+        sniff(b"\xff\xfa\x90\x64"),  # mp3, MPEG-1 layer III with CRC
+        sniff(b"\xff\xf3\xc4\xc4"),  # mp3, MPEG-2 layer III
+        sniff(b"\xff\xe3\x18\xc4"),  # mp3, MPEG-2.5 layer III
+    ) == ("audio/aac", "audio/aac", "audio/mpeg", "audio/mpeg", "audio/mpeg")
+
+
+def test_a_binary_that_merely_starts_with_the_sync_bits_is_not_called_audio():
+    # the reserved encodings are what separate a real frame header from any
+    # binary opening \xff\xe…; without them this would claim arbitrary files
+    assert (
+        sniff(b"\xff\xeb\x90\x64"),  # reserved MPEG version
+        sniff(b"\xff\xfb\xf0\x00"),  # layer III, invalid bitrate index
+        sniff(b"\xff\xf1\x3c\x40"),  # ADTS, invalid sampling-frequency index
+        sniff(b"\xff\xfd\x90\x64"),  # reserved layer
+    ) == (None, None, None, None)
+
+
 def test_the_document_ceiling_leaves_room_once_base64_encoded():
     # the ceiling is a WIRE budget, not a file size: base64 inflates by 4/3
     # and Anthropic caps the whole request at 32MB, so a file at the ceiling
     # must still leave room for the prompt, history and tool declarations
-    ceiling = ReadLimits().max_document_bytes
+    ceiling = ReadLimits().max_media_bytes
     encoded = math.ceil(ceiling / 3) * 4
     anthropic_request_cap = 32 * 1024 * 1024
 

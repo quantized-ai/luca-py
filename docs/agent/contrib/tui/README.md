@@ -250,13 +250,24 @@ One probe (a stat and an 8KB read), then the first handler in
 | an image | real `ImageContent`, so a vision model sees it |
 | a PDF, model reads PDFs | real `FileContent`, so the model reads the document |
 | a PDF, model does not | the binary note — unchanged from before |
+| a recording, model listens | real `AudioContent`, so the model hears it |
+| a recording, model does not | the binary note |
 | any other binary | the binary note |
 
 Whether the model reads PDFs comes from the catalog
 (`ModelInfo.supports_pdf_input`, true for 185 of 450 models), re-derived per
 submit — so `/model` to a model that cannot take one silently goes back to the
-note. A PDF over `ReadLimits.max_document_bytes` (30MB default) does the same
+note. A PDF over `ReadLimits.max_media_bytes` (16MB default) does the same
 and is never read into memory.
+
+Audio works the same way through `ModelInfo.supports_audio_input`, which is
+true for 27 models and reachable on OpenRouter and OpenAI only — no other
+transport has an audio shape at all, so an uncatalogued model gets the note
+rather than a failed turn. Sniffing covers wav, mp3, m4a, ogg, flac and aac,
+reading the MPEG frame header rather than matching byte literals, since real
+encoders disagree on the bits after the sync word. A bare `.mp4` is the one
+audio container left unclaimed: its brand does not say whether the track is
+sound or video, so it takes the binary path.
 
 Adding a format is one handler above `BinaryHandler` in the chain; nothing in
 `parse_prompt` or the TUI changes.

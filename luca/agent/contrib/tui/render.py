@@ -28,6 +28,7 @@ from luca.agent.core.models import (
     NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
+    AudioContent,
     ChildConversation,
     CompactionEntry,
     ContentPart,
@@ -77,6 +78,9 @@ def user_transcript_text(parts: Iterable[ContentPart]) -> str:
         elif isinstance(part, ImageContent):
             label = part.metadata.get("name") or part.source.media_type or "image"
             lines.append(f"[image: {label}]")
+        elif isinstance(part, AudioContent):
+            label = part.metadata.get("name") or part.source.media_type or "audio"
+            lines.append(f"[audio: {label}]")
         elif isinstance(part, FileContent):
             label = part.name or part.metadata.get("name") or part.source.media_type or "file"
             lines.append(f"[file: {label}]")

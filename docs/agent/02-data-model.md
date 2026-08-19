@@ -67,6 +67,7 @@ turn_finish     outcome=completed
 |---|---|
 | `text` | prose |
 | `image` | an image the user attached |
+| `audio` | a recording the user attached |
 | `file` | a document the user attached — a PDF today |
 | `thinking` | the model's reasoning, when it emits any — plus the provider's `signature` over it, its `id` for the reasoning item (OpenAI's `rs_…`, needed to replay it), and `redacted` when the body was withheld |
 
@@ -123,12 +124,48 @@ inline bytes and Bedrock refuses a document without one.
 > reject the request. The projector does not gate on it — the application
 > decides, as the TUI does before building the part at all.
 
+An `audio` part carries a `MediaSource` and nothing else. There is no `name`:
+no provider asks for one beside audio bytes, so a filename is presentation and
+belongs in `metadata`.
+
+```python
+from luca.agent.core import AudioContent, MediaBase64
+
+runner.post_message([
+    AudioContent(
+        source=MediaBase64(data=b64_mp3, media_type="audio/mpeg"),
+        metadata={"name": "standup.mp3"},
+    ),
+    TextContent(text="summarise what was decided"),
+])
+```
+
+Audio is the narrowest part of the three. Only the OpenAI chat-completions
+wire has a content shape for it, and only from inline bytes:
+
+| Source | Anthropic | OpenAI chat | OpenAI Responses | Bedrock |
+|---|---|---|---|---|
+| `MediaBase64` | raises | ✅ | raises | raises |
+| `MediaURL` | raises | raises | raises | raises |
+| `MediaFileId` | raises | raises | raises | raises |
+
+OpenRouter inherits the chat-completions transport, which is what makes the
+Gemini and `gpt-audio` models reachable. Going to OpenAI directly needs
+`OpenAIProvider(transport_class=OpenAITransport)`, since that provider
+defaults to the Responses wire. The `media_type` is what picks the
+wire's `format` token, so it has to be one the transport knows
+(`AUDIO_FORMATS` on `OpenAITransport`) — `audio/mpeg`, `audio/wav`,
+`audio/mp4`, `audio/ogg`, `audio/flac`, `audio/aac` and their `x-` spellings.
+
+> ⚠️ Same rule as documents: 27 of the catalogued models take audio
+> (`ModelInfo.supports_audio_input`), and the projector does not gate on it.
+
 There are two part unions, and they stay separate so a `tool_call` can never
 land in a user message:
 
 | Union | Parts | Used by |
 |---|---|---|
-| `ContentPart` | `text`, `image` | user messages, `ExecutionResult.content`, `PrunedEntry.content` |
+| `ContentPart` | `text`, `image`, `audio`, `file` | user messages, `ExecutionResult.content`, `PrunedEntry.content` |
 | `AssistantContentPart` | `text`, `thinking`, `tool_call` | assistant messages |
 
 So a tool can return an image too — the shell `read` tool returns one for a png

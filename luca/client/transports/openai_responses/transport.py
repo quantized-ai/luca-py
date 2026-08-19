@@ -277,6 +277,9 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         }
 
     def _project_user_block(self, block: Any) -> dict:
+        """An `AudioBlock` raises here rather than falling through by accident:
+        the Responses API has no audio input part, and OpenAI's own audio guide
+        sends callers to chat completions for it."""
         if isinstance(block, TextBlock):
             return {"type": "input_text", "text": block.text}
         if isinstance(block, ImageBlock):

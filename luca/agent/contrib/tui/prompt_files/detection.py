@@ -42,6 +42,29 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
+def _mpeg_frame(head: bytes) -> str | None:
+    """An MP3 with no ID3 tag, or a raw AAC stream, starts at a frame header
+    rather than at a fixed signature — so this reads the header instead of
+    matching literals.
+
+    Both share an 11-bit sync word, and the two LAYER bits after it are what
+    separates them: layer III is MP3, "no layer" is ADTS AAC. A table of byte
+    pairs cannot express that and will keep missing spellings (`\\xff\\xf9`,
+    ADTS with a CRC, is the one that prompted this). The version and
+    rate-index checks reject the reserved encodings, which is what keeps an
+    arbitrary binary beginning `\\xff\\xe…` from reading as audio."""
+    if len(head) < 3 or head[0] != 0xFF or head[1] & 0xE0 != 0xE0:
+        return None
+    if (head[1] >> 3) & 0b11 == 0b01:  # reserved MPEG version
+        return None
+    layer = (head[1] >> 1) & 0b11
+    if layer == 0b00:  # ADTS: byte 2 carries the sampling-frequency index
+        return None if (head[2] >> 2) & 0b1111 == 0b1111 else "audio/aac"
+    if layer == 0b01:  # layer III: byte 2 opens with the bitrate index
+        return None if head[2] >> 4 == 0b1111 else "audio/mpeg"
+    return None
+
+
 def read_head(path: Path, size: int = HEAD_BYTES) -> bytes:
     """The first `size` bytes. Both questions are answered from this one read."""
     with path.open("rb") as handle:
@@ -55,10 +78,16 @@ def sniff(head: bytes) -> str | None:
     # startswith-only table silently misses it.
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio/wav"
+    # An ISO-BMFF file names its brand at offset 8. Only the audio brands are
+    # claimed here; an mp4 VIDEO falls through and is handled as a binary.
+    if head[4:8] == b"ftyp" and head[8:11] in (b"M4A", b"M4B"):
+        return "audio/mp4"
     for signature, media_type in _MAGIC:
         if head.startswith(signature):
             return media_type
-    return None
+    return _mpeg_frame(head)
 
 
 def looks_binary(head: bytes) -> bool:

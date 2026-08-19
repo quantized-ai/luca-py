@@ -87,6 +87,7 @@ from typing import ClassVar
 
 from luca.client.types import (
     AssistantMessage as ClientAssistantMessage,
+    AudioBlock as ClientAudioBlock,
     FileBlock as ClientFileBlock,
     ImageBlock as ClientImageBlock,
     MediaBase64 as ClientMediaBase64,
@@ -106,6 +107,7 @@ from .models import (
     AnyEntry,
     ApprovalStatus,
     AssistantMessage,
+    AudioContent,
     CancelRequested,
     ChildConversation,
     CompactionEntry,
@@ -701,7 +703,7 @@ class ConversationProjector:
             return error.error_message
         return self.STATUS_ONLY_OUTPUTS[entry.status]
 
-    def _content_block(self, part) -> TextBlock | ClientImageBlock | ClientFileBlock:
+    def _content_block(self, part) -> TextBlock | ClientImageBlock | ClientAudioBlock | ClientFileBlock:
         """Agent content value → canonical client content block. Shared by
         every entry projection: user messages, tool results and pruned
         replacements all carry the same `ContentPart` union."""
@@ -709,6 +711,8 @@ class ConversationProjector:
             return TextBlock(text=part.text)
         if isinstance(part, ImageContent):
             return self._image_block(part)
+        if isinstance(part, AudioContent):
+            return self._audio_block(part)
         if isinstance(part, FileContent):
             return self._file_block(part)
         raise ProjectionError(f"Cannot project content of type {type(part).__name__}.")
@@ -729,6 +733,13 @@ class ConversationProjector:
         (proxy a URL, upload base64 and swap in a file id). `part.metadata` is
         application-owned and is dropped here by design."""
         return ClientImageBlock(source=self._media_source(part.source))
+
+    def _audio_block(self, part: AudioContent) -> ClientAudioBlock:
+        """Agent audio part → client `AudioBlock`. Same override point as
+        `_image_block`, and the same rule about `metadata`. Only the OpenAI
+        chat-completions wire can carry the result, and only from base64 —
+        every other transport raises on it."""
+        return ClientAudioBlock(source=self._media_source(part.source))
 
     def _file_block(self, part: FileContent) -> ClientFileBlock:
         """Agent file part → client `FileBlock`. Same override point as

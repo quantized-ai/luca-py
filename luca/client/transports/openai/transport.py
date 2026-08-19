@@ -21,6 +21,7 @@ from ...types.completion import (
     UsageCost,
 )
 from ...types.content import (
+    AudioBlock,
     FileBlock,
     ImageBlock,
     RefusalBlock,
@@ -114,6 +115,21 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
     transport_id = "openai"
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = OpenAIToolProjector
+
+    # Media type -> the `format` token `input_audio` wants. Subclass and widen
+    # it for a host that reads more than these.
+    AUDIO_FORMATS: ClassVar[dict[str, str]] = {
+        "audio/aac": "aac",
+        "audio/flac": "flac",
+        "audio/mp3": "mp3",
+        "audio/mp4": "m4a",
+        "audio/mpeg": "mp3",
+        "audio/ogg": "ogg",
+        "audio/wav": "wav",
+        "audio/x-flac": "flac",
+        "audio/x-m4a": "m4a",
+        "audio/x-wav": "wav",
+    }
 
     def _default_tool_projector(self) -> ToolProjector:
         return OpenAIToolProjector()
@@ -236,12 +252,41 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             return {"type": "text", "text": block.text}
         if isinstance(block, ImageBlock):
             return {"type": "image_url", "image_url": self._project_media_to_image_url(block.source)}
+        if isinstance(block, AudioBlock):
+            return self._project_audio_block(block)
         if isinstance(block, FileBlock):
             return self._project_file_block(block)
         raise BadRequestError(
             f"The chat-completions API has no shape for a {type(block).__name__}.",
             provider=self._provider,
         )
+
+    def _project_audio_block(self, block: AudioBlock) -> dict:
+        """An audio part on chat completions: `input_audio`, base64 only. The
+        API has no URL and no file-id shape for audio, and `format` is a bare
+        token rather than a media type, so it is derived from the source's.
+        https://developers.openai.com/api/docs/guides/audio
+
+        OpenAI itself takes wav and mp3; OpenRouter, which inherits this
+        transport, takes the wider set below. Which of them a given MODEL
+        accepts is the provider's to enforce — sending an unsupported format
+        is a provider error, not a client one.
+        """
+        source = block.source
+        if not isinstance(source, MediaBase64):
+            raise BadRequestError(
+                "The chat-completions API can only take audio as inline base64; "
+                f"{type(source).__name__} has no audio shape.",
+                provider=self._provider,
+            )
+        audio_format = self.AUDIO_FORMATS.get((source.media_type or "").lower())
+        if audio_format is None:
+            raise BadRequestError(
+                f"Unsupported audio media type {source.media_type!r}; "
+                f"expected one of {', '.join(sorted(self.AUDIO_FORMATS))}.",
+                provider=self._provider,
+            )
+        return {"type": "input_audio", "input_audio": {"data": source.data, "format": audio_format}}
 
     def _project_file_block(self, block: FileBlock) -> dict:
         """A file part on chat completions: an uploaded id, or inline base64 as
