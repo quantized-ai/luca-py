@@ -16,7 +16,7 @@ import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from luca.agent.core.models import (
     AudioContent,
@@ -100,6 +100,16 @@ MEDIA_KINDS = (IMAGES, AUDIO, DOCUMENTS)
 def media_kind(mime: str | None) -> MediaKind | None:
     """The media family a type belongs to, or None for everything else."""
     return next((kind for kind in MEDIA_KINDS if kind.matches_mime(mime)), None)
+
+
+class Decline(NamedTuple):
+    """The three strings a refusal needs, named so the two that are both plain
+    prose cannot be swapped at the call site: `reason` is the short phrase the
+    transcript row shows a person, `body` is the sentence the MODEL reads."""
+
+    status: str
+    reason: str
+    body: str
 
 
 @dataclass(frozen=True)
@@ -343,23 +353,23 @@ class UnsupportedMediaHandler:
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         kind = media_kind(probe.mime)
-        if kind.accepts(model):
-            status, reason, body = self._too_large(probe, limits, kind)
-        else:
-            status, reason, body = self._unsupported(kind, model)
+        # `matches` already established the file is a known media kind, so the
+        # model is the only remaining question: it either refused the kind, or
+        # it takes it and the file is simply too big.
+        decline = self._unsupported(kind, model) if not kind.accepts(model) else self._too_large(limits, kind)
         advice = _FALL_BACK if kind.tool_fallback else _NO_FALL_BACK
         return TextContent(
             text=_wrap(
-                f"{body} {advice}",
+                f"{decline.body} {advice}",
                 path=probe.path,
-                status=status,
+                status=decline.status,
                 guessed_mime=probe.mime,
                 bytes=probe.size_bytes,
             ),
-            metadata=_mention(probe, status=status, reason=reason),
+            metadata=_mention(probe, status=decline.status, reason=decline.reason),
         )
 
-    def _unsupported(self, kind: MediaKind, model: ModelInfo | None) -> tuple[str, str, str]:
+    def _unsupported(self, kind: MediaKind, model: ModelInfo | None) -> Decline:
         # An uncatalogued model cannot be named or asked about, so the reason
         # says what would have to be true instead of blaming a model that
         # cannot be identified. The branch is on the RECORD, not on the name:
@@ -373,9 +383,9 @@ class UnsupportedMediaHandler:
         body = f"This is {kind.noun} content and it was NOT attached: {named} does not accept {kind.noun} input."
         if not kind.tool_fallback:
             body += " Tell the user to switch to a model that does."
-        return STATUS_UNSUPPORTED, reason, body
+        return Decline(STATUS_UNSUPPORTED, reason, body)
 
-    def _too_large(self, probe: FileProbe, limits: ReadLimits, kind: MediaKind) -> tuple[str, str, str]:
+    def _too_large(self, limits: ReadLimits, kind: MediaKind) -> Decline:
         limit = limits.max_media_bytes
         # Whole megabytes read wrong below 1MB: a caller who set a small
         # ceiling would be told the limit is "0MB", which looks like a bug.
@@ -384,7 +394,7 @@ class UnsupportedMediaHandler:
         body = f"This is {kind.noun} content and it was NOT attached: it is over the {shown} limit for attached media."
         if not kind.tool_fallback:
             body += " Tell the user the file is too large to send."
-        return STATUS_TOO_LARGE, reason, body
+        return Decline(STATUS_TOO_LARGE, reason, body)
 
 
 class BinaryHandler:

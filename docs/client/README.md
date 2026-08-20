@@ -34,8 +34,10 @@ Start at the top and walk down — each page builds on the previous ones.
 The companion files in the repo root are the deeper, internal references:
 
 - [`api_prd.md`](../../api_prd.md) — the **full** public API spec, including the
-  surfaces (embeddings, image generation, audio) that V1 does **not** yet
-  implement. Authoritative for DTO shapes.
+  surfaces (embeddings, image generation, speech and transcription) that V1
+  does **not** yet implement. Audio as chat INPUT does ship — see
+  [05](05-messages-and-content.md); it is the `/audio/*` endpoints that are
+  deferred. Authoritative for DTO shapes.
 - [`architecture.md`](../../architecture.md) — the **internal** design: how
   providers and transports are wired, the streaming subsystem, the
   finish-reason classification rules.
