@@ -369,6 +369,9 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         return merged
 
     def _project_user_content(self, msg: UserMessage) -> list[dict]:
+        """An `AudioBlock` raises: Converse's content union is text, image,
+        document and video. The audio-capable models on Bedrock take sound
+        through their own InvokeModel schemas, not through this API."""
         if isinstance(msg.content, str):
             return [{"text": msg.content}]
         blocks: list[dict] = []

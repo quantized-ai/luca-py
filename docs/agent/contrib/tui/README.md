@@ -249,14 +249,57 @@ One probe (a stat and an 8KB read), then the first handler in
 | text over the cap | a note telling the agent to grep or read ranges |
 | an image | real `ImageContent`, so a vision model sees it |
 | a PDF, model reads PDFs | real `FileContent`, so the model reads the document |
-| a PDF, model does not | the binary note — unchanged from before |
+| a recording, model listens | real `AudioContent`, so the model hears it |
+| media the model cannot take | a note naming the model and the capability |
+| media over the size ceiling | a note saying it is too large |
 | any other binary | the binary note |
 
 Whether the model reads PDFs comes from the catalog
 (`ModelInfo.supports_pdf_input`, true for 185 of 450 models), re-derived per
 submit — so `/model` to a model that cannot take one silently goes back to the
-note. A PDF over `ReadLimits.max_document_bytes` (30MB default) does the same
+note. A PDF over `ReadLimits.max_media_bytes` (16MB default) does the same
 and is never read into memory.
+
+Audio takes **two** gates, not one. `ModelInfo.supports_audio_input` answers
+for the model, and it cannot answer for the wire: `openai:gpt-realtime-2.1`
+and the Bedrock voxtrals are catalogued audio models whose own hosts route to
+a transport with no audio shape, so trusting the flag alone builds a part that
+dies at projection. `MediaKind.deliverable` asks the client which transport
+the host resolves to (`default_transport_class`) and whether it declares
+`SUPPORTS_AUDIO_INPUT` — true for chat completions only, which in practice
+means OpenRouter and the OpenAI-compatible hosts. An uncatalogued model fails
+both gates and gets the note rather than a failed turn.
+
+The two gates say different things when they refuse, because they call for
+different fixes: `× GPT-5.4 mini does not accept audio input` means change the
+model, `× GPT-Realtime-2.1 takes audio, but the openai wire cannot carry it`
+means reach the same model through another host.
+
+Sniffing covers wav, mp3, m4a, ogg, flac and aac,
+reading the MPEG frame header rather than matching byte literals, since real
+encoders disagree on the bits after the sync word. A bare `.mp4` is the one
+audio container left unclaimed: its brand does not say whether the track is
+sound or video, so it takes the binary path.
+
+### 3.0.1 When the model cannot take the file
+
+`UnsupportedMediaHandler` owns that case, and it is deliberately not the
+binary note. "Can't read binary files" reads as "luca cannot handle mp3" when
+the truth is one `/model` away, and the fall-back advice it carries sends the
+agent glob-hunting and shelling out to ffmpeg for a whole turn. The row now
+names the model instead:
+
+```
+▸ read  ~/clip.mp3
+        × GPT-5.4 mini does not accept audio input
+```
+
+Documents are the exception and keep the "use your own tools" tail, because a
+PDF still has text a tool can pull out. A recording or a photograph does not
+become perceptible to a model that cannot take one, so for those the agent is
+told NOT to try, and the row drops the promise of tool calling with it. That
+single fact lives on `MediaKind.tool_fallback`, which both the handler and the
+transcript read, so the advice and the row cannot drift apart.
 
 Adding a format is one handler above `BinaryHandler` in the chain; nothing in
 `parse_prompt` or the TUI changes.

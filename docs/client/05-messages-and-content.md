@@ -116,6 +116,46 @@ UserMessage(content=[
 ])
 ```
 
+Which sources a given transport takes differs per block, because the wires
+differ. Audio is the narrow one: chat completions is the only API with an
+audio input part, and it reads inline bytes only.
+
+| Block | Anthropic | OpenAI chat | OpenAI Responses | Bedrock |
+|---|---|---|---|---|
+| `ImageBlock` | all three | url, base64 | all three | base64 |
+| `AudioBlock` | raises | base64 | raises | raises |
+| `FileBlock` | all three | base64, file id | all three | base64 |
+
+An `AudioBlock`'s `media_type` picks the wire's `format` token, so it must be
+one `OpenAITransport.AUDIO_FORMATS` maps — subclass and widen that dict for a
+host that reads more. Anything else raises rather than guessing a format.
+
+> ⚠️ **`openai:gpt-audio` raises out of the box.** `OpenAIProvider` defaults to
+> the Responses transport, which has no audio part. Ask for the other wire to
+> send audio to OpenAI directly:
+>
+> ```python
+> from luca.client.providers.openai import OpenAIProvider
+> from luca.client.transports import OpenAITransport
+>
+> provider = OpenAIProvider(transport_class=OpenAITransport)
+> ```
+>
+> OpenRouter has no such split — it is a chat-completions host already, so
+> `openrouter:openai/gpt-audio` and the Gemini models work as they are.
+
+To ask this before building a request, read `SUPPORTS_AUDIO_INPUT` off the
+transport a host routes to. A model's audio capability does not imply its
+host can carry audio, and the model catalog cannot see the wire:
+
+```python
+from luca.client.providers import default_transport_class
+
+default_transport_class("openrouter").SUPPORTS_AUDIO_INPUT   # True
+default_transport_class("openai").SUPPORTS_AUDIO_INPUT       # False — Responses
+default_transport_class("bedrock").SUPPORTS_AUDIO_INPUT      # False — Converse
+```
+
 ### Tool calls — one class, two views
 
 `ToolCall` lives both inside `AssistantMessage.content` **and** surfaces via

@@ -31,11 +31,13 @@ from .models import (
     AnyEntry,
     ApprovalStatus,
     AssistantMessage,
+    AudioContent,
     CancelRequested,
     ChildConversation,
     CompactionEntry,
     ContentPart,
     ExecutionStatus,
+    FileContent,
     ImageContent,
     PrunedEntry,
     TextContent,
@@ -299,8 +301,8 @@ def _assistant_lines(
 
 
 def _content_text(parts: Iterable[ContentPart]) -> str:
-    """Content parts as transcript text: text verbatim, an image as a labelled
-    placeholder (the transcript cannot draw one)."""
+    """Content parts as transcript text: text verbatim, every media part as a
+    labelled placeholder (the transcript cannot draw or play one)."""
     rendered: list[str] = []
     for part in parts:
         if isinstance(part, TextContent):
@@ -308,6 +310,12 @@ def _content_text(parts: Iterable[ContentPart]) -> str:
         elif isinstance(part, ImageContent):
             label = part.metadata.get("name") or part.source.media_type or "image"
             rendered.append(f"[image: {label}]")
+        elif isinstance(part, AudioContent):
+            label = part.metadata.get("name") or part.source.media_type or "audio"
+            rendered.append(f"[audio: {label}]")
+        elif isinstance(part, FileContent):
+            label = part.name or part.metadata.get("name") or part.source.media_type or "file"
+            rendered.append(f"[file: {label}]")
     return "\n".join(rendered)
 
 

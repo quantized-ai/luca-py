@@ -61,6 +61,22 @@ def register_provider(name: str, config_or_class) -> None:
     PROVIDERS[name] = config_or_class
 
 
+def default_transport_class(name: str) -> type | None:
+    """The transport a host routes to with no overrides, or None when the host
+    is not registered.
+
+    Lets a caller ask what a wire can carry BEFORE building a request — the
+    model catalog answers for the model, this answers for the protocol, and
+    audio needs both. A caller that passes `transport_class=` to
+    `resolve_provider` has overridden this and should not consult it."""
+    entry = PROVIDERS.get(name)
+    if entry is None:
+        return None
+    if isinstance(entry, type) and issubclass(entry, BaseProvider):
+        return entry.default_transport_class
+    return entry.get("default_transport_class")
+
+
 def resolve_provider(
     name: str,
     *,
@@ -121,6 +137,7 @@ __all__ = [
     "FauxProvider",
     "PROVIDERS",
     "ProviderConfig",
+    "default_transport_class",
     "register_provider",
     "resolve_provider",
 ]

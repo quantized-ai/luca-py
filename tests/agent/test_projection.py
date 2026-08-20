@@ -24,6 +24,7 @@ from luca.agent.core.models import (
     ApprovalOption,
     ApprovalStatus,
     AssistantMessage,
+    AudioContent,
     CancelRequested,
     CompactionEntry,
     CompactionSource,
@@ -56,6 +57,7 @@ from luca.agent.core.projection import (
 )
 from luca.client.types import (
     AssistantMessage as LucaAssistantMessage,
+    AudioBlock as LucaAudioBlock,
     FileBlock as LucaFileBlock,
     ImageBlock as LucaImageBlock,
     MediaBase64 as LucaMediaBase64,
@@ -1715,8 +1717,68 @@ def test_the_shared_media_mapping_is_one_override_for_every_part_type():
 
     assert (
         projector._image_block(ImageContent(source=MediaBase64(data="aGk=", media_type="image/png"))),
+        projector._audio_block(AudioContent(source=MediaBase64(data="SUQz", media_type="audio/mpeg"))),
         projector._file_block(FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))),
     ) == (
         LucaImageBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)),
+        LucaAudioBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)),
         LucaFileBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None), name=None),
     )
+
+
+# ── audio parts ───────────────────────────────────────────────────────────────
+
+
+def test_an_audio_part_projects_to_a_client_audio_block():
+    part = AudioContent(
+        source=MediaBase64(data="SUQz", media_type="audio/mpeg"),
+        metadata={"mention": {"path": "/tmp/clip.mp3"}},
+    )
+
+    assert PROJECTOR._audio_block(part) == LucaAudioBlock(
+        source=LucaMediaBase64(data="SUQz", media_type="audio/mpeg"),
+    )
+
+
+def test_audio_metadata_does_not_travel():
+    # same rule as ImageContent: `metadata` is the application's, not the wire's
+    source = MediaBase64(data="SUQz", media_type="audio/mpeg")
+
+    assert PROJECTOR._audio_block(
+        AudioContent(source=source, metadata={"name": "clip.mp3"}),
+    ) == PROJECTOR._audio_block(AudioContent(source=source))
+
+
+def test_every_audio_source_projects():
+    # the core carries all three; whether the WIRE takes them is the
+    # transport's call, and chat completions refuses everything but base64
+    assert (
+        PROJECTOR._audio_block(AudioContent(source=MediaURL(url="https://example.com/a.mp3"))),
+        PROJECTOR._audio_block(AudioContent(source=MediaFileId(file_id="file_123"))),
+    ) == (
+        LucaAudioBlock(source=LucaMediaURL(url="https://example.com/a.mp3", media_type=None)),
+        LucaAudioBlock(source=LucaMediaFileId(file_id="file_123", media_type=None)),
+    )
+
+
+def test_a_user_message_projects_audio_and_text_parts_in_order():
+    entries = {
+        "u1": UserMessage(
+            id="u1",
+            created_at=1,
+            parts=[
+                AudioContent(source=MediaBase64(data="SUQz", media_type="audio/mpeg")),
+                TextContent(text="what is said here?"),
+            ],
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["u1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaUserMessage(
+            content=[
+                LucaAudioBlock(source=LucaMediaBase64(data="SUQz", media_type="audio/mpeg")),
+                TextBlock(text="what is said here?"),
+            ],
+        ),
+    ]

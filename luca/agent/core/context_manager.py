@@ -80,7 +80,8 @@ is the one that should.
 This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
 `CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
-per image and `FILE_TOKENS` per document, pruning supports only terminal tool
+per image, `AUDIO_TOKENS` per recording and `FILE_TOKENS` per document,
+pruning supports only terminal tool
 executions (replacing their
 output with a fixed marker), and compaction is absent — `should_compact`
 declines and `compact` raises, so the shipped default is a pure accountant.
@@ -105,6 +106,7 @@ from .models import (
     NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
+    AudioContent,
     ChildConversation,
     CompactionEntry,
     Entry,
@@ -130,6 +132,7 @@ class ContextManager:
     PRUNED_TOOL_OUTPUT_MARKER: ClassVar[str] = PRUNED_TOOL_OUTPUT_MARKER
     CHARS_PER_TOKEN: ClassVar[int] = 4
     IMAGE_TOKENS: ClassVar[int] = 1_000
+    AUDIO_TOKENS: ClassVar[int] = 10_000
     FILE_TOKENS: ClassVar[int] = 5_000
 
     def calculate_context(self, session: AgentSession, entry: Entry) -> int:
@@ -295,9 +298,16 @@ class ContextManager:
         scales with PAGE COUNT, which cannot be read without a PDF parser this
         library will not take a dependency on. `FILE_TOKENS` stands in for a
         short document; a session of long PDFs will under-count until an
-        application overrides this."""
+        application overrides this.
+
+        Audio has the same weakness against DURATION: Gemini bills 32 tokens
+        per second, so `AUDIO_TOKENS` is roughly a five-minute clip."""
         parts = self._media_parts(entry)
-        return self.IMAGE_TOKENS * _image_count(parts) + self.FILE_TOKENS * _file_count(parts)
+        return (
+            self.IMAGE_TOKENS * _image_count(parts)
+            + self.AUDIO_TOKENS * _audio_count(parts)
+            + self.FILE_TOKENS * _file_count(parts)
+        )
 
     def _media_parts(self, entry: Entry) -> list:
         """The parts an entry owns that may carry non-text content — the same
@@ -327,6 +337,10 @@ def _text_of(parts) -> str:
 
 def _image_count(parts) -> int:
     return sum(isinstance(part, ImageContent) for part in parts)
+
+
+def _audio_count(parts) -> int:
+    return sum(isinstance(part, AudioContent) for part in parts)
 
 
 def _file_count(parts) -> int:

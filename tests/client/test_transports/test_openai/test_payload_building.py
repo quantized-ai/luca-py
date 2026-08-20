@@ -321,10 +321,35 @@ def test_a_file_url_is_refused_with_a_useful_message(openai_transport_factory):
         transport._project_user_block(FileBlock(source=MediaURL(url="https://example.com/a.pdf")))
 
 
-def test_an_audio_block_is_refused_rather_than_stringified(openai_transport_factory):
-    # the old fallback was str(block), which put the whole base64 payload into
-    # the prompt as text and billed the user for it
+def test_audio_projects_to_the_input_audio_part(openai_transport_factory):
     transport = openai_transport_factory()
 
-    with pytest.raises(BadRequestError, match="no shape for a AudioBlock"):
-        transport._project_user_block(AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg")))
+    assert transport._project_user_block(
+        AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/mpeg")),
+    ) == {"type": "input_audio", "input_audio": {"data": "aGk=", "format": "mp3"}}
+
+
+def test_the_audio_format_token_comes_from_the_media_type(openai_transport_factory):
+    # the wire wants a bare token, not a media type
+    transport = openai_transport_factory()
+
+    assert transport._project_user_block(
+        AudioBlock(source=MediaBase64(data="UklGRg==", media_type="audio/x-wav")),
+    ) == {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+
+
+def test_an_unsupported_audio_media_type_is_refused(openai_transport_factory):
+    transport = openai_transport_factory()
+
+    with pytest.raises(BadRequestError, match="Unsupported audio media type 'audio/amr'"):
+        transport._project_user_block(AudioBlock(source=MediaBase64(data="aGk=", media_type="audio/amr")))
+
+
+def test_audio_by_url_or_file_id_is_refused(openai_transport_factory):
+    # chat-completions takes audio as inline base64 only
+    transport = openai_transport_factory()
+
+    with pytest.raises(BadRequestError, match="only take audio as inline base64"):
+        transport._project_user_block(AudioBlock(source=MediaURL(url="https://example.com/a.mp3")))
+    with pytest.raises(BadRequestError, match="only take audio as inline base64"):
+        transport._project_user_block(AudioBlock(source=MediaFileId(file_id="file-abc123")))

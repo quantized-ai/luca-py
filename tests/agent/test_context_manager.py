@@ -37,6 +37,7 @@ from luca.agent.core.models import (
     AgentSession,
     ApprovalStatus,
     AssistantMessage,
+    AudioContent,
     CancelRequested,
     CompactionEntry,
     CompactionSource,
@@ -587,6 +588,34 @@ def test_subclass_can_change_the_per_file_cost():
         id="u1",
         created_at=1000,
         parts=[FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"))],
+    )
+
+    assert Free().calculate_context(SESSION, entry) == 0
+
+
+def test_audio_counts_the_flat_audio_constant_on_top_of_the_rest():
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[
+            AudioContent(source=MediaBase64(data="SUQz", media_type="audio/mpeg")),
+            FileContent(source=MediaBase64(data="JVBERi0=", media_type="application/pdf"), name="a.pdf"),
+            ImageContent(source=MediaBase64(data="aGk=", media_type="image/png")),
+            TextContent(text="Add 1 and 2"),  # 11 chars
+        ],
+    )
+
+    assert CM.calculate_context(SESSION, entry) == 16_002  # 10000 + 5000 + 1000 + 11 // 4
+
+
+def test_subclass_can_change_the_per_audio_cost():
+    class Free(ContextManager):
+        AUDIO_TOKENS = 0
+
+    entry = UserMessage(
+        id="u1",
+        created_at=1000,
+        parts=[AudioContent(source=MediaBase64(data="SUQz", media_type="audio/mpeg"))],
     )
 
     assert Free().calculate_context(SESSION, entry) == 0

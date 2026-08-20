@@ -13,12 +13,21 @@ set to None. The TUI reads it best-effort and must not require any single key.
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
-from luca.agent.core.models import ContentPart, FileContent, ImageContent, MediaBase64, TextContent
+from luca.agent.core.models import (
+    AudioContent,
+    ContentPart,
+    FileContent,
+    ImageContent,
+    MediaBase64,
+    TextContent,
+)
 from luca.client.catalog import ModelInfo
+from luca.client.providers import default_transport_class
 
 from .detection import looks_binary, read_head, sniff
 
@@ -28,11 +37,102 @@ TAG = "agent-prompt-file"
 # one that carries file content; the rest tell the agent to use its own tools.
 STATUS_OK = "ok"
 STATUS_TOO_LONG = "too_long"
+STATUS_TOO_LARGE = "too_large"
 STATUS_BINARY = "binary"
 STATUS_DIRECTORY = "directory"
 STATUS_UNREADABLE = "unreadable"
+STATUS_UNSUPPORTED = "unsupported"
 
 _FALL_BACK = "Use your own tools (ranged reads, grep, glob) to satisfy the user's request."
+
+# The advice above is right for a zip and wrong for an mp3: no shell tool
+# makes a recording audible to a model that cannot hear one.
+_NO_FALL_BACK = "Do not try to read, decode or transcribe it with your tools; that cannot work."
+
+
+@dataclass(frozen=True)
+class MediaKind:
+    """One family of attachable media: how to recognise it, and whether it can
+    be sent. The gates live here because two handlers need them — the one that
+    sends the file and the one that explains why it could not."""
+
+    noun: str
+    mime_prefix: str
+    # Two independent gates with two different answers for the user: whether
+    # the MODEL takes this kind of input, and whether the wire its provider
+    # routes to can carry it at all. Only audio splits them.
+    accepts: Callable[[ModelInfo | None], bool]
+    deliverable: Callable[[ModelInfo | None], bool]
+    # Whether the agent's own tools are a second chance once the file cannot
+    # be attached: a PDF still has text to extract, a recording does not.
+    tool_fallback: bool
+
+    def matches_mime(self, mime: str | None) -> bool:
+        return (mime or "").startswith(self.mime_prefix)
+
+    def sendable(self, model: ModelInfo | None) -> bool:
+        return self.accepts(model) and self.deliverable(model)
+
+
+def _any_wire(model: ModelInfo | None) -> bool:
+    """Text, images and documents have a shape on every transport."""
+    return True
+
+
+def _wire_carries_audio(model: ModelInfo | None) -> bool:
+    """Audio is the exception: only the chat-completions wire has a part for
+    it, so a model that hears is not enough — `openai:gpt-realtime-2.1` and
+    the Bedrock voxtrals are catalogued as audio models whose own hosts route
+    to a wire that raises.
+
+    Reads the host's DEFAULT transport, which is what the TUI uses. An
+    application that passes `transport_class=OpenAITransport` can send audio
+    to OpenAI directly; this stays conservative and will not."""
+    if model is None:
+        return False
+    transport = default_transport_class(model.provider)
+    return transport is not None and transport.SUPPORTS_AUDIO_INPUT
+
+
+# `accepts` is asymmetric between the three, and deliberately so: an image
+# goes unless the catalog says no, audio and documents only on a positive yes.
+# See `ImageHandler` for why.
+IMAGES = MediaKind(
+    "image",
+    "image/",
+    lambda model: model is None or model.supports_image_input,
+    deliverable=_any_wire,
+    tool_fallback=False,
+)
+AUDIO = MediaKind(
+    "audio",
+    "audio/",
+    lambda model: model is not None and model.supports_audio_input,
+    deliverable=_wire_carries_audio,
+    tool_fallback=False,
+)
+DOCUMENTS = MediaKind(
+    "document",
+    "application/pdf",
+    lambda model: model is not None and model.supports_pdf_input,
+    deliverable=_any_wire,
+    tool_fallback=True,
+)
+MEDIA_KINDS = (IMAGES, AUDIO, DOCUMENTS)
+
+
+def media_kind(mime: str | None) -> MediaKind | None:
+    """The media family a type belongs to, or None for everything else."""
+    return next((kind for kind in MEDIA_KINDS if kind.matches_mime(mime)), None)
+
+
+class Decline(NamedTuple):
+    """A refusal's three strings. `reason` is what the transcript row shows a
+    person; `body` is what the model reads — named so they cannot be swapped."""
+
+    status: str
+    reason: str
+    body: str
 
 
 @dataclass(frozen=True)
@@ -40,10 +140,10 @@ class ReadLimits:
     """The inline ceiling. `min` of the two knobs, so a small-context model is
     never handed a 25k-token file just because the hard limit allows it.
 
-    `max_document_bytes` is a separate, cruder gate for the formats that go to
+    `max_media_bytes` is a separate, cruder gate for the formats that go to
     the provider as bytes rather than as text: a token estimate says nothing
-    about a PDF. It is measured on the stat, so an oversized file is never
-    read.
+    about a PDF or a recording. It is measured on the stat, so an oversized
+    file is never read.
 
     The default is set from the WIRE, not from the file. Base64 inflates by
     4/3, and Anthropic caps the whole request at 32MB — so a 24MB PDF is
@@ -54,7 +154,7 @@ class ReadLimits:
 
     hard_limit: int = 25_000
     context_percentage: float = 0.05
-    max_document_bytes: int = 16 * 1024 * 1024
+    max_media_bytes: int = 16 * 1024 * 1024
 
     def max_tokens(self, context_window: int | None = None) -> int:
         if not context_window:
@@ -197,9 +297,7 @@ class ImageHandler:
     positive yes."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        if not (probe.mime or "").startswith("image/"):
-            return False
-        return model is None or model.supports_image_input
+        return IMAGES.matches_mime(probe.mime) and IMAGES.sendable(model)
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
@@ -209,24 +307,40 @@ class ImageHandler:
         )
 
 
+class AudioHandler:
+    """Recordings inline as real audio content, so a model that listens gets
+    the sound rather than a note saying a file exists.
+
+    Gated like `DocumentHandler` and for the same reason: audio has never been
+    sent, so it goes only on a positive `supports_audio_input` and an
+    uncatalogued model does not get it. Only the chat-completions wire carries
+    audio at all; everything else raises at projection time, costing the turn."""
+
+    def matches(self, probe, limits, context_window, model) -> bool:
+        if not (AUDIO.matches_mime(probe.mime) and AUDIO.sendable(model)):
+            return False
+        return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
+
+    def build(self, probe, limits, context_window, model) -> ContentPart:
+        data = probe.path.read_bytes()
+        return AudioContent(
+            source=MediaBase64(data=base64.b64encode(data).decode("ascii"), media_type=probe.mime),
+            metadata=_mention(probe, status=STATUS_OK),
+        )
+
+
 class DocumentHandler:
     """PDFs inline as real file content, so a model that reads documents gets
     the document rather than a note saying one exists.
 
-    Declines in two cases, and falls through to `BinaryHandler` in both: the
-    model does not advertise PDF input, or the file is over
-    `limits.max_document_bytes`. Declining is the whole reason this sits above
-    `BinaryHandler` rather than replacing it — the old message is still the
-    right answer when the document cannot be sent."""
-
-    MEDIA_TYPES = ("application/pdf",)
+    Declines in two cases, and falls through to `UnsupportedMediaHandler` in
+    both: the model does not advertise PDF input, or the file is over
+    `limits.max_media_bytes`."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        if (probe.mime or "") not in self.MEDIA_TYPES:
+        if not (DOCUMENTS.matches_mime(probe.mime) and DOCUMENTS.sendable(model)):
             return False
-        if model is None or not model.supports_pdf_input:
-            return False
-        return probe.size_bytes is not None and probe.size_bytes <= limits.max_document_bytes
+        return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
@@ -235,6 +349,80 @@ class DocumentHandler:
             name=probe.path.name,
             metadata=_mention(probe, status=STATUS_OK),
         )
+
+
+class UnsupportedMediaHandler:
+    """A real image, recording or document that could not be sent, naming the
+    model that refused it or the ceiling it exceeded.
+
+    Reaching here means every media handler above declined, so the file IS
+    attachable media and only the reason is still in question. `BinaryHandler`
+    below would answer "can't read binary files", which sends the user hunting
+    for a bug and the agent hunting for ffmpeg."""
+
+    def matches(self, probe, limits, context_window, model) -> bool:
+        return media_kind(probe.mime) is not None
+
+    def build(self, probe, limits, context_window, model) -> ContentPart:
+        kind = media_kind(probe.mime)
+        if not kind.accepts(model):
+            decline = self._unsupported(kind, model)
+        elif not kind.deliverable(model):
+            decline = self._undeliverable(kind, model)
+        else:
+            decline = self._too_large(limits, kind)
+        advice = _FALL_BACK if kind.tool_fallback else _NO_FALL_BACK
+        return TextContent(
+            text=_wrap(
+                f"{decline.body} {advice}",
+                path=probe.path,
+                status=decline.status,
+                guessed_mime=probe.mime,
+                bytes=probe.size_bytes,
+            ),
+            metadata=_mention(probe, status=decline.status, reason=decline.reason),
+        )
+
+    def _unsupported(self, kind: MediaKind, model: ModelInfo | None) -> Decline:
+        # An uncatalogued model cannot be named or asked about, so the reason
+        # says what would have to be true instead of blaming a model that
+        # cannot be identified. The branch is on the RECORD, not on the name:
+        # a record with a blank name is still a model that said no.
+        if model is None:
+            named = "the model in this conversation"
+            reason = f"{kind.noun} needs a model known to accept it"
+        else:
+            named = model.display_name or model.model or "this model"
+            reason = f"{named} does not accept {kind.noun} input"
+        body = f"This is {kind.noun} content and it was NOT attached: {named} does not accept {kind.noun} input."
+        if not kind.tool_fallback:
+            body += " Tell the user to switch to a model that does."
+        return Decline(STATUS_UNSUPPORTED, reason, body)
+
+    def _undeliverable(self, kind: MediaKind, model: ModelInfo | None) -> Decline:
+        """The model takes this input, its host's wire does not — so blaming
+        the model would send the user looking for the wrong fix. The provider
+        is the thing to change here, not the model."""
+        named = (model.display_name or model.model or "this model") if model is not None else "this model"
+        host = model.provider if model is not None else "this provider"
+        reason = f"{named} takes {kind.noun}, but the {host} wire cannot carry it"
+        body = (
+            f"This is {kind.noun} content and it was NOT attached: {named} accepts {kind.noun}, "
+            f"but the {host} API has no {kind.noun} shape. Tell the user to reach this model "
+            f"through a host that does."
+        )
+        return Decline(STATUS_UNSUPPORTED, reason, body)
+
+    def _too_large(self, limits: ReadLimits, kind: MediaKind) -> Decline:
+        limit = limits.max_media_bytes
+        # Whole megabytes read wrong below 1MB: a caller who set a small
+        # ceiling would be told the limit is "0MB", which looks like a bug.
+        shown = f"{limit // (1024 * 1024)}MB" if limit >= 1024 * 1024 else f"{limit}-byte"
+        reason = f"over the {shown} limit for attached media"
+        body = f"This is {kind.noun} content and it was NOT attached: it is over the {shown} limit for attached media."
+        if not kind.tool_fallback:
+            body += " Tell the user the file is too large to send."
+        return Decline(STATUS_TOO_LARGE, reason, body)
 
 
 class BinaryHandler:
@@ -304,7 +492,9 @@ HANDLERS: tuple[PromptFileHandler, ...] = (
     DirectoryHandler(),
     UnreadableHandler(),
     ImageHandler(),
+    AudioHandler(),
     DocumentHandler(),
+    UnsupportedMediaHandler(),
     BinaryHandler(),
     TextHandler(),
 )

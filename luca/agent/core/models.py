@@ -160,6 +160,21 @@ class ImageContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AudioContent(BaseModel):
+    """A sound recording carried by a `UserMessage`.
+
+    Same `metadata` rule as `ImageContent`: application-owned, never
+    projected. Unlike `FileContent` there is no `name` — no provider asks for
+    one beside audio bytes, so a filename is presentation and stays in
+    `metadata`."""
+
+    type: Literal["audio"] = "audio"
+    source: MediaSource
+    metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class FileContent(BaseModel):
     """A document carried by a `UserMessage` — a PDF today, whatever else a
     provider learns to read tomorrow.
@@ -182,7 +197,7 @@ class FileContent(BaseModel):
 
 # what a user message, a tool result or a pruned replacement carries
 ContentPart = Annotated[
-    TextContent | ImageContent | FileContent,
+    TextContent | ImageContent | AudioContent | FileContent,
     Field(discriminator="type"),
 ]
 

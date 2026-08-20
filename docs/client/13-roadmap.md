@@ -15,10 +15,12 @@ nobody has to grep to find out whether a feature is real.
 - `completion`, `acompletion`, `completion_stream`, `acompletion_stream`,
   `get_provider`.
 - Content blocks: `TextBlock`, `ImageBlock`, `AudioBlock`, `FileBlock`,
-  `ThinkingBlock`, `ToolCall`, `ToolResultBlock`, `RefusalBlock` — defined.
-  ImageBlock with URL + base64 sources fully exercised; audio/file/pdf
-  blocks defined but per-transport projection has thin coverage outside
-  ImageBlock.
+  `ThinkingBlock`, `ToolCall`, `ToolResultBlock`, `RefusalBlock`. Every one
+  of them projects on the transports that have a wire shape for it, and
+  raises `BadRequestError` on the transports that do not — a block is never
+  silently stringified into the prompt. `AudioBlock` has the narrowest
+  support by far: chat completions only, base64 only. See
+  [05](05-messages-and-content.md) for the per-transport matrix.
 - Tools: dict / Pydantic `BaseModel` / `TypeAdapter` parameter forms; tool
   choice (incl. the provider-agnostic `{"name": ...}` forcing form);
   parallel tool calls (where the host supports it); provider-native tools

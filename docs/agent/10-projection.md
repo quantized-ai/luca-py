@@ -190,16 +190,34 @@ class KeepRecent(ConversationProjector):
         return super().project(nodes, entries)[-40:]
 ```
 
-## 5. Rewriting image media
+## 5. Rewriting media
 
-`_image_block(part)` maps an `ImageContent` to the client's `ImageBlock`.
-Override it to rewrite media without touching the rest of the projection —
+Every media part has a hook of its own, and they all map an agent part to the
+matching client block:
+
+| Part | Hook | Produces |
+|---|---|---|
+| `ImageContent` | `_image_block(part)` | `ImageBlock` |
+| `AudioContent` | `_audio_block(part)` | `AudioBlock` |
+| `FileContent` | `_file_block(part)` | `FileBlock` (`name` travels; see [02](02-data-model.md)) |
+
+Override one to rewrite media without touching the rest of the projection —
 uploading base64 bytes once and sending an id instead, for example:
 
 ```python
 class Uploading(ConversationProjector):
     def _image_block(self, part):
         return ImageBlock(source=MediaFileId(file_id=upload(part.source)))
+```
+
+To apply one policy to every kind at once, override `_media_source(source)`
+instead. All three hooks route through it, so a proxy or an upload-and-swap is
+written once rather than three times:
+
+```python
+class Proxying(ConversationProjector):
+    def _media_source(self, source):
+        return MediaURL(url=proxy(source))
 ```
 
 `part.metadata` is application-owned and is dropped on the way to the wire.
