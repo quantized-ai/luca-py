@@ -47,6 +47,7 @@ from luca.agent.core.models import (
 
 from . import state as vm
 from .format import fmt_bytes, fmt_duration, fmt_tokens, home_path
+from .prompt_files import STATUS_TOO_LARGE, STATUS_UNSUPPORTED, media_kind
 
 OUTPUT_HEAD_LINES = 8
 ARG_VALUE_MAX_CHARS = 80
@@ -148,7 +149,12 @@ def user_prompts(session: AgentSession, conversation_id: str | None = None) -> l
 
 def mention_summary(mention: dict) -> str:
     """`523 lines` when it was inlined; `× <reason>, defaulting to agent tool
-    calling` when it was declined."""
+    calling` when it was declined.
+
+    Media the model cannot take drops that tail. The agent is told NOT to fall
+    back on its tools there — no shell command turns an mp3 into something a
+    text-only model can hear — so promising the user tool calling would
+    describe a turn that is not going to happen."""
     if mention.get("success"):
         lines = mention.get("lines")
         if lines is not None:
@@ -156,6 +162,10 @@ def mention_summary(mention: dict) -> str:
         size = mention.get("bytes")
         return fmt_bytes(size) if size is not None else "read"
     reason = mention.get("reason") or "not inlined"
+    kind = media_kind(mention.get("guessed_mime"))
+    declined = mention.get("status") in (STATUS_UNSUPPORTED, STATUS_TOO_LARGE)
+    if declined and kind is not None and not kind.tool_fallback:
+        return f"[error]×[/] {reason}"
     return f"[error]×[/] {reason}, defaulting to agent tool calling"
 
 

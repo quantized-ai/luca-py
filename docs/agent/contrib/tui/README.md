@@ -249,9 +249,9 @@ One probe (a stat and an 8KB read), then the first handler in
 | text over the cap | a note telling the agent to grep or read ranges |
 | an image | real `ImageContent`, so a vision model sees it |
 | a PDF, model reads PDFs | real `FileContent`, so the model reads the document |
-| a PDF, model does not | the binary note — unchanged from before |
 | a recording, model listens | real `AudioContent`, so the model hears it |
-| a recording, model does not | the binary note |
+| media the model cannot take | a note naming the model and the capability |
+| media over the size ceiling | a note saying it is too large |
 | any other binary | the binary note |
 
 Whether the model reads PDFs comes from the catalog
@@ -268,6 +268,26 @@ reading the MPEG frame header rather than matching byte literals, since real
 encoders disagree on the bits after the sync word. A bare `.mp4` is the one
 audio container left unclaimed: its brand does not say whether the track is
 sound or video, so it takes the binary path.
+
+### 3.0.1 When the model cannot take the file
+
+`UnsupportedMediaHandler` owns that case, and it is deliberately not the
+binary note. "Can't read binary files" reads as "luca cannot handle mp3" when
+the truth is one `/model` away, and the fall-back advice it carries sends the
+agent glob-hunting and shelling out to ffmpeg for a whole turn. The row now
+names the model instead:
+
+```
+▸ read  ~/clip.mp3
+        × GPT-5.4 mini does not accept audio input
+```
+
+Documents are the exception and keep the "use your own tools" tail, because a
+PDF still has text a tool can pull out. A recording or a photograph does not
+become perceptible to a model that cannot take one, so for those the agent is
+told NOT to try, and the row drops the promise of tool calling with it. That
+single fact lives on `MediaKind.tool_fallback`, which both the handler and the
+transcript read, so the advice and the row cannot drift apart.
 
 Adding a format is one handler above `BinaryHandler` in the chain; nothing in
 `parse_prompt` or the TUI changes.

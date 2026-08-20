@@ -15,6 +15,7 @@ from luca.agent.contrib.tui.render import (
     entry_blocks,
     is_questions_tool,
     is_runtime_plumbing,
+    mention_summary,
     plan_block,
     plan_dismissed,
     plan_from_session,
@@ -1445,3 +1446,49 @@ def test_a_malformed_payload_renders_rather_than_raising():
         vm.ToolBlock(tool="Ask the user", arg="0 questions", status="ok", note_right="0 answered"),
         vm.ListBlock(rows=[], column=28),
     ]
+
+
+# ── the mention row a declined attachment renders as ─────────────────────────
+
+
+def _mention(**overrides) -> dict:
+    return {"path": "/w/clip.mp3", "status": "ok", "success": True, "reason": None, "guessed_mime": None, **overrides}
+
+
+def test_a_declined_binary_still_promises_tool_calling():
+    assert (
+        mention_summary(
+            _mention(status="binary", success=False, reason="can't read binary files", guessed_mime="application/zip")
+        )
+        == "[error]×[/] can't read binary files, defaulting to agent tool calling"
+    )
+
+
+def test_media_the_model_cannot_take_names_the_model_and_promises_nothing():
+    # the tail is dropped because the agent is told NOT to fall back on tools:
+    # no shell command makes an mp3 audible to a model that cannot hear
+    assert (
+        mention_summary(
+            _mention(
+                status="unsupported",
+                success=False,
+                reason="gpt-5.4-mini does not accept audio input",
+                guessed_mime="audio/mpeg",
+            )
+        )
+        == "[error]×[/] gpt-5.4-mini does not accept audio input"
+    )
+
+
+def test_a_document_keeps_the_tail_because_its_text_is_still_reachable():
+    assert (
+        mention_summary(
+            _mention(
+                status="unsupported",
+                success=False,
+                reason="gpt-5.4-mini does not accept document input",
+                guessed_mime="application/pdf",
+            )
+        )
+        == "[error]×[/] gpt-5.4-mini does not accept document input, defaulting to agent tool calling"
+    )

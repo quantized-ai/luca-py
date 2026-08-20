@@ -94,14 +94,16 @@ def test_an_image_becomes_image_content_not_a_rejection(tmp_path):
     )
 
 
-def test_a_non_image_binary_is_declined_with_its_guessed_type(tmp_path):
-    blob = b"%PDF-1.4\n\x00\x01binary junk"
-    path = tmp_path / "doc.pdf"
+def test_a_non_media_binary_is_declined_with_its_guessed_type(tmp_path):
+    # a zip, not a PDF: attachable media routes to UnsupportedMediaHandler now,
+    # so a document no longer stands in for "some binary"
+    blob = b"PK\x03\x04\x14\x00\x00\x08binary junk"
+    path = tmp_path / "bundle.zip"
     path.write_bytes(blob)
 
     assert process_prompt_file_path(path) == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/zip" '
             f'bytes="{len(blob)}">\n'
             "The file is binary and was not inlined. "
             "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
@@ -112,7 +114,7 @@ def test_a_non_image_binary_is_declined_with_its_guessed_type(tmp_path):
             status="binary",
             success=False,
             reason="can't read binary files",
-            guessed_mime="application/pdf",
+            guessed_mime="application/zip",
             estimated_tokens=len(blob) // 4,
             bytes=len(blob),
         ),
@@ -284,7 +286,7 @@ def test_a_mention_must_start_at_a_word_boundary(tmp_path):
 
 PDF = b"%PDF-1.4\n\x00\x01binary junk"
 READS_PDF = ModelInfo(supports_pdf_input=True)
-NO_PDF = ModelInfo(supports_pdf_input=False)
+NO_PDF = ModelInfo(model="gpt-mini", supports_pdf_input=False)
 
 
 def test_a_pdf_becomes_file_content_when_the_model_reads_pdfs(tmp_path):
@@ -303,25 +305,25 @@ def test_a_pdf_becomes_file_content_when_the_model_reads_pdfs(tmp_path):
     )
 
 
-def test_a_pdf_falls_back_to_the_binary_message_when_the_model_cannot_read_it(tmp_path):
-    # the pre-existing behavior, and still the right answer for a model that
-    # would reject the document
+def test_a_pdf_names_the_model_when_it_cannot_read_documents(tmp_path):
+    # a document keeps the tool advice — text can still be pulled out of it —
+    # but the reason now says which model refused rather than "binary"
     path = tmp_path / "report.pdf"
     path.write_bytes(PDF)
 
     assert process_prompt_file_path(path, model=NO_PDF) == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'<agent-prompt-file path="{path}" status="unsupported" guessed_mime="application/pdf" '
             f'bytes="{len(PDF)}">\n'
-            "The file is binary and was not inlined. "
+            "This is document content and it was NOT attached: gpt-mini does not accept document input. "
             "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="unsupported",
             success=False,
-            reason="can't read binary files",
+            reason="gpt-mini does not accept document input",
             guessed_mime="application/pdf",
             estimated_tokens=len(PDF) // 4,
             bytes=len(PDF),
@@ -329,7 +331,7 @@ def test_a_pdf_falls_back_to_the_binary_message_when_the_model_cannot_read_it(tm
     )
 
 
-def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path):
+def test_an_oversized_pdf_says_it_is_too_large_and_is_never_read_into_memory(tmp_path):
     path = tmp_path / "huge.pdf"
     path.write_bytes(PDF)
 
@@ -337,17 +339,17 @@ def test_an_oversized_pdf_falls_back_rather_than_being_read_into_memory(tmp_path
 
     assert part == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="application/pdf" '
+            f'<agent-prompt-file path="{path}" status="too_large" guessed_mime="application/pdf" '
             f'bytes="{len(PDF)}">\n'
-            "The file is binary and was not inlined. "
+            "This is document content and it was NOT attached: it is over the 4 bytes limit for attached media. "
             "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="too_large",
             success=False,
-            reason="can't read binary files",
+            reason="over the 4 bytes limit for attached documents",
             guessed_mime="application/pdf",
             estimated_tokens=len(PDF) // 4,
             bytes=len(PDF),
@@ -365,7 +367,7 @@ def test_the_catalog_record_is_what_gates_a_document():
     )
 
 
-NO_IMAGES = ModelInfo(supports_image_input=False)
+NO_IMAGES = ModelInfo(model="gpt-mini", supports_image_input=False)
 READS_IMAGES = ModelInfo(supports_image_input=True)
 
 
@@ -378,17 +380,18 @@ def test_an_image_is_withheld_from_a_model_the_catalog_says_is_text_only(tmp_pat
 
     assert process_prompt_file_path(path, model=NO_IMAGES) == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="image/png" '
+            f'<agent-prompt-file path="{path}" status="unsupported" guessed_mime="image/png" '
             f'bytes="{len(PNG)}">\n'
-            "The file is binary and was not inlined. "
-            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "This is image content and it was NOT attached: gpt-mini does not accept image input. "
+            "Tell the user to switch to a model that does. "
+            "Do not try to read, decode or transcribe it with your tools; that cannot work.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="unsupported",
             success=False,
-            reason="can't read binary files",
+            reason="gpt-mini does not accept image input",
             guessed_mime="image/png",
             estimated_tokens=len(PNG) // 4,
             bytes=len(PNG),
@@ -423,7 +426,7 @@ def test_a_vision_model_still_gets_the_image(tmp_path):
 
 MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90d"
 HEARS_AUDIO = ModelInfo(supports_audio_input=True)
-NO_AUDIO = ModelInfo(supports_audio_input=False)
+NO_AUDIO = ModelInfo(model="gpt-mini", supports_audio_input=False)
 
 
 def test_a_recording_becomes_audio_content_when_the_model_listens(tmp_path):
@@ -441,23 +444,24 @@ def test_a_recording_becomes_audio_content_when_the_model_listens(tmp_path):
     )
 
 
-def test_a_recording_falls_back_to_the_binary_message_when_the_model_cannot_hear_it(tmp_path):
+def test_a_recording_names_the_model_when_it_cannot_hear(tmp_path):
     path = tmp_path / "clip.mp3"
     path.write_bytes(MP3)
 
     assert process_prompt_file_path(path, model=NO_AUDIO) == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'<agent-prompt-file path="{path}" status="unsupported" guessed_mime="audio/mpeg" '
             f'bytes="{len(MP3)}">\n'
-            "The file is binary and was not inlined. "
-            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "This is audio content and it was NOT attached: gpt-mini does not accept audio input. "
+            "Tell the user to switch to a model that does. "
+            "Do not try to read, decode or transcribe it with your tools; that cannot work.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="unsupported",
             success=False,
-            reason="can't read binary files",
+            reason="gpt-mini does not accept audio input",
             guessed_mime="audio/mpeg",
             estimated_tokens=len(MP3) // 4,
             bytes=len(MP3),
@@ -473,17 +477,18 @@ def test_an_uncatalogued_model_does_not_get_the_recording(tmp_path):
 
     assert process_prompt_file_path(path, model=None) == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'<agent-prompt-file path="{path}" status="unsupported" guessed_mime="audio/mpeg" '
             f'bytes="{len(MP3)}">\n'
-            "The file is binary and was not inlined. "
-            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "This is audio content and it was NOT attached: the model in this conversation does not accept audio input. "
+            "Tell the user to switch to a model that does. "
+            "Do not try to read, decode or transcribe it with your tools; that cannot work.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="unsupported",
             success=False,
-            reason="can't read binary files",
+            reason="audio needs a model known to accept it",
             guessed_mime="audio/mpeg",
             estimated_tokens=len(MP3) // 4,
             bytes=len(MP3),
@@ -491,7 +496,7 @@ def test_an_uncatalogued_model_does_not_get_the_recording(tmp_path):
     )
 
 
-def test_an_oversized_recording_falls_back_rather_than_being_read_into_memory(tmp_path):
+def test_an_oversized_recording_says_it_is_too_large_and_is_never_read(tmp_path):
     path = tmp_path / "long.mp3"
     path.write_bytes(MP3)
 
@@ -499,17 +504,18 @@ def test_an_oversized_recording_falls_back_rather_than_being_read_into_memory(tm
 
     assert part == TextContent(
         text=(
-            f'<agent-prompt-file path="{path}" status="binary" guessed_mime="audio/mpeg" '
+            f'<agent-prompt-file path="{path}" status="too_large" guessed_mime="audio/mpeg" '
             f'bytes="{len(MP3)}">\n'
-            "The file is binary and was not inlined. "
-            "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
+            "This is audio content and it was NOT attached: it is over the 4 bytes limit for attached media. "
+            "Tell the user the file is too large to send. "
+            "Do not try to read, decode or transcribe it with your tools; that cannot work.\n"
             "</agent-prompt-file>"
         ),
         metadata=mention(
             path,
-            status="binary",
+            status="too_large",
             success=False,
-            reason="can't read binary files",
+            reason="over the 4 bytes limit for attached audios",
             guessed_mime="audio/mpeg",
             estimated_tokens=len(MP3) // 4,
             bytes=len(MP3),
