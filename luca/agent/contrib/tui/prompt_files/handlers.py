@@ -45,28 +45,21 @@ STATUS_UNSUPPORTED = "unsupported"
 _FALL_BACK = "Use your own tools (ranged reads, grep, glob) to satisfy the user's request."
 
 # The advice above is right for a zip and wrong for an mp3: no shell tool
-# turns a recording into something the model can hear, so an agent told to
-# "use your own tools" spends the turn reaching for ffmpeg before giving up.
+# makes a recording audible to a model that cannot hear one.
 _NO_FALL_BACK = "Do not try to read, decode or transcribe it with your tools; that cannot work."
 
 
 @dataclass(frozen=True)
 class MediaKind:
     """One family of attachable media: how to recognise it, and whether the
-    active model takes it.
-
-    The gate lives here rather than inside each handler because two handlers
-    need it — the one that SENDS the file and the one that explains why it
-    could not. If those two disagreed, the user would be shown a reason that
-    is not the real one."""
+    active model takes it. The gate lives here because two handlers need it —
+    the one that sends the file and the one that explains why it could not."""
 
     noun: str
     mime_prefix: str
     accepts: Callable[[ModelInfo | None], bool]
-    # Whether the agent's own tools are a real second chance once the file
-    # cannot be attached. A PDF still has text in it that a tool can pull out;
-    # a recording or a photograph does not become perceptible to a model that
-    # cannot take one, no matter what is run against it.
+    # Whether the agent's own tools are a second chance once the file cannot
+    # be attached: a PDF still has text to extract, a recording does not.
     tool_fallback: bool
 
     def matches_mime(self, mime: str | None) -> bool:
@@ -103,9 +96,8 @@ def media_kind(mime: str | None) -> MediaKind | None:
 
 
 class Decline(NamedTuple):
-    """The three strings a refusal needs, named so the two that are both plain
-    prose cannot be swapped at the call site: `reason` is the short phrase the
-    transcript row shows a person, `body` is the sentence the MODEL reads."""
+    """A refusal's three strings. `reason` is what the transcript row shows a
+    person; `body` is what the model reads — named so they cannot be swapped."""
 
     status: str
     reason: str
@@ -289,14 +281,9 @@ class AudioHandler:
     the sound rather than a note saying a file exists.
 
     Gated like `DocumentHandler` and for the same reason: audio has never been
-    sent, so it goes only on a positive `supports_audio_input`, and an
-    uncatalogued model does not get it. Only 27 of the catalogued models take
-    audio at all, and only the OpenAI chat-completions wire (OpenRouter
-    included) can carry it — everything else raises at projection time, which
-    would cost the turn.
-
-    Declines fall through to `UnsupportedMediaHandler`, which says which of
-    the two reasons applied."""
+    sent, so it goes only on a positive `supports_audio_input` and an
+    uncatalogued model does not get it. Only the chat-completions wire carries
+    audio at all; everything else raises at projection time, costing the turn."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
         if not (AUDIO.matches_mime(probe.mime) and AUDIO.accepts(model)):
@@ -334,29 +321,20 @@ class DocumentHandler:
 
 
 class UnsupportedMediaHandler:
-    """A real image, recording or document that could not be sent — because
-    the active model does not take that kind of input, or because it is over
-    the size ceiling.
+    """A real image, recording or document that could not be sent, naming the
+    model that refused it or the ceiling it exceeded.
 
-    Reaching here already means every media handler above declined, so the
-    file IS attachable media; this only has to work out which of the two
-    reasons applied and say so.
-
-    It exists because "can't read binary files" is the wrong sentence twice
-    over. The user reads it as "luca cannot handle mp3" and goes looking for a
-    bug, when the fix is one `/model` away. The agent reads the fall-back
-    advice and spends the turn globbing and shelling out to ffmpeg. Naming the
-    model and the capability fixes both ends at once."""
+    Reaching here means every media handler above declined, so the file IS
+    attachable media and only the reason is still in question. `BinaryHandler`
+    below would answer "can't read binary files", which sends the user hunting
+    for a bug and the agent hunting for ffmpeg."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
         return media_kind(probe.mime) is not None
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         kind = media_kind(probe.mime)
-        # `matches` already established the file is a known media kind, so the
-        # model is the only remaining question: it either refused the kind, or
-        # it takes it and the file is simply too big.
-        decline = self._unsupported(kind, model) if not kind.accepts(model) else self._too_large(limits, kind)
+        decline = self._too_large(limits, kind) if kind.accepts(model) else self._unsupported(kind, model)
         advice = _FALL_BACK if kind.tool_fallback else _NO_FALL_BACK
         return TextContent(
             text=_wrap(

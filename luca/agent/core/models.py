@@ -166,10 +166,7 @@ class AudioContent(BaseModel):
     Same `metadata` rule as `ImageContent`: application-owned, never
     projected. Unlike `FileContent` there is no `name` — no provider asks for
     one beside audio bytes, so a filename is presentation and stays in
-    `metadata`.
-
-    Only OpenAI chat completions (and OpenRouter, which inherits it) have a
-    wire shape for this, and only from base64. Every other transport raises."""
+    `metadata`."""
 
     type: Literal["audio"] = "audio"
     source: MediaSource

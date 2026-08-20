@@ -301,9 +301,7 @@ class ContextManager:
         application overrides this.
 
         Audio has the same weakness against DURATION: Gemini bills 32 tokens
-        per second, so `AUDIO_TOKENS` is roughly a five-minute clip. Reading
-        the real duration needs a decoder, and a URL source has no bytes to
-        read anyway."""
+        per second, so `AUDIO_TOKENS` is roughly a five-minute clip."""
         parts = self._media_parts(entry)
         return (
             self.IMAGE_TOKENS * _image_count(parts)

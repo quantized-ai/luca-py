@@ -44,13 +44,12 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 
 def _mpeg_frame(head: bytes) -> str | None:
     """An MP3 with no ID3 tag, or a raw AAC stream, starts at a frame header
-    rather than at a fixed signature — so this reads the header instead of
+    rather than a fixed signature, so this reads the header instead of
     matching literals.
 
-    Both share an 11-bit sync word, and the two LAYER bits after it are what
-    separates them: layer III is MP3, "no layer" is ADTS AAC. A table of byte
-    pairs cannot express that and will keep missing spellings (`\\xff\\xf9`,
-    ADTS with a CRC, is the one that prompted this). The version and
+    Both share an 11-bit sync word and the two LAYER bits after it separate
+    them: layer III is MP3, "no layer" is ADTS AAC. A table of byte pairs
+    cannot express that and keeps missing spellings. The version and
     rate-index checks reject the reserved encodings, which is what keeps an
     arbitrary binary beginning `\\xff\\xe…` from reading as audio."""
     if len(head) < 3 or head[0] != 0xFF or head[1] & 0xE0 != 0xE0:

@@ -265,12 +265,8 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         """An audio part on chat completions: `input_audio`, base64 only. The
         API has no URL and no file-id shape for audio, and `format` is a bare
         token rather than a media type, so it is derived from the source's.
+        Which formats a given MODEL takes is the provider's to enforce.
         https://developers.openai.com/api/docs/guides/audio
-
-        OpenAI itself takes wav and mp3; OpenRouter, which inherits this
-        transport, takes the wider set below. Which of them a given MODEL
-        accepts is the provider's to enforce — sending an unsupported format
-        is a provider error, not a client one.
         """
         source = block.source
         if not isinstance(source, MediaBase64):

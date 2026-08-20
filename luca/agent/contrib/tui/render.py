@@ -151,10 +151,9 @@ def mention_summary(mention: dict) -> str:
     """`523 lines` when it was inlined; `× <reason>, defaulting to agent tool
     calling` when it was declined.
 
-    Media the model cannot take drops that tail. The agent is told NOT to fall
-    back on its tools there — no shell command turns an mp3 into something a
-    text-only model can hear — so promising the user tool calling would
-    describe a turn that is not going to happen."""
+    Media the model cannot take drops that tail: the agent is told not to fall
+    back on its tools there, so promising tool calling would describe a turn
+    that is not going to happen."""
     if mention.get("success"):
         lines = mention.get("lines")
         if lines is not None:

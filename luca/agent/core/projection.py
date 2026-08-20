@@ -736,9 +736,7 @@ class ConversationProjector:
 
     def _audio_block(self, part: AudioContent) -> ClientAudioBlock:
         """Agent audio part → client `AudioBlock`. Same override point as
-        `_image_block`, and the same rule about `metadata`. Only the OpenAI
-        chat-completions wire can carry the result, and only from base64 —
-        every other transport raises on it."""
+        `_image_block`, and the same rule about `metadata`."""
         return ClientAudioBlock(source=self._media_source(part.source))
 
     def _file_block(self, part: FileContent) -> ClientFileBlock:
