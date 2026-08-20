@@ -116,6 +116,9 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = OpenAIToolProjector
 
+    # The only wire with an audio input part; OpenRouter inherits it.
+    SUPPORTS_AUDIO_INPUT: ClassVar[bool] = True
+
     # Media type -> the `format` token `input_audio` wants. Subclass and widen
     # it for a host that reads more than these.
     AUDIO_FORMATS: ClassVar[dict[str, str]] = {

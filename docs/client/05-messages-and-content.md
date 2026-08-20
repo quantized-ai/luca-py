@@ -144,6 +144,18 @@ host that reads more. Anything else raises rather than guessing a format.
 > OpenRouter has no such split — it is a chat-completions host already, so
 > `openrouter:openai/gpt-audio` and the Gemini models work as they are.
 
+To ask this before building a request, read `SUPPORTS_AUDIO_INPUT` off the
+transport a host routes to. A model's audio capability does not imply its
+host can carry audio, and the model catalog cannot see the wire:
+
+```python
+from luca.client.providers import default_transport_class
+
+default_transport_class("openrouter").SUPPORTS_AUDIO_INPUT   # True
+default_transport_class("openai").SUPPORTS_AUDIO_INPUT       # False — Responses
+default_transport_class("bedrock").SUPPORTS_AUDIO_INPUT      # False — Converse
+```
+
 ### Tool calls — one class, two views
 
 `ToolCall` lives both inside `AssistantMessage.content` **and** surfaces via

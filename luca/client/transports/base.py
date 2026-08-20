@@ -31,6 +31,15 @@ class BaseTransport:
 
     transport_id: str = ""
 
+    # Whether this wire has a shape for an `AudioBlock` on a user message.
+    # Declared because a MODEL's audio capability does not imply it: the
+    # catalog knows `gpt-realtime-2.1` hears, and cannot know that OpenAI
+    # routes to the Responses wire, which has no audio part. Text, images and
+    # documents reach every transport, so audio is the only block worth a flag.
+    # `tests/client/test_transports/test_audio_declaration.py` pins this
+    # against what the transports actually do.
+    SUPPORTS_AUDIO_INPUT: ClassVar[bool] = False
+
     def __init__(
         self,
         *,

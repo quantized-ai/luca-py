@@ -27,6 +27,7 @@ from luca.agent.core.models import (
     TextContent,
 )
 from luca.client.catalog import ModelInfo
+from luca.client.providers import default_transport_class
 
 from .detection import looks_binary, read_head, sniff
 
@@ -57,13 +58,40 @@ class MediaKind:
 
     noun: str
     mime_prefix: str
+    # Two independent gates with two different answers for the user: whether
+    # the MODEL takes this kind of input, and whether the wire its provider
+    # routes to can carry it at all. Only audio splits them.
     accepts: Callable[[ModelInfo | None], bool]
+    deliverable: Callable[[ModelInfo | None], bool]
     # Whether the agent's own tools are a second chance once the file cannot
     # be attached: a PDF still has text to extract, a recording does not.
     tool_fallback: bool
 
     def matches_mime(self, mime: str | None) -> bool:
         return (mime or "").startswith(self.mime_prefix)
+
+    def sendable(self, model: ModelInfo | None) -> bool:
+        return self.accepts(model) and self.deliverable(model)
+
+
+def _any_wire(model: ModelInfo | None) -> bool:
+    """Text, images and documents have a shape on every transport."""
+    return True
+
+
+def _wire_carries_audio(model: ModelInfo | None) -> bool:
+    """Audio is the exception: only the chat-completions wire has a part for
+    it, so a model that hears is not enough — `openai:gpt-realtime-2.1` and
+    the Bedrock voxtrals are catalogued as audio models whose own hosts route
+    to a wire that raises.
+
+    Reads the host's DEFAULT transport, which is what the TUI uses. An
+    application that passes `transport_class=OpenAITransport` can send audio
+    to OpenAI directly; this stays conservative and will not."""
+    if model is None:
+        return False
+    transport = default_transport_class(model.provider)
+    return transport is not None and transport.SUPPORTS_AUDIO_INPUT
 
 
 # `accepts` is asymmetric between the three, and deliberately so: an image
@@ -73,18 +101,21 @@ IMAGES = MediaKind(
     "image",
     "image/",
     lambda model: model is None or model.supports_image_input,
+    deliverable=_any_wire,
     tool_fallback=False,
 )
 AUDIO = MediaKind(
     "audio",
     "audio/",
     lambda model: model is not None and model.supports_audio_input,
+    deliverable=_wire_carries_audio,
     tool_fallback=False,
 )
 DOCUMENTS = MediaKind(
     "document",
     "application/pdf",
     lambda model: model is not None and model.supports_pdf_input,
+    deliverable=_any_wire,
     tool_fallback=True,
 )
 MEDIA_KINDS = (IMAGES, AUDIO, DOCUMENTS)
@@ -266,7 +297,7 @@ class ImageHandler:
     positive yes."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        return IMAGES.matches_mime(probe.mime) and IMAGES.accepts(model)
+        return IMAGES.matches_mime(probe.mime) and IMAGES.sendable(model)
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         data = probe.path.read_bytes()
@@ -286,7 +317,7 @@ class AudioHandler:
     audio at all; everything else raises at projection time, costing the turn."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        if not (AUDIO.matches_mime(probe.mime) and AUDIO.accepts(model)):
+        if not (AUDIO.matches_mime(probe.mime) and AUDIO.sendable(model)):
             return False
         return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
 
@@ -307,7 +338,7 @@ class DocumentHandler:
     `limits.max_media_bytes`."""
 
     def matches(self, probe, limits, context_window, model) -> bool:
-        if not (DOCUMENTS.matches_mime(probe.mime) and DOCUMENTS.accepts(model)):
+        if not (DOCUMENTS.matches_mime(probe.mime) and DOCUMENTS.sendable(model)):
             return False
         return probe.size_bytes is not None and probe.size_bytes <= limits.max_media_bytes
 
@@ -334,7 +365,12 @@ class UnsupportedMediaHandler:
 
     def build(self, probe, limits, context_window, model) -> ContentPart:
         kind = media_kind(probe.mime)
-        decline = self._too_large(limits, kind) if kind.accepts(model) else self._unsupported(kind, model)
+        if not kind.accepts(model):
+            decline = self._unsupported(kind, model)
+        elif not kind.deliverable(model):
+            decline = self._undeliverable(kind, model)
+        else:
+            decline = self._too_large(limits, kind)
         advice = _FALL_BACK if kind.tool_fallback else _NO_FALL_BACK
         return TextContent(
             text=_wrap(
@@ -361,6 +397,22 @@ class UnsupportedMediaHandler:
         body = f"This is {kind.noun} content and it was NOT attached: {named} does not accept {kind.noun} input."
         if not kind.tool_fallback:
             body += " Tell the user to switch to a model that does."
+        return Decline(STATUS_UNSUPPORTED, reason, body)
+
+    def _undeliverable(self, kind: MediaKind, model: ModelInfo | None) -> Decline:
+        """The model takes this input, its host's wire does not — so blaming
+        the model would send the user looking for the wrong fix. The provider
+        is the thing to change here, not the model."""
+        named = (model.display_name or model.model or "this model") if model is not None else "this model"
+        host = model.provider if model is not None else "this provider"
+        reason = f"{named} takes {kind.noun}, but the {host} wire cannot carry it"
+        body = (
+            f"This is {kind.noun} content and it was NOT attached: {named} accepts {kind.noun}, "
+            f"but the {host} API has no {kind.noun} shape. Tell the user to reach this model "
+            f"through a host that does."
+        )
+        if not kind.tool_fallback:
+            body += " Do not attempt it yourself."
         return Decline(STATUS_UNSUPPORTED, reason, body)
 
     def _too_large(self, limits: ReadLimits, kind: MediaKind) -> Decline:

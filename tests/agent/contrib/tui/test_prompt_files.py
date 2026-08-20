@@ -425,8 +425,8 @@ def test_a_vision_model_still_gets_the_image(tmp_path):
 # ── audio ────────────────────────────────────────────────────────────────────
 
 MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90d"
-HEARS_AUDIO = ModelInfo(supports_audio_input=True)
-NO_AUDIO = ModelInfo(model="gpt-mini", supports_audio_input=False)
+HEARS_AUDIO = ModelInfo(provider="openrouter", model="hears", supports_audio_input=True)
+NO_AUDIO = ModelInfo(provider="openrouter", model="gpt-mini", supports_audio_input=False)
 
 
 def test_a_recording_becomes_audio_content_when_the_model_listens(tmp_path):
@@ -521,6 +521,36 @@ def test_an_oversized_recording_says_it_is_too_large_and_is_never_read(tmp_path)
             bytes=len(MP3),
         ),
     )
+
+
+def test_an_audio_model_whose_host_cannot_carry_audio_is_declined(tmp_path):
+    # `supports_audio_input` is per MODEL and cannot see the wire. These three
+    # are catalogued as audio models on hosts that route to a transport with no
+    # audio shape, so building the part would cost the turn at projection.
+    path = tmp_path / "clip.mp3"
+    path.write_bytes(MP3)
+    stranded = [
+        get_model_info("openai", "gpt-realtime-2.1"),
+        get_model_info("bedrock", "mistral.voxtral-mini-3b-2507"),
+        get_model_info("bedrock", "mistral.voxtral-small-24b-2507"),
+    ]
+
+    assert [(m.supports_audio_input, type(process_prompt_file_path(path, model=m)).__name__) for m in stranded] == [
+        (True, "TextContent"),
+        (True, "TextContent"),
+        (True, "TextContent"),
+    ]
+
+
+def test_the_wire_refusal_blames_the_host_not_the_model(tmp_path):
+    # blaming the model would send the user to change the wrong thing: the
+    # model does hear, it is the host's API that has no audio part
+    path = tmp_path / "clip.mp3"
+    path.write_bytes(MP3)
+
+    part = process_prompt_file_path(path, model=get_model_info("openai", "gpt-realtime-2.1"))
+
+    assert part.metadata["mention"]["reason"] == "GPT-Realtime-2.1 takes audio, but the openai wire cannot carry it"
 
 
 def test_the_audio_formats_the_wire_takes_are_all_sniffable():

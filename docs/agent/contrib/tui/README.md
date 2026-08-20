@@ -260,10 +260,22 @@ submit — so `/model` to a model that cannot take one silently goes back to the
 note. A PDF over `ReadLimits.max_media_bytes` (16MB default) does the same
 and is never read into memory.
 
-Audio works the same way through `ModelInfo.supports_audio_input`, which is
-true for 27 models and reachable on OpenRouter and OpenAI only — no other
-transport has an audio shape at all, so an uncatalogued model gets the note
-rather than a failed turn. Sniffing covers wav, mp3, m4a, ogg, flac and aac,
+Audio takes **two** gates, not one. `ModelInfo.supports_audio_input` answers
+for the model, and it cannot answer for the wire: `openai:gpt-realtime-2.1`
+and the Bedrock voxtrals are catalogued audio models whose own hosts route to
+a transport with no audio shape, so trusting the flag alone builds a part that
+dies at projection. `MediaKind.deliverable` asks the client which transport
+the host resolves to (`default_transport_class`) and whether it declares
+`SUPPORTS_AUDIO_INPUT` — true for chat completions only, which in practice
+means OpenRouter and the OpenAI-compatible hosts. An uncatalogued model fails
+both gates and gets the note rather than a failed turn.
+
+The two gates say different things when they refuse, because they call for
+different fixes: `× GPT-5.4 mini does not accept audio input` means change the
+model, `× GPT-Realtime-2.1 takes audio, but the openai wire cannot carry it`
+means reach the same model through another host.
+
+Sniffing covers wav, mp3, m4a, ogg, flac and aac,
 reading the MPEG frame header rather than matching byte literals, since real
 encoders disagree on the bits after the sync word. A bare `.mp4` is the one
 audio container left unclaimed: its brand does not say whether the track is
