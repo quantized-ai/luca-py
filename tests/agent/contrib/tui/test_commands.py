@@ -92,7 +92,7 @@ async def wait_until(pilot, condition, timeout: float = 8.0) -> None:
 # ── the registry ─────────────────────────────────────────────────────────────
 
 
-def test_the_registry_lists_the_sixteen_commands():
+def test_the_registry_lists_the_seventeen_commands():
     # Spelled out rather than re-derived: a command added, renamed or
     # re-summarized shows up here as a diff.
     assert [(c.name, c.usage, c.summary, c.insert) for c in COMMANDS] == [
@@ -110,6 +110,7 @@ def test_the_registry_lists_the_sixteen_commands():
         ("rewind", "", "pick an earlier checkpoint to restore", False),
         ("resume", "", "switch to another session in this project", False),
         ("new", "", "save and start a fresh conversation", False),
+        ("mcp", "[server]", "MCP servers: status, tools, sign in, reconnect", False),
         ("help", "", "show every command", False),
         ("quit", "", "save and exit", False),
     ]
@@ -430,7 +431,7 @@ async def test_help_mounts_the_command_list_block(tmp_path):
         # too, mounted from the start and hidden until there are todos.
         [view] = list(app.transcript.query(ListBlockView))
         assert view.model == vm.ListBlock(
-            label="commands · 16",
+            label="commands · 17",
             column=24,
             rows=[
                 vm.ListRow(glyph="none", text="/skill [name]", annotation="load a skill into this session"),
@@ -447,6 +448,9 @@ async def test_help_mounts_the_command_list_block(tmp_path):
                 vm.ListRow(glyph="none", text="/rewind", annotation="pick an earlier checkpoint to restore"),
                 vm.ListRow(glyph="none", text="/resume", annotation="switch to another session in this project"),
                 vm.ListRow(glyph="none", text="/new", annotation="save and start a fresh conversation"),
+                vm.ListRow(
+                    glyph="none", text="/mcp [server]", annotation="MCP servers: status, tools, sign in, reconnect"
+                ),
                 vm.ListRow(glyph="none", text="/help", annotation="show every command"),
                 vm.ListRow(glyph="none", text="/quit", annotation="save and exit"),
             ],

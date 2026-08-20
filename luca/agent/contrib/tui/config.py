@@ -21,6 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from luca.agent.contrib.mcp.config import McpSettings
 from luca.agent.contrib.resource_permissions import (
     PermissionMatchMode,
     PermissionMode,
@@ -252,6 +253,11 @@ class LucaConfig(BaseModel):
     # CLAUDE.md; `~` expanded, relative entries resolved against the workspace.
     instructions: list[str] = Field(default_factory=list)
     streaming: bool | None = None
+    # External MCP servers whose tools the model may call. A block rather than
+    # a bare map so `enabled` has somewhere to live that a server label cannot
+    # collide with. The models are pydantic-only and pull in no optional
+    # dependency, which is what lets this file name them at module scope.
+    mcp: McpSettings = Field(default_factory=McpSettings)
     # Snapshot the workspace before each turn so `/undo` and `/rewind` can put
     # it back (`--checkpoints` / `--no-checkpoints`; default on). Snapshots go
     # to a private git repository beside the session, never into the workspace,

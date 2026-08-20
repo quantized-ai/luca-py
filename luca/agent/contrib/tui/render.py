@@ -279,6 +279,42 @@ def was_auto_approved(execution: ToolExecution) -> bool:
     return bool(execution.extras.get("approval_context"))
 
 
+MCP_NAMESPACE_PREFIX = "mcp."
+
+
+def mcp_identity(spec) -> tuple[str, str] | None:
+    """The (server, remote tool) an MCP spec came from, or None. A plain dict
+    read rather than an import of `luca.agent.contrib.mcp`, which pulls
+    `mcp-types`: the TUI renders with or without the optional group."""
+    if spec is None or not (spec.namespace or "").startswith(MCP_NAMESPACE_PREFIX):
+        return None
+    entry = (spec.metadata or {}).get("mcp")
+    if not isinstance(entry, dict):
+        return None
+    label, tool = entry.get("server"), entry.get("tool")
+    return (label, tool) if isinstance(label, str) and isinstance(tool, str) else None
+
+
+def tool_label(execution: ToolExecution) -> str:
+    """What to call this tool on the header.
+
+    The spec's `display_name` is `title` when the tool declares one and the
+    internal `name` otherwise — so a provider-native tool reads as "Apply
+    patch" here while staying `openai_apply_patch` everywhere identity
+    matters. An unresolved call has no spec; its raw name is all there is.
+
+    An MCP tool reads `airtable:list_records`, because neither name it has is
+    the one to show: `mcp__airtable__list_records` is a wire format nobody
+    types, and a server's own `title` hides whose tool it is, which is what
+    somebody deciding whether to approve the call needs to know.
+    """
+    spec = execution.tool_spec
+    if spec is None:
+        return execution.raw_tool_call.name
+    identity = mcp_identity(spec)
+    return f"{identity[0]}:{identity[1]}" if identity else spec.display_name
+
+
 def tool_block(
     execution: ToolExecution,
     result_text: str | None = None,
@@ -291,11 +327,7 @@ def tool_block(
     a `ToolBlock`. Every automatic permission decision is stated: an
     auto-allowed gated call carries `approved by rule` on its result row, a
     denial says whether a rule or the user refused it."""
-    # The spec's `display_name` is `title` when the tool declares one and the
-    # internal `name` otherwise — so a provider-native tool reads as "Apply
-    # patch" here while staying `openai_apply_patch` everywhere identity
-    # matters. An unresolved call has no spec; its raw name is all there is.
-    name = execution.tool_spec.display_name if execution.tool_spec is not None else execution.raw_tool_call.name
+    name = tool_label(execution)
     status = _STATUS_MAP.get(execution.status, "pending")
     if status == "running":
         status = "pending"

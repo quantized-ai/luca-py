@@ -369,6 +369,16 @@ async def _cmd_compact(app: AgentApp, arg: str) -> None:
         app._start_drive()
 
 
+async def _cmd_mcp(app: AgentApp, arg: str) -> None:
+    """Open the MCP server list: what is connected, what is waiting on a login,
+    and what failed, with the action for each on the row.
+
+    `/mcp <label>` opens it with that server selected, which is what a failed
+    tool call tells the user to type.
+    """
+    await app.open_mcp_screen(label=arg.strip() or None)
+
+
 async def _cmd_quit(app: AgentApp, arg: str) -> None:
     await app._quit()
 
@@ -388,6 +398,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("rewind", "", "pick an earlier checkpoint to restore", _cmd_rewind),
     SlashCommand("resume", "", "switch to another session in this project", _cmd_sessions),
     SlashCommand("new", "", "save and start a fresh conversation", _cmd_clear),
+    SlashCommand("mcp", "[server]", "MCP servers: status, tools, sign in, reconnect", _cmd_mcp),
     SlashCommand("help", "", "show every command", _cmd_help),
     SlashCommand("quit", "", "save and exit", _cmd_quit),
 )

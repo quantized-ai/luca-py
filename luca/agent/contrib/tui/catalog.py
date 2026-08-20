@@ -30,6 +30,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from luca.agent.contrib.mcp.servers import ServerState, ServerStatus
 from luca.agent.contrib.questions import QuestionsTool
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.core.exceptions import ProjectionError
@@ -38,6 +39,7 @@ from luca.agent.core.models import (
     AgentSession,
     ExecutionStatus,
     ToolExecution,
+    ToolSpec,
 )
 from luca.agent.core.projection import ConversationProjector, tool_message_text
 
@@ -46,6 +48,7 @@ from .approvals import build_approval_prompts
 from .commands import build_sessions_state, build_settings_state, palette_rows
 from .files import rank_files
 from .format import HINTS, approval_hints, question_hints_for, short_model
+from .mcp_service import build_mcp_detail, build_mcp_state, mcp_hints
 from .render import (
     filter_rows,
     is_questions_tool,
@@ -64,7 +67,9 @@ SESSIONS_DIR = Path(__file__).parent / "fixtures" / "sessions"
 # NOW that never moves or its snapshots would rot overnight.
 NOW = datetime(2026, 3, 14, 9, 30, 0)
 
-ScreenName = Literal["chat", "approval", "questions", "palette", "picker", "cost", "settings", "sessions"]
+ScreenName = Literal[
+    "chat", "approval", "questions", "palette", "picker", "cost", "settings", "sessions", "mcp", "mcp-detail"
+]
 
 
 class CatalogError(Exception):
@@ -359,6 +364,89 @@ def cost_screen(scene: Scene) -> vm.ScreenState:
     )
 
 
+# One of each state, so the catalog shows what every colour means side by side
+# and a snapshot catches a regression in any of them.
+MCP_SERVERS: tuple[ServerStatus, ...] = (
+    ServerStatus(
+        label="files",
+        state=ServerState.CONNECTED,
+        tool_count=14,
+        protocol_version="2025-11-25",
+    ),
+    ServerStatus(
+        label="linear",
+        state=ServerState.NEEDS_AUTH,
+        oauth=True,
+    ),
+    # Three tools, matching MCP_TOOLS below, so the list and the drill-in agree.
+    ServerStatus(
+        label="airtable",
+        state=ServerState.CONNECTED,
+        tool_count=3,
+        protocol_version="2026-07-28",
+        rejected_tools={"bulk_upsert": "'x-mcp-header' at rows is on a 'array' parameter"},
+    ),
+    ServerStatus(
+        label="staging",
+        state=ServerState.INACTIVE,
+        error="Could not start MCP server 'staging': No such file or directory",
+    ),
+    ServerStatus(label="notion", state=ServerState.DISABLED),
+    ServerStatus(
+        label="github",
+        state=ServerState.STALE,
+        tool_count=9,
+        error="MCP server 'github' is unreachable: timed out",
+    ),
+)
+
+# The airtable row's tools, for the drill-in. Specs rather than raw MCP tools,
+# because that is what the service hands a UI: the catalog derives them once.
+MCP_TOOLS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="mcp__airtable__list_records",
+        description="List records in a table, with optional filtering and sorting.",
+        input_schema={"type": "object", "properties": {}},
+        metadata={"mcp": {"server": "airtable", "tool": "list_records"}},
+    ),
+    ToolSpec(
+        name="mcp__airtable__create_record",
+        description="Create one record in a table.",
+        input_schema={"type": "object", "properties": {}},
+        metadata={"mcp": {"server": "airtable", "tool": "create_record"}},
+    ),
+    ToolSpec(
+        name="mcp__airtable__search_records",
+        description="Full-text search across a table's records.",
+        input_schema={"type": "object", "properties": {}},
+        metadata={"mcp": {"server": "airtable", "tool": "search_records"}},
+    ),
+)
+
+
+def mcp_screen(scene: Scene) -> vm.ScreenState:
+    """1l — MCP servers, one row per state: connected, stale, waiting on a
+    login, failed, and switched off."""
+    state = build_mcp_state(list(MCP_SERVERS), selected=scene.world.selected)
+    return vm.ScreenState(
+        **_base(scene, label="mcp servers"),
+        modal=vm.ModalState(mcp=state),
+        hints=mcp_hints(state),
+    )
+
+
+def mcp_detail_screen(scene: Scene) -> vm.ScreenState:
+    """1m — one server's tools, including the ones excluded and why."""
+    status = MCP_SERVERS[2]
+    detail = build_mcp_detail(status, MCP_TOOLS)
+    state = build_mcp_state(list(MCP_SERVERS), selected=2, detail=detail)
+    return vm.ScreenState(
+        **_base(scene, label="mcp servers"),
+        modal=vm.ModalState(mcp=state),
+        hints=mcp_hints(state),
+    )
+
+
 def settings_screen(scene: Scene) -> vm.ScreenState:
     """1j — model, permissions, appearance."""
     return vm.ScreenState(
@@ -437,6 +525,8 @@ SCREENS: dict[ScreenName, Callable[[Scene], vm.ScreenState]] = {
     "cost": cost_screen,
     "settings": settings_screen,
     "sessions": sessions_screen,
+    "mcp": mcp_screen,
+    "mcp-detail": mcp_detail_screen,
 }
 
 

@@ -32,6 +32,9 @@ tui = [
 skills = [
     "pyyaml>=6",
 ]
+mcp = [
+    "mcp-types==2.0.0",
+]
 ssh = [
     "asyncssh>=2.24.0",
     "paramiko>=5.0.0",
@@ -55,7 +58,7 @@ testpaths = ["tests"]
 
 [tool.uv]
 package = true
-default-groups = ["dev", "tui", "skills"]
+default-groups = ["dev", "tui", "skills", "mcp"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["luca"]

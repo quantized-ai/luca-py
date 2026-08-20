@@ -134,6 +134,7 @@ def build_runner(
     instructions: bool = True,
     extra_instructions: list[str] | None = None,
     questions_store: dict | None = None,
+    mcp=None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy, QuestionsPlugin]:
     """The full demo composition: shell + memory + questions plugins, the math
     tools, one shared strategy, and — unless `subagents=False` — the subagent
@@ -143,6 +144,9 @@ def build_runner(
     `context_manager=` is the same for context accounting and compaction —
     `None` falls back to core's default, which accounts but never compacts, so
     `/compact` fails until one that implements `compact()` is passed here.
+
+    `mcp=` is the application's `McpService`, or None. It is a REFERENCE, not
+    something built here, because MCP connections outlive the runner.
 
     `questions_store=` is the dict `QuestionsTool` keeps its outstanding jobs
     in. The app hands in the one it loaded from the session's `.tui.json`
@@ -190,6 +194,16 @@ def build_runner(
         plugins.append(skills_plugin)
     if instructions:
         plugins.append(InstructionsPlugin(workspace=workspace, extra=extra_instructions))
+    if mcp is not None:
+        # The SERVICE is passed in, not built here. It owns the live
+        # connections and the tool catalog, and it outlives every session:
+        # `_reset_session` rebuilds this runner on `/clear`, `/resume` and
+        # fork, and a plugin holding connections would reconnect (and re-run
+        # OAuth) each time. The plugin below is a stateless view over it, and
+        # it shares the one PermissionStrategy like every other registry.
+        from luca.agent.contrib.mcp.plugin import McpPlugin
+
+        plugins.append(McpPlugin(mcp, strategy))
     if subagents:
         # Installing the plugin is not on its own enough: `subagents_enabled`
         # still has to be True on the session's RuntimeConfig. The capability

@@ -27,6 +27,7 @@ from luca.agent.contrib.tui.render import (
     task_status,
     tool_arg,
     tool_block,
+    tool_label,
     transcript_blocks,
     user_prompts,
     user_transcript_text,
@@ -1104,6 +1105,37 @@ def test_transcript_blocks_nest_a_subagent_into_its_task_block():
             blocks=[vm.TextBlock(text="all pages read")],
         ),
     ]
+
+
+# ── mcp tools ─────────────────────────────────────────────────────────────────
+
+MCP_SPEC = spec(
+    "mcp__airtable__list_records",
+    title="List records",
+    namespace="mcp.airtable",
+    metadata={"mcp": {"server": "airtable", "tool": "list_records"}},
+)
+
+
+def test_an_mcp_call_names_the_server_it_came_from():
+    # Neither name it has is the one to show: the wire name is a format nobody
+    # types, and the server's own title says what the tool does while hiding
+    # whose it is.
+    call = execution("mcp__airtable__list_records", ExecutionStatus.RUNNING, tool_spec=MCP_SPEC)
+
+    assert tool_label(call) == "airtable:list_records"
+
+
+def test_a_tool_that_is_not_ours_keeps_its_display_name():
+    call = execution("read", ExecutionStatus.RUNNING, tool_spec=spec("read", title="Read"))
+
+    assert tool_label(call) == "Read"
+
+
+def test_a_call_with_no_spec_falls_back_to_the_name_the_model_used():
+    call = execution("whatever", ExecutionStatus.RUNNING, tool_spec=None)
+
+    assert tool_label(call) == "whatever"
 
 
 # ── the agent's questions (`ask_user`) ────────────────────────────────────────

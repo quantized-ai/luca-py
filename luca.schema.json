@@ -609,6 +609,144 @@
       ],
       "title": "ToolKind",
       "type": "string"
+    },
+    "McpServerSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "title": "McpServerSettings",
+      "description": "One MCP server. Give either 'command' (a local server over stdio) or 'url' (a remote server over Streamable HTTP), never both. Values in 'env' and 'headers' may reference an exported environment variable as ${VAR}.",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "The executable to run, for a stdio server."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment for the subprocess. Values may contain ${VAR}."
+        },
+        "url": {
+          "type": "string",
+          "description": "The MCP endpoint, for an http server."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Static headers sent with every request. Values may contain ${VAR}."
+        },
+        "oauth": {
+          "type": "boolean",
+          "default": false,
+          "description": "Authorize in a browser on first use."
+        },
+        "client_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A pre-registered OAuth client id. Omit to register dynamically."
+        },
+        "redirect_port": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Pin the OAuth loopback port. Omit to let the OS pick one, which is the default."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "connect_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "list_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "call_timeout_in_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Deadline for one tool call on this server. Omit to inherit runtime.tool_execution_timeout_in_ms."
+        }
+      }
+    },
+    "McpSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "title": "McpSettings",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Connect to the configured MCP servers. Defaults to true; --no-mcp overrides it."
+        },
+        "servers": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServerSettings"
+          },
+          "description": "Servers by label. The label prefixes every tool name the model sees."
+        }
+      }
     }
   },
   "additionalProperties": false,
@@ -717,6 +855,11 @@
       ],
       "default": null,
       "title": "Streaming"
+    },
+    "mcp": {
+      "$ref": "#/$defs/McpSettings",
+      "default": {},
+      "description": "External MCP servers whose tools the model may call."
     },
     "checkpoints": {
       "anyOf": [

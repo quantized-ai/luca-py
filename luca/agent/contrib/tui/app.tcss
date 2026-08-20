@@ -467,6 +467,17 @@ PreviewGutter {
     height: auto;
 }
 
+/* mcp (1l) */
+
+.mcp-table {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.mcp-message--error {
+    color: $error;
+}
+
 /* settings (1j) */
 
 .group-label {

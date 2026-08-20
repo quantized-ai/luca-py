@@ -94,4 +94,4 @@ Snapshotting also stays off the middleware chain: every hook is synchronous, and
 a git commit over a large workspace on the event loop once per entry write is
 not a trade worth making. `take()` is awaited by the application instead.
 
-Next: back to the [contrib index](../README.md).
+Next: [`mcp/README.md`](../mcp/README.md).

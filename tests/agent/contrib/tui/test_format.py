@@ -156,6 +156,8 @@ def test_hints_covers_every_focus_context():
         "menu",
         "sessions",
         "settings",
+        # No "mcp": its legend depends on the selected row, so `mcp_hints`
+        # builds it rather than a constant here.
         "cost",
         "questions-single",
         "questions-multi",
