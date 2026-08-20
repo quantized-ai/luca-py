@@ -52,9 +52,9 @@ _NO_FALL_BACK = "Do not try to read, decode or transcribe it with your tools; th
 
 @dataclass(frozen=True)
 class MediaKind:
-    """One family of attachable media: how to recognise it, and whether the
-    active model takes it. The gate lives here because two handlers need it —
-    the one that sends the file and the one that explains why it could not."""
+    """One family of attachable media: how to recognise it, and whether it can
+    be sent. The gates live here because two handlers need them — the one that
+    sends the file and the one that explains why it could not."""
 
     noun: str
     mime_prefix: str
@@ -411,16 +411,14 @@ class UnsupportedMediaHandler:
             f"but the {host} API has no {kind.noun} shape. Tell the user to reach this model "
             f"through a host that does."
         )
-        if not kind.tool_fallback:
-            body += " Do not attempt it yourself."
         return Decline(STATUS_UNSUPPORTED, reason, body)
 
     def _too_large(self, limits: ReadLimits, kind: MediaKind) -> Decline:
         limit = limits.max_media_bytes
         # Whole megabytes read wrong below 1MB: a caller who set a small
         # ceiling would be told the limit is "0MB", which looks like a bug.
-        shown = f"{limit // (1024 * 1024)}MB" if limit >= 1024 * 1024 else f"{limit} bytes"
-        reason = f"over the {shown} limit for attached {kind.noun}s"
+        shown = f"{limit // (1024 * 1024)}MB" if limit >= 1024 * 1024 else f"{limit}-byte"
+        reason = f"over the {shown} limit for attached media"
         body = f"This is {kind.noun} content and it was NOT attached: it is over the {shown} limit for attached media."
         if not kind.tool_fallback:
             body += " Tell the user the file is too large to send."

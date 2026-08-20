@@ -341,7 +341,7 @@ def test_an_oversized_pdf_says_it_is_too_large_and_is_never_read_into_memory(tmp
         text=(
             f'<agent-prompt-file path="{path}" status="too_large" guessed_mime="application/pdf" '
             f'bytes="{len(PDF)}">\n'
-            "This is document content and it was NOT attached: it is over the 4 bytes limit for attached media. "
+            "This is document content and it was NOT attached: it is over the 4-byte limit for attached media. "
             "Use your own tools (ranged reads, grep, glob) to satisfy the user's request.\n"
             "</agent-prompt-file>"
         ),
@@ -349,7 +349,7 @@ def test_an_oversized_pdf_says_it_is_too_large_and_is_never_read_into_memory(tmp
             path,
             status="too_large",
             success=False,
-            reason="over the 4 bytes limit for attached documents",
+            reason="over the 4-byte limit for attached media",
             guessed_mime="application/pdf",
             estimated_tokens=len(PDF) // 4,
             bytes=len(PDF),
@@ -506,7 +506,7 @@ def test_an_oversized_recording_says_it_is_too_large_and_is_never_read(tmp_path)
         text=(
             f'<agent-prompt-file path="{path}" status="too_large" guessed_mime="audio/mpeg" '
             f'bytes="{len(MP3)}">\n'
-            "This is audio content and it was NOT attached: it is over the 4 bytes limit for attached media. "
+            "This is audio content and it was NOT attached: it is over the 4-byte limit for attached media. "
             "Tell the user the file is too large to send. "
             "Do not try to read, decode or transcribe it with your tools; that cannot work.\n"
             "</agent-prompt-file>"
@@ -515,7 +515,7 @@ def test_an_oversized_recording_says_it_is_too_large_and_is_never_read(tmp_path)
             path,
             status="too_large",
             success=False,
-            reason="over the 4 bytes limit for attached audios",
+            reason="over the 4-byte limit for attached media",
             guessed_mime="audio/mpeg",
             estimated_tokens=len(MP3) // 4,
             bytes=len(MP3),
