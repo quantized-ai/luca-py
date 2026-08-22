@@ -76,8 +76,9 @@ Streams fail in two places, and the place decides the shape.
 
 **Rejected before the stream opens** — the provider answered the HTTP request
 with a 4xx/5xx, so no event was ever emitted. The mapped `ClientError` is
-**raised** from the first iteration, exactly as `completion()` raises it. The
-same rejection must not change shape just because you asked for a stream:
+**raised** at the `with` / `async with` line, exactly as `completion()` raises
+it. The same rejection must not change shape just because you asked for a
+stream:
 
 ```python
 try:

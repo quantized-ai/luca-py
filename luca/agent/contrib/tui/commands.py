@@ -171,7 +171,18 @@ def _apply(
         else:
             options["reasoning"] = reasoning
         updated = updated.model_copy(update={"model_options": options})
-    app.runner.session.session_config.llm_config = updated
+    session = app.runner.session
+    session.session_config.llm_config = updated
+    if updates:
+        # A provider/model switch changes what the wire keeps (encrypted
+        # payloads, thinking attestations), so every stored context estimate
+        # is stale on the new basis. Refresh the ACTIVE pair first — the
+        # manager measures against it, and the drive would otherwise only
+        # re-stamp it at the next turn — then re-derive every entry. Core
+        # deliberately never does this on its own; the trigger is the
+        # application's.
+        session.update_llm_config(f"{updated.provider}:{updated.model}", session.use_native_tools)
+        app.runner.recalculate_context_tokens()
     app._refresh_status()
 
 

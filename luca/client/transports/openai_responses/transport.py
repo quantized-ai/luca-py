@@ -34,16 +34,21 @@ from ...types.completion import (
 from ...types.content import (
     FileBlock,
     ImageBlock,
+    PrivateProviderBlock,
     RefusalBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    URLCitationAnnotation,
+    WebFetchBlock,
+    WebPagePart,
+    WebSearchBlock,
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.structured import response_format_to_json_schema, strictify_json_schema
 from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
-from ..base import BaseTransport, ChatCompletionTransportMixin
+from ..base import BaseTransport, ChatCompletionTransportMixin, WireFormatMixin
 from ..openai.errors import OpenAIErrorMappingMixin
 
 # Chat-completions parameters the Responses API has no equivalent for. Refused
@@ -74,6 +79,13 @@ class OpenAIResponsesToolProjector(ToolProjector):
             "description": tool.description,
             "parameters": tool_parameters_to_json_schema(tool.parameters),
         }
+
+    def project_request_params(self, tool: BaseTool) -> dict[str, Any]:
+        """Request-level parameters this tool contributes beyond its `tools`
+        entry — web search projects its inclusion flags into the top-level
+        `include` list. Merged into the payload by
+        `_build_chat_completion_payload`; nothing for standard tools."""
+        return {}
 
     def build_tool_call(self, item: dict) -> ToolCall:
         return ToolCall(
@@ -131,10 +143,18 @@ class OpenAIResponsesToolProjector(ToolProjector):
         return "".join(b.text for b in message.content)
 
 
-class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTransportMixin):
-    transport_id = "openai-responses"
+class OpenAIResponsesWireMixin(OpenAIErrorMappingMixin, WireFormatMixin):
+    """Responses wire knowledge: payload building, item projection, response
+    parsing, finish classification. Shared by OpenAIResponsesTransport
+    (non-streaming) and the Responses streamer, by inheritance.
+    OpenAIErrorMappingMixin comes first so its `_map_chat_completion_http_error`
+    beats WireFormatMixin's stub in the MRO."""
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = OpenAIResponsesToolProjector
+
+    # The wire format stamped on PrivateProviderBlocks minted here; only this
+    # wire replays them.
+    WIRE_FORMAT: ClassVar[str | None] = "openai.responses"
 
     def _default_tool_projector(self) -> ToolProjector:
         return OpenAIResponsesToolProjector()
@@ -188,7 +208,16 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         payload.update(self._reasoning_config(request))
 
         if request.tools:
-            payload["tools"] = self._project_tools(request.tools)
+            # One projector resolution per tool covers both contributions:
+            # its `tools` entry and any request-level parameters (web
+            # search's `include` values merge with the reasoning include
+            # already on the payload).
+            declarations: list[dict] = []
+            for tool in request.tools:
+                projector = self._resolve_projector(tool)
+                declarations.append(projector.project_tool_to_llm(tool))
+                self._merge_tool_request_params(payload, projector.project_request_params(tool), tool)
+            payload["tools"] = declarations
         if request.tool_choice is not None:
             payload["tool_choice"] = self._project_tool_choice(request.tool_choice, request.tools)
         if request.response_format is not None:
@@ -196,6 +225,25 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
 
         payload.update(self._provider_options(request))
         return payload
+
+    def _merge_tool_request_params(self, payload: dict, params: dict, tool: BaseTool) -> None:
+        """Merge one tool's request-level parameters into the payload.
+
+        Lists combine and deduplicate, identical values are accepted, and a
+        conflicting value raises — a tool cannot silently replace core
+        fields such as `model` or `input`."""
+        for key, value in params.items():
+            if key not in payload:
+                payload[key] = value
+            elif isinstance(payload[key], list) and isinstance(value, list):
+                payload[key] = payload[key] + [v for v in value if v not in payload[key]]
+            elif payload[key] != value:
+                raise BadRequestError(
+                    f"{type(tool).__name__} sets request parameter {key!r} to "
+                    f"{value!r}, conflicting with {payload[key]!r} already on "
+                    "the request.",
+                    provider=self._provider,
+                )
 
     def _check_unsupported(self, request: ChatCompletionRequest) -> None:
         offending = [name for name in _UNSUPPORTED_FIELDS if getattr(request, name) is not None]
@@ -330,6 +378,37 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             provider=self._provider,
         )
 
+    def select_assistant_blocks(
+        self,
+        message: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> list:
+        """The keep/drop rules for this wire, in one place (payload build and
+        `effective_messages` both route through here): text always survives;
+        a reasoning block survives when both identity halves replay; a
+        ToolCall survives when its projector family is this wire's;
+        own-format privates replay verbatim — except the `in_progress` stub a
+        cancelled stream left behind, an incomplete item this API 400s on —
+        foreign privates drop; the portable web blocks are never sent; a
+        refusal is an output-only shape."""
+        kept: list = []
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                kept.append(block)
+            elif isinstance(block, ThinkingBlock):
+                if self._project_reasoning_item(block, message, request) is not None:
+                    kept.append(block)
+            elif isinstance(block, ToolCall):
+                if self._resolve_call(block) is not None:
+                    kept.append(block)
+            elif (
+                isinstance(block, PrivateProviderBlock)
+                and block.format == self.WIRE_FORMAT
+                and block.data.get("status") != "in_progress"
+            ):
+                kept.append(block)
+        return kept
+
     def _project_assistant_message(
         self,
         msg: AssistantMessage,
@@ -338,12 +417,15 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
     ) -> list[dict]:
         if lineage is None:
             lineage = {}
-        items: list[dict] = []
+        # Lineage records EVERY call's fate — dropped ones included, so the
+        # ToolMessage answering a dropped foreign call falls with it.
         for block in msg.content:
+            if isinstance(block, ToolCall):
+                lineage[block.id] = self._resolve_call(block)
+        items: list[dict] = []
+        for block in self.select_assistant_blocks(msg, request):
             if isinstance(block, ThinkingBlock):
-                reasoning = self._project_reasoning_item(block, msg, request)
-                if reasoning is not None:
-                    items.append(reasoning)
+                items.append(self._project_reasoning_item(block, msg, request))
             elif isinstance(block, TextBlock):
                 items.append(
                     {
@@ -353,14 +435,13 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                     }
                 )
             elif isinstance(block, ToolCall):
-                entry = self._resolve_call(block)
-                lineage[block.id] = entry
-                if entry is not None:
-                    projector, call = entry
-                    items.append(projector.project_tool_call_to_llm(call))
-            elif isinstance(block, RefusalBlock):
-                # A refusal is an output-only shape; the API rejects it on input.
-                continue
+                # Resolved per block, never through the id-keyed lineage dict:
+                # duplicate ids would make the dict's last write clobber an
+                # earlier kept call's entry.
+                projector, call = self._resolve_call(block)
+                items.append(projector.project_tool_call_to_llm(call))
+            elif isinstance(block, PrivateProviderBlock):
+                items.append(block.data)
         return items
 
     def _project_reasoning_item(
@@ -440,7 +521,7 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
     ) -> ChatCompletionResponse:
         data = response.json()
         message = self._parse_assistant_message(data, request)
-        message.usage = self._parse_usage(data.get("usage"), request.model_info)
+        message.usage = self._parse_usage(data.get("usage"), request.model_info, data.get("tool_usage"))
 
         provider_terminal = self._provider_finish_reason(data)
         canonical, error_message = self._classify_finish(provider_terminal, message)
@@ -470,13 +551,20 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
                 content.extend(self._parse_message_item(item))
             elif item_type == "function_call":
                 content.append(default.build_tool_call(item))
+            elif item_type == "web_search_call":
+                # Two adjacent views of the one operation: the exact wire
+                # item for replay, then its portable meaning.
+                content.append(PrivateProviderBlock(format=self.WIRE_FORMAT, data=item))
+                synthetic = self._web_block(item)
+                if synthetic is not None:
+                    content.append(synthetic)
             elif (native := self._native_projector_for_item(item_type)) is not None:
                 # The registry replaces a per-request tools scan: an item type
                 # can only appear if its tool was declared, and the registry
                 # is filled at import by the same module that defines it.
                 content.append(native.build_tool_call(item))
-            # Hosted-tool items (web_search_call, file_search_call, …) have no
-            # canonical block; ignored rather than guessed at.
+            # Other hosted-tool items (file_search_call, …) have no canonical
+            # block; ignored rather than guessed at.
         return AssistantMessage(
             content=content,
             provider=self._provider,
@@ -503,14 +591,116 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         for part in item.get("content") or []:
             part_type = part.get("type")
             if part_type == "output_text":
-                blocks.append(TextBlock(text=part.get("text", "")))
+                blocks.append(
+                    TextBlock(
+                        text=part.get("text", ""),
+                        annotations=self._parse_annotations(part.get("annotations")),
+                    )
+                )
             elif part_type == "refusal":
                 blocks.append(RefusalBlock(text=part.get("refusal", "")))
         return blocks
 
-    def _parse_usage(self, usage_json: dict | None, model_info: Any) -> Usage:
-        if usage_json is None:
+    # --- web operations (hosted web_search tool) ---
+
+    @staticmethod
+    def _parse_annotation(raw: dict) -> URLCitationAnnotation | None:
+        """One wire annotation, or None for kinds with no canonical shape."""
+        if raw.get("type") != "url_citation":
+            return None
+        return URLCitationAnnotation(
+            url=raw.get("url", ""),
+            title=raw.get("title", ""),
+            start_index=raw.get("start_index"),
+            end_index=raw.get("end_index"),
+        )
+
+    def _parse_annotations(self, raw: list | None) -> list[URLCitationAnnotation]:
+        return [annotation for entry in raw or [] if (annotation := self._parse_annotation(entry)) is not None]
+
+    def _web_block(self, item: dict) -> WebSearchBlock | WebFetchBlock | None:
+        """The portable projection of one web_search_call item, or None when
+        its action has no canonical block (find_in_page, image search, an
+        action OpenAI adds later) — the private block still preserves it.
+
+        `extras` carries the adjacency-free facts: the operation id
+        (`item["id"]`, the `ws_…` id) and, on a failed item,
+        `{"status": "failed"}` — OpenAI reports no structured per-operation
+        error code on the wire, so the status string is the whole signal."""
+        action = item.get("action") or {}
+        action_type = action.get("type")
+        extras: dict = {}
+        if (op_id := item.get("id")) is not None:
+            extras["id"] = op_id
+        if item.get("status") == "failed":
+            extras["error"] = {"status": "failed"}
+        if action_type == "search":
+            return WebSearchBlock(
+                queries=self._web_queries(action),
+                results=self._web_search_results(item),
+                extras=extras,
+            )
+        if action_type == "open_page":
+            return WebFetchBlock(web_page=self._web_fetched_page(item), extras=extras)
+        return None
+
+    @staticmethod
+    def _web_queries(action: dict) -> list[str]:
+        # `queries` is authoritative; `query` is its legacy singular twin.
+        queries = action.get("queries")
+        if queries:
+            return list(queries)
+        query = action.get("query")
+        return [query] if query else []
+
+    @staticmethod
+    def _web_search_results(item: dict) -> list[WebPagePart] | None:
+        """`results` metadata and URL `sources` merged by URL, or None when
+        neither was returned. Results come first (they carry title and
+        snippet); a source URL no result covers is appended bare."""
+        results = item.get("results")
+        sources = [s for s in (item.get("action") or {}).get("sources") or [] if s.get("type") == "url"]
+        if results is None and not sources:
+            return None
+        parts: list[WebPagePart] = []
+        seen: set[str] = set()
+        for result in results or []:
+            url = result.get("url", "")
+            parts.append(WebPagePart(url=url, title=result.get("title"), content=result.get("snippet")))
+            seen.add(url)
+        for source in sources:
+            if source["url"] not in seen:
+                parts.append(WebPagePart(url=source["url"]))
+                seen.add(source["url"])
+        return parts
+
+    @staticmethod
+    def _web_fetched_page(item: dict) -> WebPagePart:
+        """The page an open_page action landed on: the result when returned
+        (its URL wins — a redirect makes it differ from the action's), else
+        just the URL the action opened."""
+        action = item.get("action") or {}
+        results = item.get("results") or []
+        if results:
+            result = results[0]
+            return WebPagePart(
+                url=result.get("url") or action.get("url", ""),
+                title=result.get("title"),
+                content=result.get("snippet"),
+            )
+        return WebPagePart(url=action.get("url", ""))
+
+    def _parse_usage(
+        self,
+        usage_json: dict | None,
+        model_info: Any,
+        tool_usage_json: dict | None = None,
+    ) -> Usage:
+        """`usage` plus the sibling `tool_usage` envelope key, which carries
+        the hosted-tool request counters."""
+        if usage_json is None and tool_usage_json is None:
             return Usage()
+        usage_json = usage_json or {}
         input_details = usage_json.get("input_tokens_details") or {}
         output_details = usage_json.get("output_tokens_details") or {}
         u = Usage(
@@ -520,10 +710,23 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
             cached_input_tokens=input_details.get("cached_tokens"),
             cache_write_tokens=input_details.get("cache_write_tokens"),
             reasoning_tokens=output_details.get("reasoning_tokens"),
+            tool_requests=self._tool_requests(tool_usage_json),
+            provider_tool_usage=tool_usage_json or {},
         )
         if model_info is not None and getattr(model_info, "cost", None) is not None:
             u.cost = UsageCost.compute(u, model_info.cost)
         return u
+
+    @staticmethod
+    def _tool_requests(tool_usage_json: dict | None) -> dict[str, int]:
+        """One `{tool: count}` entry per hosted tool whose usage reports
+        `num_requests` (`web_search` today; `image_gen` reports tokens, not
+        requests, and is left to `provider_tool_usage`)."""
+        return {
+            name: entry["num_requests"]
+            for name, entry in (tool_usage_json or {}).items()
+            if isinstance(entry, dict) and isinstance(entry.get("num_requests"), int)
+        }
 
     # --- finish-reason classification ---
 
@@ -572,14 +775,18 @@ class OpenAIResponsesTransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompl
         # documented set; the raw value stays on provider_finish_reason.
         return (None, None)
 
-    # --- stream class hooks ---
 
-    def _chat_completion_stream_class(self) -> type:
-        from .stream import OpenAIResponsesStream
+# Imported here, between the wire mixin and the transport class, because the
+# streamer module inherits the mixin above: at the top of the file this would
+# be a circular import.
+from .streamer import (  # noqa: E402
+    AsyncOpenAIResponsesStreamer,
+    SyncOpenAIResponsesStreamer,
+)
 
-        return OpenAIResponsesStream
 
-    def _async_chat_completion_stream_class(self) -> type:
-        from .stream import OpenAIResponsesAsyncStream
+class OpenAIResponsesTransport(BaseTransport, ChatCompletionTransportMixin, OpenAIResponsesWireMixin):
+    transport_id = "openai-responses"
 
-        return OpenAIResponsesAsyncStream
+    STREAMER = SyncOpenAIResponsesStreamer
+    ASYNC_STREAMER = AsyncOpenAIResponsesStreamer

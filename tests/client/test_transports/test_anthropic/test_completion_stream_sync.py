@@ -194,3 +194,40 @@ def test_anthropic_streaming_redacted_thinking_keeps_its_payload(
     )["content"] == [
         {"type": "redacted_thinking", "data": "encrypted-payload"},
     ]
+
+
+def test_a_streamed_pause_turn_finishes_with_pause(anthropic_transport_factory):
+    chunks = [
+        _sse(
+            "message_start",
+            '{"type":"message_start","message":{"id":"msg_9","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}',
+        ),
+        _sse(
+            "content_block_start", '{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}'
+        ),
+        _sse(
+            "content_block_delta",
+            '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Searching..."}}',
+        ),
+        _sse("content_block_stop", '{"type":"content_block_stop","index":0}'),
+        _sse(
+            "message_delta",
+            '{"type":"message_delta","delta":{"stop_reason":"pause_turn","stop_sequence":null},"usage":{"output_tokens":2}}',
+        ),
+        _sse("message_stop", '{"type":"message_stop"}'),
+    ]
+    client = make_sync_client(sse_response(chunks))
+    transport = anthropic_transport_factory(http_client=client)
+
+    req = ChatCompletionRequest(
+        model="claude-test",
+        provider="anthropic",
+        messages=[UserMessage(content="hi")],
+    )
+    with transport.completion_stream(req) as s:
+        events = list(s)
+
+    assert events[-1].type == "finish"
+    assert events[-1].finish_reason == "pause"
+    assert events[-1].provider_finish_reason == "pause_turn"
+    assert events[-1].message.finish_reason == "pause"

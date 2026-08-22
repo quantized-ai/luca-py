@@ -1617,7 +1617,7 @@ async def test_llm_timeout_closes_the_turn_and_reraises_through_await():
         parent_id="ts",
         created_at=1000,
         outcome=TurnOutcome.TIMED_OUT,
-        error="completion exceeded total_timeout=0.05s",
+        error="completion exceeded timeout=0.05s",
     )
     assert main_conversation(runner.session).nodes == ["u1", "ts", "tf"]
     assert runner.idle()  # a failed close is IDLE: recover by posting, not by re-running
@@ -1921,3 +1921,33 @@ async def test_post_failure_session_reloads_cold_and_a_new_turn_reanswers():
 
 
 # The post_message acceptance matrix lives in `test_runner_post_message.py`.
+
+
+async def test_empty_resume_reasons_closes_completed_with_pause_recorded():
+    # [] = pause-and-replay off: "pause" is not in NON_ANSWER_FINISH_REASONS,
+    # so the turn closes COMPLETED exactly as before the feature — with the
+    # durable stop_reason still recording what the provider said
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Searching...")], finish_reason="pause")])
+    session = make_session(
+        id="s_pause_off",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(
+            llm_config=MODEL,
+            runtime_config=RuntimeConfig(resume_finish_reasons=[]),
+        ),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "tf"], now=1000)
+
+    await runner.run()
+
+    assert len(faux.requests) == 1
+    assert runner.session.entries["a1"].stop_reason == "pause"
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="a1",
+        created_at=1000,
+        outcome=TurnOutcome.COMPLETED,
+    )

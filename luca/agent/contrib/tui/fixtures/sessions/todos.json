@@ -1,5 +1,6 @@
 {
   "id": "todos",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "plan the whole sqlite migration, step by step",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -88,7 +90,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -98,12 +100,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"port the reader\", \"status\": \"pending\"}, {\"id\": 2, \"content\": \"port the writer\", \"status\": \"pending\"}, {\"id\": 3, \"content\": \"port the index\", \"status\": \"pending\"}, {\"id\": 4, \"content\": \"port the compactor\", \"status\": \"pending\"}, {\"id\": 5, \"content\": \"migrate the schema\", \"status\": \"pending\"}, {\"id\": 6, \"content\": \"backfill old sessions\", \"status\": \"pending\"}, {\"id\": 7, \"content\": \"drop the jsonl writer\", \"status\": \"pending\"}, {\"id\": 8, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 9, \"content\": \"rewrite the store tests\", \"status\": \"pending\"}, {\"id\": 10, \"content\": \"benchmark the new path\", \"status\": \"pending\"}, {\"id\": 11, \"content\": \"document the format\", \"status\": \"pending\"}, {\"id\": 12, \"content\": \"cut the release note\", \"status\": \"pending\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -211,7 +215,8 @@
         {
           "type": "text",
           "text": "Twelve steps. Starting at the top.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -249,7 +254,8 @@
         {
           "type": "text",
           "text": "carry on until the jsonl writer is gone",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -319,7 +325,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -329,12 +335,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"port the reader\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"port the writer\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"port the index\", \"status\": \"completed\"}, {\"id\": 4, \"content\": \"port the compactor\", \"status\": \"completed\"}, {\"id\": 5, \"content\": \"migrate the schema\", \"status\": \"completed\"}, {\"id\": 6, \"content\": \"backfill old sessions\", \"status\": \"completed\"}, {\"id\": 7, \"content\": \"drop the jsonl writer\", \"status\": \"completed\"}, {\"id\": 8, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 9, \"content\": \"rewrite the store tests\", \"status\": \"pending\"}, {\"id\": 10, \"content\": \"benchmark the new path\", \"status\": \"pending\"}, {\"id\": 11, \"content\": \"document the format\", \"status\": \"pending\"}, {\"id\": 12, \"content\": \"cut the release note\", \"status\": \"pending\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -437,7 +445,8 @@
         {
           "type": "text",
           "text": "The jsonl writer is gone. Five steps left.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -460,7 +469,7 @@
     }
   },
   "tool_specs": {
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd": {
       "name": "update_todos",
       "title": null,
       "description": "update_todos tool.",
@@ -470,6 +479,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",
@@ -486,7 +496,8 @@
         "output": 210,
         "cache_read": 0,
         "cache_write": 900,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       },
       "a2": {
         "conversation_id": "c1",
@@ -495,7 +506,8 @@
         "output": 180,
         "cache_read": 14000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -532,7 +544,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -540,6 +551,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

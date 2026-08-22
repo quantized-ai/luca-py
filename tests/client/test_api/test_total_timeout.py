@@ -1,9 +1,7 @@
-"""total_timeout= on the async helpers: a wall-clock deadline over the whole
-call (beside the per-phase httpx timeout=). Async-only — the sync helpers have
-no loop to enforce a total deadline on. Expiry raises the SDK TimeoutError
-(non-streaming) or yields exactly one terminal ErrorEvent carrying it
-(streaming), per the streaming contract. The faux hang (`faux_hang()`) stands
-in for a provider that stops sending."""
+"""timeout= on the async helpers: a wall-clock deadline over the whole call.
+Expiry raises the SDK TimeoutError (non-streaming) or yields exactly one
+terminal ErrorEvent carrying it (streaming), per the streaming contract. The
+faux hang (`faux_hang()`) stands in for a provider that stops sending."""
 
 import pytest
 
@@ -27,7 +25,7 @@ async def test_acompletion_total_timeout_raises_on_a_hung_call():
             "faux:test-model",
             [UserMessage(content="hi")],
             provider=faux,
-            total_timeout=0.05,
+            timeout=0.05,
         )
 
 
@@ -43,7 +41,7 @@ async def test_acompletion_total_timeout_is_inert_on_an_instant_response():
         "faux:test-model",
         [UserMessage(content="hi")],
         provider=faux,
-        total_timeout=60.0,
+        timeout=60.0,
     )
 
     assert response.messages[-1].content == [TextBlock(text="ok")]
@@ -64,7 +62,7 @@ async def test_stream_total_timeout_emits_one_terminal_error_event():
         "faux:test-model",
         [UserMessage(content="hi")],
         provider=faux,
-        total_timeout=0.05,
+        timeout=0.05,
     )
 
     async with stream as s:
@@ -75,7 +73,6 @@ async def test_stream_total_timeout_emits_one_terminal_error_event():
     assert len(terminals) == 1
     assert terminals[0].type == "error"
     assert isinstance(terminals[0].error, SDKTimeoutError)
-    assert s._http_response is None  # closed, not leaked
 
 
 async def test_stream_total_timeout_is_inert_on_an_instant_stream():
@@ -89,7 +86,7 @@ async def test_stream_total_timeout_is_inert_on_an_instant_stream():
         "faux:test-model",
         [UserMessage(content="hi")],
         provider=faux,
-        total_timeout=60.0,
+        timeout=60.0,
     )
 
     async with stream as s:

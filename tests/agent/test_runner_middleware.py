@@ -41,6 +41,7 @@ from luca.agent.core import AgentMiddlewareMixin
 from luca.agent.core.compaction import CompactionPlan
 from luca.agent.core.context_manager import ContextManager
 from luca.agent.core.events import ToolExecuted
+from luca.agent.core.exceptions import AgentError
 from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
@@ -59,9 +60,11 @@ from luca.agent.core.models import (
     ToolCall,
     ToolExecution,
     ToolExecutionError,
+    ToolSpec,
     TurnFinish,
     TurnOutcome,
     TurnStart,
+    Usage,
     UserMessage,
 )
 from luca.agent.core.projection import ConversationProjector
@@ -1226,9 +1229,11 @@ def test_mixin_every_hook_returns_its_input():
     assert mixin.before_tool_execution(session, cid, execution) is execution
     assert mixin.after_tool_execution(session, cid, execution) is execution
     assert mixin.after_tool_execution(session, cid, execution, ValueError("x")) is execution
+    # the one contributing hook: identity is the EMPTY list, not the input
+    assert mixin.synthesize_executions(session, cid, entry) == []
 
 
-def test_mixin_exposes_exactly_the_thirteen_hooks_with_the_scope_prefix():
+def test_mixin_exposes_exactly_the_fourteen_hooks_with_the_scope_prefix():
     import inspect
 
     hooks = {
@@ -1251,6 +1256,7 @@ def test_mixin_exposes_exactly_the_thirteen_hooks_with_the_scope_prefix():
         "before_tool_execution": ["self", "session", "conversation_id"],
         "build_model_string": ["self", "session", "conversation_id"],
         "build_tool_list": ["self", "session", "conversation_id"],
+        "synthesize_executions": ["self", "session", "conversation_id"],
     }
 
 
@@ -1914,3 +1920,352 @@ async def test_after_llm_response_does_not_fire_for_an_incomplete_response(strea
 
     assert counter.calls == 0
     assert main_conversation(runner.session).nodes[-1] == "tf"  # the turn closed ERRORED
+
+
+# ── synthesize_executions (hook #14) ──────────────────────────────────────────
+
+SYNTH_SPEC = ToolSpec(
+    name="web_search",
+    description="Provider-hosted web search, recorded for posterity.",
+    input_schema={"type": "object", "properties": {}},
+    is_private=True,
+    is_synthetic=True,
+)
+
+
+def _synthetic_template(op_id: str, **over) -> ToolExecution:
+    """A hook-#14 template: no identity (the runner stamps it), terminal,
+    private spec — the shape the D5 contract requires."""
+    fields = {
+        "tool_call_id": op_id,
+        "raw_tool_call": ToolCall(id=op_id, name="web_search", arguments={"queries": ["apple"]}),
+        "tool_spec": SYNTH_SPEC,
+        "status": ExecutionStatus.COMPLETED,
+        "result": ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+    }
+    fields.update(over)
+    return ToolExecution(**fields)
+
+
+class MintSynthetic:
+    """Middleware double: mints one synthetic per assistant commit."""
+
+    def __init__(self, op_id: str, **over) -> None:
+        self.op_id = op_id
+        self.over = over
+
+    def synthesize_executions(self, session, conversation_id, entry):
+        return [_synthetic_template(self.op_id, **self.over)]
+
+
+async def test_synthesize_executions_concatenates_in_middleware_order():
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_order",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "s1", "s2", "tf"],
+        now=1000,
+        middleware=[MintSynthetic("op-a"), MintSynthetic("op-b")],
+    )
+
+    await runner.run()
+
+    assert runner.session == make_session(
+        id="s_syn_order",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
+            "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
+                parts=[TextContent(text="Done.")],
+                llm_config=MODEL,
+                stop_reason="stop",
+                context_tokens=1,  # len("Done.") // 4
+            ),
+            "s1": ToolExecution(
+                id="s1",
+                parent_id="a1",
+                created_at=1000,
+                conversation_id="c1",
+                tool_call_id="op-a",
+                raw_tool_call=ToolCall(id="op-a", name="web_search", arguments={"queries": ["apple"]}),
+                tool_spec=SYNTH_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+                finished_at=1000,  # = created_at: born terminal
+                context_tokens=4,  # len('Web search: "apple"') // 4
+            ),
+            "s2": ToolExecution(
+                id="s2",
+                parent_id="s1",
+                created_at=1000,
+                conversation_id="c1",
+                tool_call_id="op-b",
+                raw_tool_call=ToolCall(id="op-b", name="web_search", arguments={"queries": ["apple"]}),
+                tool_spec=SYNTH_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+                finished_at=1000,
+                context_tokens=4,
+            ),
+            "tf": TurnFinish(id="tf", parent_id="s2", created_at=1000),
+        },
+        usages={"c1": {"a1": Usage(conversation_id="c1", entry_id="a1")}},
+        conversations={"c1": conversation("c1", ["u1", "ts", "a1", "s1", "s2", "tf"], created_at=500, updated_at=1000)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+
+async def test_a_nonterminal_template_is_refused():
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_nonterminal",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1"],
+        now=1000,
+        middleware=[MintSynthetic("op-a", status=ExecutionStatus.RUNNING, result=None)],
+    )
+
+    with pytest.raises(AgentError, match="nonterminal"):
+        await runner.run()
+
+    # the assistant entry is committed, no synthetic landed, the turn is OPEN
+    assert set(runner.session.entries) == {"u1", "ts", "a1"}
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1"]
+
+
+async def test_a_non_private_spec_template_is_refused():
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_public",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    public_spec = SYNTH_SPEC.model_copy(update={"is_private": False})
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1"],
+        now=1000,
+        middleware=[MintSynthetic("op-a", tool_spec=public_spec)],
+    )
+
+    with pytest.raises(AgentError, match="private"):
+        await runner.run()
+
+    assert set(runner.session.entries) == {"u1", "ts", "a1"}
+
+
+async def test_synthetics_fire_no_tool_lifecycle_events():
+    # the full event list: block events only — no ToolCallReceived, no
+    # ToolExecutionStarted, no ToolExecuted for the minted execution
+    from luca.agent.core.events import FinishReason, TextBlock as TextBlockEvent
+
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_silent",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "s1", "tf"],
+        now=1000,
+        middleware=[MintSynthetic("op-a")],
+    )
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert events == [
+        TextBlockEvent(conversation_id="c1", text="Done."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
+
+
+async def test_a_missing_op_id_is_backfilled_by_the_runner():
+    # a template with no operation id (empty correlation fields) gets ONE
+    # generated id stamped on both — scriptable through DeterministicRunner
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_backfill",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "op-gen", "s1", "tf"],
+        now=1000,
+        middleware=[
+            MintSynthetic(
+                "",
+                raw_tool_call=ToolCall(id="", name="web_search", arguments={"queries": ["apple"]}),
+            )
+        ],
+    )
+
+    await runner.run()
+
+    assert runner.session.entries["s1"] == ToolExecution(
+        id="s1",
+        parent_id="a1",
+        created_at=1000,
+        conversation_id="c1",
+        tool_call_id="op-gen",
+        raw_tool_call=ToolCall(id="op-gen", name="web_search", arguments={"queries": ["apple"]}),
+        tool_spec=SYNTH_SPEC,
+        tool_spec_id=SYNTH_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+        finished_at=1000,
+        context_tokens=4,
+    )
+
+
+async def test_synthetics_run_before_entry_written_and_get_context_tokens():
+    class MintAndStamp:
+        def synthesize_executions(self, session, conversation_id, entry):
+            return [_synthetic_template("op-a")]
+
+        def before_entry_written(self, session, conversation_id, entry):
+            if isinstance(entry, ToolExecution):
+                entry.extras = {**entry.extras, "stamped": True}
+            return entry
+
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_mw",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "s1", "tf"],
+        now=1000,
+        middleware=[MintAndStamp()],
+    )
+
+    await runner.run()
+
+    assert runner.session.entries["s1"] == ToolExecution(
+        id="s1",
+        parent_id="a1",
+        created_at=1000,
+        conversation_id="c1",
+        tool_call_id="op-a",
+        raw_tool_call=ToolCall(id="op-a", name="web_search", arguments={"queries": ["apple"]}),
+        tool_spec=SYNTH_SPEC,
+        tool_spec_id=SYNTH_SPEC.spec_id(),
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+        extras={"stamped": True},
+        finished_at=1000,
+        context_tokens=4,  # len('Web search: "apple"') // 4 — the calc ran on the synthetic
+    )
+
+
+async def test_path_order_is_assistant_then_synthetics_then_births():
+    # a tool-calling web-bearing response: the synthetic lands between the
+    # assistant entry and the RECEIVED execution that answers its tool call
+    class MintOnMarker:
+        def synthesize_executions(self, session, conversation_id, entry):
+            if any(isinstance(part, TextContent) and part.text == "SEARCH" for part in entry.parts):
+                return [_synthetic_template("op-a")]
+            return []
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [faux_text("SEARCH"), faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_syn_path",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "s1", "te1", "a2", "tf"],
+        now=1000,
+        middleware=[MintOnMarker()],
+    )
+
+    await runner.run()
+
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "s1", "te1", "a2", "tf"]
+    assert runner.session.entries["s1"].status == ExecutionStatus.COMPLETED
+    assert runner.session.entries["te1"].raw_tool_call.name == "add"
+
+
+async def test_a_refused_template_appends_no_partial_synthetics():
+    # validate-ALL-first: a valid template from an earlier middleware must NOT
+    # land when a later middleware's template is refused — the refusal leaves
+    # ZERO synthetics behind, not a prefix of them
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    session = make_session(
+        id="s_syn_atomic",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1"],
+        now=1000,
+        middleware=[
+            MintSynthetic("op-good"),
+            MintSynthetic("op-bad", status=ExecutionStatus.RUNNING, result=None),
+        ],
+    )
+
+    with pytest.raises(AgentError, match="nonterminal"):
+        await runner.run()
+
+    assert set(runner.session.entries) == {"u1", "ts", "a1"}
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1"]

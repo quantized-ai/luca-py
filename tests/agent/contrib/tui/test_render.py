@@ -1448,6 +1448,82 @@ def test_a_malformed_payload_renders_rather_than_raising():
     ]
 
 
+def test_web_parts_derive_tool_block_rows_on_resume():
+    # the resume derivation reads the PARTS — never the synthetics, which
+    # stay invisible via is_runtime_plumbing — and produces the same rows the
+    # live block events produce
+    from luca.agent.core.models import (
+        PrivateProviderContent,
+        URLCitation,
+        WebFetchContent,
+        WebPageContent,
+        WebSearchContent,
+    )
+
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            PrivateProviderContent(format="anthropic.messages", data={"type": "server_tool_use"}),
+            WebSearchContent(
+                queries=["Apple Q3 2026 results"],
+                results=[
+                    WebPageContent(url="https://www.apple.com/newsroom/", title="Apple reports"),
+                    WebPageContent(url="https://finance.yahoo.com/apple", title="Apple beats"),
+                ],
+                extras={"id": "srv_1"},
+            ),
+            WebFetchContent(
+                web_page=WebPageContent(url="https://apple.com/report", title="Apple report", content="x" * 2048),
+                extras={"id": "srv_2"},
+            ),
+            WebSearchContent(
+                queries=["nvidia"],
+                results=None,
+                extras={"id": "srv_3", "error": {"error_code": "max_uses_exceeded"}},
+            ),
+            WebFetchContent(
+                web_page=WebPageContent(url="https://blocked.example"),
+                extras={"id": "srv_4", "error": {"error_code": "url_not_allowed"}},
+            ),
+            TextContent(
+                text="Apple reported revenue of $94.9B.",
+                annotations=[URLCitation(url="https://www.apple.com/newsroom/", title="Apple reports")],
+            ),
+        ],
+        llm_config=MODEL,
+        stop_reason="stop",
+    )
+
+    assert entry_blocks(entry) == [
+        vm.ToolBlock(
+            tool="web_search",
+            arg="Apple Q3 2026 results",
+            status="ok",
+            result=vm.ToolResult(summary="2 results"),
+        ),
+        vm.ToolBlock(
+            tool="web_fetch",
+            arg="https://apple.com/report",
+            status="ok",
+            result=vm.ToolResult(summary="Apple report · 2.0KB"),
+        ),
+        vm.ToolBlock(
+            tool="web_search",
+            arg="nvidia",
+            status="error",
+            result=vm.ToolResult(summary="[error]failed: max_uses_exceeded[/]"),
+        ),
+        vm.ToolBlock(
+            tool="web_fetch",
+            arg="https://blocked.example",
+            status="error",
+            result=vm.ToolResult(summary="[error]failed: url_not_allowed[/]"),
+        ),
+        vm.TextBlock(text="Apple reported revenue of $94.9B."),
+    ]
+
+
 # ── the mention row a declined attachment renders as ─────────────────────────
 
 

@@ -24,16 +24,19 @@ from ...types.content import (
     AudioBlock,
     FileBlock,
     ImageBlock,
+    PrivateProviderBlock,
     RefusalBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    WebFetchBlock,
+    WebSearchBlock,
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.structured import response_format_to_json_schema, strictify_json_schema
 from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
-from ..base import BaseTransport, ChatCompletionTransportMixin
+from ..base import BaseTransport, ChatCompletionTransportMixin, WireFormatMixin
 from .errors import OpenAIErrorMappingMixin
 
 
@@ -111,8 +114,12 @@ class OpenAIToolProjector(ToolProjector):
         return {"type": "function", "function": {"name": tool.name}}
 
 
-class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTransportMixin):
-    transport_id = "openai"
+class OpenAIWireMixin(OpenAIErrorMappingMixin, WireFormatMixin):
+    """Chat-completions wire knowledge: payload building, message projection,
+    response parsing, finish classification. Shared by OpenAITransport
+    (non-streaming) and the chat-completions streamer, by inheritance.
+    OpenAIErrorMappingMixin comes first so its `_map_chat_completion_http_error`
+    beats WireFormatMixin's stub in the MRO."""
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = OpenAIToolProjector
 
@@ -145,7 +152,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         *,
         stream: bool = False,
     ) -> dict:
-        wire_messages = self._project_messages(request.messages)
+        wire_messages = self._project_messages(request.messages, request)
         if request.system_message is not None:
             wire_messages = [self._project_system_message(request.system_message), *wire_messages]
 
@@ -209,7 +216,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
         text = "".join(b.text for b in system_message if isinstance(b, TextBlock))
         return {"role": "system", "content": text}
 
-    def _project_messages(self, messages: list) -> list[dict]:
+    def _project_messages(self, messages: list, request: ChatCompletionRequest | None = None) -> list[dict]:
         """The walk records call lineage — `{call_id: (projector, call)}` —
         so a ToolMessage projects through the projector of the call it
         answers; a dropped foreign call maps to None and takes its result
@@ -222,7 +229,7 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             if isinstance(msg, UserMessage):
                 out.append(self._project_user_message(msg))
             elif isinstance(msg, AssistantMessage):
-                projected = self._project_assistant_message(msg, lineage)
+                projected = self._project_assistant_message(msg, lineage, request)
                 if projected["content"] is not None or "tool_calls" in projected or "refusal" in projected:
                     out.append(projected)
             elif isinstance(msg, ToolMessage):
@@ -332,33 +339,61 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             provider=self._provider,
         )
 
-    def _project_assistant_message(
+    def select_assistant_blocks(
         self,
-        msg: AssistantMessage,
-        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
-    ) -> dict:
-        if lineage is None:
-            lineage = {}
-        wire: dict = {"role": "assistant"}
-        text_parts: list[str] = []
-        tool_calls_wire: list[dict] = []
-        for block in msg.content:
-            if isinstance(block, TextBlock):
-                text_parts.append(block.text)
+        message: AssistantMessage,
+        request: ChatCompletionRequest | None = None,
+    ) -> list:
+        """The keep/drop rules for this wire, in one place (payload build and
+        `effective_messages` both route through here): text and refusals
+        survive; thinking always drops (chat completions has no replay
+        surface at all); a ToolCall survives when its projector family is
+        this wire's; every private block is foreign (this wire mints none,
+        `WIRE_FORMAT=None`) and drops, as do the portable web blocks."""
+        kept: list = []
+        for block in message.content:
+            if isinstance(block, (TextBlock, RefusalBlock)):
+                kept.append(block)
             elif isinstance(block, ThinkingBlock):
                 # OpenAI doesn't have a public thinking-replay surface; drop the text
                 # but keep the structure preserved if the upstream supports it.
                 # In v1 we just skip — round-trip is provider-internal. (Future:
                 # OpenRouter replay via `reasoning_details` + `signature`.)
                 continue
+            elif isinstance(block, ToolCall):
+                if self._resolve_call(block) is not None:
+                    kept.append(block)
+            elif isinstance(block, (PrivateProviderBlock, WebSearchBlock, WebFetchBlock)):
+                continue
+        return kept
+
+    def _project_assistant_message(
+        self,
+        msg: AssistantMessage,
+        lineage: dict[str, tuple[ToolProjector, ToolCall] | None] | None = None,
+        request: ChatCompletionRequest | None = None,
+    ) -> dict:
+        if lineage is None:
+            lineage = {}
+        # Lineage records EVERY call's fate — dropped ones included, so the
+        # ToolMessage answering a dropped foreign call falls with it.
+        for block in msg.content:
+            if isinstance(block, ToolCall):
+                lineage[block.id] = self._resolve_call(block)
+        wire: dict = {"role": "assistant"}
+        text_parts: list[str] = []
+        tool_calls_wire: list[dict] = []
+        for block in self.select_assistant_blocks(msg, request):
+            if isinstance(block, TextBlock):
+                text_parts.append(block.text)
             elif isinstance(block, RefusalBlock):
                 wire["refusal"] = block.text
             elif isinstance(block, ToolCall):
-                entry = self._resolve_call(block)
-                lineage[block.id] = entry
-                if entry is not None:
-                    projector, call = entry
-                    tool_calls_wire.append(projector.project_tool_call_to_llm(call))
+                # Resolved per block, never through the id-keyed lineage dict:
+                # duplicate ids would make the dict's last write clobber an
+                # earlier kept call's entry.
+                projector, call = self._resolve_call(block)
+                tool_calls_wire.append(projector.project_tool_call_to_llm(call))
         if text_parts:
             wire["content"] = "".join(text_parts)
         else:
@@ -505,14 +540,18 @@ class OpenAITransport(BaseTransport, OpenAIErrorMappingMixin, ChatCompletionTran
             return (None, None)
         return (provider_value, None)
 
-    # --- stream class hooks ---
 
-    def _chat_completion_stream_class(self) -> type:
-        from .stream import OpenAIChatCompletionStream
+# Imported here, between the wire mixin and the transport class, because the
+# streamer module inherits the mixin above: at the top of the file this would
+# be a circular import.
+from .streamer import (  # noqa: E402
+    AsyncOpenAIChatCompletionsStreamer,
+    SyncOpenAIChatCompletionsStreamer,
+)
 
-        return OpenAIChatCompletionStream
 
-    def _async_chat_completion_stream_class(self) -> type:
-        from .stream import OpenAIAsyncChatCompletionStream
+class OpenAITransport(BaseTransport, ChatCompletionTransportMixin, OpenAIWireMixin):
+    transport_id = "openai"
 
-        return OpenAIAsyncChatCompletionStream
+    STREAMER = SyncOpenAIChatCompletionsStreamer
+    ASYNC_STREAMER = AsyncOpenAIChatCompletionsStreamer

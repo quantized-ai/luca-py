@@ -299,7 +299,7 @@ CASES = [
             "model": "gpt-5.4",
             "status": "completed",
             "output": [
-                {"id": "ws_1", "type": "web_search_call", "status": "completed"},
+                {"id": "fs_1", "type": "file_search_call", "status": "completed"},
                 {
                     "id": "msg_1",
                     "type": "message",

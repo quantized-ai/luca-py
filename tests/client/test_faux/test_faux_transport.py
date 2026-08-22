@@ -146,3 +146,153 @@ def test_streaming_error_injection_emits_error_event():
     assert events[-1].type == "error"
     assert "upstream timeout" in str(events[-1].error)
     assert s.message.content[0].text == "partial"
+
+
+# --- scripted web content (phase-5 faux extension) --------------------------
+
+
+def test_scripted_web_blocks_play_back_verbatim():
+    # The three real client blocks pass straight through — both modes — so a
+    # runner-level test can script a whole web-bearing response.
+    from luca.client.types import (
+        PrivateProviderBlock,
+        TextBlock,
+        WebFetchBlock,
+        WebPagePart,
+        WebSearchBlock,
+    )
+
+    blocks = [
+        PrivateProviderBlock(format="anthropic.messages", data={"type": "server_tool_use", "id": "s_1"}),
+        WebSearchBlock(
+            queries=["apple"],
+            results=[WebPagePart(url="https://apple.com", title="Apple")],
+            extras={"id": "s_1"},
+        ),
+        WebFetchBlock(web_page=WebPagePart(url="https://apple.com"), extras={"id": "f_1"}),
+        faux_text("Done."),
+    ]
+    faux = FauxTransport()
+    faux.set_responses(
+        [
+            faux_assistant_message(list(blocks), finish_reason="stop"),
+            faux_assistant_message(list(blocks), finish_reason="stop"),
+        ]
+    )
+
+    sync_content = faux.completion(_req()).messages[-1].content
+    with faux.completion_stream(_req()) as s:
+        list(s)
+        streamed_content = s.message.content
+
+    expected = [
+        PrivateProviderBlock(format="anthropic.messages", data={"type": "server_tool_use", "id": "s_1"}),
+        WebSearchBlock(
+            queries=["apple"],
+            results=[WebPagePart(url="https://apple.com", title="Apple")],
+            extras={"id": "s_1"},
+        ),
+        WebFetchBlock(web_page=WebPagePart(url="https://apple.com"), extras={"id": "f_1"}),
+        TextBlock(text="Done."),
+    ]
+    assert sync_content == expected
+    assert streamed_content == expected
+
+
+def test_a_scripted_web_search_streams_the_web_event_sequence():
+    from luca.client.types import PrivateProviderBlock, WebPagePart, WebSearchBlock
+    from luca.client.types.streaming import (
+        FinishEvent,
+        StartEvent,
+        TextDeltaEvent,
+        TextEndEvent,
+        TextStartEvent,
+        WebEndEvent,
+        WebSearchEvent,
+        WebSearchResultEvent,
+        WebStartEvent,
+    )
+
+    results = [WebPagePart(url="https://apple.com", title="Apple")]
+    faux = FauxTransport()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    PrivateProviderBlock(format="anthropic.messages", data={"type": "server_tool_use", "id": "s_1"}),
+                    WebSearchBlock(queries=["apple"], results=results, extras={"id": "s_1"}),
+                    faux_text("Done."),
+                ],
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    with faux.completion_stream(_req()) as s:
+        events = list(s)
+
+    assert [type(e) for e in events] == [
+        StartEvent,
+        WebStartEvent,
+        WebSearchEvent,
+        WebSearchResultEvent,
+        WebEndEvent,
+        TextStartEvent,
+        TextDeltaEvent,
+        TextEndEvent,
+        FinishEvent,
+    ]
+    assert events[1] == WebStartEvent(id="s_1")
+    assert events[2] == WebSearchEvent(id="s_1", queries=["apple"])
+    assert events[3] == WebSearchResultEvent(id="s_1", results=results)
+    assert events[4] == WebEndEvent(id="s_1")
+
+
+def test_scripted_annotations_survive_and_stream():
+    from luca.client.types import TextBlock, URLCitationAnnotation
+    from luca.client.types.streaming import TextAnnotationEvent
+
+    annotation = URLCitationAnnotation(url="https://apple.com", title="Apple", start_index=0, end_index=12)
+    faux = FauxTransport()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Apple is up.", annotations=[annotation])], finish_reason="stop"),
+            faux_assistant_message([faux_text("Apple is up.", annotations=[annotation])], finish_reason="stop"),
+        ]
+    )
+
+    sync_content = faux.completion(_req()).messages[-1].content
+    with faux.completion_stream(_req()) as s:
+        events = list(s)
+        streamed_content = s.message.content
+
+    assert sync_content == [TextBlock(text="Apple is up.", annotations=[annotation])]
+    assert streamed_content == [TextBlock(text="Apple is up.", annotations=[annotation])]
+    assert TextAnnotationEvent(index=0, annotation=annotation) in events
+
+
+def test_an_empty_scripted_result_set_streams_no_result_event():
+    # the real streamers suppress the results event for an empty list; the
+    # faux must play back the same shape
+    from luca.client.types import WebSearchBlock
+    from luca.client.types.streaming import WebEndEvent, WebSearchEvent, WebStartEvent
+
+    faux = FauxTransport()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [WebSearchBlock(queries=["nothing"], results=[], extras={"id": "s_1"})],
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    with faux.completion_stream(_req()) as s:
+        events = list(s)
+
+    web_events = [e for e in events if e.type.startswith("web")]
+    assert web_events == [
+        WebStartEvent(id="s_1"),
+        WebSearchEvent(id="s_1", queries=["nothing"]),
+        WebEndEvent(id="s_1"),
+    ]

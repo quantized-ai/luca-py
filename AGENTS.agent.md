@@ -69,6 +69,10 @@ luca/agent/
 │   │   └── plugin.py    # spawn_gate_open, spawning_prompt_part + control_prompt_part
 │   │                    #   (callables), SubagentToolRegistry (the depth gate + the
 │   │                    #   control-tool withholding), SubagentsPlugin
+│   ├── websearch/       # provider-hosted web tools: config (the client
+│   │   │                #   declarations ARE the options), the per-model
+│   │   │                #   support table, the middleware (hosted
+│   │   │                #   declarations + D9 synthetic executions), specs
 │   ├── skills/          # SKILL.md instruction sets read from disk
 │   │   ├── __init__.py  # package surface: SkillsPlugin, SkillTool, Skill, the
 │   │   │                #   discovery functions
@@ -127,7 +131,7 @@ luca/agent/
     │                    #   strategy (subclass to customize history/tool-output policy)
     ├── adapter.py       # message_to_parts() (inbound response conversion) +
     │                    #   tool_spec_to_luca_tool() (tool-definition conversion)
-    ├── middleware.py    # AgentMiddlewareMixin — the 13 duck-typed middleware
+    ├── middleware.py    # AgentMiddlewareMixin — the 14 duck-typed middleware
                          #   hooks, every one (session, conversation_id, …)
     ├── ledger.py        # SessionLedger — the single append/read door onto the entry
     │                    #   log; every door takes a conversation_id
@@ -360,7 +364,7 @@ Two `calculate_context` gotchas, both silent when violated: it runs on EVERY new
 
 Because counts are STORED on the entry, a model-aware `ContextManager` goes stale the moment `llm_config` changes. `AgentSessionRunner.recalculate_context_tokens()` re-derives `context_tokens` for every entry in `session.entries` — every entry, not just the active path, because the count is intrinsic to an entry and shared by every conversation referencing it — setting no other field. It runs NO middleware: `before_entry_written` is scoped to the conversation whose operation caused a write, and this method rewrites every entry across every conversation at once, so no single id would be honest. It is an operational refresh of a derived estimate, not a write with a scope. **Nothing in the framework calls it**: no constructor keyword, no CLI flag, no automatic invalidation on a model switch (which would put an unbounded rewrite behind an innocuous assignment). The shipped `ContextManager` is a character estimate no model choice affects; the method is there for the application that swaps in a real tokenizer, and that application calls it.
 
-**Pruning** replaces an entry's contribution to the path without touching the original: `ContextManager.prune_entry()` builds a `PrunedEntry` TEMPLATE (placeholder identity; v1 supports terminal tool executions only, replacement text `"[tool output has been pruned to reduce context]"`), and `SessionLedger.prune(original_id, build)` stamps identity (the original's `parent_id`), verifies the referent/type/terminality invariants, and swaps the node id in place. The original stays in `entries`. `ConversationProjector.project_pruned` resolves the referent and re-emits the replacement content under the original's role and `tool_call_id` (a missing referent, type mismatch, or unprojectable source raises). The runner deliberately exposes NO public prune/context-total methods yet.
+**Pruning** replaces an entry's contribution to the path without touching the original: `ContextManager.prune_entry()` builds a `PrunedEntry` TEMPLATE (placeholder identity; v1 supports terminal tool executions — replacement text `"[tool output has been pruned to reduce context]"` — and assistant messages, whose replacement summarizes the web machinery and keeps the final answer text verbatim; a message carrying client-executed `ToolCall` parts is refused, since a replayed `ToolMessage` whose call vanished is a 400 everywhere), and `SessionLedger.prune(original_id, build)` stamps identity (the original's `parent_id`), verifies the referent/type/terminality invariants, and swaps the node id in place. The original stays in `entries`. `ConversationProjector.project_pruned` resolves the referent and re-emits the replacement content under the original's role and `tool_call_id` (a missing referent, type mismatch, or unprojectable source raises). The runner deliberately exposes NO public prune/context-total methods yet.
 
 ### The tool registry
 
@@ -516,8 +520,7 @@ All config rides on `SessionConfig.runtime_config` (a `RuntimeConfig`), which pe
 
 | Field | Effect |
 |-------|--------|
-| `builtin_client_completion_timeout_in_ms` | Client per-phase `timeout=`. INERT when the runner is built with a provider instance. |
-| `client_completion_timeout_in_ms` | Client wall-clock `total_timeout=` (async helpers only). |
+| `client_completion_timeout_in_ms` | Client wall-clock `timeout=` on the model call. |
 | `tool_execution_timeout_in_ms` | Outside deadline on the PREPARED CALLABLE only; beaten by the birth `ToolSpec.timeout_in_ms` (stamped from the tool's `timeout_in_ms` ClassVar). Expiry → `TIMED_OUT`, resultless. |
 | `*_cancellation_grace_period` | Grace window for cancel races. 0 = immediate hard cancel; a tool returning within grace records its real result. Applies to the tool BODY and the LLM call — the four registry calls are raced with grace 0. |
 
@@ -631,7 +634,7 @@ The runner projects `get_tools()`'s `ToolSpec`s to wire tools via `adapter.tool_
 
 ### Add middleware
 
-Write a plain Python class that implements any of the 13 hook methods defined in `luca/agent/core/middleware.py` (`AgentMiddlewareMixin` — its hooks are identity pass-throughs, so subclassing is safe for partial overrides, but plain classes are the recommended style; the runner dispatches via `hasattr`). Pass instances as `middleware=[mw1, mw2]` to `AgentSessionRunner`. Hooks run in list order; there is no reverse ordering. There is deliberately NO `build_messages` hook — history policy belongs on the `ConversationProjector`.
+Write a plain Python class that implements any of the 14 hook methods defined in `luca/agent/core/middleware.py` (`AgentMiddlewareMixin` — its hooks are identity pass-throughs, so subclassing is safe for partial overrides, but plain classes are the recommended style; the runner dispatches via `hasattr`). Pass instances as `middleware=[mw1, mw2]` to `AgentSessionRunner`. Hooks run in list order; there is no reverse ordering. There is deliberately NO `build_messages` hook — history policy belongs on the `ConversationProjector`.
 
 **Every hook starts with `(session, conversation_id)`** — the live session the runner writes through, plus the conversation whose OPERATION invoked the hook. One instance serves the main conversation and every subagent concurrently, so that id is what makes per-conversation routing, state and attribution possible at all; it does NOT assert the value belongs exclusively to that conversation. Same prefix as `ToolRegistry`, `ContextManager.compact`, `Tool.execute` and system-prompt callables.
 
@@ -676,7 +679,7 @@ The handle owns lifecycle plumbing: `_begin_run`'s one-engine-at-a-time guard, t
 4. Step-limit / doom-loop checks → `prepare_llm_call()` (`before_llm_call`) → `_collect_tools()` (raced; a lost race skips the LLM call and returns to the loop top) → model call (reached when every execution is terminal, or through the 3b / 3b' fall-through with a gated or parked execution still live and projecting its placeholder).
    - `hard_max_steps` reached → `_close_turn(ERRORED)` and return (no raise). With unresolved children: cascade-cancel them, `_settle_children`, re-check for a cancel that landed during the settle's awaits (it controls the close), then ERRORED — no close ever leaves an unresolved child.
    - `soft_max_steps` reached, or a doom-loop-flagged execution exists → `tool_choice="none"`.
-   - Race the cancellation token via `_race_cancellation` (grace window, hard-kill via `_kill`), wired to `RuntimeConfig`'s `timeout=`/`total_timeout=`.
+   - Race the cancellation token via `_race_cancellation` (grace window, hard-kill via `_kill`), wired to `RuntimeConfig`'s client `timeout=`.
    - `TimeoutError` → `TurnFinish(TIMED_OUT)` and re-raise; any other failure → `ERRORED` (status PENDING, retry-ready); cancel pending → wins (wind-down, normal return). With unresolved children the close splits by depth: the MAIN conversation leaves the turn OPEN and re-raises (children keep working; the next `run()` resumes), a SUBAGENT parent cascade-cancels + settles its children and closes ERRORED (nothing outside it ever retries a subagent mid-run).
    - THE ROUND KEYS OFF `tool_calls`, NOT the finish reason — a misclassifying provider can neither wedge the conversation ("stop" + calls) nor loop it ("tool_use" + none). That settles "stop" vs "tool_use" and says nothing about a model that produced NEITHER: no calls plus a finish reason in `NON_ANSWER_FINISH_REASONS` (`{"error", "length"}` — the client's vocabulary is already normalized, so OpenAI's `length` and Anthropic's/Bedrock's `max_tokens` both arrive as `"length"`, and every refusal / safety filter / guardrail as `"error"` with an `error_message`) closes `ERRORED` and raises `IncompleteResponseError`, carrying `message.error_message` when the transport supplied one. It sits LAST in the close-site precedence chain, so it only ever converts what would otherwise have closed COMPLETED — a cancel, an unseen post, an unresolved child and a live gate all still win, unchanged. Unlike a transport failure it **keeps** the partial assistant message (`_record_assistant` already ran): those tokens were really produced, and on a truncation they are the useful half. Settles every still-open execution before closing, like every other failure close.
    - Recording the assistant message, RECEIVING its executions, and closing a final-answer bracket is **atomic**, and atomic here means **no `await` between**, not merely no yield. This is the invariant the whole `RECEIVED` state exists to serve: no append — a `post_message` from an application's UI on the same event loop, most of all — can ever land between a `tool_call` and the execution nodes that answer it, so the path is always projectable. Birth is deliberately outside that block (it is async and application-owned) and runs as step 1a against the durable entries this wrote.
@@ -762,7 +765,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/test_projection.py` | `ConversationProjector`: every entry type, every terminal tool status, fail-loud rules, subclass override points |
 | `tests/agent/test_adapter.py` | Inbound message parts + `tool_spec_to_luca_tool` (the `input_schema` → `parameters` pass-through) |
 | `tests/agent/test_utils.py` | `pretty_print`: whole-transcript assertions per session shape (answered turn, tool tree, failure, open turn, compaction/pruning, clipping) |
-| `tests/agent/test_runner_middleware.py` | Middleware hook dispatch: the thirteen hooks, the `(session, conversation_id)` prefix, the four-hook tool lifecycle (creation pair, dispatch-only `before_tool_execution`, universal `after_tool_execution`), chaining + exception context, `after_llm_response` exactly-once across streaming/non-streaming, and `recalculate_context_tokens()` firing nothing |
+| `tests/agent/test_runner_middleware.py` | Middleware hook dispatch: the fourteen hooks (`synthesize_executions`' contribute-not-transform shape and the synthetic minting door included), the `(session, conversation_id)` prefix, the four-hook tool lifecycle (creation pair, dispatch-only `before_tool_execution`, universal `after_tool_execution`), chaining + exception context, `after_llm_response` exactly-once across streaming/non-streaming, and `recalculate_context_tokens()` firing nothing |
 | `tests/agent/contrib/test_tools.py` | Self-scoped contrib tests: the `Tool` base contract (spec stamping incl. `input_schema`, `output_schema` and `timeout_in_ms`, session + token pass-through, a result carrying `structured_content`) and the working `tool()` / `tool_class()` factories (incl. `output=` in both forms and its `class_attrs` collision) |
 | `tests/agent/contrib/test_simple_tool_registry.py` | Self-scoped contrib tests: birth drafts per preflight outcome, decide delegation, `prepare` returning a callable WITHOUT running the body and its two raise paths, `ProxyToolRegistry` routing/nesting and cache-independent `decide`/`prepare` on a never-warmed route — no runner |
 | `tests/agent/contrib/test_plugins.py` | Self-scoped contrib tests: `PluginAgentSessionRunner` composition (one proxy, parts/middleware flattening, equality with a directly-configured runner) |
@@ -770,6 +773,7 @@ Load the session cold into a fresh runner to exercise the persisted-resume path.
 | `tests/agent/contrib/shell/` | Self-scoped contrib tests: one file per shell tool (`tools/test_<name>.py`), `native/` (the per-model support table, the four native tools, the middleware's own tables) + `test_plugin.py` (`ShellAccessPlugin` wiring, seeded rules, decide/pending flows) — no runner |
 | `tests/agent/test_native_tools/` | The provider-native BATTERY: given entries and an active config, the exact `(tools, messages)` `acompletion()` receives — advertisement per mode, adoption, projection across provider switches, the denied-shell synthesis, the no-plugin fail-safe. Real `ShellNativeMiddleware`, fixture tools |
 | `tests/agent/contrib/test_memory.py` | Self-scoped contrib tests: `MemoryPlugin` surface + scratchpad / todo-list behavior — no runner |
+| `tests/agent/contrib/websearch/` | Self-scoped contrib tests: the D7 config surface, the hosted-web support table, the advertisement rules (unit + a MockLLM kwargs-capture battery), and the D9 synthesis (unit templates + faux-driven runner integration) |
 | `tests/agent/contrib/test_skills.py` | Self-scoped contrib tests: frontmatter parsing (incl. the `>` / `\|` block scalars real skills use), the skip-don't-raise rules, location precedence, the `skill` tool, the plugin surface — no runner |
 | `tests/agent/contrib/test_simple_context_manager.py` | Self-scoped contrib tests: `SummarizingContextManager` — the context gauge, the split strategies, and the `CompactionPlan` it returns (via `FauxProvider`); no runner |
 ## When in doubt

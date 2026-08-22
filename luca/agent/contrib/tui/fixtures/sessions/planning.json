@@ -1,5 +1,6 @@
 {
   "id": "planning",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "split @luca/store/reader.py into a reader and a writer",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         },
         {
           "type": "text",
@@ -29,7 +31,8 @@
               "success": true,
               "lines": 84
             }
-          }
+          },
+          "annotations": []
         }
       ]
     },
@@ -91,7 +94,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -101,12 +104,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"audit the reader and draft the split\", \"status\": \"in_progress\"}, {\"id\": 2, \"content\": \"move the write path into writer.py\", \"status\": \"pending\"}, {\"id\": 3, \"content\": \"update every import site\", \"status\": \"pending\"}, {\"id\": 4, \"content\": \"backfill the tests\", \"status\": \"pending\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -190,7 +195,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -200,12 +205,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"audit the reader and draft the split\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"move the write path into writer.py\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"update every import site\", \"status\": \"in_progress\"}, {\"id\": 4, \"content\": \"backfill the tests\", \"status\": \"pending\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -264,7 +271,8 @@
         {
           "type": "text",
           "text": "Step one, in parallel: one subagent audits the reader, one drafts the writer.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -294,7 +302,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -304,7 +312,8 @@
           {
             "type": "text",
             "text": "task started",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -344,7 +353,8 @@
           {
             "type": "text",
             "text": "4 write-path methods identified",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -372,7 +382,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -382,7 +392,8 @@
           {
             "type": "text",
             "text": "task started",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -422,7 +433,8 @@
           {
             "type": "text",
             "text": "writer.py created, 2 files touched",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -442,7 +454,8 @@
         {
           "type": "text",
           "text": "`writer.py` now owns the write path. Next: the import sites.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -473,7 +486,8 @@
         {
           "type": "text",
           "text": "Read the store module and report what belongs on the write path.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -518,7 +532,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "39ce8502d016acb060d32df5eb3898739c864ebe1ac85dc67e4722a79543a3d2",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -528,7 +542,8 @@
           {
             "type": "text",
             "text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31\nline 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52\nline 53\nline 54\nline 55\nline 56\nline 57\nline 58\nline 59\nline 60\nline 61\nline 62\nline 63\nline 64\nline 65\nline 66\nline 67\nline 68\nline 69\nline 70\nline 71\nline 72\nline 73\nline 74\nline 75\nline 76\nline 77\nline 78\nline 79\nline 80\nline 81\nline 82\nline 83\nline 84",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -566,7 +581,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "39ce8502d016acb060d32df5eb3898739c864ebe1ac85dc67e4722a79543a3d2",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -576,7 +591,8 @@
           {
             "type": "text",
             "text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -615,7 +631,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "bd8aa3dbb28183605cdea61789deb4e01d5ddc40d6cefcd49e191e85f4edf5de",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -625,7 +641,8 @@
           {
             "type": "text",
             "text": "Found 4 matches\nluca/store/reader.py:\nluca/store/__init__.py:",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -655,8 +672,9 @@
       "parts": [
         {
           "type": "text",
-          "text": "`append`, `flush`, `_rotate` and `close` are the write path \u2014 all four live in `reader.py` today.",
-          "metadata": {}
+          "text": "`append`, `flush`, `_rotate` and `close` are the write path — all four live in `reader.py` today.",
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -678,7 +696,8 @@
         {
           "type": "text",
           "text": "Create writer.py and move the write path into it.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -723,7 +742,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62",
+      "tool_spec_id": "2e3804910b4e07bac60c270f0c53f65bad25fe483a029356b47d11f6932e07c3",
       "extras": {
         "approval_context": {
           "requests": [
@@ -762,7 +781,8 @@
           {
             "type": "text",
             "text": "created luca/store/writer.py",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -802,7 +822,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "803ae5272a7f8cd508adb20f30b1dd7210ce2a47361c9e371d4a1645fbaf60b2",
       "extras": {
         "approval_context": {
           "requests": [
@@ -841,7 +861,8 @@
           {
             "type": "text",
             "text": "edited luca/store/__init__.py",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -874,7 +895,8 @@
         {
           "type": "text",
           "text": "`writer.py` holds the write path and `store/__init__.py` re-exports it.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -888,7 +910,7 @@
     }
   },
   "tool_specs": {
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd": {
       "name": "update_todos",
       "title": null,
       "description": "update_todos tool.",
@@ -898,13 +920,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",
       "version": null,
       "timeout_in_ms": null
     },
-    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+    "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd": {
       "name": "task",
       "title": null,
       "description": "task tool.",
@@ -924,13 +947,14 @@
         ]
       },
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+    "39ce8502d016acb060d32df5eb3898739c864ebe1ac85dc67e4722a79543a3d2": {
       "name": "read",
       "title": null,
       "description": "read tool.",
@@ -940,13 +964,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+    "bd8aa3dbb28183605cdea61789deb4e01d5ddc40d6cefcd49e191e85f4edf5de": {
       "name": "grep",
       "title": null,
       "description": "grep tool.",
@@ -956,13 +981,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ab2f9af446928b09940c9b7a2b1cc71792c5f76694a245674afce2192d660d62": {
+    "2e3804910b4e07bac60c270f0c53f65bad25fe483a029356b47d11f6932e07c3": {
       "name": "write",
       "title": null,
       "description": "write tool.",
@@ -972,13 +998,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+    "803ae5272a7f8cd508adb20f30b1dd7210ce2a47361c9e371d4a1645fbaf60b2": {
       "name": "edit",
       "title": null,
       "description": "edit tool.",
@@ -988,6 +1015,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
@@ -1004,7 +1032,8 @@
         "output": 390,
         "cache_read": 26000,
         "cache_write": 1200,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     },
     "c2": {
@@ -1015,7 +1044,8 @@
         "output": 240,
         "cache_read": 11000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     },
     "c3": {
@@ -1026,7 +1056,8 @@
         "output": 310,
         "cache_read": 9000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -1094,7 +1125,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -1102,6 +1132,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

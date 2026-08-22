@@ -327,13 +327,19 @@ class SessionLedger:
         self,
         conversation_id: str,
         entry_id: str,
+        *,
+        tool_requests: dict[str, int] | None = None,
         **counters: int,
     ) -> Usage:
         """Write the provider-usage record for `entry_id` in `conversation_id`.
         The door builds the `Usage` itself — outer key == `conversation_id`,
         inner key == `entry_id`, entry verified to exist on that conversation's
         path — so the store's invariants hold at every call site. At most one
-        record per (conversation, entry) pair: a re-record replaces."""
+        record per (conversation, entry) pair: a re-record replaces.
+
+        `tool_requests` is a named keyword because it is the one non-int
+        payload — leaving it inside `**counters: int` would falsify the
+        annotation."""
         conversation = self.conversation(conversation_id)
         if entry_id not in self.session.entries:
             raise AgentError(f"Cannot record usage for entry {entry_id!r}: no such entry.")
@@ -345,6 +351,7 @@ class SessionLedger:
         usage = Usage(
             conversation_id=conversation.id,
             entry_id=entry_id,
+            tool_requests=tool_requests or {},
             **counters,
         )
         self.session.usages.setdefault(conversation.id, {})[entry_id] = usage

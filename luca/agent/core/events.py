@@ -9,11 +9,15 @@ Two tiers, selected by the run's `streaming=` flag:
 
 - BLOCK events fire in BOTH modes, once a block is complete:
   `ReasoningBlock`, `TextBlock`, `ToolCallReceived`, `ToolExecutionStarted`,
-  `ToolExecuted`, `FinishReason`.
+  `ToolExecuted`, `FinishReason`, `WebSearchBlock`, `WebFetchBlock`.
 - DELTA / `*Start` events fire ONLY under `streaming=True`, as tokens arrive:
-  `ReasoningStart`/`ReasoningDelta`, `TextStart`/`TextDelta`, `ToolCallStart`.
+  `ReasoningStart`/`ReasoningDelta`, `TextStart`/`TextDelta`, `ToolCallStart`,
+  and the web-operation narration — `WebOperationStart`, `WebSearchQueries`,
+  `WebSearchResults`, `WebFetchUrls`, `WebFindInPage`, `WebOperationEnd`,
+  `TextAnnotation`.
 
-Plus the LIFECYCLE events, which fire in both modes: `SubagentsSpawned` and
+Plus the LIFECYCLE events, which fire in both modes: the pause pair
+(`ResponsePaused` / `ResponseResumed`), `SubagentsSpawned` and
 the three subagent lifecycle events (`SubagentStarted` / `SubagentPaused` /
 `SubagentFinished`), `ApprovalRequired`,
 emitted as the last event before the engine parks for external approval, and
@@ -48,7 +52,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import AnyEntry, CompactionEntry, ToolExecution, TurnOutcome
+from .models import (
+    AnyEntry,
+    CompactionEntry,
+    ToolExecution,
+    TurnOutcome,
+    URLCitation,
+    WebPageContent,
+)
 
 
 class AgentEventBase(BaseModel):
@@ -140,6 +151,33 @@ class FinishReason(AgentEventBase):
     finish_reason: str | None
 
 
+class WebSearchBlock(AgentEventBase):
+    """One provider-hosted web search, derived from the RECORDED assistant
+    entry's `WebSearchContent` part — streaming-independent, like every block
+    event. `id` is the provider's operation id (the same one the streaming
+    web events and the synthetic execution's `tool_call_id` carry), `None`
+    when the provider reported none."""
+
+    type: Literal["web_search_block"] = "web_search_block"
+    id: str | None
+    queries: list[str]
+    results: list[WebPageContent] | None = None
+    # the client-stamped provider error, present iff the operation FAILED —
+    # lifted off the part's extras like `id`, so a renderer needs no session
+    error: dict | None = None
+
+
+class WebFetchBlock(AgentEventBase):
+    """One provider-hosted page fetch, derived from the recorded
+    `WebFetchContent` part. Same correlation `id` contract as
+    `WebSearchBlock`."""
+
+    type: Literal["web_fetch_block"] = "web_fetch_block"
+    id: str | None
+    web_page: WebPageContent
+    error: dict | None = None
+
+
 # ── delta / start events (fire only under streaming=True) ──────────────────────
 
 
@@ -165,6 +203,84 @@ class ToolCallStart(AgentEventBase):
     type: Literal["tool_call_start"] = "tool_call_start"
     tool_call_id: str
     name: str
+
+
+class WebOperationStart(AgentEventBase):
+    """A provider-hosted web operation opened mid-stream. `id` is the
+    provider's operation id and correlates every web event of the same
+    operation — and the synthetic execution recorded for it afterwards."""
+
+    type: Literal["web_operation_start"] = "web_operation_start"
+    id: str
+
+
+class WebSearchQueries(AgentEventBase):
+    type: Literal["web_search_queries"] = "web_search_queries"
+    id: str
+    queries: list[str]
+
+
+class WebSearchResults(AgentEventBase):
+    type: Literal["web_search_results"] = "web_search_results"
+    id: str
+    results: list[WebPageContent]
+
+
+class WebFetchUrls(AgentEventBase):
+    type: Literal["web_fetch_urls"] = "web_fetch_urls"
+    id: str
+    urls: list[str]
+
+
+class WebFindInPage(AgentEventBase):
+    """A find-in-page operation (OpenAI only) — it produces no portable part
+    and no synthetic execution; this delta is its only agent-level trace."""
+
+    type: Literal["web_find_in_page"] = "web_find_in_page"
+    id: str
+    url: str
+    pattern: str
+
+
+class WebOperationEnd(AgentEventBase):
+    type: Literal["web_operation_end"] = "web_operation_end"
+    id: str
+
+
+class TextAnnotation(AgentEventBase):
+    """A citation landed on the streaming text — complete when it arrives,
+    its range covering text already streamed."""
+
+    type: Literal["text_annotation"] = "text_annotation"
+    annotation: URLCitation
+
+
+class ResponsePaused(AgentEventBase):
+    """A provider paused its RESPONSE mid-turn (a long-running hosted tool —
+    Anthropic's `pause_turn`, normalized to `"pause"`): the recorded
+    assistant content will be re-sent as-is and the model continues. Named
+    `Response*`, not `Turn*` — the logical turn never pauses (one
+    `TurnStart`/`TurnFinish` bracket throughout); the provider's response
+    did. Fires right after the paused entry is persisted.
+    `provider_finish_reason` is read from the in-scope client message and is
+    NOT durable on the entry, so the pair is not reconstructible from the
+    session alone (after a reload only `ResponseResumed` fires)."""
+
+    type: Literal["response_paused"] = "response_paused"
+    finish_reason: str
+    provider_finish_reason: str | None
+
+
+class ResponseResumed(AgentEventBase):
+    """The continuation round is about to call the model — fired after the
+    step-limit checks, immediately before the LLM call, detected from
+    durable state (the open turn's last assistant entry is paused and only
+    synthetic executions and/or user posts follow it). The other half of
+    `ResponsePaused`; separate because the two can land in different drives:
+    a lazy consumer can exit after `Paused`, and after a crash or reload
+    only this one fires in the new process."""
+
+    type: Literal["response_resumed"] = "response_resumed"
 
 
 # ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -298,11 +414,22 @@ AgentEvent = Annotated[
     | ToolExecutionStarted
     | ToolExecuted
     | FinishReason
+    | WebSearchBlock
+    | WebFetchBlock
     | ReasoningStart
     | ReasoningDelta
     | TextStart
     | TextDelta
     | ToolCallStart
+    | WebOperationStart
+    | WebSearchQueries
+    | WebSearchResults
+    | WebFetchUrls
+    | WebFindInPage
+    | WebOperationEnd
+    | TextAnnotation
+    | ResponsePaused
+    | ResponseResumed
     | ApprovalRequired
     | CompactionScheduled
     | CompactionStarted

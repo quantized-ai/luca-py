@@ -175,6 +175,9 @@ renderer keys its live state by that field.
 | `ToolExecutionStarted` | `.tool_call_id`, `.execution` — RUNNING, emitted iff the tool body dispatches |
 | `ToolExecuted` | `.tool_call_id`, `.execution` (terminal), `.result_text`, `.is_error` — what the model is told |
 | `FinishReason` | `.finish_reason` |
+| `WebSearchBlock` / `WebFetchBlock` | `.id` (the provider's operation id), `.queries`/`.results` or `.web_page` — one provider-hosted web operation, derived from the recorded parts ([contrib/websearch](contrib/websearch/README.md)) |
+| `ResponsePaused` | `.finish_reason` (`"pause"`), `.provider_finish_reason` — the provider paused its response; the runner will replay and continue (§14) |
+| `ResponseResumed` | the continuation round is about to call the model (fires alone after a reload — `provider_finish_reason` is not durable) |
 | `ApprovalRequired` | `.executions` — emitted when a call parks at a gate (not necessarily last: a sibling subagent may keep going) |
 | `SubagentsSpawned` | `.conversation_ids` — one batch of children, announced before any of them starts ([13](13-subagents.md)) |
 | `SubagentStarted` | the subagent (`.conversation_id`) began — or resumed — doing work; a spawned child with no start yet is queued behind `subagents_max_workers` ([13](13-subagents.md)) |
@@ -221,6 +224,10 @@ identical either way.
 | `ReasoningStart` / `ReasoningDelta` | `.text` (delta) |
 | `TextStart` / `TextDelta` | `.text` (delta) |
 | `ToolCallStart` | `.tool_call_id`, `.name` |
+| `WebOperationStart` / `WebOperationEnd` | `.id` — a hosted web operation opening/closing mid-stream |
+| `WebSearchQueries` / `WebSearchResults` | `.id`, `.queries` / `.results` |
+| `WebFetchUrls` / `WebFindInPage` | `.id`, `.urls` / `.url` + `.pattern` |
+| `TextAnnotation` | `.annotation` — a citation landing on streaming text |
 
 ```python
 from luca.agent.core.events import TextStart, TextDelta
@@ -547,5 +554,55 @@ Two rules explain the rest of the behavior:
   fresh handle: under `autostart_subagents=True` the framework makes one for you
   (on `notify()`, and on the next `run()`); under `False`, `run.child(cid)`
   hands you a new one.
+
+## 14. Pause-and-replay
+
+A provider can pause its own RESPONSE mid-turn — Anthropic's long-running
+server tools end with `stop_reason: "pause_turn"` (normalized by the client
+to canonical `"pause"`), and the contract is "re-send the recorded assistant
+content as-is and let the model continue". The mechanism is generic:
+`RuntimeConfig.resume_finish_reasons` (default `["pause"]`) names the
+normalized reasons that mean "record, then replay"; `[]` turns it off
+([08](08-runtime-config.md)).
+
+The decision table — tool calls remain the SOLE driver of the round; the
+finish reason is consulted only when there are none:
+
+| tool calls? | finish reason | behavior |
+|---|---|---|
+| yes | anything, incl. `"pause"` | today's tool round, unchanged |
+| no | in `resume_finish_reasons` (default `["pause"]`) | NEW: record, then replay |
+| no | anything else (`"stop"`, …) | today's close logic, unchanged |
+
+Only the middle row is new. The paused entry is recorded with the durable
+marker `stop_reason="pause"`, `ResponsePaused` fires, and the drive loops:
+projection re-derives the history (now ending with the paused entry, whose
+same-format private blocks replay verbatim) and calls the model again —
+`ResponseResumed` firing just before the call. No special replay code
+exists; a trailing assistant message is exactly the provider's continuation
+shape. What rides along for free:
+
+- a pause round is a real model round — `hard_max_steps` counts it (the
+  infinite-pause protection) and `soft_max_steps` forces `tool_choice="none"`
+  on the continuation;
+- an unconsumed `cancel()` wins before the continuation call, as everywhere;
+- crash-safe: the durable `stop_reason` makes a reloaded session derive
+  `BUSY`, and the next `run()` replays — emitting only `ResponseResumed`
+  (`provider_finish_reason` is not durable, so the `Paused` half belongs to
+  the process that recorded it);
+- a post landing in the pause window is the documented in-flight shape: the
+  continuation request simply ends with the user message.
+
+> ⚠️ **Pause × unresolved subagents parks.** A paused wake-round response
+> landing while children are unresolved and nothing else is material does
+> NOT replay immediately: the paused entry is the last assistant message and
+> is not "material", so the drive parks on the subtree and the replay
+> happens on the next wake — the continuation request then ends with the
+> task-update user message, the blessed in-flight shape.
+
+> ⚠️ **Soft-max × pause is a documented edge.** A continuation under
+> `tool_choice="none"` replays `server_tool_use` blocks; provider tolerance
+> of that combination is unverified against the live API. No code guards it
+> until there is evidence.
 
 Next: [`05-permissions.md`](05-permissions.md).

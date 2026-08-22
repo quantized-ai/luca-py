@@ -1,5 +1,6 @@
 {
   "id": "todos-done",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -17,8 +18,9 @@
       "parts": [
         {
           "type": "text",
-          "text": "the pagination test is failing \u2014 sort it out",
-          "metadata": {}
+          "text": "the pagination test is failing — sort it out",
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -52,7 +54,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -62,12 +64,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"read the failing test\", \"status\": \"pending\"}, {\"id\": 2, \"content\": \"fix the off-by-one in the cursor\", \"status\": \"pending\"}, {\"id\": 3, \"content\": \"re-run the suite\", \"status\": \"pending\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -141,7 +145,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858",
+      "tool_spec_id": "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -151,12 +155,14 @@
           {
             "type": "text",
             "text": "Todo list updated successfully",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           },
           {
             "type": "text",
             "text": "[{\"id\": 1, \"content\": \"read the failing test\", \"status\": \"completed\"}, {\"id\": 2, \"content\": \"fix the off-by-one in the cursor\", \"status\": \"completed\"}, {\"id\": 3, \"content\": \"re-run the suite\", \"status\": \"completed\"}]",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -210,7 +216,8 @@
         {
           "type": "text",
           "text": "The cursor advanced one row too far on the last page. Suite is green.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -233,7 +240,7 @@
     }
   },
   "tool_specs": {
-    "90e55aaf52d3f855976420fb1cb6be45f98f1e84ce7f67bac5f8748a5c21c858": {
+    "3e7a3ecbb2c5be42be2c672a12cb53bd650dda79a343de7320233414acc99bcd": {
       "name": "update_todos",
       "title": null,
       "description": "update_todos tool.",
@@ -243,6 +250,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.memory",
@@ -259,7 +267,8 @@
         "output": 260,
         "cache_read": 8000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -292,7 +301,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -300,6 +308,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

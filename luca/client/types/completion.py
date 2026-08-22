@@ -56,6 +56,11 @@ class Usage(BaseModel):
     audio_input_tokens: int | None = None
     audio_output_tokens: int | None = None
     image_input_tokens: int | None = None
+    # Requests made by provider-hosted tools, normalized to
+    # `{tool_name: count}` (e.g. {"web_search": 2}); `provider_tool_usage` is
+    # the provider's own payload behind those counts, verbatim.
+    tool_requests: dict[str, int] = Field(default_factory=dict)
+    provider_tool_usage: dict[str, Any] = Field(default_factory=dict)
     cost: UsageCost | None = None
 
     model_config = ConfigDict(extra="forbid")

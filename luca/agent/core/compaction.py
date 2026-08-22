@@ -31,8 +31,9 @@ from .models import (
 class UsageCounters(BaseModel):
     """The counters a manager reports for its summarization call.
 
-    Field names and semantics are `Usage`'s, minus the ids the ledger owns —
-    one vocabulary, and the same shape the runner produces for an ordinary LLM
+    Field names and semantics are `Usage`'s, minus the ids the ledger owns
+    and minus `tool_requests` (a compaction call has no hosted tools) — one
+    vocabulary, and the same shape the runner produces for an ordinary LLM
     response. `extra="forbid"` is the point: a provider's own counter names
     (`prompt_tokens`, `completion_tokens`) fail HERE, in the manager, at plan
     construction — not later inside a runner-internal ledger write that cannot

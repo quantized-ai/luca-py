@@ -2117,3 +2117,396 @@ async def test_post_message_names_the_mistake_when_a_part_is_not_in_a_list():
 
     with pytest.raises(AgentError, match="wrap the TextContent in a list"):
         runner.post_message(TextContent(text="hi"))
+
+
+async def test_an_unknown_client_block_raises_before_anything_durable_is_written(monkeypatch):
+    # The adapter's loud fall-through fires INSIDE `_record_assistant`, before
+    # the assistant entry is appended: the raise reaches the caller and the
+    # session shows an open turn with NO assistant entry — nothing durable was
+    # written for the response. (The faux cannot script an unknown block, so
+    # the LLM boundary is mocked at the runner's import site, the
+    # test_native_tools pattern.)
+    import luca.agent.core.runner as runner_module
+    from luca.client.types import (
+        AssistantMessage as ClientAssistantMessage,
+        ChatCompletionResponse,
+        ToolResultBlock,
+    )
+
+    async def mock_acompletion(*args, **kwargs):
+        message = ClientAssistantMessage.model_construct(
+            content=[ToolResultBlock(tool_call_id="tc1", content="output")],
+            finish_reason="stop",
+            usage=ClientUsage(),
+            tool_calls=[],
+        )
+        return ChatCompletionResponse(messages=[message])
+
+    monkeypatch.setattr(runner_module, "acompletion", mock_acompletion)
+    session = make_session(
+        id="s1",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
+        },
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, ids=["ts", "a1"], now=1000)
+
+    with pytest.raises(AgentError, match="tool_result"):
+        await runner.run()
+
+    assert runner.session.entries == {
+        "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="Hi")]),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
+    }
+
+
+# ── hosted web content (phase-6 core wiring; the PLUGIN lives in contrib) ─────
+
+
+async def test_web_deltas_interleave_before_their_block_events():
+    # deltas narrate the operation DURING the call; the block events derive
+    # from the RECORDED parts — after the record, before FinishReason
+    from luca.agent.core.events import (
+        WebOperationEnd,
+        WebOperationStart,
+        WebSearchBlock as WebSearchBlockEvent,
+        WebSearchQueries,
+        WebSearchResults,
+    )
+    from luca.agent.core.models import WebPageContent
+    from luca.client.types import (
+        PrivateProviderBlock as ClientPrivateProviderBlock,
+        WebPagePart as ClientWebPagePart,
+        WebSearchBlock as ClientWebSearchBlock,
+    )
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    ClientPrivateProviderBlock(format="anthropic.messages", data={"type": "server_tool_use"}),
+                    ClientWebSearchBlock(
+                        queries=["apple"],
+                        results=[ClientWebPagePart(url="https://apple.com", title="Apple")],
+                        extras={"id": "srv_1"},
+                    ),
+                    faux_text("Apple is up."),
+                ],
+                finish_reason="stop",
+            ),
+        ]
+    )
+    session = make_session(
+        id="s_web_stream",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "tf"], now=1000)
+
+    async with runner.run(streaming=True) as run:
+        events = [event async for event in run]
+
+    results = [WebPageContent(url="https://apple.com", title="Apple")]
+    assert events == [
+        WebOperationStart(conversation_id="c1", id="srv_1"),
+        WebSearchQueries(conversation_id="c1", id="srv_1", queries=["apple"]),
+        WebSearchResults(conversation_id="c1", id="srv_1", results=results),
+        WebOperationEnd(conversation_id="c1", id="srv_1"),
+        TextStart(conversation_id="c1"),
+        TextDelta(conversation_id="c1", text="Apple is up."),
+        WebSearchBlockEvent(conversation_id="c1", id="srv_1", queries=["apple"], results=results),
+        TextBlock(conversation_id="c1", text="Apple is up."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
+
+
+async def test_streaming_produces_same_session_as_run_with_web_parts():
+    # same script, same ids, both modes: byte-identical sessions — the block
+    # tier and the durable record never depend on streaming
+    from luca.client.types import (
+        PrivateProviderBlock as ClientPrivateProviderBlock,
+        URLCitationAnnotation,
+        WebFetchBlock as ClientWebFetchBlock,
+        WebPagePart as ClientWebPagePart,
+        WebSearchBlock as ClientWebSearchBlock,
+    )
+
+    def scripted_faux() -> FauxProvider:
+        faux = FauxProvider()
+        faux.set_responses(
+            [
+                faux_assistant_message(
+                    [
+                        ClientPrivateProviderBlock(format="anthropic.messages", data={"type": "server_tool_use"}),
+                        ClientWebSearchBlock(queries=["apple"], extras={"id": "srv_1"}),
+                        ClientWebFetchBlock(
+                            web_page=ClientWebPagePart(url="https://apple.com"), extras={"id": "srv_2"}
+                        ),
+                        faux_text(
+                            "Apple is up.",
+                            annotations=[
+                                URLCitationAnnotation(
+                                    url="https://apple.com", title="Apple", start_index=0, end_index=12
+                                )
+                            ],
+                        ),
+                    ],
+                    finish_reason="stop",
+                ),
+            ]
+        )
+        return faux
+
+    def fresh() -> AgentSession:
+        return make_session(
+            id="s_web_parity",
+            entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+            conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+            main_conversation_id="c1",
+            session_config=SessionConfig(llm_config=MODEL),
+        )
+
+    streamed = DeterministicRunner(fresh(), provider=scripted_faux(), ids=["ts", "a1", "tf"], now=1000)
+    plain = DeterministicRunner(fresh(), provider=scripted_faux(), ids=["ts", "a1", "tf"], now=1000)
+
+    async with streamed.run(streaming=True) as run:
+        _ = [event async for event in run]
+    await plain.run()
+
+    assert streamed.session == plain.session
+
+
+def test_to_delta_event_maps_all_seven_web_events():
+    from luca.agent.core.events import (
+        TextAnnotation,
+        WebFetchUrls,
+        WebFindInPage,
+        WebOperationEnd,
+        WebOperationStart,
+        WebSearchQueries,
+        WebSearchResults,
+    )
+    from luca.agent.core.models import URLCitation, WebPageContent
+    from luca.agent.core.runner import _to_delta_event
+    from luca.client.types import URLCitationAnnotation, WebPagePart as ClientWebPagePart
+    from luca.client.types.streaming import (
+        TextAnnotationEvent,
+        WebEndEvent,
+        WebFetchEvent,
+        WebFindEvent,
+        WebSearchEvent,
+        WebSearchResultEvent,
+        WebStartEvent,
+    )
+
+    assert _to_delta_event("c1", WebStartEvent(id="w1")) == WebOperationStart(conversation_id="c1", id="w1")
+    assert _to_delta_event("c1", WebSearchEvent(id="w1", queries=["apple"])) == WebSearchQueries(
+        conversation_id="c1", id="w1", queries=["apple"]
+    )
+    assert _to_delta_event(
+        "c1", WebSearchResultEvent(id="w1", results=[ClientWebPagePart(url="https://a", title="A")])
+    ) == WebSearchResults(conversation_id="c1", id="w1", results=[WebPageContent(url="https://a", title="A")])
+    assert _to_delta_event("c1", WebFetchEvent(id="w2", urls=["https://a"])) == WebFetchUrls(
+        conversation_id="c1", id="w2", urls=["https://a"]
+    )
+    # WebFindInPage is reachable ONLY here: find-in-page has no portable
+    # block, so the faux cannot script it
+    assert _to_delta_event("c1", WebFindEvent(id="w3", url="https://a", pattern="R&D")) == WebFindInPage(
+        conversation_id="c1", id="w3", url="https://a", pattern="R&D"
+    )
+    assert _to_delta_event("c1", WebEndEvent(id="w1")) == WebOperationEnd(conversation_id="c1", id="w1")
+    assert _to_delta_event(
+        "c1",
+        TextAnnotationEvent(
+            index=0, annotation=URLCitationAnnotation(url="https://a", title="A", start_index=0, end_index=5)
+        ),
+    ) == TextAnnotation(
+        conversation_id="c1", annotation=URLCitation(url="https://a", title="A", start_index=0, end_index=5)
+    )
+
+
+# ── pause-and-replay (D8) ─────────────────────────────────────────────────────
+
+
+async def test_a_pause_continues_and_replays():
+    from luca.agent.core.events import ResponsePaused, ResponseResumed
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_pause",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "a2", "tf"], now=1000)
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert events == [
+        TextBlock(conversation_id="c1", text="Searching..."),
+        FinishReason(conversation_id="c1", finish_reason="pause"),
+        ResponsePaused(conversation_id="c1", finish_reason="pause", provider_finish_reason="pause"),
+        ResponseResumed(conversation_id="c1"),
+        TextBlock(conversation_id="c1", text="Done."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
+    # the replay really happened: two requests, the second carrying the
+    # paused entry as the provider's continuation shape — TRAILING, verbatim
+    assert len(faux.requests) == 2
+    from luca.client.types import AssistantMessage as LucaAssistantMessage, TextBlock as LucaTextBlock
+
+    assert faux.requests[1].messages[-1] == LucaAssistantMessage(
+        content=[LucaTextBlock(text="Searching...")],
+        provider="faux",
+        model="test-model",
+    )
+    assert runner.session == make_session(
+        id="s_pause",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")]),
+            "ts": TurnStart(id="ts", parent_id="u1", created_at=1000),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=1000,
+                parts=[TextContent(text="Searching...")],
+                llm_config=MODEL,
+                stop_reason="pause",  # the durable marker
+                context_tokens=3,  # len("Searching...") // 4
+            ),
+            "a2": AssistantMessage(
+                id="a2",
+                parent_id="a1",
+                created_at=1000,
+                parts=[TextContent(text="Done.")],
+                llm_config=MODEL,
+                stop_reason="stop",
+                context_tokens=1,  # len("Done.") // 4
+            ),
+            "tf": TurnFinish(id="tf", parent_id="a2", created_at=1000),
+        },
+        usages={
+            "c1": {
+                "a1": Usage(conversation_id="c1", entry_id="a1"),
+                "a2": Usage(conversation_id="c1", entry_id="a2"),
+            }
+        },
+        conversations={"c1": conversation("c1", ["u1", "ts", "a1", "a2", "tf"], created_at=500, updated_at=1000)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+
+async def test_a_streamed_pause_continues_and_replays():
+    from luca.agent.core.events import ResponsePaused, ResponseResumed
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = make_session(
+        id="s_pause_stream",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "a2", "tf"], now=1000)
+
+    async with runner.run(streaming=True) as run:
+        events = [event async for event in run]
+
+    assert events == [
+        TextStart(conversation_id="c1"),
+        TextDelta(conversation_id="c1", text="Searching..."),
+        TextBlock(conversation_id="c1", text="Searching..."),
+        FinishReason(conversation_id="c1", finish_reason="pause"),
+        ResponsePaused(conversation_id="c1", finish_reason="pause", provider_finish_reason="pause"),
+        ResponseResumed(conversation_id="c1"),
+        TextStart(conversation_id="c1"),
+        TextDelta(conversation_id="c1", text="Done."),
+        TextBlock(conversation_id="c1", text="Done."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
+    assert len(faux.requests) == 2
+    assert [entry.stop_reason for entry in (runner.session.entries["a1"], runner.session.entries["a2"])] == [
+        "pause",
+        "stop",
+    ]
+
+
+async def test_a_reloaded_paused_session_resumes_with_only_response_resumed():
+    # after a crash in the pause window, the durable stop_reason is the whole
+    # signal: the session derives BUSY, and the fresh drive replays with only
+    # the Resumed half of the pair (Paused fired in the process that died)
+    from luca.agent.core.events import ResponsePaused, ResponseResumed
+    from luca.agent.core.models import ConversationStatus
+    from tests.agent.scenarios import PAUSED_SESSION
+
+    session = AgentSession.model_validate_json(PAUSED_SESSION.model_dump_json())
+    assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    runner = DeterministicRunner(session, provider=faux, ids=["a2", "tf"], now=1000)
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert events == [
+        ResponseResumed(conversation_id="c1"),
+        TextBlock(conversation_id="c1", text="Done."),
+        FinishReason(conversation_id="c1", finish_reason="stop"),
+    ]
+    assert not any(isinstance(event, ResponsePaused) for event in events)
+    # the replay carried the paused entry as the continuation shape —
+    # TRAILING, verbatim
+    from luca.client.types import AssistantMessage as LucaAssistantMessage, TextBlock as LucaTextBlock
+
+    assert len(faux.requests) == 1
+    assert faux.requests[0].messages[-1] == LucaAssistantMessage(
+        content=[LucaTextBlock(text="Searching...")],
+        provider="faux",
+        model="test-model",
+    )
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "a2", "tf"]
+
+
+async def test_a_post_landing_in_the_pause_window_still_resumes():
+    # the Resumed detection tolerates a user post after the paused entry (the
+    # documented in-flight shape): the continuation request ends with the
+    # post, and the pair's second half still fires
+    from luca.agent.core.events import ResponseResumed
+    from tests.agent.scenarios import PAUSED_SESSION
+
+    session = PAUSED_SESSION.model_copy(deep=True)
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("Done.")], finish_reason="stop")])
+    runner = DeterministicRunner(session, provider=faux, ids=["u2", "a2", "tf"], now=1000)
+    runner.post_message("any luck?")
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    from luca.client.types import TextBlock as LucaTextBlock, UserMessage as LucaUserMessage
+
+    assert ResponseResumed(conversation_id="c1") in events
+    assert faux.requests[0].messages[-1] == LucaUserMessage(content=[LucaTextBlock(text="any luck?")])
+    assert faux.requests[0].messages[-2].content[0].text == "Searching..."

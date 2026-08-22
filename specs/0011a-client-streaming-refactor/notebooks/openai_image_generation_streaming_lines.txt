@@ -1,0 +1,424 @@
+event: response.created
+{
+  "type": "response.created",
+  "response": {
+    "id": "resp_0815a32be9636479016a82e25bd4dc81a0a7f6916cdbf...",
+    "object": "response",
+    "created_at": 1786962523,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "image_generation",
+        "background": "auto",
+        "model": "gpt-image-2",
+        "moderation": "auto",
+        "n": 1,
+        "output_compression": 100,
+        "output_format": "png",
+        "quality": "auto",
+        "size": "auto"
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 0
+}
+
+event: response.in_progress
+{
+  "type": "response.in_progress",
+  "response": {
+    "id": "resp_0815a32be9636479016a82e25bd4dc81a0a7f6916cdbf...",
+    "object": "response",
+    "created_at": 1786962523,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "image_generation",
+        "background": "auto",
+        "model": "gpt-image-2",
+        "moderation": "auto",
+        "n": 1,
+        "output_compression": 100,
+        "output_format": "png",
+        "quality": "auto",
+        "size": "auto"
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 1
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+    "type": "image_generation_call",
+    "status": "in_progress"
+  },
+  "output_index": 0,
+  "sequence_number": 2
+}
+
+event: response.image_generation_call.in_progress
+{
+  "type": "response.image_generation_call.in_progress",
+  "item_id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+  "output_index": 0,
+  "sequence_number": 3
+}
+
+event: response.image_generation_call.generating
+{
+  "type": "response.image_generation_call.generating",
+  "item_id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+  "output_index": 0,
+  "sequence_number": 4
+}
+
+event: response.image_generation_call.partial_image
+{
+  "type": "response.image_generation_call.partial_image",
+  "background": "opaque",
+  "item_id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+  "output_format": "png",
+  "output_index": 0,
+  "partial_image_b64": "iVBORw0KGgoAAAANSUhEUgAABf8AAAQACAIAAADQtrQAAABhUm...",
+  "partial_image_index": 0,
+  "quality": "low",
+  "sequence_number": 5,
+  "size": "1535x1024"
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+    "type": "image_generation_call",
+    "status": "generating",
+    "action": "generate",
+    "background": "opaque",
+    "output_format": "png",
+    "quality": "low",
+    "result": "iVBORw0KGgoAAAANSUhEUgAABf8AAAQACAIAAADQtrQAAABhUm...",
+    "revised_prompt": "A cheerful golden retriever sitting in a bright co...",
+    "size": "1535x1024"
+  },
+  "output_index": 0,
+  "sequence_number": 6
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+    "type": "message",
+    "status": "in_progress",
+    "content": [],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 1,
+  "sequence_number": 7
+}
+
+event: response.content_part.added
+{
+  "type": "response.content_part.added",
+  "content_index": 0,
+  "item_id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+  "output_index": 1,
+  "part": {
+    "type": "output_text",
+    "annotations": [],
+    "logprobs": [],
+    "text": ""
+  },
+  "sequence_number": 8
+}
+
+event: response.output_text.done
+{
+  "type": "response.output_text.done",
+  "content_index": 0,
+  "item_id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+  "logprobs": [],
+  "output_index": 1,
+  "sequence_number": 9,
+  "text": ""
+}
+
+event: response.content_part.done
+{
+  "type": "response.content_part.done",
+  "content_index": 0,
+  "item_id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+  "output_index": 1,
+  "part": {
+    "type": "output_text",
+    "annotations": [],
+    "logprobs": [],
+    "text": ""
+  },
+  "sequence_number": 10
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [],
+        "logprobs": [],
+        "text": ""
+      }
+    ],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 1,
+  "sequence_number": 11
+}
+
+event: response.completed
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_0815a32be9636479016a82e25bd4dc81a0a7f6916cdbf...",
+    "object": "response",
+    "created_at": 1786962523,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1786962543,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [
+      {
+        "id": "ig_0815a32be9636479016a82e25c7b1081a0970279ce39470...",
+        "type": "image_generation_call",
+        "status": "generating",
+        "action": "generate",
+        "background": "opaque",
+        "output_format": "png",
+        "quality": "low",
+        "result": "iVBORw0KGgoAAAANSUhEUgAABf8AAAQACAIAAADQtrQAAABhUm...",
+        "revised_prompt": "A cheerful golden retriever sitting in a bright co...",
+        "size": "1535x1024"
+      },
+      {
+        "id": "msg_0815a32be9636479016a82e26f255081a09288400e23fa...",
+        "type": "message",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "annotations": [],
+            "logprobs": [],
+            "text": ""
+          }
+        ],
+        "phase": "final_answer",
+        "role": "assistant"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 53,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 53
+        },
+        "output_tokens": 158,
+        "output_tokens_details": {
+          "image_tokens": 158,
+          "text_tokens": 0
+        },
+        "total_tokens": 211
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "image_generation",
+        "background": "auto",
+        "model": "gpt-image-2",
+        "moderation": "auto",
+        "n": 1,
+        "output_compression": 100,
+        "output_format": "png",
+        "quality": "auto",
+        "size": "auto"
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 2278,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 66,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 2344
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 12
+}
+

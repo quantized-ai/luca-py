@@ -1,5 +1,6 @@
 {
   "id": "subagents",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "audit the docs and the tests for stale references",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -32,7 +34,8 @@
         {
           "type": "text",
           "text": "Spawning two subagents in parallel.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -62,7 +65,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -72,7 +75,8 @@
           {
             "type": "text",
             "text": "task started",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -112,7 +116,8 @@
           {
             "type": "text",
             "text": "3 stale references",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -140,7 +145,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd",
+      "tool_spec_id": "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -150,7 +155,8 @@
           {
             "type": "text",
             "text": "task started",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": {
@@ -190,7 +196,8 @@
           {
             "type": "text",
             "text": "the grep tool timed out",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -210,7 +217,8 @@
         {
           "type": "text",
           "text": "The docs audit found 3 stale references; the test audit timed out and needs a rerun.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -241,7 +249,8 @@
         {
           "type": "text",
           "text": "Read every page under docs/ and list stale references.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -286,7 +295,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24",
+      "tool_spec_id": "45ac6ae1cbece9dff02110fc98163c36a6da79be8aeb2afbdc07aa6e05ee922a",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -296,7 +305,8 @@
           {
             "type": "text",
             "text": "docs/agent/README.md\ndocs/client/README.md\ndocs/llm.txt",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -335,7 +345,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "bd8aa3dbb28183605cdea61789deb4e01d5ddc40d6cefcd49e191e85f4edf5de",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -345,7 +355,8 @@
           {
             "type": "text",
             "text": "Found 3 matches\ndocs/agent/README.md:\ndocs/llm.txt:",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -376,7 +387,8 @@
         {
           "type": "text",
           "text": "Three pages still describe the jsonl store.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -398,7 +410,8 @@
         {
           "type": "text",
           "text": "Find tests referencing the jsonl store.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -444,7 +457,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc",
+      "tool_spec_id": "bd8aa3dbb28183605cdea61789deb4e01d5ddc40d6cefcd49e191e85f4edf5de",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -469,7 +482,7 @@
     }
   },
   "tool_specs": {
-    "807d06913bb671aa4fdb89b03a6d80da29788af4931f5ac6c3b474c118b445dd": {
+    "15b8557ec940b88511b8958c66f3fc290c0ddfdc2b031a8273a466fb9a5992fd": {
       "name": "task",
       "title": null,
       "description": "task tool.",
@@ -489,13 +502,14 @@
         ]
       },
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "e36f91ccf59b43f6d823a0f2b7e846416f4b5dfca941f39a5e147906b280db24": {
+    "45ac6ae1cbece9dff02110fc98163c36a6da79be8aeb2afbdc07aa6e05ee922a": {
       "name": "glob",
       "title": null,
       "description": "glob tool.",
@@ -505,13 +519,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "3e54579b6da140298723ec806e357fabecb3fdcb5003903802619125237695dc": {
+    "bd8aa3dbb28183605cdea61789deb4e01d5ddc40d6cefcd49e191e85f4edf5de": {
       "name": "grep",
       "title": null,
       "description": "grep tool.",
@@ -521,6 +536,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
@@ -537,7 +553,8 @@
         "output": 430,
         "cache_read": 22000,
         "cache_write": 900,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     },
     "c2": {
@@ -548,7 +565,8 @@
         "output": 180,
         "cache_read": 8000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     },
     "c3": {
@@ -559,7 +577,8 @@
         "output": 60,
         "cache_read": 0,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -621,7 +640,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -629,6 +647,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

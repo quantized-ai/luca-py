@@ -1,0 +1,1547 @@
+event: message_start
+{
+  "type": "message_start",
+  "message": {
+    "model": "claude-sonnet-5",
+    "id": "msg_011Ce4fvxpdBhzmgp6rqToJc",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+      "input_tokens": 7206,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "output_tokens": 8,
+      "service_tier": "standard",
+      "inference_geo": "global"
+    }
+  }
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 0,
+  "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+  }
+}
+
+event: ping
+{
+  "type": "ping"
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "thinking_delta",
+    "thinking": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "signature_delta",
+    "signature": "EqgCCokBCBAYAipAs7jLFWOWCwO66CzLxDksjHqIRifZpLqS0q"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 0
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 1,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 1,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 1,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"import asyncio\\nresults = await asyncio."
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 1,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "Apple reports fourth quarter 2025 results\\\"}),\\n)\\"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 1,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 1
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 2,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01V9tL33Ky8GMjQuW5w59p6t",
+    "name": "web_search",
+    "input": {
+      "query": "Apple reports fourth quarter 2025 results"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 2
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 3,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_01V9tL33Ky8GMjQuW5w59p6t",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2025",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EpAPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2025",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EsIQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2025",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EsUPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports fourth quarter results",
+        "url": "https://finance.yahoo.com/news/apple-reports-fourt",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "October 30, 2025"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports fourth quarter results | INN",
+        "url": "https://investingnews.com/apple-reports-fourth-qua",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "November 24, 2025"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports fourth quarter results | Nasdaq",
+        "url": "https://www.nasdaq.com/press-release/apple-reports",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "October 30, 2025"
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 3
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 4,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01SDonyfPhfUMnAvKb11fYTE",
+    "name": "web_search",
+    "input": {
+      "query": "Apple latest quarterly earnings release investor r"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 4
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 5,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_01SDonyfPhfUMnAvKb11fYTE",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple Reports 3Q 2026 Results: $29.8B Profit on $1",
+        "url": "https://www.macrumors.com/2026/07/30/apple-3q-2026",
+        "encrypted_content": "EosPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports first quarter results - Apple",
+        "url": "https://www.apple.com/newsroom/2026/01/apple-repor",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "May 13, 2026"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports second quarter results - Apple",
+        "url": "https://www.apple.com/newsroom/2026/04/apple-repor",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "May 13, 2026"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2023",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EvUHCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2024",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EtkHCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2023",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EpkPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple (AAPL) Investor Relations, Earnings Summary ",
+        "url": "https://quartr.com/companies/apple-inc_4742",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2025",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EsUPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2024",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "EoQICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. - Form 8-K - FY2021",
+        "url": "https://www.sec.gov/Archives/edgar/data/320193/000",
+        "encrypted_content": "Eo8FCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 5
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 6,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_01APx1aCrB2ApVSnRapKBXKs",
+    "content": {
+      "type": "encrypted_code_execution_result",
+      "encrypted_stdout": "Eo4BCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+      "stderr": "Traceback (most recent call last):\n  File \"/usr/lo",
+      "return_code": 1,
+      "content": []
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 6
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 7,
+  "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 7,
+  "delta": {
+    "type": "thinking_delta",
+    "thinking": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 7,
+  "delta": {
+    "type": "signature_delta",
+    "signature": "EpcCCokBCBAYAipA4cCg32ZChnufXoIH/2TUET2yl3oS3Hcqp+"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 7
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 8,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_012Qmorgu2JGVozxCV3ddACX",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"import json\\nfor r in results:\\n    prin"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ", str) else r)\\n    print('====')\\n"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 8
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 9,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_012Qmorgu2JGVozxCV3ddACX",
+    "content": {
+      "type": "code_execution_result",
+      "stdout": "<class 'str'> [{\"type\": \"web_search_result\", \"titl",
+      "stderr": "",
+      "return_code": 0,
+      "content": [],
+      "abort_reason": null
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 9
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 10,
+  "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 10,
+  "delta": {
+    "type": "thinking_delta",
+    "thinking": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 10,
+  "delta": {
+    "type": "signature_delta",
+    "signature": "EoMECokBCBAYAipAe+B2DTC3SEhoC6YRhFO5hjK2q727MeQRQL"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 10
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 11,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01EnR6SLmqXbUgPK8vCkszeF",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 11,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 11,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"import json\\nparsed = [json.loads(r) for"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 11,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": " in parsed:\\n    for item in p[:5]:\\n        print"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 11,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 11
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 12,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_01EnR6SLmqXbUgPK8vCkszeF",
+    "content": {
+      "type": "code_execution_result",
+      "stdout": "Apple Reports 3Q 2026 Results: $29.8B Profit on $1",
+      "stderr": "",
+      "return_code": 0,
+      "content": [],
+      "abort_reason": null
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 12
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 13,
+  "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 13,
+  "delta": {
+    "type": "thinking_delta",
+    "thinking": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 13,
+  "delta": {
+    "type": "signature_delta",
+    "signature": "EoQECokBCBAYAipAd8ZITU4A3AAZ3xeaSp4jeT9agHm+sgz0UW"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 13
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 14,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 14,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 14,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"import asyncio\\nresults2 = await asyncio"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 14,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "web_search({\\\"query\\\": \\\"Apple reports third quart"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 14,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "item.get('title'), '|', item.get('url'), '|', item"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 14,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 14
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 15,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01W3jWgorL2j6BRcpwUQpNKF",
+    "name": "web_search",
+    "input": {
+      "query": "Apple reports third quarter results July 2026 site"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 15
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 16,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_01W3jWgorL2j6BRcpwUQpNKF",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (MZ)",
+        "url": "https://www.apple.com/mz/newsroom/2026/07/apple-re",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (GQ)",
+        "url": "https://www.apple.com/gq/newsroom/2026/07/apple-re",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (SI)",
+        "url": "https://www.apple.com/si/newsroom/2026/07/apple-re",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (CI)",
+        "url": "https://www.apple.com/ci/newsroom/2026/07/apple-re",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (LI)",
+        "url": "https://www.apple.com/li/newsroom/2026/07/apple-re",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (MU)",
+        "url": "https://www.apple.com/mu/newsroom/2026/07/apple-re",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple",
+        "url": "https://www.apple.com/newsroom/2026/07/apple-repor",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (IL)",
+        "url": "https://www.apple.com/il/newsroom/2026/07/apple-re",
+        "encrypted_content": "EvAOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple to report on its third fiscal quarter earnin",
+        "url": "https://phonearena.com/news/apple-to-announce-thir",
+        "encrypted_content": "EqwPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 16
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 17,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_015yfoWUryrm2Px8kTNd7cb1",
+    "name": "web_search",
+    "input": {
+      "query": "apple.com newsroom \"third quarter\" 2026 results"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 17
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 18,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_015yfoWUryrm2Px8kTNd7cb1",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results",
+        "url": "https://finance.yahoo.com/markets/stocks/articles/",
+        "encrypted_content": "EuoPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports blockbuster third quarter results - ",
+        "url": "https://macdailynews.com/2026/07/30/apple-reports-",
+        "encrypted_content": "Ev8OCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple (GQ)",
+        "url": "https://www.apple.com/gq/newsroom/2026/07/apple-re",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - AOL",
+        "url": "https://www.aol.com/articles/apple-reports-third-q",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results",
+        "url": "https://www.businesswire.com/news/home/20260730284",
+        "encrypted_content": "EsINCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Reports 3Q 2026 Results: $29.8B Profit on $1",
+        "url": "https://www.macrumors.com/2026/07/30/apple-3q-2026",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple reports third quarter results - Apple",
+        "url": "https://www.apple.com/newsroom/2026/07/apple-repor",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "2026-07-30 Apple reports third quarter results",
+        "url": "https://www.apple.com/newsroom/pdfs/fy2026q3/FY26_",
+        "encrypted_content": "ErgDCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 weeks ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "apple reports third quarter results",
+        "url": "https://www.barchart.com/story/news/33792707/apple",
+        "encrypted_content": "EvYICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 18
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 19,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_011Fh8nbTJZwp8BnKViEe62m",
+    "content": {
+      "type": "encrypted_code_execution_result",
+      "encrypted_stdout": "EvkOCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+      "stderr": "",
+      "return_code": 0,
+      "content": []
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 19
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 20,
+  "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 20,
+  "delta": {
+    "type": "thinking_delta",
+    "thinking": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 20,
+  "delta": {
+    "type": "signature_delta",
+    "signature": "EsMCCokBCBAYAipAGhHlCQmraoM+Kaxvu0LgfyCLd4atVCgmPj"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 20
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 21,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01Dr9FRBaTAdRWKeR6sUL7hb",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 21,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 21,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"entry = json.loads(await web_fetch({\\\"ur"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 21,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "0]\\nprint(entry.get('error_code'))\\nprint(entry.ge"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 21,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 21
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 22,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_012hFT2gBpcuPeYhirg2nRNZ",
+    "name": "web_fetch",
+    "input": {
+      "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01Dr9FRBaTAdRWKeR6sUL7hb"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 22
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 23,
+  "content_block": {
+    "type": "web_fetch_tool_result",
+    "tool_use_id": "srvtoolu_012hFT2gBpcuPeYhirg2nRNZ",
+    "content": {
+      "type": "web_fetch_result",
+      "url": "https://www.apple.com/newsroom/2026/07/apple-repor",
+      "retrieved_at": "2026-08-15T03:41:54.963000+00:00",
+      "content": {
+        "type": "document",
+        "source": {
+          "type": "text",
+          "media_type": "text/plain",
+          "data": "---\ncanonical: https://www.apple.com/newsroom/2026"
+        },
+        "title": "Apple reports third quarter results"
+      }
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01Dr9FRBaTAdRWKeR6sUL7hb"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 23
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 24,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_01Dr9FRBaTAdRWKeR6sUL7hb",
+    "content": {
+      "type": "code_execution_result",
+      "stdout": "None\nApple reports third quarter results\n13265\n---",
+      "stderr": "",
+      "return_code": 0,
+      "content": [],
+      "abort_reason": null
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 24
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 25,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": "I"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": " found and"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": " opened the official"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": " Apple Newsroom"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": " (Investor Relations press"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": " release"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": ") page directly, confirming the content on the pag"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": "Apple reports third quarter results\" (fiscal 2026 "
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 25,
+  "delta": {
+    "type": "text_delta",
+    "text": "ports:\n\n**1. Quarterly Revenue:** "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 25
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 26,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 26,
+  "delta": {
+    "type": "text_delta",
+    "text": "Apple today announced financial results for its fi"
+  }
+}
+
+event: ping
+{
+  "type": "ping"
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 26,
+  "delta": {
+    "type": "text_delta",
+    "text": "4 billion, up 16 percent year over year."
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 26
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 27,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 27,
+  "delta": {
+    "type": "text_delta",
+    "text": "\n\n**2. Diluted EPS:** "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 27
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 28,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 28,
+  "delta": {
+    "type": "text_delta",
+    "text": "Diluted earnings per share was $2.02, up 29 percen"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 28
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 29,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 29,
+  "delta": {
+    "type": "text_delta",
+    "text": "ff-related items (the page notes this reflects a b"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 29,
+  "delta": {
+    "type": "text_delta",
+    "text": "** The press release is dated **July 30, 2026**, a"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 29,
+  "delta": {
+    "type": "text_delta",
+    "text": " page: the quarter set records, as "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 29
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 30,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 30,
+  "delta": {
+    "type": "text_delta",
+    "text": "June quarter records for total company revenue and"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 30
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 31,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 31,
+  "delta": {
+    "type": "text_delta",
+    "text": " were ach"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 31,
+  "delta": {
+    "type": "text_delta",
+    "text": "ieved, with "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 31
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 32,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 32,
+  "delta": {
+    "type": "text_delta",
+    "text": "iPhone, Mac and Services revenue set new June quar"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 32
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 33,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 33,
+  "delta": {
+    "type": "text_delta",
+    "text": " as well. The release also notes that "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 33
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 34,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 34,
+  "delta": {
+    "type": "text_delta",
+    "text": "Company gross margin was 50.1 percent, including a"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 34,
+  "delta": {
+    "type": "text_delta",
+    "text": "ximately 2 percentage points from tariff refunds."
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 34
+}
+
+event: message_delta
+{
+  "type": "message_delta",
+  "delta": {
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "stop_details": null,
+    "container": {
+      "id": "container_01Tn9Ejq5JFzqqYejgPCoRay",
+      "expires_at": "2026-08-15T15:13:43.221226Z"
+    }
+  },
+  "usage": {
+    "input_tokens": 53798,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 1590,
+    "output_tokens_details": {
+      "thinking_tokens": 276
+    },
+    "server_tool_use": {
+      "web_search_requests": 4,
+      "web_fetch_requests": 1
+    }
+  }
+}
+
+event: message_stop
+{
+  "type": "message_stop"
+}
+

@@ -1,0 +1,172 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011Ce4g6hDYMXo5i2B5KMaPs",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "EusCCokBCBAYAipAjS5zTE9qEgLhYLc9lZbOf0i+Ib2Kz6f2FincaWIzK+JLdphP72Cjytveq/HZxqgKvJoJcQbV601KcL4iW0vtajIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2I2ZjlmNmEyMzYSDKd3q8iB"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01BdRtGCdim9XEr6jJ22ax75",
+      "name": "code_execution",
+      "input": {
+        "code": "import json\nresult = await web_fetch({\"url\": \"https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/\"})\nentry = json.loads(result)[0]\nprint(entry.get(\"error_code\"))\nprint(entry.ge"
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_016yp6WfXR1LbpNhKN6EW62N",
+      "name": "web_fetch",
+      "input": {
+        "url": "https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/"
+      },
+      "caller": {
+        "type": "code_execution_20260120",
+        "tool_id": "srvtoolu_01BdRtGCdim9XEr6jJ22ax75"
+      }
+    },
+    {
+      "type": "web_fetch_tool_result",
+      "tool_use_id": "srvtoolu_016yp6WfXR1LbpNhKN6EW62N",
+      "content": {
+        "type": "web_fetch_result",
+        "url": "https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/",
+        "retrieved_at": "2026-08-15T03:41:54.963000+00:00",
+        "content": {
+          "type": "document",
+          "source": {
+            "type": "text",
+            "media_type": "text/plain",
+            "data": "---\ncanonical: https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/\nmeta-Description: Apple today announced financial results for its fiscal 2026 third quarter ended June 27, 20"
+          },
+          "title": "Apple reports third quarter results"
+        }
+      },
+      "caller": {
+        "type": "code_execution_20260120",
+        "tool_id": "srvtoolu_01BdRtGCdim9XEr6jJ22ax75"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01BdRtGCdim9XEr6jJ22ax75",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "None\n---\ncanonical: https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/\nmeta-Description: Apple today announced financial results for its fiscal 2026 third quarter ended June 2",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Er0CCokBCBAYAipA+UGeRYd1E+X9B4cd/JBjlTpdqsrlmLZCtx07GpdrHQDFfR7LoH23WUOoBwHG1rw82YsdbGl6ccrEDptAqkD2kDIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2I2ZjlmNmEyMzYSDMnq/42A"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_0185xYxaWN6ULVRjmXPRu9to",
+      "name": "code_execution",
+      "input": {
+        "code": "content = entry[\"content\"]\nprint(len(content))\nidx = content.find(\"Apple today announced\")\nprint(content[idx:idx+4000])\n"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_0185xYxaWN6ULVRjmXPRu9to",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "13265\nApple today announced financial results for its fiscal 2026 third quarter ended June 27, 2026.\nmeta-analytics-s-bucket-0: applestoreww\nmeta-analytics-s-bucket-1: applestoreww\nmeta-analytics-s-bu",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Ev8DCokBCBAYAipAqRzw/fxfU/nnqQtNPmqzl20iyOw8StVNnYnPigyzLA6vbkcG/3bTJVEtaLV/l43fhJMoJSi8liMx38sjuZfxljIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2I2ZjlmNmEyMzYSDBzkNgS2"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_013ZhHvZSpsFrVeTPAD9qtou",
+      "name": "code_execution",
+      "input": {
+        "code": "print(content[idx+4000:idx+8000])\n"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_013ZhHvZSpsFrVeTPAD9qtou",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "rnings-call). The webcast will be available for replay for approximately two weeks thereafter.\n\n## Media\n\n-\n\n      Consolidated Financial Statements\n\n  [View PDF](https://www.apple.com/newsroom/pdfs/f",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "EogFCokBCBAYAipAAJQve1Yet4p7RyuZqoaoZb9UED3raU4c7Q14UeoM6Gw4G6LTiY3leHEw4Qy2xIGKPTX/Vhjvw7HvsDRCdfguaTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2I2ZjlmNmEyMzYSDL4CVuOr"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01HszFkWED4poe9fHZw8mYAi",
+      "name": "code_execution",
+      "input": {
+        "code": "import re\nfor kw in [\"iPhone revenue\",\"Services revenue\",\"Mac revenue\",\"iPad revenue\",\"Wearables\",\"Greater China\",\"International\"]:\n    i = content.find(kw)\n    print(kw, i)\n"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01HszFkWED4poe9fHZw8mYAi",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "iPhone revenue -1\nServices revenue 2497\nMac revenue -1\niPad revenue -1\nWearables -1\nGreater China -1\nInternational -1\n",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "text",
+      "text": "This is a genuine (future-dated) Apple Newsroom press release. Here's a summary:\n\n## Apple Reports Fiscal 2026 Third-Quarter Results\n**Press Release Date: July 30, 2026 | Quarter Ended: June 27, 2026*"
+    }
+  ],
+  "container": {
+    "id": "container_01KQ9UDprWTedqo2AzrvWjQY",
+    "expires_at": "2026-08-15T15:15:46.715503Z"
+  },
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 38688,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1414,
+    "output_tokens_details": {
+      "thinking_tokens": 293
+    },
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 1
+    }
+  }
+}

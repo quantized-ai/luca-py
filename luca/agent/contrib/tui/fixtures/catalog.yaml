@@ -28,6 +28,13 @@
   screen: chat
   session: subagents
 
+# A hosted web search turn: the search renders as an ordinary tool row derived
+# from the recorded parts, the cited answer follows, and the synthetic
+# execution beside them stays invisible plumbing.
+- name: chat/websearch
+  screen: chat
+  session: websearch
+
 # A mentioned file, a plan, and the plan's first step carried out by two
 # subagents at once — one reading, one editing. The plan itself is the docked
 # panel under the transcript, not a transcript block.

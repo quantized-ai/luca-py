@@ -664,3 +664,74 @@ async def test_a_fully_resolved_reload_still_engages_the_model_with_completion_w
     assert result.outcome is TurnOutcome.COMPLETED
     assert runner.idle()
     assert len(faux.requests) == 1
+
+
+async def test_a_pause_with_unresolved_children_parks_until_material(faux):
+    # D8 × subagents (§10 item 36, ratified): a PAUSED wake-round response
+    # landing with a child still unresolved and no fresh material PARKS — the
+    # paused entry is the last assistant message and is not "material", and
+    # its replay happens on the NEXT wake (here: the child's resolution),
+    # with the continuation request ending in the task-update user message —
+    # the blessed in-flight shape.
+    from luca.agent.core.events import ResponsePaused, ResponseResumed
+
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [spawn_call("Find the bug", "finder", call_id="tc1", task_id="tA")],
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message(
+                [faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")],  # gated: the child parks
+                finish_reason="tool_use",
+            ),
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),  # the paused wake round
+            faux_assistant_message([faux_text("A found the bug")], finish_reason="stop"),  # the child, once allowed
+            faux_assistant_message([faux_text("bug found")], finish_reason="stop"),  # the replay round
+        ]
+    )
+    from tests.agent.scenarios import AddTool, FakeToolRegistry
+
+    registry = SubagentRegistry()
+    registry.other = FakeToolRegistry(
+        [AddTool()],
+        decisions=[
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),  # run 1: the child gates
+            ApprovalDecision(decision=ApprovalOption.PENDING, created_at=1000),  # run 2 re-asks: still gated
+            ApprovalDecision(decision=ApprovalOption.ALLOW, created_at=1000),  # run 3: allowed
+        ],
+    )
+    session = subagent_session()
+    runner = DeterministicRunner(session, tool_registry=registry, provider=faux, ids=list(IDS), now=1000)
+    runner.post_message("go")
+
+    await runner.run()  # run 1: spawn; the child gates; the parent parks
+    assert len(faux.requests) == 2
+
+    runner.post_message("how is it going?")
+    async with runner.run() as run:  # run 2: the wake round returns a PAUSE
+        pause_events = [event async for event in run]
+
+    # the pause parked instead of replaying: no third request was made, the
+    # paused entry is durable, and only the Paused half fired (a child-result
+    # wake is not the pure-continuation shape the Resumed detection names)
+    assert len(faux.requests) == 3
+    assert any(isinstance(event, ResponsePaused) for event in pause_events)
+    assert not any(isinstance(event, ResponseResumed) for event in pause_events)
+    parent_nodes = session.conversations["c1"].nodes
+    last_assistant = [session.entries[n] for n in parent_nodes if session.entries[n].type == "assistant"][-1]
+    assert last_assistant.stop_reason == "pause"
+    assert session.get_conversation_status("c1").status is ConversationStatus.BLOCKED
+
+    await runner.run()  # run 3: the gate allows; the child resolves; the wake REPLAYS
+
+    assert len(faux.requests) == 5
+    # the continuation request replays the paused entry verbatim and ends
+    # with the task-update user message
+    continuation = faux.requests[4].messages
+    assert continuation[-2].role == "assistant"
+    assert continuation[-2].content[0].text == "Searching..."
+    assert continuation[-1].role == "user"
+    assert "task id=tA" in continuation[-1].content[0].text
+    closing = session.entries[session.conversations["c1"].nodes[-1]]
+    assert (closing.type, closing.outcome) == ("turn_finish", TurnOutcome.COMPLETED)

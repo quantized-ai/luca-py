@@ -41,6 +41,7 @@ from luca.agent.core.models import (
     TextContent,
     ToolCall,
     ToolExecution,
+    ToolSpec,
     TurnFinish,
     TurnOutcome,
     UserMessage,
@@ -709,3 +710,125 @@ def test_no_warning_when_both_limits_are_disabled():
         DeterministicRunner(session, provider=faux, ids=[], now=1000)
 
     assert recorded == []
+
+
+async def test_a_synthetic_execution_does_not_break_the_doom_loop_chain():
+    # a runtime-minted record (an is_synthetic spec) interleaved between
+    # identical calls is filtered out of the scan — without the filter it
+    # would break window contiguity and MASK a real doom loop
+    synthetic_spec = ToolSpec(
+        name="web_search",
+        description="Provider-hosted web search, recorded for posterity.",
+        input_schema={"type": "object", "properties": {}},
+        is_private=True,
+        is_synthetic=True,
+    )
+
+    class MintPerToolRound:
+        def __init__(self):
+            self.counter = 0
+
+        def synthesize_executions(self, session, conversation_id, entry):
+            if not any(isinstance(part, ToolCall) for part in entry.parts):
+                return []
+            self.counter += 1
+            return [
+                ToolExecution(
+                    tool_call_id=f"srv_{self.counter}",
+                    raw_tool_call=ToolCall(
+                        id=f"srv_{self.counter}",
+                        name="web_search",
+                        arguments={"queries": ["apple"]},
+                    ),
+                    tool_spec=synthetic_spec,
+                    status=ExecutionStatus.COMPLETED,
+                    result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+                )
+            ]
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_tool_call("add", {"a": 1, "b": 2}, id="tc1")], finish_reason="tool_use"),
+            faux_assistant_message([faux_tool_call("add", {"a": 1, "b": 2}, id="tc2")], finish_reason="tool_use"),
+            faux_assistant_message([faux_tool_call("add", {"a": 1, "b": 2}, id="tc3")], finish_reason="tool_use"),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = session_with(
+        RuntimeConfig(
+            doom_loop_threshold=3,
+            limit_tool_choice_on_doom_loop_flagged=False,  # isolate flagging only
+        )
+    )
+    runner = DeterministicRunner(
+        session,
+        tool_registry=FakeToolRegistry([AddTool()]),
+        provider=faux,
+        ids=["ts", "a1", "s1", "te1", "a2", "s2", "te2", "a3", "s3", "te3", "a4", "tf"],
+        now=1000,
+        middleware=[MintPerToolRound()],
+    )
+
+    await runner.run()
+
+    # the third consecutive identical CALL is still flagged: the synthetics
+    # between the calls are invisible to the window
+    assert runner.session.entries["te1"].is_doom_loop_flagged is False
+    assert runner.session.entries["te2"].is_doom_loop_flagged is False
+    assert runner.session.entries["te3"] == completed(
+        "te3",
+        "s3",
+        ToolCall(id="tc3", name="add", arguments={"a": 1, "b": 2}),
+        "3",
+        flagged=True,
+    )
+
+
+async def test_pause_rounds_count_against_hard_max_steps():
+    # a pause round is a real model round: two paused responses hit the
+    # hard limit and the turn closes ERRORED instead of replaying forever
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),
+            faux_assistant_message([faux_text("Still searching...")], finish_reason="pause"),
+        ]
+    )
+    session = session_with(RuntimeConfig(hard_max_steps=2))
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "a2", "tf"], now=1000)
+
+    async with runner.run() as run:
+        events = [event async for event in run]
+
+    assert len(faux.requests) == 2
+    # Resumed fires AFTER the limit checks: exactly one (before the second
+    # call), never a spurious one ahead of the ERRORED close
+    from luca.agent.core.events import ResponseResumed
+
+    assert events.count(ResponseResumed(conversation_id="c1")) == 1
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="a2",
+        created_at=1000,
+        outcome=TurnOutcome.ERRORED,
+        error="Hard max steps limit reached: 2",
+    )
+
+
+async def test_a_pause_round_counts_toward_soft_max_and_forces_tool_choice_none():
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),
+            faux_assistant_message([faux_text("Done.")], finish_reason="stop"),
+        ]
+    )
+    session = session_with(RuntimeConfig(soft_max_steps=1))
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "a2", "tf"], now=1000)
+
+    await runner.run()
+
+    # the continuation request runs under the soft cap: text-only
+    assert [request.tool_choice for request in faux.requests] == [None, "none"]
+    assert runner.session.entries["tf"].outcome == TurnOutcome.COMPLETED

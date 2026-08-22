@@ -20,11 +20,11 @@ from .types.messages import AssistantMessage, ToolMessage, UserMessage
 from .types.tools import BaseTool, Tool
 
 if TYPE_CHECKING:
+    from .transports.streamer import BaseStreamer
     from .types.completion import ChatCompletionResponse
-    from .types.streaming import AsyncChatCompletionStream, ChatCompletionStream
 
 
-# Process-local provider cache: keyed by (name, api_key, base_url, transport_class, timeout).
+# Process-local provider cache: keyed by (name, api_key, base_url, transport_class).
 # Never evicts. close_all() (not exposed in V1) can clear it for tests.
 _provider_cache: dict[tuple, BaseProvider] = {}
 
@@ -163,9 +163,8 @@ def _get_cached_provider(
     api_key: str | None,
     base_url: str | None,
     transport_class: type | None,
-    timeout: float | None,
 ) -> BaseProvider:
-    key = (name, api_key, base_url, transport_class, timeout)
+    key = (name, api_key, base_url, transport_class)
     inst = _provider_cache.get(key)
     if inst is None:
         inst = resolve_provider(
@@ -173,7 +172,6 @@ def _get_cached_provider(
             api_key=api_key,
             base_url=base_url,
             transport_class=transport_class,
-            timeout=timeout,
         )
         _provider_cache[key] = inst
     return inst
@@ -187,7 +185,6 @@ def _resolve_for_call(
     transport_class: type | None,
     api_key: str | None,
     base_url: str | None,
-    timeout: float | None,
 ) -> tuple[BaseProvider, str, str]:
     """Returns (provider_instance, provider_name, model_id)."""
     # Pre-built provider — caller drives the lifecycle entirely.
@@ -212,7 +209,6 @@ def _resolve_for_call(
         api_key=api_key,
         base_url=base_url,
         transport_class=transport_class,
-        timeout=timeout,
     )
     return prov, provider_name, model_id
 
@@ -255,6 +251,10 @@ def completion(
     base_url: str | None = None,
     timeout: float | None = None,
 ) -> ChatCompletionResponse:
+    """Sync completion. `timeout=` is a total wall-clock deadline for the
+    call, forwarded as the per-request httpx timeout — best-effort: httpx
+    phase timeouts reset as data arrives, so a wall clock cannot be enforced
+    on a live sync socket."""
     prov, provider_name, model_id = _resolve_for_call(
         model=model,
         provider=provider,
@@ -262,7 +262,6 @@ def completion(
         transport_class=transport_class,
         api_key=api_key,
         base_url=base_url,
-        timeout=timeout,
     )
     request = _build_request(
         model=model_id,
@@ -291,7 +290,7 @@ def completion(
         metadata=metadata,
         provider_options=provider_options,
     )
-    return prov.completion(request)
+    return prov.completion(request, timeout=timeout)
 
 
 async def acompletion(
@@ -326,12 +325,9 @@ async def acompletion(
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
-    total_timeout: float | None = None,
 ) -> ChatCompletionResponse:
-    """Async completion. `timeout=` is the per-phase httpx timeout;
-    `total_timeout=` is a wall-clock deadline over the whole call — expiry
-    raises the SDK `TimeoutError`. Async-only: the sync `completion` has no
-    loop to enforce a total deadline on."""
+    """Async completion. `timeout=` is a total wall-clock deadline over the
+    whole call — expiry raises the SDK `TimeoutError`."""
     prov, provider_name, model_id = _resolve_for_call(
         model=model,
         provider=provider,
@@ -339,7 +335,6 @@ async def acompletion(
         transport_class=transport_class,
         api_key=api_key,
         base_url=base_url,
-        timeout=timeout,
     )
     request = _build_request(
         model=model_id,
@@ -368,14 +363,14 @@ async def acompletion(
         metadata=metadata,
         provider_options=provider_options,
     )
-    if total_timeout is None:
+    if timeout is None:
         return await prov.acompletion(request)
     try:
-        async with asyncio.timeout(total_timeout):
+        async with asyncio.timeout(timeout):
             return await prov.acompletion(request)
     except TimeoutError as exc:  # the builtin, raised by asyncio.timeout
         raise SDKTimeoutError(
-            f"completion exceeded total_timeout={total_timeout}s",
+            f"completion exceeded timeout={timeout}s",
             provider=provider_name,
             original_exception=exc,
         ) from exc
@@ -413,7 +408,12 @@ def completion_stream(
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
-) -> ChatCompletionStream:
+) -> BaseStreamer:
+    """Sync streaming. Creating the stream makes no network call; entering
+    the context manager sends the request. `timeout=` is a total wall-clock
+    deadline, enforced cooperatively (checked before each read) — expiry
+    after the stream opened emits one terminal ErrorEvent carrying the SDK
+    TimeoutError; expiry during open raises it."""
     prov, provider_name, model_id = _resolve_for_call(
         model=model,
         provider=provider,
@@ -421,7 +421,6 @@ def completion_stream(
         transport_class=transport_class,
         api_key=api_key,
         base_url=base_url,
-        timeout=timeout,
     )
     request = _build_request(
         model=model_id,
@@ -450,7 +449,7 @@ def completion_stream(
         metadata=metadata,
         provider_options=provider_options,
     )
-    return prov.completion_stream(request)
+    return prov.completion_stream(request, timeout=timeout)
 
 
 def acompletion_stream(
@@ -485,15 +484,12 @@ def acompletion_stream(
     api_key: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
-    total_timeout: float | None = None,
-) -> AsyncChatCompletionStream:
+) -> BaseStreamer:
     # NOTE: this is a regular `def`, not `async def`. The function returns
-    # AsyncChatCompletionStream synchronously; HTTP fires on first iteration.
-    # `total_timeout=` arms a wall-clock deadline on the stream object
-    # (recorded at open, enforced on every chunk pull): expiry follows the
+    # the async streamer synchronously; HTTP fires at `async with`.
+    # `timeout=` arms a wall-clock deadline on the stream: expiry follows the
     # streaming contract — exactly one terminal ErrorEvent carrying the SDK
-    # TimeoutError, then close. Async-only; `completion_stream` has no loop
-    # to enforce a total deadline on.
+    # TimeoutError, then close — and expiry during open raises it.
     prov, provider_name, model_id = _resolve_for_call(
         model=model,
         provider=provider,
@@ -501,7 +497,6 @@ def acompletion_stream(
         transport_class=transport_class,
         api_key=api_key,
         base_url=base_url,
-        timeout=timeout,
     )
     request = _build_request(
         model=model_id,
@@ -530,10 +525,65 @@ def acompletion_stream(
         metadata=metadata,
         provider_options=provider_options,
     )
-    stream = prov.acompletion_stream(request)
-    if total_timeout is not None:
-        stream._set_total_timeout(total_timeout)
-    return stream
+    return prov.acompletion_stream(request, timeout=timeout)
+
+
+def effective_messages(
+    model: str,
+    messages: list,
+    *,
+    provider: str | BaseProvider | None = None,
+    transport: Any = None,
+    transport_class: type | None = None,
+) -> list:
+    """The subset of `messages` that will actually serialize onto the wire
+    for the given target, in client types instead of wire dicts.
+
+    Same target resolution as `acompletion()` (`provider=` takes a name or a
+    pre-built provider, `transport=` a pre-built transport instance,
+    `transport_class=` a class), and the same selection the payload build
+    runs: `payload(messages, t) == payload(effective_messages(messages, t), t)`.
+    Entirely offline — no key is needed and no HTTP happens; the resolved
+    provider is cached exactly as a call's would be.
+
+    A fully-filtered assistant message is returned as
+    `AssistantMessage(content=[])`, never omitted."""
+    prov, provider_name, model_id = _resolve_for_call(
+        model=model,
+        provider=provider,
+        transport=transport,
+        transport_class=transport_class,
+        api_key=None,
+        base_url=None,
+    )
+    request = _build_request(
+        model=model_id,
+        provider_name=provider_name,
+        messages=messages,
+        system_message=None,
+        tools=None,
+        tool_choice=None,
+        response_format=None,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        max_tokens=None,
+        stop=None,
+        seed=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        logprobs=None,
+        top_logprobs=None,
+        reasoning=None,
+        cache_retention=None,
+        session_id=None,
+        parallel_tool_calls=None,
+        user=None,
+        model_info=None,
+        metadata=None,
+        provider_options=None,
+    )
+    return prov.transport.effective_messages(request.messages, request)
 
 
 def get_provider(model_or_pair: str) -> BaseProvider:
@@ -545,5 +595,4 @@ def get_provider(model_or_pair: str) -> BaseProvider:
         api_key=None,
         base_url=None,
         transport_class=None,
-        timeout=None,
     )

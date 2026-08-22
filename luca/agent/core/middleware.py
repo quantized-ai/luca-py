@@ -8,7 +8,9 @@ the recommended way to write one.
 
 Every hook on the mixin is an identity pass-through — it returns exactly what
 it receives — so a subclass that overrides only some hooks leaves every other
-pipeline stage untouched.
+pipeline stage untouched. The one departure is `synthesize_executions`, which
+CONTRIBUTES rather than transforms (each middleware returns only its own
+templates, defaulting to none) — identity there is the empty list.
 
 CONVERSATION SCOPE. Every hook starts with `(session, conversation_id)`. An
 `AgentSession` holds several conversations — the main one plus parallel
@@ -72,6 +74,7 @@ from .models import (
     AgentSession,
     AnyEntry,
     ApprovalDecision,
+    AssistantMessage,
     ContentPart,
     LLMConfig,
     ToolCall,
@@ -124,7 +127,11 @@ class AgentMiddlewareMixin:
         vocabulary, the richer fields to filter on), this one RESHAPES how a
         surviving tool is declared. The place to swap a function declaration
         for a provider-native declaration item (`ApplyPatchTool()`,
-        `TextEditorTool()`, …); dropping or adding tools belongs upstream."""
+        `TextEditorTool()`, …) — and the place to APPEND a provider-HOSTED
+        declaration item (a web-search tool the provider executes
+        server-side): a hosted declaration has no `ToolSpec` behind it, so
+        the spec-vocabulary door upstream cannot carry it. Dropping tools,
+        and adding tools that DO have specs, still belong upstream."""
         return tools
 
     def before_post_message(
@@ -201,6 +208,42 @@ class AgentMiddlewareMixin:
         a transformation here changes the durable response and everything
         downstream of it while the rendered stream stands as it was."""
         return message
+
+    def synthesize_executions(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        entry: AssistantMessage,
+    ) -> list[ToolExecution]:
+        """Executions to append after `entry` — the COMMITTED assistant entry,
+        so its durable id is available for linking — derived from what the
+        response carried (a hosted web operation, an MCP server-side action,
+        anything the model has already seen that deserves a durable structural
+        record).
+
+        UNLIKE every other hook this one CONTRIBUTES rather than transforms:
+        each middleware returns only its OWN templates and the runner
+        concatenates them in middleware order — no value is threaded through
+        the chain. Templates carry no identity (`id` / `created_at` /
+        `conversation_id` are the runner's to stamp; a missing
+        `tool_call_id` / `raw_tool_call.id` is backfilled via `generate_id()`)
+        and MUST be TERMINAL and resolve to a PRIVATE spec — no `ToolCall`
+        block for them exists on the path, so private is the only wire-legal
+        shape. No tool lifecycle events fire for them.
+
+        SYNC ONLY — it runs inside the drive's documented no-await atomic
+        block, between the assistant commit and the RECEIVED births.
+
+        A template that violates the terminal/private contract raises
+        `AgentError` OUT of the drive with the turn left OPEN — the assistant
+        entry is already committed and, for a tool-calling response, the
+        RECEIVED births have not run yet, which is not a cleanly resumable
+        state. Acceptable because the refusals guard against middleware BUGS,
+        not runtime conditions (middleware is trusted); the recovery door is
+        `cancel()`, whose wind-down closes the turn from exactly this state.
+
+        Default: no synthetics."""
+        return []
 
     def before_tool_creation(
         self,

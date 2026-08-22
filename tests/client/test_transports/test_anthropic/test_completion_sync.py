@@ -129,6 +129,38 @@ CASES = [
         ),
     ),
     Case(
+        name="pause_turn_terminal_maps_to_pause",
+        request=ChatCompletionRequest(
+            model="claude-3-5-sonnet-latest",
+            provider="anthropic",
+            messages=[UserMessage(content="...")],
+        ),
+        mock_response_json={
+            "id": "msg_07",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{"type": "text", "text": "Searching..."}],
+            "stop_reason": "pause_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        },
+        expected=ChatCompletionResponse(
+            messages=[
+                AssistantMessage(
+                    content=[TextBlock(text="Searching...")],
+                    finish_reason="pause",
+                    provider_finish_reason="pause_turn",
+                    provider="anthropic",
+                    model="claude-3-5-sonnet-latest",
+                    response_model="claude-3-5-sonnet-20241022",
+                    response_id="msg_07",
+                    usage=Usage(input_tokens=5, output_tokens=3, total_tokens=8),
+                )
+            ],
+        ),
+    ),
+    Case(
         name="refusal_terminal_maps_to_error",
         request=ChatCompletionRequest(
             model="claude-3-5-sonnet-latest",

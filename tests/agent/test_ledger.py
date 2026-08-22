@@ -2979,3 +2979,45 @@ def test_derive_status_a_cancelling_child_outranks_a_gate():
 
     assert session.get_conversation_status("c2").status == ConversationStatus.CANCELLING
     assert session.get_conversation_status("c1").status == ConversationStatus.BUSY
+
+
+def test_record_usage_stores_tool_requests():
+    # the one non-int payload rides the named keyword, never **counters
+    session = AgentSession(
+        id="s",
+        entries={
+            "a1": AssistantMessage(
+                id="a1",
+                created_at=1,
+                parts=[TextContent(text="hi")],
+                llm_config=MODEL,
+                stop_reason="stop",
+            ),
+        },
+        conversations={
+            "c1": conversation(
+                "c1",
+                ["a1"],
+                created_at=0,
+                updated_at=1,
+            )
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    ledger = SessionLedger(session, clock=lambda: 1000, gen_id=lambda: "x")
+
+    recorded = ledger.record_usage("c1", "a1", input=100, output=50, tool_requests={"web_search": 2})
+
+    assert session.usages == {
+        "c1": {
+            "a1": Usage(
+                conversation_id="c1",
+                entry_id="a1",
+                input=100,
+                output=50,
+                tool_requests={"web_search": 2},
+            )
+        }
+    }
+    assert recorded is session.usages["c1"]["a1"]

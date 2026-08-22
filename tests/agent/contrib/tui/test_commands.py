@@ -33,7 +33,7 @@ from luca.agent.contrib.tui.prompt import PromptInput
 from luca.agent.contrib.tui.sessions import list_sessions, save_session
 from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
 from luca.agent.contrib.tui.wiring import default_model
-from luca.agent.core.models import LLMConfig, RuntimeConfig
+from luca.agent.core.models import LLMConfig, RuntimeConfig, TextContent, UserMessage
 from luca.client import catalog
 from luca.client.catalog._data import cache_path
 from luca.client.providers import PROVIDERS
@@ -841,3 +841,34 @@ def test_the_tests_read_an_isolated_model_catalog_cache():
     # pinning that variable, a contributor who has refreshed would be testing
     # against different models than CI.
     assert str(cache_path()).startswith(os.environ["XDG_CACHE_HOME"])
+
+
+async def test_a_model_switch_triggers_recalculate_context_tokens(tmp_path):
+    # The trigger is TUI wiring, not core: /model refreshes the ACTIVE config
+    # (the manager measures against it) and re-derives every stored count on
+    # the new basis. The stale value proves the recalculation actually ran.
+    session = fresh_session()
+    # in the STORE but on no path: recalculation covers every entry, and an
+    # off-path entry cannot make the app auto-drive at mount
+    session.entries["u1"] = UserMessage(
+        id="u1",
+        created_at=1,
+        parts=[TextContent(text="hello world, this is a long enough message")],
+        context_tokens=999,  # stale on purpose
+    )
+    app = AgentApp(
+        session,
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model anthropic:claude-sonnet-5")
+        await pilot.pause()
+
+        # the ACTIVE pair was refreshed to the new configured value…
+        assert app.runner.session.llm_config == app.runner.session.session_config.llm_config
+        assert _config(app) == LLMConfig(model="claude-sonnet-5", provider="anthropic")
+        # …and every entry was re-derived: len("hello world, …") // 4
+        assert app.runner.session.entries["u1"].context_tokens == 10

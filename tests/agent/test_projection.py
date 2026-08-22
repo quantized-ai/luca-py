@@ -39,6 +39,7 @@ from luca.agent.core.models import (
     MediaBase64,
     MediaFileId,
     MediaURL,
+    PrivateProviderContent,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -48,7 +49,11 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     TurnStart,
+    URLCitation,
     UserMessage,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
 )
 from luca.agent.core.projection import (
     CANCELLED_TURN_MARKER,
@@ -63,11 +68,16 @@ from luca.client.types import (
     MediaBase64 as LucaMediaBase64,
     MediaFileId as LucaMediaFileId,
     MediaURL as LucaMediaURL,
+    PrivateProviderBlock as LucaPrivateProviderBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall as LucaToolCall,
     ToolMessage,
+    URLCitationAnnotation as LucaURLCitationAnnotation,
     UserMessage as LucaUserMessage,
+    WebFetchBlock as LucaWebFetchBlock,
+    WebPagePart as LucaWebPagePart,
+    WebSearchBlock as LucaWebSearchBlock,
 )
 from tests.agent.scenarios import spec
 
@@ -1724,6 +1734,237 @@ def test_the_shared_media_mapping_is_one_override_for_every_part_type():
         LucaAudioBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None)),
         LucaFileBlock(source=LucaMediaURL(url="https://cdn.example.com/proxied", media_type=None), name=None),
     )
+
+
+# ── web parts (hosted web tools) ─────────────────────────────────────────────
+
+
+def test_a_private_provider_part_projects_verbatim_with_provenance():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[
+                PrivateProviderContent(
+                    format="anthropic.messages",
+                    data={"type": "server_tool_use", "id": "srvtoolu_1", "input": {"query": "apple"}},
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaAssistantMessage(
+            content=[
+                LucaPrivateProviderBlock(
+                    format="anthropic.messages",
+                    data={"type": "server_tool_use", "id": "srvtoolu_1", "input": {"query": "apple"}},
+                ),
+            ],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_a_web_search_part_projects_with_results_and_extras():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[
+                WebSearchContent(
+                    queries=["apple results"],
+                    results=[WebPageContent(url="https://apple.com", title="Apple", content="snippet")],
+                    extras={"id": "srvtoolu_1"},
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaAssistantMessage(
+            content=[
+                LucaWebSearchBlock(
+                    queries=["apple results"],
+                    results=[LucaWebPagePart(url="https://apple.com", title="Apple", content="snippet")],
+                    extras={"id": "srvtoolu_1"},
+                ),
+            ],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_a_resultless_web_search_part_projects_none_not_empty():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[WebSearchContent(queries=["apple"], results=None)],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaAssistantMessage(
+            content=[LucaWebSearchBlock(queries=["apple"], results=None)],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_a_web_fetch_part_projects_with_its_page():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[
+                WebFetchContent(
+                    web_page=WebPageContent(url="https://apple.com", title="Apple", content="Page text."),
+                    extras={"id": "ws_2"},
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaAssistantMessage(
+            content=[
+                LucaWebFetchBlock(
+                    web_page=LucaWebPagePart(url="https://apple.com", title="Apple", content="Page text."),
+                    extras={"id": "ws_2"},
+                ),
+            ],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_annotated_text_projects_its_citation_ranges():
+    entries = {
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=1,
+            parts=[
+                TextContent(
+                    text="Apple rose 2.8% today.",
+                    annotations=[
+                        URLCitation(
+                            url="https://example.com/apple",
+                            title="Apple shares rise",
+                            start_index=0,
+                            end_index=22,
+                        )
+                    ],
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="stop",
+        ),
+    }
+    conversation = Conversation(id="c1", nodes=["a1"], created_at=1, updated_at=1)
+
+    assert PROJECTOR.project(conversation.nodes, entries) == [
+        LucaAssistantMessage(
+            content=[
+                TextBlock(
+                    text="Apple rose 2.8% today.",
+                    annotations=[
+                        LucaURLCitationAnnotation(
+                            url="https://example.com/apple",
+                            title="Apple shares rise",
+                            start_index=0,
+                            end_index=22,
+                        )
+                    ],
+                ),
+            ],
+            provider="p",
+            model="m",
+        ),
+    ]
+
+
+def test_projected_web_parts_survive_a_provider_switch():
+    # The D1 walkthrough, asserted across the layer boundary: the agent
+    # projects everything with provenance; the CLIENT's effective view keeps
+    # the private verbatim on the producing target and drops it on a foreign
+    # one — and the session parts are untouched either way.
+    from luca.client import effective_messages
+
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            PrivateProviderContent(
+                format="openai.responses",
+                data={"id": "ws_1", "type": "web_search_call", "status": "completed"},
+            ),
+            WebSearchContent(queries=["apple"], extras={"id": "ws_1"}),
+            TextContent(
+                text="Apple rose.",
+                annotations=[URLCitation(url="https://apple.com", title="Apple", start_index=0, end_index=11)],
+            ),
+        ],
+        llm_config=LLMConfig(model="gpt-5.1", provider="openai"),
+        stop_reason="stop",
+    )
+    original_parts = [part.model_copy(deep=True) for part in entry.parts]
+    projected = PROJECTOR.project(["a1"], {"a1": entry})
+
+    producing_view = effective_messages("openai:gpt-5.1", projected)
+    foreign_view = effective_messages("anthropic:claude-sonnet-5", projected)
+
+    # The producing target replays the private and never sends the portable
+    # block; a foreign target drops the private and keeps the cited text.
+    assert producing_view == [
+        LucaAssistantMessage(
+            content=[
+                LucaPrivateProviderBlock(
+                    format="openai.responses",
+                    data={"id": "ws_1", "type": "web_search_call", "status": "completed"},
+                ),
+                TextBlock(
+                    text="Apple rose.",
+                    annotations=[
+                        LucaURLCitationAnnotation(url="https://apple.com", title="Apple", start_index=0, end_index=11)
+                    ],
+                ),
+            ],
+            provider="openai",
+            model="gpt-5.1",
+        ),
+    ]
+    assert foreign_view == [
+        LucaAssistantMessage(
+            content=[
+                TextBlock(
+                    text="Apple rose.",
+                    annotations=[
+                        LucaURLCitationAnnotation(url="https://apple.com", title="Apple", start_index=0, end_index=11)
+                    ],
+                ),
+            ],
+            provider="openai",
+            model="gpt-5.1",
+        ),
+    ]
+    assert entry.parts == original_parts
 
 
 # ── audio parts ───────────────────────────────────────────────────────────────

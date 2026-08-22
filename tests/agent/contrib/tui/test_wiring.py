@@ -177,3 +177,18 @@ def test_faux_provider_starts_unconsumed():
     provider = build_faux_provider()
 
     assert provider.requests == []
+
+
+def test_the_websearch_plugin_is_composed_iff_enabled(tmp_path):
+    from luca.agent.contrib.websearch import WebSearchConfig, WebSearchMiddleware
+
+    without = build_runner(fresh_session(), workspace=tmp_path)[0]
+    with_block = build_runner(
+        fresh_session(),
+        workspace=tmp_path,
+        websearch=WebSearchConfig.model_validate({"anthropic": {"search": {"max_uses": 5}}}),
+    )[0]
+
+    assert not any(isinstance(mw, WebSearchMiddleware) for mw in without.middleware)
+    [middleware] = [mw for mw in with_block.middleware if isinstance(mw, WebSearchMiddleware)]
+    assert middleware.config.anthropic.search.max_uses == 5

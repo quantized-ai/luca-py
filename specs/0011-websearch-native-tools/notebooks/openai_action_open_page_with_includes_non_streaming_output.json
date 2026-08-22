@@ -1,0 +1,508 @@
+{
+  "id": "resp_0600e9eb9c86b4c2016a8454053d3887d2a3be4447021",
+  "object": "response",
+  "created_at": 1787057157,
+  "status": "completed",
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1787057166,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.4-nano-2026-03-17",
+  "moderation": null,
+  "output": [
+    {
+      "id": "ws_0600e9eb9c86b4c2016a845405eef087d2b3a623a7b853f",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "Apple Investor Relations latest quarterly results press release diluted earnings per share publication date"
+        ],
+        "query": "Apple Investor Relations latest quarterly results ",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://ph.investing.com/equities/apple-computer-i"
+          },
+          {
+            "type": "url",
+            "url": "https://d3cobg6h0snvt3.cloudfront.net/pressroom/pr"
+          },
+          {
+            "type": "url",
+            "url": "https://ph.investing.com/equities/apple-computer-i"
+          },
+          {
+            "type": "url",
+            "url": "https://www.ig.com/ae/news-and-trade-ideas/apple-q"
+          },
+          {
+            "type": "url",
+            "url": "https://s21.q4cdn.com/100551446/files/doc_financia"
+          },
+          {
+            "type": "url",
+            "url": "https://s21.q4cdn.com/100551446/files/doc_financia"
+          },
+          {
+            "type": "url",
+            "url": "https://s26.q4cdn.com/658173366/files/doc_financia"
+          },
+          {
+            "type": "url",
+            "url": "https://s26.q4cdn.com/658173366/files/doc_financia"
+          },
+          {
+            "type": "url",
+            "url": "https://www.reddit.com/r/stocks/comments/1vb5xl9/a"
+          },
+          {
+            "type": "url",
+            "url": "https://www.finanzen.at/termine/apple"
+          },
+          {
+            "type": "url",
+            "url": "https://stockeyes.com/stocks/changes"
+          },
+          {
+            "type": "url",
+            "url": "https://www.reddit.com/r/walnutmarkets/comments/1v"
+          }
+        ]
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search0\ue201 [wordlim: 200] Published: 2 we",
+          "title": "Apple Earnings - Investing.com PH",
+          "url": "https://ph.investing.com/equities/apple-computer-i"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search12\ue201 [wordlim: 200] Published: 3 m",
+          "title": "Full Year and Fourth Quarter 2025 Earnings Results",
+          "url": "https://d3cobg6h0snvt3.cloudfront.net/pressroom/pr"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search1\ue201 [wordlim: 200] Published: 2 we",
+          "title": "Apple Earnings - Investing.com PH",
+          "url": "https://ph.investing.com/equities/apple-computer-i"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search2\ue201 [wordlim: 200] Published: 3 we",
+          "title": "Apple Q3 2026 earnings preview | IG AE",
+          "url": "https://www.ig.com/ae/news-and-trade-ideas/apple-q"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search13\ue201 [wordlim: 200] Published: 9 m",
+          "title": "3Q25 Press Release - Final",
+          "url": "https://s21.q4cdn.com/100551446/files/doc_financia"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search14\ue201 [wordlim: 200] Published: 5 m",
+          "title": "FOR IMMEDIATE RELEASE",
+          "url": "https://s21.q4cdn.com/100551446/files/doc_financia"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search15\ue201 [wordlim: 200] Published: 9 m",
+          "title": "News Release",
+          "url": "https://s26.q4cdn.com/658173366/files/doc_financia"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search16\ue201 [wordlim: 200] Published: 9 m",
+          "title": "News Release",
+          "url": "https://s26.q4cdn.com/658173366/files/doc_financia"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0reddit17\ue201 [wordlim: 200] Published: 2 w",
+          "title": "AAPL Quarterly Revenue $109.4 billion (up 16% YoY)",
+          "url": "https://www.reddit.com/r/stocks/comments/1vb5xl9/a"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search3\ue201 [wordlim: 200] Crawled: last w",
+          "title": "Apple Termine | finanzen.at",
+          "url": "https://www.finanzen.at/termine/apple"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0search4\ue201 [wordlim: 200] Published: last",
+          "title": "AAPL, MSFT & NVDA Latest Company Changes | StockEy",
+          "url": "https://stockeyes.com/stocks/changes"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn0reddit18\ue201 [wordlim: 200] Published: 3 w",
+          "title": "Apple Q3 2026 Earnings Preview: Strong momentum, b",
+          "url": "https://www.reddit.com/r/walnutmarkets/comments/1v"
+        }
+      ]
+    },
+    {
+      "id": "ws_0600e9eb9c86b4c2016a845407af4087d28f2599aced499",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "Apple Investor Relations fiscal Q3 2026 results press release revenue diluted earnings per share"
+        ],
+        "query": "Apple Investor Relations fiscal Q3 2026 results pr",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.apple.com/ne/newsroom/2026/07/apple-re"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://www.sec.gov/Archives/edgar/data/723125/000"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://www.apple.com/newsroom/2025/07/apple-repor"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://d18rn0p25nwr6d.cloudfront.net/CIK-00003201"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          },
+          {
+            "type": "url",
+            "url": "https://s27.q4cdn.com/749715820/files/doc_financia"
+          },
+          {
+            "type": "url",
+            "url": "https://s23.q4cdn.com/152113917/files/doc_download"
+          },
+          {
+            "type": "url",
+            "url": "https://s203.q4cdn.com/764564379/files/doc_financi"
+          },
+          {
+            "type": "url",
+            "url": "https://s21.q4cdn.com/769814866/files/doc_financia"
+          }
+        ]
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search0\ue201 [wordlim: 200] Published: 2 we",
+          "title": "Apple reports third quarter results - Apple",
+          "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search1\ue201 [wordlim: 200] Published: last",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search2\ue201 [wordlim: 200] Published: 2 we",
+          "title": "Apple reports third quarter results - Apple (NE)",
+          "url": "https://www.apple.com/ne/newsroom/2026/07/apple-re"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search3\ue201 [wordlim: 200] Published: last",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search4\ue201 [wordlim: 200] Published: last",
+          "title": "",
+          "url": "https://www.sec.gov/Archives/edgar/data/723125/000"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search5\ue201 [wordlim: 200] Published: 2 mo",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search6\ue201 [wordlim: 200] Crawled: 3 week",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search7\ue201 [wordlim: 200] Published: last",
+          "title": "Apple reports third quarter results - Apple",
+          "url": "https://www.apple.com/newsroom/2025/07/apple-repor"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search8\ue201 [wordlim: 200] Published: 2 mo",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search9\ue201 [wordlim: 200] Published: 2 we",
+          "title": "Apple Inc. (Form: 8-K, Received: 07/30/2026 16:30:",
+          "url": "https://d18rn0p25nwr6d.cloudfront.net/CIK-00003201"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search10\ue201 [wordlim: 200] Published: 2 m",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search11\ue201 [wordlim: 200] Crawled: last ",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search12\ue201 [wordlim: 200] Published: 9 m",
+          "title": "2025 Q3 Earnings Release",
+          "url": "https://s27.q4cdn.com/749715820/files/doc_financia"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search13\ue201 [wordlim: 200] Published: 3 m",
+          "title": "Press Release 3.31.2026",
+          "url": "https://s23.q4cdn.com/152113917/files/doc_download"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search14\ue201 [wordlim: 200] Published: 6 m",
+          "title": "Press release Q3 2026",
+          "url": "https://s203.q4cdn.com/764564379/files/doc_financi"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search15\ue201 [wordlim: 200] Published: 3 m",
+          "title": "Press Release Q1 2026",
+          "url": "https://s21.q4cdn.com/769814866/files/doc_financia"
+        }
+      ]
+    },
+    {
+      "id": "ws_0600e9eb9c86b4c2016a84540a4e8c87d2b9435fc8a36dc",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/"
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn2view0\ue201 [wordlim: 200] Crawled: today; C",
+          "title": "Investor Relations - Apple",
+          "url": "https://investor.apple.com/investor-relations/"
+        }
+      ]
+    },
+    {
+      "id": "ws_0600e9eb9c86b4c2016a84540b322887d28d857111b8ed3",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/"
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn3view0\ue201 [wordlim: 200] Crawled: today; C",
+          "title": "Contact - Apple",
+          "url": "https://investor.apple.com/contact/default.aspx"
+        }
+      ]
+    },
+    {
+      "id": "ws_0600e9eb9c86b4c2016a84540bfa1c87d297f991bbd5c7a",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "site:investor.apple.com \"Q3\" \"Press Release\" \"diluted earnings per share\" \"CUPERTINO\" July 2026"
+        ],
+        "query": "site:investor.apple.com \"Q3\" \"Press Release\" \"dilu"
+      },
+      "results": []
+    },
+    {
+      "id": "ws_0600e9eb9c86b4c2016a84540d01a487d2aa866efb4b741",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn5view0\ue201 [wordlim: 200] Crawled: today; C",
+          "title": "Apple reports third quarter results - Apple",
+          "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+        }
+      ]
+    },
+    {
+      "id": "msg_0600e9eb9c86b4c2016a84540dcbf087d2afd9647eed4f",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "end_index": 227,
+              "start_index": 137,
+              "title": "Apple reports third quarter results - Apple",
+              "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+            },
+            {
+              "type": "url_citation",
+              "end_index": 359,
+              "start_index": 269,
+              "title": "Apple reports third quarter results - Apple",
+              "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+            },
+            {
+              "type": "url_citation",
+              "end_index": 495,
+              "start_index": 405,
+              "title": "Apple reports third quarter results - Apple",
+              "url": "https://www.apple.com/newsroom/2026/07/apple-repor"
+            }
+          ],
+          "logprobs": [],
+          "text": "From Apple\u2019s official earnings release page for it"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "none",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 3
+    }
+  },
+  "tools": [
+    {
+      "type": "web_search",
+      "return_token_budget": "default",
+      "search_content_types": [
+        "text"
+      ],
+      "search_context_size": "medium",
+      "user_location": {
+        "type": "approximate",
+        "city": null,
+        "country": "US",
+        "region": null,
+        "timezone": null
+      }
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 14899,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 337,
+    "output_tokens_details": {
+      "reasoning_tokens": 232
+    },
+    "total_tokens": 15236
+  },
+  "user": null,
+  "metadata": {}
+}

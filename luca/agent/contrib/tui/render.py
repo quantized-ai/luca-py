@@ -43,6 +43,9 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     UserMessage,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
 )
 
 from . import state as vm
@@ -760,6 +763,49 @@ def task_status(entry: ChildConversation) -> vm.TaskStatus:
 ResultResolver = Callable[[ToolExecution], tuple[str | None, bool]]
 
 
+def web_search_row(queries: list[str], results, error: dict | None) -> vm.ToolBlock:
+    """One hosted web search as an ordinary `ToolBlock` row (the @-mention
+    idiom — no new block kind). Shared by the live event path and the resume
+    derivation, so the transcript reads the same either way."""
+    arg = ", ".join(queries)
+    if error is not None:
+        code = error.get("error_code") or error.get("status") or "failed"
+        return vm.ToolBlock(
+            tool="web_search",
+            arg=arg,
+            status="error",
+            result=vm.ToolResult(summary=f"[error]failed: {code}[/]"),
+        )
+    if results is None:
+        return vm.ToolBlock(tool="web_search", arg=arg, status="ok", result=vm.ToolResult(summary="searched"))
+    count = len(results)
+    summary = f"{count} result{'s' if count != 1 else ''}"
+    return vm.ToolBlock(tool="web_search", arg=arg, status="ok", result=vm.ToolResult(summary=summary))
+
+
+def web_fetch_row(web_page: WebPageContent, error: dict | None) -> vm.ToolBlock:
+    """One hosted page fetch as an ordinary `ToolBlock` row."""
+    if error is not None:
+        code = error.get("error_code") or error.get("status") or "failed"
+        return vm.ToolBlock(
+            tool="web_fetch",
+            arg=web_page.url,
+            status="error",
+            result=vm.ToolResult(summary=f"[error]failed: {code}[/]"),
+        )
+    facts: list[str] = []
+    if web_page.title:
+        facts.append(web_page.title)
+    if web_page.content is not None:
+        facts.append(fmt_bytes(len(web_page.content)))
+    return vm.ToolBlock(
+        tool="web_fetch",
+        arg=web_page.url,
+        status="ok",
+        result=vm.ToolResult(summary=" · ".join(facts) or "fetched"),
+    )
+
+
 def entry_blocks(
     entry: Entry | None,
     *,
@@ -787,6 +833,13 @@ def entry_blocks(
                 blocks.append(vm.ThinkingBlock())
             elif isinstance(part, TextContent) and part.text.strip():
                 blocks.append(vm.TextBlock(text=part.text))
+            elif isinstance(part, WebSearchContent):
+                # The same row the live path derives from the block event —
+                # from the PARTS, never the synthetics (those stay invisible
+                # via `is_runtime_plumbing`).
+                blocks.append(web_search_row(part.queries, part.results, part.extras.get("error")))
+            elif isinstance(part, WebFetchContent):
+                blocks.append(web_fetch_row(part.web_page, part.extras.get("error")))
         return blocks
     if isinstance(entry, ToolExecution):
         return _execution_blocks(entry, resolve_result)

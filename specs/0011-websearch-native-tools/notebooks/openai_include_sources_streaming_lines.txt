@@ -1,0 +1,852 @@
+event: response.created
+{
+  "type": "response.created",
+  "response": {
+    "id": "resp_0c4809b9c06d2de2016a80652ebd00819fbeeb5d2fa43",
+    "object": "response",
+    "created_at": 1786799406,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 0
+}
+
+event: response.in_progress
+{
+  "type": "response.in_progress",
+  "response": {
+    "id": "resp_0c4809b9c06d2de2016a80652ebd00819fbeeb5d2fa43",
+    "object": "response",
+    "created_at": 1786799406,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 1
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 0,
+  "sequence_number": 2
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+  "output_index": 0,
+  "sequence_number": 3
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+  "output_index": 0,
+  "sequence_number": 4
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+  "output_index": 0,
+  "sequence_number": 5
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "positive news story August 15 2026"
+      ],
+      "query": "positive news story August 15 2026",
+      "sources": [
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+        },
+        {
+          "type": "url",
+          "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+        },
+        {
+          "type": "url",
+          "url": "https://en.wikipedia.org/wiki/2026"
+        },
+        {
+          "type": "url",
+          "url": "https://thepeninsulaqatar.com/pdf-file/20250815_17"
+        },
+        {
+          "type": "url",
+          "url": "https://en.wikipedia.org/wiki/2016_in_science"
+        },
+        {
+          "type": "url",
+          "url": "https://kypublicnotices.newzgroup.com/KYLegals/202"
+        },
+        {
+          "type": "url",
+          "url": "https://appalachianhardwood.org/wp-content/uploads"
+        },
+        {
+          "type": "url",
+          "url": "https://caningerabass.eq.edu.au/calendarandnews/ne"
+        }
+      ]
+    }
+  },
+  "output_index": 0,
+  "sequence_number": 6
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 1,
+  "sequence_number": 7
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+  "output_index": 1,
+  "sequence_number": 8
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+  "output_index": 1,
+  "sequence_number": 9
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+  "output_index": 1,
+  "sequence_number": 10
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "August 15 2026 positive news story",
+        "good news August 15 2026",
+        "site:goodnewsnetwork.org August 2026",
+        "site:apnews.com August 15 2026 good news"
+      ],
+      "query": "August 15 2026 positive news story",
+      "sources": [
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/RKLB/comments/1voyw9x/aug"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/March2027BumpGroup/commen"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/February2027Bumpers/comme"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/atlanticdiscussions/comme"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+        },
+        {
+          "type": "url",
+          "url": "https://churchofthegoodsamaritan.org/current.pdf"
+        },
+        {
+          "type": "url",
+          "url": "https://www.abc.org/Portals/1/NewsMedia/2026%20ABC"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/exjw/comments/1vkadi9/fee"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+        },
+        {
+          "type": "url",
+          "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+        },
+        {
+          "type": "url",
+          "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+        },
+        {
+          "type": "url",
+          "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+        },
+        {
+          "type": "url",
+          "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+        },
+        {
+          "type": "url",
+          "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+        },
+        {
+          "type": "url",
+          "url": "https://en.wikipedia.org/wiki/2026"
+        },
+        {
+          "type": "url",
+          "url": "https://goodnewsfirstchurch.org/wp-content/uploads"
+        },
+        {
+          "type": "url",
+          "url": "https://www.goodnewsnetwork.org/events060626/"
+        }
+      ]
+    }
+  },
+  "output_index": 1,
+  "sequence_number": 11
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+    "type": "message",
+    "status": "in_progress",
+    "content": [],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 2,
+  "sequence_number": 12
+}
+
+event: response.content_part.added
+{
+  "type": "response.content_part.added",
+  "content_index": 0,
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "output_index": 2,
+  "part": {
+    "type": "output_text",
+    "annotations": [],
+    "logprobs": [],
+    "text": ""
+  },
+  "sequence_number": 13
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "Here\u2019s one **positive story",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "db7E4",
+  "output_index": 2,
+  "sequence_number": 14
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " idea for \u201ctoday\u201d (",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "HGYgtb4fS65bv",
+  "output_index": 2,
+  "sequence_number": 15
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "Aug 15, 2026)** that",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "BXYGyX8KMKyq",
+  "output_index": 2,
+  "sequence_number": 16
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " I found quickly: a Reddit \u201cglobal check-in\u201d threa",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "ZgQD0AF",
+  "output_index": 2,
+  "sequence_number": 17
+}
+
+event: response.output_text.annotation.added
+{
+  "type": "response.output_text.annotation.added",
+  "annotation": {
+    "type": "url_citation",
+    "end_index": 394,
+    "start_index": 257,
+    "title": "How is your country doing today? August 15, 2026",
+    "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+  },
+  "annotation_index": 0,
+  "content_index": 0,
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "output_index": 2,
+  "sequence_number": 18
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "\nIf you want, tell me your preference\u2014**US-only or",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "WfVU0",
+  "output_index": 2,
+  "sequence_number": 19
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " you want **health/science, community,",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "sRA49razpc",
+  "output_index": 2,
+  "sequence_number": 20
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " environment, or animals**\u2014and I\u2019ll",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "N0htNVvtE6FVY",
+  "output_index": 2,
+  "sequence_number": 21
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " find a more mainstream news item that matches it.",
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "obfuscation": "r6gE9oLskAdmL3",
+  "output_index": 2,
+  "sequence_number": 22
+}
+
+event: response.output_text.done
+{
+  "type": "response.output_text.done",
+  "content_index": 0,
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "logprobs": [],
+  "output_index": 2,
+  "sequence_number": 23,
+  "text": "Here\u2019s one **positive story idea for \u201ctoday\u201d (Aug "
+}
+
+event: response.content_part.done
+{
+  "type": "response.content_part.done",
+  "content_index": 0,
+  "item_id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+  "output_index": 2,
+  "part": {
+    "type": "output_text",
+    "annotations": [
+      {
+        "type": "url_citation",
+        "end_index": 394,
+        "start_index": 257,
+        "title": "How is your country doing today? August 15, 2026",
+        "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+      }
+    ],
+    "logprobs": [],
+    "text": "Here\u2019s one **positive story idea for \u201ctoday\u201d (Aug "
+  },
+  "sequence_number": 24
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [
+          {
+            "type": "url_citation",
+            "end_index": 394,
+            "start_index": 257,
+            "title": "How is your country doing today? August 15, 2026",
+            "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+          }
+        ],
+        "logprobs": [],
+        "text": "Here\u2019s one **positive story idea for \u201ctoday\u201d (Aug "
+      }
+    ],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 2,
+  "sequence_number": 25
+}
+
+event: response.completed
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_0c4809b9c06d2de2016a80652ebd00819fbeeb5d2fa43",
+    "object": "response",
+    "created_at": 1786799406,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1786799410,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [
+      {
+        "id": "ws_0c4809b9c06d2de2016a80652f3fa8819f9bd4992c1180e",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "positive news story August 15 2026"
+          ],
+          "query": "positive news story August 15 2026",
+          "sources": [
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+            },
+            {
+              "type": "url",
+              "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+            },
+            {
+              "type": "url",
+              "url": "https://en.wikipedia.org/wiki/2026"
+            },
+            {
+              "type": "url",
+              "url": "https://thepeninsulaqatar.com/pdf-file/20250815_17"
+            },
+            {
+              "type": "url",
+              "url": "https://en.wikipedia.org/wiki/2016_in_science"
+            },
+            {
+              "type": "url",
+              "url": "https://kypublicnotices.newzgroup.com/KYLegals/202"
+            },
+            {
+              "type": "url",
+              "url": "https://appalachianhardwood.org/wp-content/uploads"
+            },
+            {
+              "type": "url",
+              "url": "https://caningerabass.eq.edu.au/calendarandnews/ne"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ws_0c4809b9c06d2de2016a8065302e24819fa985835faaded",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "August 15 2026 positive news story",
+            "good news August 15 2026",
+            "site:goodnewsnetwork.org August 2026",
+            "site:apnews.com August 15 2026 good news"
+          ],
+          "query": "August 15 2026 positive news story",
+          "sources": [
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/RKLB/comments/1voyw9x/aug"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/March2027BumpGroup/commen"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/February2027Bumpers/comme"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/atlanticdiscussions/comme"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+            },
+            {
+              "type": "url",
+              "url": "https://churchofthegoodsamaritan.org/current.pdf"
+            },
+            {
+              "type": "url",
+              "url": "https://www.abc.org/Portals/1/NewsMedia/2026%20ABC"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/exjw/comments/1vkadi9/fee"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+            },
+            {
+              "type": "url",
+              "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+            },
+            {
+              "type": "url",
+              "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+            },
+            {
+              "type": "url",
+              "url": "https://www.goodnewsnetwork.org/?wordfence_syncAtt"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+            },
+            {
+              "type": "url",
+              "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+            },
+            {
+              "type": "url",
+              "url": "https://en.wikipedia.org/wiki/2026"
+            },
+            {
+              "type": "url",
+              "url": "https://goodnewsfirstchurch.org/wp-content/uploads"
+            },
+            {
+              "type": "url",
+              "url": "https://www.goodnewsnetwork.org/events060626/"
+            },
+            {
+              "type": "url",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+            }
+          ]
+        }
+      },
+      {
+        "id": "msg_0c4809b9c06d2de2016a806531d314819fa42ff49d89de",
+        "type": "message",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "annotations": [
+              {
+                "type": "url_citation",
+                "end_index": 394,
+                "start_index": 257,
+                "title": "How is your country doing today? August 15, 2026",
+                "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+              }
+            ],
+            "logprobs": [],
+            "text": "Here\u2019s one **positive story idea for \u201ctoday\u201d (Aug "
+          }
+        ],
+        "phase": "final_answer",
+        "role": "assistant"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 2
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 12705,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 3712
+      },
+      "output_tokens": 257,
+      "output_tokens_details": {
+        "reasoning_tokens": 129
+      },
+      "total_tokens": 12962
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 26
+}
+

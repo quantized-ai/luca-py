@@ -1,0 +1,650 @@
+event: message_start
+{
+  "type": "message_start",
+  "message": {
+    "model": "claude-sonnet-5",
+    "id": "msg_011CeCqRU1AA9Rek9sBNGAJj",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+      "input_tokens": 6093,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "output_tokens": 22,
+      "service_tier": "standard",
+      "inference_geo": "global"
+    }
+  }
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 0,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01MYTaAKRjV8ZAZPnXSA79Hp",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: ping
+{
+  "type": "ping"
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"\\nimport"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": " as"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "yncio\\nresults = asyncio.get_event_loop().run_unti"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "'][:500])\\n    print('---')\\n"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 0,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 0
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 1,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01A3LrVnd51qqSQqNVNqQ5qn",
+    "name": "web_search",
+    "input": {
+      "query": "AAPL stock price today"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01MYTaAKRjV8ZAZPnXSA79Hp"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 1
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 2,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_01A3LrVnd51qqSQqNVNqQ5qn",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple Stock Chart \u2014 NASDAQ:AAPL Stock Price \u2014 Trad",
+        "url": "https://www.tradingview.com/symbols/NASDAQ-AAPL/",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "AAPL Stock Quote Price and Forecast | CNN",
+        "url": "https://www.cnn.com/markets/stocks/AAPL",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Buy or Sell Apple Stock - AAPL Stock Price Quote &",
+        "url": "https://robinhood.com/us/en/stocks/AAPL/",
+        "encrypted_content": "EuEPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "What BofA and Morgan Stanley Are Saying About Appl",
+        "url": "https://finance.yahoo.com/markets/stocks/articles/",
+        "encrypted_content": "Eu0ECioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple stock price ended at $310.03 on Tuesday, aft",
+        "url": "https://stockinvest.us/stock-news/apple-stock-pric",
+        "encrypted_content": "EtsGCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. (AAPL) Stock Price, News, Quote & Histo",
+        "url": "https://finance.yahoo.com/quote/AAPL/",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Check out Apple Inc.'s stock price (AAPL) in real ",
+        "url": "https://www.cnbc.com/quotes/AAPL",
+        "encrypted_content": "EsAICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "3 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple (AAPL) Stock Price, News, Quotes, & Historic",
+        "url": "https://www.nasdaq.com/market-activity/stocks/aapl",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc (AAPL) Stock Price & News - Google Finan",
+        "url": "https://www.google.com/finance/quote/AAPL:NASDAQ",
+        "encrypted_content": "Es4ICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "What's Going On With Apple Stock Wednesday? - Appl",
+        "url": "https://www.benzinga.com/markets/tech/26/08/613084",
+        "encrypted_content": "EsYDCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01MYTaAKRjV8ZAZPnXSA79Hp"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 2
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 3,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_01MYTaAKRjV8ZAZPnXSA79Hp",
+    "content": {
+      "type": "encrypted_code_execution_result",
+      "encrypted_stdout": "Eo4BCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+      "stderr": "Traceback (most recent call last):\n  File \"/tmp/sr",
+      "return_code": 1,
+      "content": []
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 3
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 4,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01K9Ksux6iPNmfUucHSszKbG",
+    "name": "code_execution",
+    "input": {}
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 4,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 4,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"code\": \"\\nimport json\\nresults = await web_searc"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 4,
+  "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 4
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 5,
+  "content_block": {
+    "type": "server_tool_use",
+    "id": "srvtoolu_01MB5SGn8mG4TFhJxpro41B8",
+    "name": "web_search",
+    "input": {
+      "query": "AAPL stock price today"
+    },
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01K9Ksux6iPNmfUucHSszKbG"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 5
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 6,
+  "content_block": {
+    "type": "web_search_tool_result",
+    "tool_use_id": "srvtoolu_01MB5SGn8mG4TFhJxpro41B8",
+    "content": [
+      {
+        "type": "web_search_result",
+        "title": "Apple Stock Chart \u2014 NASDAQ:AAPL Stock Price \u2014 Trad",
+        "url": "https://www.tradingview.com/symbols/NASDAQ-AAPL/",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "AAPL Stock Quote Price and Forecast | CNN",
+        "url": "https://www.cnn.com/markets/stocks/AAPL",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Buy or Sell Apple Stock - AAPL Stock Price Quote &",
+        "url": "https://robinhood.com/us/en/stocks/AAPL/",
+        "encrypted_content": "EuEPCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "What BofA and Morgan Stanley Are Saying About Appl",
+        "url": "https://finance.yahoo.com/markets/stocks/articles/",
+        "encrypted_content": "Eu0ECioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple stock price ended at $310.03 on Tuesday, aft",
+        "url": "https://stockinvest.us/stock-news/apple-stock-pric",
+        "encrypted_content": "EtsGCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc. (AAPL) Stock Price, News, Quote & Histo",
+        "url": "https://finance.yahoo.com/quote/AAPL/",
+        "encrypted_content": "Et8QCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Check out Apple Inc.'s stock price (AAPL) in real ",
+        "url": "https://www.cnbc.com/quotes/AAPL",
+        "encrypted_content": "EsAICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "3 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple (AAPL) Stock Price, News, Quotes, & Historic",
+        "url": "https://www.nasdaq.com/market-activity/stocks/aapl",
+        "encrypted_content": "EuAQCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "Apple Inc (AAPL) Stock Price & News - Google Finan",
+        "url": "https://www.google.com/finance/quote/AAPL:NASDAQ",
+        "encrypted_content": "Es4ICioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": "2 days ago"
+      },
+      {
+        "type": "web_search_result",
+        "title": "What's Going On With Apple Stock Wednesday? - Appl",
+        "url": "https://www.benzinga.com/markets/tech/26/08/613084",
+        "encrypted_content": "EsYDCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+        "page_age": null
+      }
+    ],
+    "caller": {
+      "type": "code_execution_20260120",
+      "tool_id": "srvtoolu_01K9Ksux6iPNmfUucHSszKbG"
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 6
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 7,
+  "content_block": {
+    "type": "code_execution_tool_result",
+    "tool_use_id": "srvtoolu_01K9Ksux6iPNmfUucHSszKbG",
+    "content": {
+      "type": "encrypted_code_execution_result",
+      "encrypted_stdout": "Er4PCioIEhgCIiRmMDQ1ZTA1Yy02MjA3LTQ0YTEtOTcxMi1lY2",
+      "stderr": "Task was destroyed but it is pending!\ntask: <Task ",
+      "return_code": 0,
+      "content": []
+    }
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 7
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 8,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "text_delta",
+    "text": "Based on the latest available"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "text_delta",
+    "text": " data,"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "text_delta",
+    "text": " Apple ("
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 8,
+  "delta": {
+    "type": "text_delta",
+    "text": "AAPL) stock is trading around $303\u2013$310.\n\nAccordin"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 8
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 9,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 9,
+  "delta": {
+    "type": "text_delta",
+    "text": "the price of AAPL shares has increased $4.44 since"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 9
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 10,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 10,
+  "delta": {
+    "type": "text_delta",
+    "text": ", with some after-hours movement noted as"
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 10,
+  "delta": {
+    "type": "text_delta",
+    "text": " well.\n\nMeanwhile, TradingView reports "
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 10
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 11,
+  "content_block": {
+    "citations": [],
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 11,
+  "delta": {
+    "type": "text_delta",
+    "text": "Apple stock (AAPL) trades around $303 to $307 toda"
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 11
+}
+
+event: content_block_start
+{
+  "type": "content_block_start",
+  "index": 12,
+  "content_block": {
+    "type": "text",
+    "text": ""
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 12,
+  "delta": {
+    "type": "text_delta",
+    "text": ".\n\nNote: Stock prices fluctuate constantly during "
+  }
+}
+
+event: content_block_delta
+{
+  "type": "content_block_delta",
+  "index": 12,
+  "delta": {
+    "type": "text_delta",
+    "text": " Finance, Yahoo Finance, or your brokerage app."
+  }
+}
+
+event: content_block_stop
+{
+  "type": "content_block_stop",
+  "index": 12
+}
+
+event: message_delta
+{
+  "type": "message_delta",
+  "delta": {
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "stop_details": null,
+    "container": {
+      "id": "container_01WmNJzRHk4BDRCBHJ9P6397",
+      "expires_at": "2026-08-19T22:42:47.489694Z"
+    }
+  },
+  "usage": {
+    "input_tokens": 19871,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 535,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 2,
+      "web_fetch_requests": 0
+    }
+  }
+}
+
+event: message_stop
+{
+  "type": "message_stop"
+}
+

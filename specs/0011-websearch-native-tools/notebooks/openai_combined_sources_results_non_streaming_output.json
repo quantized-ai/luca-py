@@ -1,0 +1,230 @@
+{
+  "id": "resp_00eccfb61c881477016a8067e70cc081a3bdcf3487f41df9ac",
+  "object": "response",
+  "created_at": 1786800103,
+  "status": "completed",
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1786800105,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.4-nano-2026-03-17",
+  "moderation": null,
+  "output": [
+    {
+      "id": "ws_00eccfb61c881477016a8067e74ff081a39e2d6229542b7508",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "time: {\"utc_offset\":\"-04:00\"}"
+        ],
+        "query": "time: {\"utc_offset\":\"-04:00\"}",
+        "sources": [
+          {
+            "type": "api",
+            "name": "oai-time"
+          }
+        ]
+      },
+      "results": []
+    },
+    {
+      "id": "ws_00eccfb61c881477016a8067e7b41c81a3b78410026f274c99",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "positive news Aug 15 2026",
+          "good news story Aug 15 2026",
+          "charity success Aug 15 2026 news",
+          "community celebrates success Aug 15 2026 news"
+        ],
+        "query": "positive news Aug 15 2026",
+        "sources": [
+          {
+            "type": "url",
+            "url": "https://www.reddit.com/r/globalcheckin/comments/1votryg/how_is_your_country_doing_today_august_15_2026/"
+          },
+          {
+            "type": "url",
+            "url": "https://www.sistersofcharityhealth.org/media/e3nl5pjn/schs26-15_2025-impact-report_2nd-run-final.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://ipan.au/storage/daily-news/2026-07-15/daily_report.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.detpress.com/storage/uploads/D3/CC/D3CC08A9-EF68-C5CF-DA58-EC005D21F31D/press-release-10-1440870.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://discover.onecause.com/rs/527-FNH-344/images/OneCause-Fundraising-Outlook-2025-EB.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://cdnc.heyzine.com/files/uploaded/90287f7d9362d3555fefe18646856a8b01134e86.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://nonprofitmanagementnavigator.com/wp-content/uploads/2025/08/August25NavigatorUpdate.pdf"
+          },
+          {
+            "type": "url",
+            "url": "https://www.reddit.com/r/globalcheckin/comments/1votryg/how_is_your_country_doing_today_august_15_2026/?utm_source=openai"
+          }
+        ]
+      },
+      "results": [
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1reddit0\ue201 [wordlim: 200] Published: today; [Saturday August 15 2026] [+4 votes] ... Every day by reading the news in this thread we can become a little closer to people from all over the wor",
+          "title": "How is your country doing today? August 15, 2026",
+          "url": "https://www.reddit.com/r/globalcheckin/comments/1votryg/how_is_your_country_doing_today_august_15_2026/"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search1\ue201 [wordlim: 200] Published: 3 months ago; SISTERS OF CHARITY FOUNDATION OF CLEVELAND ... After a brief pause, grantmaking returns in 2026.\nSenior Care Ministries\nFoundation Ministrie",
+          "title": "Mission in Action: 2025 Impact Report",
+          "url": "https://www.sistersofcharityhealth.org/media/e3nl5pjn/schs26-15_2025-impact-report_2nd-run-final.pdf"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search2\ue201 [wordlim: 200] Published: last month; Daily Peace and Crisis Report \u2014 Wednesday 15 July 2026 ... UN News / WHO\n7/14/26, 10:16 PM\nDaily Peace and Crisis Report \u2014 Wednesday 15 July 2",
+          "title": "Daily Peace and Crisis Report \u2014 Wednesday 15 July 2026",
+          "url": "https://ipan.au/storage/daily-news/2026-07-15/daily_report.pdf"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search3\ue201 [wordlim: 200] Published: 3 months ago; Aug.15, 2025 ... invaluable conversations, celebrities, newsmakers and politicians and must-see viewing for our loyal ... 19 (OAD: 6/17/25) ",
+          "title": "Aug. 15, 2025",
+          "url": "https://www.detpress.com/storage/uploads/D3/CC/D3CC08A9-EF68-C5CF-DA58-EC005D21F31D/press-release-10-1440870.pdf"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search4\ue201 [wordlim: 200] Published: 8 months ago; 15% ... 2025 Fundraising Success By Campaign Type ... 2026 FUNDRAISING OUTLOOK\nAll virtual\n42%\n32%\n26%\nWe do not plan on holding an event in",
+          "title": "2026\nFUNDRAISING OUTLOOK\nTrends, Opportunities & C",
+          "url": "https://discover.onecause.com/rs/527-FNH-344/images/OneCause-Fundraising-Outlook-2025-EB.pdf"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search5\ue201 [wordlim: 200] Published: 3 months ago; Good News ... that\u2019s down from 13.6m hectares in the last\nGood News\nGood News\nGood News\nGood News\nDeforestation rates decrease:\nThe UN Food ",
+          "title": "ISSUE 15\n SPRING 2026\nMarcus Morris Finaly\ngets hi",
+          "url": "https://cdnc.heyzine.com/files/uploaded/90287f7d9362d3555fefe18646856a8b01134e86.pdf"
+        },
+        {
+          "type": "text_result",
+          "snippet": "\ue200cite\ue202turn1search6\ue201 [wordlim: 200] Published: 6 months ago; reductions threaten 2026 filing season processing capabilities. ... affect charitable giving and lending compliance with August 2025 Section",
+          "title": "Abstract \nThe nonprofit sector faces unprecedented",
+          "url": "https://nonprofitmanagementnavigator.com/wp-content/uploads/2025/08/August25NavigatorUpdate.pdf"
+        }
+      ]
+    },
+    {
+      "id": "msg_00eccfb61c881477016a8067e8cc0081a38c960c57f8e978fc",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "end_index": 384,
+              "start_index": 247,
+              "title": "How is your country doing today? August 15, 2026",
+              "url": "https://www.reddit.com/r/globalcheckin/comments/1votryg/how_is_your_country_doing_today_august_15_2026/?utm_source=openai"
+            }
+          ],
+          "logprobs": [],
+          "text": "One positive story from **today (Aug 15, 2026)**: a thread on *r/globalcheckin* shared uplifting \u201cgood news\u201d from around the world\u2014people posted cheerful, community-style updates (including lightheart"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "none",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 2
+    }
+  },
+  "tools": [
+    {
+      "type": "web_search",
+      "return_token_budget": "default",
+      "search_content_types": [
+        "text"
+      ],
+      "search_context_size": "medium",
+      "user_location": {
+        "type": "approximate",
+        "city": null,
+        "country": "US",
+        "region": null,
+        "timezone": null
+      }
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 8511,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 3712
+    },
+    "output_tokens": 188,
+    "output_tokens_details": {
+      "reasoning_tokens": 116
+    },
+    "total_tokens": 8699
+  },
+  "user": null,
+  "metadata": {}
+}

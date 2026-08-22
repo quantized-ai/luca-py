@@ -31,6 +31,7 @@ from luca.agent.contrib.resource_permissions import (
     PermissionRequest,
     ResourcePermission,
 )
+from luca.agent.contrib.websearch import WEB_SEARCH_SPEC
 from luca.agent.core.models import (
     AgentSession,
     ApprovalStatus,
@@ -41,6 +42,7 @@ from luca.agent.core.models import (
     ExecutionResult,
     ExecutionStatus,
     LLMConfig,
+    PrivateProviderContent,
     SessionConfig,
     TextContent,
     ThinkingContent,
@@ -50,8 +52,11 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     TurnStart,
+    URLCitation,
     Usage,
     UserMessage,
+    WebPageContent,
+    WebSearchContent,
 )
 from tests.agent.scenarios import conversation, make_session, spec
 
@@ -1083,6 +1088,83 @@ def todos_done_session() -> AgentSession:
     return with_todo_store(session)
 
 
+def websearch_session() -> AgentSession:
+    """A hosted web search turn: the recorded parts render as tool rows (the
+    same derivation live and on resume), the cited answer keeps its ranges,
+    and the synthetic execution stays invisible plumbing."""
+    search_part = WebSearchContent(
+        queries=["Apple Q3 2026 results"],
+        results=[
+            WebPageContent(url="https://www.apple.com/newsroom/2026/07/", title="Apple reports third quarter results"),
+            WebPageContent(url="https://finance.yahoo.com/apple", title="Apple beats expectations"),
+        ],
+        extras={"id": "srvtoolu_ws_1"},
+    )
+    entries = {
+        "ts1": turn(1, 0),
+        "u1": user("u1", "what did Apple report last quarter?", 0),
+        "a1": AssistantMessage(
+            id="a1",
+            created_at=at(0.4),
+            parts=[
+                PrivateProviderContent(
+                    format="anthropic.messages",
+                    data={"type": "server_tool_use", "id": "srvtoolu_ws_1", "name": "web_search"},
+                ),
+                search_part,
+                TextContent(
+                    text="Apple reported quarterly revenue of $94.9B, up 6% year over year.",
+                    annotations=[
+                        URLCitation(
+                            url="https://www.apple.com/newsroom/2026/07/",
+                            title="Apple reports third quarter results",
+                            start_index=15,
+                            end_index=48,
+                        )
+                    ],
+                ),
+            ],
+            llm_config=MODEL,
+            stop_reason="stop",
+            context_tokens=320,
+        ),
+        "s1": ToolExecution(
+            id="s1",
+            created_at=at(0.4),
+            conversation_id="c1",
+            tool_call_id="srvtoolu_ws_1",
+            raw_tool_call=ToolCall(
+                id="srvtoolu_ws_1",
+                name="web_search",
+                arguments={"queries": ["Apple Q3 2026 results"]},
+            ),
+            tool_spec=WEB_SEARCH_SPEC,
+            status=ExecutionStatus.COMPLETED,
+            result=ExecutionResult(
+                content=[
+                    TextContent(text='Web search: "Apple Q3 2026 results" — 2 results (apple.com, finance.yahoo.com)')
+                ],
+                structured_content=search_part.model_dump(),
+            ),
+            extras={"websearch": {"message_entry_id": "a1"}},
+            finished_at=at(0.4),
+            context_tokens=19,
+        ),
+        "tf1": finish(1, 0.6),
+    }
+    session = make_session(
+        id="websearch",
+        entries=entries,
+        conversations={"c1": conversation("c1", list(entries), created_at=T0, updated_at=at(0.6))},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    session.usages = {
+        "c1": {"a1": usage("c1", "a1", input=6_400, output=280, cache_read=12_000)},
+    }
+    return session
+
+
 BUILDERS = {
     "empty": empty_session,
     "conversation": conversation_session,
@@ -1091,6 +1173,7 @@ BUILDERS = {
     "questions-answered": questions_answered_session,
     "failures": failures_session,
     "subagents": subagents_session,
+    "websearch": websearch_session,
     "planning": planning_session,
     "todos": todos_session,
     "todos-done": todos_done_session,

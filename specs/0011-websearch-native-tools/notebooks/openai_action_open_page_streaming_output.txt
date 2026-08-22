@@ -1,0 +1,1125 @@
+event: response.created
+{
+  "type": "response.created",
+  "response": {
+    "id": "resp_076cbfebf3a97214016a806a2761a481a0b9654b37995",
+    "object": "response",
+    "created_at": 1786800679,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 0
+}
+
+event: response.in_progress
+{
+  "type": "response.in_progress",
+  "response": {
+    "id": "resp_076cbfebf3a97214016a806a2761a481a0b9654b37995",
+    "object": "response",
+    "created_at": 1786800679,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 1
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 0,
+  "sequence_number": 2
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+  "output_index": 0,
+  "sequence_number": 3
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+  "output_index": 0,
+  "sequence_number": 4
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+  "output_index": 0,
+  "sequence_number": 5
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "Apple Investor Relations latest quarterly earnings release revenue diluted EPS publication date"
+      ],
+      "query": "Apple Investor Relations latest quarterly earnings"
+    }
+  },
+  "output_index": 0,
+  "sequence_number": 6
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 1,
+  "sequence_number": 7
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+  "output_index": 1,
+  "sequence_number": 8
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+  "output_index": 1,
+  "sequence_number": 9
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+  "output_index": 1,
+  "sequence_number": 10
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "open_page",
+      "url": "https://investor.apple.com/investor-relations/defa"
+    }
+  },
+  "output_index": 1,
+  "sequence_number": 11
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 2,
+  "sequence_number": 12
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+  "output_index": 2,
+  "sequence_number": 13
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+  "output_index": 2,
+  "sequence_number": 14
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+  "output_index": 2,
+  "sequence_number": 15
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "open_page",
+      "url": "https://investor.apple.com/investor-relations/defa"
+    }
+  },
+  "output_index": 2,
+  "sequence_number": 16
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 3,
+  "sequence_number": 17
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+  "output_index": 3,
+  "sequence_number": 18
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+  "output_index": 3,
+  "sequence_number": 19
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+  "output_index": 3,
+  "sequence_number": 20
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "open_page",
+      "url": "https://investor.apple.com/investor-relations/defa"
+    }
+  },
+  "output_index": 3,
+  "sequence_number": 21
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 4,
+  "sequence_number": 22
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+  "output_index": 4,
+  "sequence_number": 23
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+  "output_index": 4,
+  "sequence_number": 24
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+  "output_index": 4,
+  "sequence_number": 25
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "open_page",
+      "url": "https://investor.apple.com/investor-relations/defa"
+    }
+  },
+  "output_index": 4,
+  "sequence_number": 26
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 5,
+  "sequence_number": 27
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+  "output_index": 5,
+  "sequence_number": 28
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+  "output_index": 5,
+  "sequence_number": 29
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+  "output_index": 5,
+  "sequence_number": 30
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "site:investor.apple.com \"Apple reports\" \"quarterly revenue\" \"diluted earnings per share\" press release July 2026",
+        "site:investor.apple.com \"reports third quarter\" \"diluted earnings per share\" press release"
+      ],
+      "query": "site:investor.apple.com \"Apple reports\" \"quarterly"
+    }
+  },
+  "output_index": 5,
+  "sequence_number": 31
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 6,
+  "sequence_number": 32
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+  "output_index": 6,
+  "sequence_number": 33
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+  "output_index": 6,
+  "sequence_number": 34
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+  "output_index": 6,
+  "sequence_number": 35
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "site:investor.apple.com press release \"third quarter\" \"diluted earnings per share\" \"Company posted quarterly revenue\""
+      ],
+      "query": "site:investor.apple.com press release \"third quart"
+    }
+  },
+  "output_index": 6,
+  "sequence_number": 36
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 7,
+  "sequence_number": 37
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+  "output_index": 7,
+  "sequence_number": 38
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+  "output_index": 7,
+  "sequence_number": 39
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+  "output_index": 7,
+  "sequence_number": 40
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "investor.apple.com quarterly earnings reports press release third quarter 2026 diluted earnings per share",
+        "investor.apple.com earnings press release June quarter 2026 diluted earnings per share 2.02"
+      ],
+      "query": "investor.apple.com quarterly earnings reports pres"
+    }
+  },
+  "output_index": 7,
+  "sequence_number": 41
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+    "type": "web_search_call",
+    "status": "in_progress"
+  },
+  "output_index": 8,
+  "sequence_number": 42
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+  "output_index": 8,
+  "sequence_number": 43
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+  "output_index": 8,
+  "sequence_number": 44
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+  "output_index": 8,
+  "sequence_number": 45
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "open_page",
+      "url": "https://investor.apple.com/investor-relations/defa"
+    }
+  },
+  "output_index": 8,
+  "sequence_number": 46
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+    "type": "message",
+    "status": "in_progress",
+    "content": [],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 9,
+  "sequence_number": 47
+}
+
+event: response.content_part.added
+{
+  "type": "response.content_part.added",
+  "content_index": 0,
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "output_index": 9,
+  "part": {
+    "type": "output_text",
+    "annotations": [],
+    "logprobs": [],
+    "text": ""
+  },
+  "sequence_number": 48
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "I tried to follow your instructions",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "GgDXY4GQYfEBZ",
+  "output_index": 9,
+  "sequence_number": 49
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " literally (open Apple",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "8wP3Lv8Ync",
+  "output_index": 9,
+  "sequence_number": 50
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "\u2019s official Investor Relations page that contains ",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "",
+  "output_index": 9,
+  "sequence_number": 51
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "\u2019s Investor Relations page in this environment, th",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "ngoM",
+  "output_index": 9,
+  "sequence_number": 52
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "Quarterly Earnings Reports\u201d content does not rende",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "M",
+  "output_index": 9,
+  "sequence_number": 53
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "([investor.apple.com](https://investor.apple.com/i",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "nHjVIZriBtm4Hr",
+  "output_index": 9,
+  "sequence_number": 54
+}
+
+event: response.output_text.annotation.added
+{
+  "type": "response.output_text.annotation.added",
+  "annotation": {
+    "type": "url_citation",
+    "end_index": 597,
+    "start_index": 500,
+    "title": "Investor Relations - Apple",
+    "url": "https://investor.apple.com/investor-relations/defa"
+  },
+  "annotation_index": 0,
+  "content_index": 0,
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "output_index": 9,
+  "sequence_number": 55
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "\nBecause I can\u2019t access/read the earnings-release ",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "cY",
+  "output_index": 9,
+  "sequence_number": 56
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": ", or (3) publication date *from that page*",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "cAZ2F8",
+  "output_index": 9,
+  "sequence_number": 57
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " as you requested.\n\nIf you paste the earnings-rele",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "rB8h3QspZNSdQxm",
+  "output_index": 9,
+  "sequence_number": 58
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "or provide a direct link to the specific press-rel",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "MYn",
+  "output_index": 9,
+  "sequence_number": 59
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "DF file behind the \u201cView the press release\u201d button",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "le2c1etaealF",
+  "output_index": 9,
+  "sequence_number": 60
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": " I can extract the three values immediately from t",
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "obfuscation": "F1NvMwX",
+  "output_index": 9,
+  "sequence_number": 61
+}
+
+event: response.output_text.done
+{
+  "type": "response.output_text.done",
+  "content_index": 0,
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "logprobs": [],
+  "output_index": 9,
+  "sequence_number": 62,
+  "text": "I tried to follow your instructions literally (ope"
+}
+
+event: response.content_part.done
+{
+  "type": "response.content_part.done",
+  "content_index": 0,
+  "item_id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+  "output_index": 9,
+  "part": {
+    "type": "output_text",
+    "annotations": [
+      {
+        "type": "url_citation",
+        "end_index": 597,
+        "start_index": 500,
+        "title": "Investor Relations - Apple",
+        "url": "https://investor.apple.com/investor-relations/defa"
+      }
+    ],
+    "logprobs": [],
+    "text": "I tried to follow your instructions literally (ope"
+  },
+  "sequence_number": 63
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [
+          {
+            "type": "url_citation",
+            "end_index": 597,
+            "start_index": 500,
+            "title": "Investor Relations - Apple",
+            "url": "https://investor.apple.com/investor-relations/defa"
+          }
+        ],
+        "logprobs": [],
+        "text": "I tried to follow your instructions literally (ope"
+      }
+    ],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 9,
+  "sequence_number": 64
+}
+
+event: response.completed
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_076cbfebf3a97214016a806a2761a481a0b9654b37995",
+    "object": "response",
+    "created_at": 1786800679,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1786800691,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [
+      {
+        "id": "ws_076cbfebf3a97214016a806a27d13881a0bf53e3b9d74ec",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "Apple Investor Relations latest quarterly earnings release revenue diluted EPS publication date"
+          ],
+          "query": "Apple Investor Relations latest quarterly earnings"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a29b6d081a0971bb3316a606",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a2a89a881a09eaec98075607",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a2c933c81a0842e1600b793a",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a2d40e881a0a663617f076a6",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a2e461081a08a859d2715c24",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "site:investor.apple.com \"Apple reports\" \"quarterly revenue\" \"diluted earnings per share\" press release July 2026",
+            "site:investor.apple.com \"reports third quarter\" \"diluted earnings per share\" press release"
+          ],
+          "query": "site:investor.apple.com \"Apple reports\" \"quarterly"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a2f203c81a0affa65580c755",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "site:investor.apple.com press release \"third quarter\" \"diluted earnings per share\" \"Company posted quarterly revenue\""
+          ],
+          "query": "site:investor.apple.com press release \"third quart"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a3006e881a0b04ea64beea6c",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "investor.apple.com quarterly earnings reports press release third quarter 2026 diluted earnings per share",
+            "investor.apple.com earnings press release June quarter 2026 diluted earnings per share 2.02"
+          ],
+          "query": "investor.apple.com quarterly earnings reports pres"
+        }
+      },
+      {
+        "id": "ws_076cbfebf3a97214016a806a31ce4481a096996af2e6500",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://investor.apple.com/investor-relations/defa"
+        }
+      },
+      {
+        "id": "msg_076cbfebf3a97214016a806a32799881a081726b0a1862",
+        "type": "message",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "annotations": [
+              {
+                "type": "url_citation",
+                "end_index": 597,
+                "start_index": 500,
+                "title": "Investor Relations - Apple",
+                "url": "https://investor.apple.com/investor-relations/defa"
+              }
+            ],
+            "logprobs": [],
+            "text": "I tried to follow your instructions literally (ope"
+          }
+        ],
+        "phase": "final_answer",
+        "role": "assistant"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 4
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 16005,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 3712
+      },
+      "output_tokens": 648,
+      "output_tokens_details": {
+        "reasoning_tokens": 435
+      },
+      "total_tokens": 16653
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 65
+}
+

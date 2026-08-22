@@ -902,3 +902,70 @@ def test_luca_schema_describes_the_logging_section():
             },
         },
     )
+
+
+def test_websearch_absent_is_off_and_empty_block_is_on():
+    # absent block = OFF (None), deliberately breaking with the
+    # default_factory feature-block shape (which cannot encode absent≠empty);
+    # {} is the minimal enable
+    assert LucaConfig().websearch is None
+    assert LucaConfig.model_validate({}).websearch is None
+
+    minimal = LucaConfig.model_validate({"websearch": {}})
+    assert minimal.websearch is not None
+    assert minimal.websearch.enabled is True
+
+
+def test_home_and_project_websearch_blocks_deep_merge_per_key(tmp_path):
+    # the D7 merge must still work into the None-defaulted field: the raw
+    # dicts merge BEFORE validation, so per-key deep-merge applies as for any
+    # feature block
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "luca.json").write_text(json.dumps({"websearch": {"anthropic": {"search": {"max_uses": 3}}}}))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "luca.json").write_text(
+        json.dumps({"websearch": {"anthropic": {"fetch": {"max_content_tokens": 20000}}}})
+    )
+
+    config = load_luca_config(cwd=project, home=home)
+
+    assert config.websearch.anthropic.search.max_uses == 3
+    assert config.websearch.anthropic.fetch.max_content_tokens == 20000
+
+
+def test_tui_fetch_defaults_apply_only_when_the_user_enables_fetch():
+    from luca.agent.contrib.tui.config import resolve_websearch
+
+    without_fetch = resolve_websearch(
+        LucaConfig.model_validate({"websearch": {"anthropic": {"search": {"max_uses": 5}}}}).websearch
+    )
+    with_fetch = resolve_websearch(
+        LucaConfig.model_validate({"websearch": {"anthropic": {"fetch": {"max_content_tokens": 20000}}}}).websearch
+    )
+
+    # fetch stays opt-in: no user fetch key → no fetch declaration at all —
+    # an unconditional merge would silently enable it for every Anthropic user
+    assert without_fetch.anthropic.fetch is None
+    assert without_fetch.anthropic.search.allowed_callers == ["direct"]
+    assert without_fetch.anthropic.search.max_uses == 5
+    assert without_fetch.openai.options.include_results is True
+    assert without_fetch.openai.options.include_sources is True
+    # …and when the user opts in, the fetch half of the defaults applies
+    assert with_fetch.anthropic.fetch.allowed_callers == ["direct"]
+    assert with_fetch.anthropic.fetch.max_content_tokens == 20000
+
+
+def test_the_schema_websearch_defs_are_generated_from_the_models():
+    # the hand-written schema embeds the client tool fields; regenerating the
+    # subtree from the pydantic models pins the copy against drift
+    from luca.agent.contrib.websearch import WebSearchConfig
+
+    schema = json.loads((Path(__file__).parents[4] / "luca.schema.json").read_text())
+    generated = WebSearchConfig.model_json_schema()
+    generated_defs = generated.pop("$defs")
+    generated_defs["WebSearchSettings"] = generated
+
+    for name, definition in generated_defs.items():
+        assert schema["$defs"][name] == definition, f"stale schema def: {name}"

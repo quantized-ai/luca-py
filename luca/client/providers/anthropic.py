@@ -1,8 +1,23 @@
 from ..transports import AnthropicTransport
-from ..transports.anthropic.native_tools import BashTool, TextEditorTool
+from ..transports.anthropic.native_tools import (
+    AnthropicWebCaller,
+    BashTool,
+    ResponseInclusion,
+    TextEditorTool,
+    WebFetchTool,
+    WebSearchTool,
+)
 from .base import BaseProvider, ChatCompletionMixin
 
-__all__ = ["AnthropicProvider", "BashTool", "TextEditorTool"]
+__all__ = [
+    "AnthropicProvider",
+    "AnthropicWebCaller",
+    "BashTool",
+    "ResponseInclusion",
+    "TextEditorTool",
+    "WebFetchTool",
+    "WebSearchTool",
+]
 
 
 class AnthropicProvider(BaseProvider, ChatCompletionMixin):

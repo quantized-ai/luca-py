@@ -48,7 +48,9 @@ from luca.agent.core.models import (
     ExecutionStatus,
     FileContent,
     ImageContent,
+    LLMConfig,
     MediaBase64,
+    PrivateProviderContent,
     PrunedEntry,
     SessionConfig,
     TextContent,
@@ -58,7 +60,11 @@ from luca.agent.core.models import (
     ToolExecutionError,
     TurnFinish,
     TurnStart,
+    URLCitation,
     UserMessage,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
 )
 from tests.agent.scenarios import (
     ADD_SPEC,
@@ -427,14 +433,14 @@ def test_prune_entry_builds_a_template_for_a_terminal_execution():
     )
 
 
-def test_prune_entry_rejects_a_non_execution_entry():
+def test_a_user_message_is_still_refused():
     entry = UserMessage(
         id="u1",
         created_at=1000,
         parts=[TextContent(text="hi")],
     )
 
-    with pytest.raises(AgentError, match="only tool executions"):
+    with pytest.raises(AgentError, match="only tool executions and assistant messages"):
         CM.prune_entry(SESSION, entry)
 
 
@@ -724,3 +730,269 @@ async def test_a_subclass_implements_compact_over_session_nodes_and_entry():
         nodes=["c1"],
         usage=UsageCounters(input=100, output=20, total_tokens=120),
     )
+
+
+# ── the effective wire view (assistant entries; D3) ──────────────────────────
+
+# An ACTIVE Anthropic target — a REGISTERED provider, so the assistant branch
+# measures through the client's effective view instead of falling back.
+ANTHROPIC_SESSION = make_session(
+    id="s_ctx_anthropic",
+    conversations={"c1": conversation("c1", [], created_at=500, updated_at=500)},
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic")),
+)
+
+
+def test_an_anthropic_private_blob_counts_on_anthropic_and_drops_after_a_switch():
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            PrivateProviderContent(format="anthropic.messages", data={"blob": "x" * 26}),
+            TextContent(text="Answer."),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+    session = ANTHROPIC_SESSION.model_copy(deep=True)
+
+    # on the producing target the private replays verbatim, so its JSON bytes
+    # are real context: (38 dumps chars + 7 text chars) // 4
+    assert CM.calculate_context(session, entry) == 11
+
+    session.update_llm_config("openai:gpt-5.1", False)
+
+    # a foreign target drops the private; only the text is left: 7 // 4
+    assert CM.calculate_context(session, entry) == 1
+
+
+def test_web_blocks_are_never_counted():
+    # no transport sends the portable web blocks, so their (potentially huge)
+    # payloads never reach the estimate
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            WebSearchContent(
+                queries=["apple latest quarterly results"],
+                results=[WebPageContent(url="https://apple.com", title="Apple", content="snippet " * 100)],
+            ),
+            TextContent(text="Answer."),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+
+    # only the text survives the wire: 7 // 4
+    assert CM.calculate_context(ANTHROPIC_SESSION, entry) == 1
+
+
+def test_annotated_cited_text_measures_by_the_merged_text_rule():
+    # On Anthropic the merged cited text replays through its split privates —
+    # the text drops and the privates' JSON counts. On a foreign target the
+    # privates drop and the merged text counts.
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            TextContent(
+                text="Hello world.",
+                annotations=[URLCitation(url="https://a", title="A", start_index=0, end_index=12)],
+            ),
+            PrivateProviderContent(format="anthropic.messages", data={"type": "text", "text": "Hello "}),
+            PrivateProviderContent(format="anthropic.messages", data={"type": "text", "text": "world."}),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+    session = ANTHROPIC_SESSION.model_copy(deep=True)
+
+    # the two split privates' dumps (34 + 34 chars) // 4; the merged text is 0
+    assert CM.calculate_context(session, entry) == 17
+
+    session.update_llm_config("openai:gpt-5.1", False)
+
+    # foreign target: privates gone, merged text counts: 12 // 4
+    assert CM.calculate_context(session, entry) == 3
+
+
+def test_plain_assistant_entries_measure_identically_to_the_naive_path():
+    # count parity for non-web content: a plain text + tool-call entry
+    # measures the same through the effective view (registered provider) and
+    # through the naive fallback (SESSION's provider "p" is unregistered)
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            TextContent(text="Sure — adding now."),
+            ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+
+    # (18 text chars + 3 name chars + 8 argument-JSON chars) // 4, both paths
+    assert (
+        CM.calculate_context(ANTHROPIC_SESSION, entry),
+        CM.calculate_context(SESSION, entry),
+    ) == (7, 7)
+
+
+def test_an_unresolvable_provider_falls_back_to_the_naive_estimate():
+    # SESSION's provider "p" resolves to nothing offline — the estimate stays
+    # the naive one (private blobs contribute 0 there), and nothing raises;
+    # this is also what keeps the faux-driven runner suite alive
+    entry = AssistantMessage(
+        id="a1",
+        created_at=1,
+        parts=[
+            PrivateProviderContent(format="anthropic.messages", data={"blob": "x" * 26}),
+            TextContent(text="Answer."),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+
+    # the naive path ignores private payloads: 7 // 4
+    assert CM.calculate_context(SESSION, entry) == 1
+
+
+# ── whole-assistant-message pruning (D6) ─────────────────────────────────────
+
+WEB_HEAVY_ENTRY = AssistantMessage(
+    id="am1",
+    created_at=1000,
+    parts=[
+        ThinkingContent(thinking="Let me check the markets.", signature="sig-1"),
+        PrivateProviderContent(format="anthropic.messages", data={"type": "server_tool_use", "id": "s_1"}),
+        PrivateProviderContent(
+            format="anthropic.messages",
+            data={"type": "web_search_tool_result", "tool_use_id": "s_1", "content": [{"encrypted": "blob" * 500}]},
+        ),
+        WebSearchContent(
+            queries=["Apple stock price today"],
+            results=[
+                WebPageContent(url="https://cnn.com/a"),
+                WebPageContent(url="https://www.tradingview.com/b"),
+            ],
+            extras={"id": "s_1"},
+        ),
+        WebSearchContent(queries=["NVIDIA stock price today"], results=None, extras={"id": "s_2"}),
+        WebFetchContent(
+            web_page=WebPageContent(url="https://apple.com/report", title="Apple report"),
+            extras={"id": "f_1"},
+        ),
+        TextContent(
+            text="Apple rose 2.8% today.",
+            annotations=[URLCitation(url="https://cnn.com/a", title="A", start_index=0, end_index=22)],
+        ),
+    ],
+    llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+    stop_reason="stop",
+)
+
+
+def test_a_web_assistant_entry_prunes_to_summary_plus_verbatim_answer():
+    template = CM.prune_entry(SESSION, WEB_HEAVY_ENTRY)
+
+    assert template == PrunedEntry(
+        id=None,  # uncommitted — the persisting door stamps identity
+        parent_id=None,
+        created_at=None,
+        pruned_entry_type="assistant",
+        pruned_entry_id="am1",
+        content=[
+            TextContent(
+                text=(
+                    'Searched the web: "Apple stock price today" (2 results: cnn.com, tradingview.com), '
+                    '"NVIDIA stock price today" (result metadata not returned). '
+                    'Fetched: https://apple.com/report ("Apple report"). '
+                    "Answered: Apple rose 2.8% today."
+                )
+            )
+        ],
+    )
+
+
+def test_a_tool_call_carrying_message_is_refused():
+    entry = AssistantMessage(
+        id="am2",
+        created_at=1000,
+        parts=[
+            TextContent(text="Adding."),
+            ToolCall(id="tc1", name="add", arguments={"a": 1}),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="tool_use",
+    )
+
+    with pytest.raises(AgentError, match="client-executed tool calls"):
+        CM.prune_entry(SESSION, entry)
+
+
+def test_the_assistant_wording_overrides_via_subclass():
+    class Condensed(ContextManager):
+        PRUNED_SEARCH_PREFIX = "Web: "
+        PRUNED_ANSWER_PREFIX = "A: "
+
+    entry = AssistantMessage(
+        id="am3",
+        created_at=1000,
+        parts=[
+            WebSearchContent(queries=["apple"], results=[], extras={"id": "s_1"}),
+            TextContent(text="Nothing found."),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+
+    template = Condensed().prune_entry(SESSION, entry)
+
+    assert template.content == [TextContent(text='Web: "apple" (no results). A: Nothing found.')]
+
+
+def test_a_failed_fetch_prunes_to_the_failed_marker_and_hosts_cap_at_five():
+    # the fetch error stamp renders as failed (never as a completed fetch),
+    # and a long result list caps at five hosts with the remainder counted
+    entry = AssistantMessage(
+        id="am4",
+        created_at=1000,
+        parts=[
+            WebSearchContent(
+                queries=["Apple stock price today"],
+                results=[
+                    WebPageContent(url="https://cnn.com/a"),
+                    WebPageContent(url="https://www.tradingview.com/b"),
+                    WebPageContent(url="https://coinbase.com/c"),
+                    WebPageContent(url="https://cnbc.com/d"),
+                    WebPageContent(url="https://finance.yahoo.com/e"),
+                    WebPageContent(url="https://f.com"),
+                    WebPageContent(url="https://g.com"),
+                    WebPageContent(url="https://h.com"),
+                    WebPageContent(url="https://i.com"),
+                ],
+                extras={"id": "s_1"},
+            ),
+            WebFetchContent(
+                web_page=WebPageContent(url="https://apple.com/x"),
+                extras={"id": "f_1", "error": {"type": "web_fetch_tool_result_error", "error_code": "unavailable"}},
+            ),
+            TextContent(text="Partial answer."),
+        ],
+        llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+        stop_reason="stop",
+    )
+
+    template = CM.prune_entry(SESSION, entry)
+
+    assert template.content == [
+        TextContent(
+            text=(
+                'Searched the web: "Apple stock price today" (9 results: cnn.com, tradingview.com, '
+                "coinbase.com, cnbc.com, finance.yahoo.com, +4 more). "
+                "Fetched: https://apple.com/x (failed: unavailable). "
+                "Answered: Partial answer."
+            )
+        )
+    ]

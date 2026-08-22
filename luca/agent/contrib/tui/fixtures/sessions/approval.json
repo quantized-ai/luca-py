@@ -1,5 +1,6 @@
 {
   "id": "approval",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "add a --json flag to the events command",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -63,7 +65,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756",
+      "tool_spec_id": "39ce8502d016acb060d32df5eb3898739c864ebe1ac85dc67e4722a79543a3d2",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -73,7 +75,8 @@
           {
             "type": "text",
             "text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31\nline 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52\nline 53\nline 54\nline 55\nline 56\nline 57\nline 58\nline 59\nline 60\nline 61",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -104,7 +107,8 @@
         {
           "type": "text",
           "text": "I can add the flag in `format()`. It needs an edit to `luca/events.py`.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -133,7 +137,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74",
+      "tool_spec_id": "803ae5272a7f8cd508adb20f30b1dd7210ce2a47361c9e371d4a1645fbaf60b2",
       "extras": {
         "approval_context": {
           "requests": [
@@ -177,7 +181,7 @@
     }
   },
   "tool_specs": {
-    "eddf6d17e9ff257ce2e2b1c7f21d81aa73cd3d86ea15674fe9c24424c6939756": {
+    "39ce8502d016acb060d32df5eb3898739c864ebe1ac85dc67e4722a79543a3d2": {
       "name": "read",
       "title": null,
       "description": "read tool.",
@@ -187,13 +191,14 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
       "version": null,
       "timeout_in_ms": null
     },
-    "ca5b24411007d05a5cd919cbbbbf29c497fbd95fc11ea7fed004ab6b2870ae74": {
+    "803ae5272a7f8cd508adb20f30b1dd7210ce2a47361c9e371d4a1645fbaf60b2": {
       "name": "edit",
       "title": null,
       "description": "edit tool.",
@@ -203,6 +208,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
@@ -219,7 +225,8 @@
         "output": 260,
         "cache_read": 18000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -252,7 +259,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -260,6 +266,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

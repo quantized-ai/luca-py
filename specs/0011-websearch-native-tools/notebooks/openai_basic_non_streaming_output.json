@@ -1,0 +1,145 @@
+{
+  "id": "resp_0292c8bacc7c3291016a80627673e487d289cf0e3f3dfd44ed",
+  "object": "response",
+  "created_at": 1786798710,
+  "status": "completed",
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1786798716,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.4-nano-2026-03-17",
+  "moderation": null,
+  "output": [
+    {
+      "id": "ws_0292c8bacc7c3291016a806277141087d2af9608c4e594969f",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "positive news story August 15 2026"
+        ],
+        "query": "positive news story August 15 2026"
+      }
+    },
+    {
+      "id": "ws_0292c8bacc7c3291016a806277ec6c87d2bd1e2cf6fe5fb54d",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "August 15 2026 good news story",
+          "site:apnews.com Aug. 15 2026 positive",
+          "site:reuters.com Aug. 15 2026 charity helps",
+          "\"good news\" \"August 15, 2026\""
+        ],
+        "query": "August 15 2026 good news story"
+      }
+    },
+    {
+      "id": "msg_0292c8bacc7c3291016a80627b7ddc87d2a7d0964a1e91a3f6",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "end_index": 293,
+              "start_index": 236,
+              "title": "Good News Baptist Church| Grand Rapids Michigan | Experience Community - Join Us Today",
+              "url": "https://www.gnbcgr.org/?utm_source=openai"
+            }
+          ],
+          "logprobs": [],
+          "text": "One positive \u201ctoday\u201d story I found is from a local Good News Baptist Church (Grand Rapids, Michigan): they\u2019re hosting a **Men\u2019s trip to the Gilmore Car Museum on Saturday, August 15, 2026**, described as a day of cars *and fellowship*. ([gnbcgr.org](https://www.gnbcgr.org/?utm_source=openai))\n\nIf you tell me your city/state (or what kind of news you like\u2014science, health, environment, business, sports), I can look for a better-matching positive headline for **today**."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "none",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 2
+    }
+  },
+  "tools": [
+    {
+      "type": "web_search",
+      "return_token_budget": "default",
+      "search_content_types": [
+        "text"
+      ],
+      "search_context_size": "medium",
+      "user_location": {
+        "type": "approximate",
+        "city": null,
+        "country": "US",
+        "region": null,
+        "timezone": null
+      }
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 12653,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 3712
+    },
+    "output_tokens": 255,
+    "output_tokens_details": {
+      "reasoning_tokens": 138
+    },
+    "total_tokens": 12908
+  },
+  "user": null,
+  "metadata": {}
+}

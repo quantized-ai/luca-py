@@ -10,6 +10,7 @@
     uv run python -m luca.agent.contrib.tui --resume <id>       # resume it by id
     uv run python -m luca.agent.contrib.tui --resume <id> --fork
     uv run python -m luca.agent.contrib.tui --no-use-native     # no provider-native tools
+    uv run python -m luca.agent.contrib.tui --websearch         # provider-hosted web search
     uv run python -m luca.agent.contrib.tui --no-checkpoints    # no per-turn snapshots
     uv run python -m luca.agent.contrib.tui --no-streaming      # block-level events
     uv run python -m luca.agent.contrib.tui --theme nord        # Textual theme
@@ -96,6 +97,7 @@ from .config import (
     resolve_llm_config,
     resolve_read_limits,
     resolve_runtime_config,
+    resolve_websearch,
     validate_provider,
 )
 from .sessions import fork_session, load_session, resolve_session_directory
@@ -250,6 +252,14 @@ def arg_parser() -> argparse.ArgumentParser:
         help="Snapshot the workspace before each turn, which is what /undo and /rewind "
         "restore (--no-checkpoints turns it off). Snapshots go to a private git repository "
         "beside the session, never into the workspace.",
+    )
+    parser.add_argument(
+        "--websearch",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Provider-hosted web search (off by default; also enabled by a 'websearch' block "
+        "in luca.json — --no-websearch turns that off for this run). The provider executes "
+        "searches server-side; there is no approval gate, only the block's own limits.",
     )
     parser.add_argument(
         "--no-instructions",
@@ -421,6 +431,25 @@ def build_session(
     return session
 
 
+def resolve_websearch_setting(cli_flag: bool | None, config) -> object | None:
+    """The websearch block the app composes, or None for off. Resolved like
+    checkpoints — pick(cli flag, block-present-and-enabled, off) — with two
+    D7 refinements: a bare `--websearch` with no block is the minimal enable
+    (≡ `"websearch": {}`, TUI defaults applied), and a flag-forced ON wins
+    over a block's `"enabled": false` (the flag exists to flip exactly that
+    temporarily)."""
+    from luca.agent.contrib.websearch import WebSearchConfig
+
+    block = config.websearch
+    on = pick(cli_flag, block is not None and block.enabled, False)
+    if not on:
+        return None
+    resolved = resolve_websearch(block if block is not None else WebSearchConfig())
+    if not resolved.enabled:
+        resolved = resolved.model_copy(update={"enabled": True})
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = arg_parser()
     args = parser.parse_args(argv)
@@ -499,6 +528,7 @@ def main(argv: list[str] | None = None) -> None:
             model_options=partial(apply_model_options, config=config),
             subagents=args.subagents,
             checkpoints=pick(args.checkpoints, config.checkpoints, True),
+            websearch=resolve_websearch_setting(args.websearch, config),
             skills=args.skills,
             extra_skill_locations=config.extra_skill_locations or None,
             commands=args.commands,

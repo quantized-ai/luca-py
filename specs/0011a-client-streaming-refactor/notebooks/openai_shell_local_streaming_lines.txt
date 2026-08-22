@@ -1,0 +1,345 @@
+event: response.created
+{
+  "type": "response.created",
+  "response": {
+    "id": "resp_0d1f96ef7392e67e016a81a8275e1081939e852656199...",
+    "object": "response",
+    "created_at": 1786882087,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "shell",
+        "environment": {
+          "type": "local"
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 0
+}
+
+event: response.in_progress
+{
+  "type": "response.in_progress",
+  "response": {
+    "id": "resp_0d1f96ef7392e67e016a81a8275e1081939e852656199...",
+    "object": "response",
+    "created_at": 1786882087,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "shell",
+        "environment": {
+          "type": "local"
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 1
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "sh_0d1f96ef7392e67e016a81a827ee3c819389e82bf9478c6...",
+    "type": "shell_call",
+    "status": "in_progress",
+    "action": {
+      "commands": [],
+      "max_output_length": null,
+      "timeout_ms": null
+    },
+    "call_id": "call_IlPmXqi7FKOYL8PjSWfOcg1U",
+    "environment": null
+  },
+  "output_index": 0,
+  "sequence_number": 2
+}
+
+event: response.shell_call_command.added
+{
+  "type": "response.shell_call_command.added",
+  "command": "",
+  "command_index": 0,
+  "output_index": 0,
+  "sequence_number": 3
+}
+
+event: response.shell_call_command.delta
+{
+  "type": "response.shell_call_command.delta",
+  "command_index": 0,
+  "delta": "ls",
+  "obfuscation": "7sX3crQfgZPwk7",
+  "output_index": 0,
+  "sequence_number": 4
+}
+
+event: response.shell_call_command.delta
+{
+  "type": "response.shell_call_command.delta",
+  "command_index": 0,
+  "delta": " -",
+  "obfuscation": "KiyN31AfGllCYA",
+  "output_index": 0,
+  "sequence_number": 5
+}
+
+event: response.shell_call_command.delta
+{
+  "type": "response.shell_call_command.delta",
+  "command_index": 0,
+  "delta": "la",
+  "obfuscation": "tRGuAygoSiL6ln",
+  "output_index": 0,
+  "sequence_number": 6
+}
+
+event: response.shell_call_command.done
+{
+  "type": "response.shell_call_command.done",
+  "command": "ls -la",
+  "command_index": 0,
+  "output_index": 0,
+  "sequence_number": 7
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "sh_0d1f96ef7392e67e016a81a827ee3c819389e82bf9478c6...",
+    "type": "shell_call",
+    "status": "completed",
+    "action": {
+      "commands": [
+        "ls -la"
+      ],
+      "max_output_length": null,
+      "timeout_ms": 10000
+    },
+    "call_id": "call_IlPmXqi7FKOYL8PjSWfOcg1U",
+    "environment": null
+  },
+  "output_index": 0,
+  "sequence_number": 8
+}
+
+event: response.completed
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_0d1f96ef7392e67e016a81a8275e1081939e852656199...",
+    "object": "response",
+    "created_at": 1786882087,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1786882088,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [
+      {
+        "id": "sh_0d1f96ef7392e67e016a81a827ee3c819389e82bf9478c6...",
+        "type": "shell_call",
+        "status": "completed",
+        "action": {
+          "commands": [
+            "ls -la"
+          ],
+          "max_output_length": null,
+          "timeout_ms": 10000
+        },
+        "call_id": "call_IlPmXqi7FKOYL8PjSWfOcg1U",
+        "environment": null
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "shell",
+        "environment": {
+          "type": "local"
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 256,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 25,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 281
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 9
+}
+

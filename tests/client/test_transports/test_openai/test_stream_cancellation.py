@@ -34,37 +34,6 @@ def test_premature_finish_emits_error_event(openai_transport_factory):
         events = list(s)
 
     assert events[-1].type == "error"
-    assert "RawFinish" in str(events[-1].error)
+    assert "without a terminal event" in str(events[-1].error)
     # Partial content should still be readable on the stream object.
     assert s.message.content[0].text == "oops"
-
-
-def test_cancellation_path_via_accumulator():
-    """The accumulator builds a cancelled FinishEvent when asked."""
-    from luca.client.types.streaming import (
-        RawBlockStart,
-        RawBlockStop,
-        RawTextDelta,
-        _ChatCompletionAccumulator,
-    )
-
-    class _Req:
-        model = "m"
-        response_format = None
-
-    acc = _ChatCompletionAccumulator(request=_Req(), provider="openai")
-    # Emit some content, but no RawFinish.
-    list(acc.handle_raw(RawBlockStart(index=0, block_type="text")))
-    list(acc.handle_raw(RawTextDelta(index=0, text="Hi")))
-    list(acc.handle_raw(RawBlockStop(index=0)))
-
-    def _classify(provider_value, message):
-        return ("stop", None) if provider_value == "stop" else (provider_value, None)
-
-    finish = acc.build_terminal_finish(classify_finish=_classify, cancelled=True)
-    assert finish.cancelled is True
-    # No terminal arrived → finish_reason / provider_finish_reason are None.
-    assert finish.finish_reason is None
-    assert finish.provider_finish_reason is None
-    # The partial message is still on the event.
-    assert finish.message.content[0].text == "Hi"

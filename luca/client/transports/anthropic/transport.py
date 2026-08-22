@@ -36,10 +36,14 @@ from ...types.completion import (
 from ...types.content import (
     FileBlock,
     ImageBlock,
-    RefusalBlock,
+    PrivateProviderBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    URLCitationAnnotation,
+    WebFetchBlock,
+    WebPagePart,
+    WebSearchBlock,
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
@@ -49,11 +53,20 @@ from ...types.structured import (
     strip_unsupported_keywords,
 )
 from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
-from ..base import BaseTransport, ChatCompletionTransportMixin
+from ..base import BaseTransport, ChatCompletionTransportMixin, WireFormatMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 4096
+
+# Server-side blocks kept verbatim as PrivateProviderBlocks. The web results
+# feed the synthetic blocks; code_execution results appear when a web tool
+# runs under a code_execution caller and are kept purely for exact replay.
+_SERVER_RESULT_TYPES = (
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+    "code_execution_tool_result",
+)
 
 
 def _project_image_block(block: ImageBlock) -> dict:
@@ -163,10 +176,17 @@ class AnthropicToolProjector(ToolProjector):
         return content
 
 
-class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
-    transport_id = "anthropic"
+class AnthropicWireMixin(WireFormatMixin):
+    """Messages-API wire knowledge: headers, payload building, block
+    projection, response parsing, finish classification, and error mapping.
+    Shared by AnthropicTransport (non-streaming) and the Anthropic streamer,
+    by inheritance."""
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = AnthropicToolProjector
+
+    # The wire format stamped on PrivateProviderBlocks minted here; only this
+    # wire replays them.
+    WIRE_FORMAT: ClassVar[str | None] = "anthropic.messages"
 
     def _default_tool_projector(self) -> ToolProjector:
         return AnthropicToolProjector()
@@ -361,6 +381,32 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     def _project_file_block(self, block: FileBlock) -> dict:
         return _project_file_block(block, provider=self._provider)
 
+    def select_assistant_blocks(
+        self,
+        message: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> list:
+        """The keep/drop rules for this wire, in one place (payload build and
+        `effective_messages` both route through here): plain text survives
+        unless its cited split privates replay it; thinking survives when its
+        attestation replays; a ToolCall survives when its projector family is
+        this wire's; own-format privates replay verbatim, foreign ones drop;
+        the portable web blocks are never sent; refusals have no input shape."""
+        kept: list = []
+        for index, block in enumerate(message.content):
+            if isinstance(block, TextBlock):
+                if not self._text_replays_privately(message.content, index):
+                    kept.append(block)
+            elif isinstance(block, ThinkingBlock):
+                if self._project_thinking_block(block, message, request) is not None:
+                    kept.append(block)
+            elif isinstance(block, ToolCall):
+                if self._resolve_call(block) is not None:
+                    kept.append(block)
+            elif isinstance(block, PrivateProviderBlock) and block.format == self.WIRE_FORMAT:
+                kept.append(block)
+        return kept
+
     def _project_assistant_message(
         self,
         msg: AssistantMessage,
@@ -369,23 +415,25 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     ) -> dict:
         if lineage is None:
             lineage = {}
-        wire_blocks: list[dict] = []
+        # Lineage records EVERY call's fate — dropped ones included, so the
+        # ToolMessage answering a dropped foreign call falls with it.
         for block in msg.content:
+            if isinstance(block, ToolCall):
+                lineage[block.id] = self._resolve_call(block)
+        wire_blocks: list[dict] = []
+        for block in self.select_assistant_blocks(msg, request):
             if isinstance(block, TextBlock):
                 wire_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
-                thinking = self._project_thinking_block(block, msg, request)
-                if thinking is not None:
-                    wire_blocks.append(thinking)
+                wire_blocks.append(self._project_thinking_block(block, msg, request))
             elif isinstance(block, ToolCall):
-                entry = self._resolve_call(block)
-                lineage[block.id] = entry
-                if entry is not None:
-                    projector, call = entry
-                    wire_blocks.append(projector.project_tool_call_to_llm(call))
-            elif isinstance(block, RefusalBlock):
-                # Anthropic doesn't take refusals on the way in; drop.
-                continue
+                # Resolved per block, never through the id-keyed lineage dict:
+                # duplicate ids would make the dict's last write clobber an
+                # earlier kept call's entry.
+                projector, call = self._resolve_call(block)
+                wire_blocks.append(projector.project_tool_call_to_llm(call))
+            elif isinstance(block, PrivateProviderBlock):
+                wire_blocks.append(block.data)
         return {"role": "assistant", "content": wire_blocks}
 
     def _project_thinking_block(
@@ -480,11 +528,27 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
     ) -> AssistantMessage:
         content: list = []
         default = self._default_tool_projector()
+        # server_tool_use id -> its wire block, so a result pairs with its
+        # call by tool_use_id (parallel searches batch call-call-result-result).
+        web_calls: dict[str, dict] = {}
+        # Adjacent wire text blocks merge into ONE TextBlock; a run flushes
+        # when any other block type breaks the adjacency.
+        text_run: list[dict] = []
+
+        def flush_text_run() -> None:
+            if not text_run:
+                return
+            content.append(self._merge_text_blocks(text_run))
+            content.extend(self._text_run_private_blocks(text_run))
+            text_run.clear()
+
         for block in data.get("content") or []:
             block_type = block.get("type")
             if block_type == "text":
-                content.append(TextBlock(text=block.get("text", "")))
-            elif block_type == "thinking":
+                text_run.append(block)
+                continue
+            flush_text_run()
+            if block_type == "thinking":
                 content.append(
                     ThinkingBlock(
                         text=block.get("thinking", ""),
@@ -503,6 +567,16 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
                         redacted=True,
                     )
                 )
+            elif block_type == "server_tool_use":
+                content.append(PrivateProviderBlock(format=self.WIRE_FORMAT, data=block))
+                if (call_id := block.get("id")) is not None:
+                    web_calls[call_id] = block
+            elif block_type in _SERVER_RESULT_TYPES:
+                content.append(PrivateProviderBlock(format=self.WIRE_FORMAT, data=block))
+                synthetic = self._web_block(web_calls.get(block.get("tool_use_id")), block)
+                if synthetic is not None:
+                    content.append(synthetic)
+        flush_text_run()
         return AssistantMessage(
             content=content,
             provider=self._provider,
@@ -516,19 +590,184 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             response_id=data.get("id"),
         )
 
+    # --- web operations (server tools) ---
+
+    def _merge_text_blocks(self, blocks: list[dict]) -> TextBlock:
+        """Adjacent wire text blocks -> ONE TextBlock. Anthropic splits a
+        cited answer into per-span text blocks; the canonical form is the
+        joined text with each citation as a character range over it — the
+        same shape OpenAI returns natively. Provider-only citation fields
+        (cited_text, encrypted_index) stay in the run's private blocks
+        (`_text_run_private_blocks`)."""
+        text = ""
+        annotations: list[URLCitationAnnotation] = []
+        for block in blocks:
+            block_text = block.get("text", "")
+            for citation in block.get("citations") or []:
+                annotation = self._citation_annotation(citation, len(text), len(text) + len(block_text))
+                if annotation is not None:
+                    annotations.append(annotation)
+            text += block_text
+        return TextBlock(text=text, annotations=annotations)
+
+    def _text_run_private_blocks(self, blocks: list[dict]) -> list[PrivateProviderBlock]:
+        """A CITED run's original wire text blocks, kept verbatim — the
+        citations carry provider-only fields (cited_text, encrypted_index)
+        Anthropic wants back on later turns, and the merged TextBlock cannot
+        reproduce the split-span structure. An uncited run keeps nothing:
+        merging plain text is lossless.
+
+        Unlike a web operation's synthetic — which FOLLOWS its privates —
+        these privates follow the merged block: the streamer opens the
+        merged block at a stable index while the run is still arriving, so
+        its privates can only ever be appended after it. Replay pairs them
+        by that adjacency (`_text_replays_privately`)."""
+        if not any(block.get("citations") for block in blocks):
+            return []
+        return [PrivateProviderBlock(format=self.WIRE_FORMAT, data=block) for block in blocks]
+
+    def _text_replays_privately(self, content: list, index: int) -> bool:
+        """Whether the TextBlock at `index` is the merged view of cited wire
+        text blocks stored right after it. Those privates replay the text
+        exactly — citations included — so the merged block must not double it.
+
+        The check is TEXT EQUALITY against the following run of own-format
+        text privates, not bare adjacency: selection can DROP blocks (a
+        foreign thinking block, say) and create an adjacency the original
+        list never had, and an adjacency-only rule would then misclassify a
+        plain TextBlock as the merged view of a cited run it has nothing to
+        do with — breaking the effective-messages invariant and idempotence.
+        By construction (parse and streamer alike) the merged block's text IS
+        the concatenation of its run's wire texts, so equality identifies
+        exactly the merged view and nothing else."""
+        texts: list[str] = []
+        for following in content[index + 1 :]:
+            if (
+                isinstance(following, PrivateProviderBlock)
+                and following.format == self.WIRE_FORMAT
+                and following.data.get("type") == "text"
+            ):
+                texts.append(following.data.get("text", ""))
+            else:
+                break
+        if not texts:
+            return False
+        return content[index].text == "".join(texts)
+
+    @staticmethod
+    def _citation_annotation(citation: dict, start: int, end: int) -> URLCitationAnnotation | None:
+        """One wire citation -> the canonical annotation. Kinds that carry no
+        URL (document locations) have no canonical shape and drop."""
+        url = citation.get("url")
+        if url is None:
+            return None
+        return URLCitationAnnotation(
+            url=url,
+            title=citation.get("title") or "",
+            start_index=start,
+            end_index=end,
+        )
+
+    def _web_block(self, call: dict | None, result_block: dict) -> WebSearchBlock | WebFetchBlock | None:
+        """The portable projection of one server-tool result, paired with the
+        server_tool_use it answers. None for results that are not web
+        operations (code_execution) — the private block still preserves
+        them."""
+        if result_block.get("type") == "web_search_tool_result":
+            return self._web_search_block(call, result_block)
+        if result_block.get("type") == "web_fetch_tool_result":
+            return self._web_fetch_block(call, result_block)
+        return None
+
+    @staticmethod
+    def _web_block_extras(result_block: dict, error: dict | None) -> dict:
+        """The adjacency-free facts stamped on every portable web block: the
+        operation id (`tool_use_id` — the `srvtoolu_…` call id by wire
+        contract) and, on a failure, the provider's wire error dict verbatim
+        (`{"type": "web_search_tool_result_error", "error_code": …}`). What
+        makes a consumer independent of the adjacent private block."""
+        extras: dict = {}
+        if (op_id := result_block.get("tool_use_id")) is not None:
+            extras["id"] = op_id
+        if error is not None:
+            extras["error"] = error
+        return extras
+
+    @staticmethod
+    def _web_search_block(call: dict | None, result_block: dict) -> WebSearchBlock:
+        """Queries from the call's input, results from the result content. An
+        error result (`content` is the error object, not a list) returned no
+        result metadata: results=None, with the error dict stamped in
+        `extras`. Snippets are not exposed — Anthropic returns only encrypted
+        content, which stays private."""
+        query = ((call or {}).get("input") or {}).get("query")
+        raw = result_block.get("content")
+        results: list[WebPagePart] | None
+        if isinstance(raw, list):
+            results = [
+                WebPagePart(url=item.get("url", ""), title=item.get("title"))
+                for item in raw
+                if item.get("type") == "web_search_result"
+            ]
+        else:
+            results = None
+        error = raw if isinstance(raw, dict) else None
+        return WebSearchBlock(
+            queries=[query] if query else [],
+            results=results,
+            extras=AnthropicWireMixin._web_block_extras(result_block, error),
+        )
+
+    @staticmethod
+    def _web_fetch_block(call: dict | None, result_block: dict) -> WebFetchBlock:
+        """On success the page carries the fetched document's readable text;
+        an error result keeps only the URL the call asked for, with the error
+        dict stamped in `extras` (never on `WebPagePart.extras` — the
+        streamer shares part instances with already-emitted events)."""
+        input_url = ((call or {}).get("input") or {}).get("url")
+        raw = result_block.get("content") or {}
+        if isinstance(raw, dict) and raw.get("type") == "web_fetch_result":
+            document = raw.get("content") or {}
+            source = document.get("source") or {}
+            return WebFetchBlock(
+                web_page=WebPagePart(
+                    url=raw.get("url") or input_url or "",
+                    title=document.get("title"),
+                    content=source.get("data"),
+                ),
+                extras=AnthropicWireMixin._web_block_extras(result_block, None),
+            )
+        error = raw if isinstance(raw, dict) and raw else None
+        return WebFetchBlock(
+            web_page=WebPagePart(url=input_url or ""),
+            extras=AnthropicWireMixin._web_block_extras(result_block, error),
+        )
+
     def _parse_usage(self, usage_json: dict | None, model_info: Any) -> Usage:
         if usage_json is None:
             return Usage()
+        server_tool_use = usage_json.get("server_tool_use") or {}
         u = Usage(
             input_tokens=usage_json.get("input_tokens", 0),
             output_tokens=usage_json.get("output_tokens", 0),
             total_tokens=(usage_json.get("input_tokens", 0) + usage_json.get("output_tokens", 0)),
             cached_input_tokens=usage_json.get("cache_read_input_tokens"),
             cache_write_tokens=usage_json.get("cache_creation_input_tokens"),
+            reasoning_tokens=(usage_json.get("output_tokens_details") or {}).get("thinking_tokens"),
+            tool_requests=self._tool_requests(server_tool_use),
+            provider_tool_usage=server_tool_use,
         )
         if model_info is not None and getattr(model_info, "cost", None) is not None:
             u.cost = UsageCost.compute(u, model_info.cost)
         return u
+
+    @staticmethod
+    def _tool_requests(server_tool_use: dict) -> dict[str, int]:
+        """`{"web_search_requests": 2}` -> `{"web_search": 2}` — the per-tool
+        request count under the tool's own name."""
+        return {
+            name.removesuffix("_requests"): count for name, count in server_tool_use.items() if isinstance(count, int)
+        }
 
     # --- finish-reason classification ---
 
@@ -549,6 +788,12 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
             return ("error", "Anthropic refusal stop reason")
         if provider_value == "sensitive":
             return ("error", "Anthropic safety filter (sensitive content)")
+        if provider_value == "pause_turn":
+            # A long-running server tool paused the response; the contract is
+            # "re-send the recorded assistant content as-is and continue".
+            # Normalized so any future provider condition meaning "replay and
+            # continue" arrives as the same canonical value.
+            return ("pause", None)
         if provider_value is None:
             return (None, None)
         return (provider_value, None)
@@ -647,14 +892,15 @@ class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin):
         except ValueError:
             return None
 
-    # --- stream class hooks ---
 
-    def _chat_completion_stream_class(self) -> type:
-        from .stream import AnthropicChatCompletionStream
+# Imported here, between the wire mixin and the transport class, because the
+# streamer module inherits the mixin above: at the top of the file this would
+# be a circular import.
+from .streamer import AsyncAnthropicStreamer, SyncAnthropicStreamer  # noqa: E402
 
-        return AnthropicChatCompletionStream
 
-    def _async_chat_completion_stream_class(self) -> type:
-        from .stream import AnthropicAsyncChatCompletionStream
+class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin, AnthropicWireMixin):
+    transport_id = "anthropic"
 
-        return AnthropicAsyncChatCompletionStream
+    STREAMER = SyncAnthropicStreamer
+    ASYNC_STREAMER = AsyncAnthropicStreamer

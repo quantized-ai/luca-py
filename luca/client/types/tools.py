@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
 if TYPE_CHECKING:
     from .content import ToolCall
@@ -46,6 +46,25 @@ class Tool(BaseTool):
 
 
 ToolChoice = Literal["auto", "required", "none"] | dict
+
+
+class ApproximateLocation(BaseModel):
+    """Rough user location for provider web tools — the one value object the
+    per-provider web tool declarations share. At least one field must be
+    provided."""
+
+    city: str | None = None
+    region: str | None = None
+    country: str | None = None  # ISO 3166-1 alpha-2
+    timezone: str | None = None  # IANA timezone
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> ApproximateLocation:
+        if self.city is None and self.region is None and self.country is None and self.timezone is None:
+            raise ValueError("ApproximateLocation needs at least one of city, region, country, timezone")
+        return self
 
 
 class ToolProjector:
