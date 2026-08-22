@@ -609,6 +609,571 @@
       ],
       "title": "ToolKind",
       "type": "string"
+    },
+    "AnthropicWebConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "search": {
+          "$ref": "#/$defs/luca__client__transports__anthropic__native_tools__WebSearchTool",
+          "default": {
+            "max_uses": null,
+            "allowed_domains": null,
+            "blocked_domains": null,
+            "allowed_callers": null,
+            "response_inclusion": null,
+            "user_location": null
+          }
+        },
+        "fetch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebFetchTool"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "AnthropicWebConfig",
+      "type": "object"
+    },
+    "ApproximateLocation": {
+      "additionalProperties": false,
+      "description": "Rough user location for provider web tools \u2014 the one value object the\nper-provider web tool declarations share. At least one field must be\nprovided.",
+      "properties": {
+        "city": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "City"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        },
+        "country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Country"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        }
+      },
+      "title": "ApproximateLocation",
+      "type": "object"
+    },
+    "OpenAIWebConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "options": {
+          "$ref": "#/$defs/luca__client__transports__openai_responses__native_tools__WebSearchTool",
+          "default": {
+            "search_context_size": null,
+            "filters": null,
+            "user_location": null,
+            "external_web_access": null,
+            "return_token_budget": null,
+            "search_content_types": null,
+            "image_settings": null,
+            "include_sources": false,
+            "include_results": false
+          }
+        }
+      },
+      "title": "OpenAIWebConfig",
+      "type": "object"
+    },
+    "WebFetchTool": {
+      "additionalProperties": false,
+      "description": "Declares Anthropic's web_fetch server tool. Anthropic executes it:\noperations arrive as content blocks (PrivateProviderBlock plus\nWebFetchBlock), never as ToolCalls.",
+      "properties": {
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Uses"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Domains"
+        },
+        "allowed_callers": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "direct",
+                  "code_execution_20260120"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Callers"
+        },
+        "response_inclusion": {
+          "anyOf": [
+            {
+              "enum": [
+                "full",
+                "excluded"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Inclusion"
+        },
+        "max_content_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Content Tokens"
+        },
+        "citations": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Citations"
+        },
+        "use_cache": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Use Cache"
+        }
+      },
+      "title": "WebFetchTool",
+      "type": "object"
+    },
+    "WebSearchFilters": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Domains"
+        }
+      },
+      "title": "WebSearchFilters",
+      "type": "object"
+    },
+    "WebSearchImageSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "max_results": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Results"
+        },
+        "caption": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caption"
+        }
+      },
+      "title": "WebSearchImageSettings",
+      "type": "object"
+    },
+    "luca__client__transports__anthropic__native_tools__WebSearchTool": {
+      "additionalProperties": false,
+      "description": "Declares Anthropic's web_search server tool. Anthropic executes it:\noperations arrive as content blocks (PrivateProviderBlock plus\nWebSearchBlock), never as ToolCalls.",
+      "properties": {
+        "max_uses": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Uses"
+        },
+        "allowed_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Domains"
+        },
+        "blocked_domains": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocked Domains"
+        },
+        "allowed_callers": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "direct",
+                  "code_execution_20260120"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Callers"
+        },
+        "response_inclusion": {
+          "anyOf": [
+            {
+              "enum": [
+                "full",
+                "excluded"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Inclusion"
+        },
+        "user_location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApproximateLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "WebSearchTool",
+      "type": "object"
+    },
+    "luca__client__transports__openai_responses__native_tools__WebSearchTool": {
+      "additionalProperties": false,
+      "description": "Declares OpenAI's hosted web_search tool \u2014 one tool covering search,\npage opening, find-in-page and image search. OpenAI executes it\nserver-side: operations arrive as content blocks (PrivateProviderBlock\nplus WebSearchBlock / WebFetchBlock), never as ToolCalls.",
+      "properties": {
+        "search_context_size": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Search Context Size"
+        },
+        "filters": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchFilters"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "user_location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApproximateLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "external_web_access": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "External Web Access"
+        },
+        "return_token_budget": {
+          "anyOf": [
+            {
+              "enum": [
+                "default",
+                "unlimited"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Return Token Budget"
+        },
+        "search_content_types": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "text",
+                  "image"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Search Content Types"
+        },
+        "image_settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchImageSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "include_sources": {
+          "default": false,
+          "title": "Include Sources",
+          "type": "boolean"
+        },
+        "include_results": {
+          "default": false,
+          "title": "Include Results",
+          "type": "boolean"
+        }
+      },
+      "title": "WebSearchTool",
+      "type": "object"
+    },
+    "WebSearchSettings": {
+      "additionalProperties": false,
+      "description": "`WebSearchPlugin`'s whole configuration \u2014 JSON-shaped, `luca.json`'s\n`websearch` block maps onto it 1:1. `enabled: false` disables everything\ntemporarily while the rest of the block stays in place.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "openai": {
+          "$ref": "#/$defs/OpenAIWebConfig",
+          "default": {
+            "enabled": true,
+            "options": {
+              "external_web_access": null,
+              "filters": null,
+              "image_settings": null,
+              "include_results": false,
+              "include_sources": false,
+              "return_token_budget": null,
+              "search_content_types": null,
+              "search_context_size": null,
+              "user_location": null
+            }
+          }
+        },
+        "anthropic": {
+          "$ref": "#/$defs/AnthropicWebConfig",
+          "default": {
+            "enabled": true,
+            "search": {
+              "allowed_callers": null,
+              "allowed_domains": null,
+              "blocked_domains": null,
+              "max_uses": null,
+              "response_inclusion": null,
+              "user_location": null
+            },
+            "fetch": null
+          }
+        }
+      },
+      "title": "WebSearchConfig",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -743,6 +1308,18 @@
       "default": null,
       "description": "Offer the provider's own native tools where the active model supports them (apply_patch + shell on OpenAI, text_editor + bash on Anthropic). Defaults to true.",
       "title": "Use Native Tools"
+    },
+    "websearch": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WebSearchSettings"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Provider-hosted web search. Absent = off; {} enables with the defaults. openai.options / anthropic.search / anthropic.fetch validate into the client's own tool declarations (fetch is opt-in). Nothing is persisted."
     }
   },
   "title": "LucaConfig",

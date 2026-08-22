@@ -685,4 +685,92 @@ Native calls and results survive `model_dump()` and validation. OpenAI's typed
 calls and shell results also have lossless `as_generic()` / `as_native()`
 forms for storage or tool-agnostic plumbing.
 
+## Hosted web tools
+
+Web search and web fetch are native tools the **provider executes** — declare
+them and you are done. No calls to dispatch, no results to send back:
+operations arrive as content blocks
+([`PrivateProviderBlock` + `WebSearchBlock` / `WebFetchBlock`](05-messages-and-content.md#web-operations--two-views-per-operation)),
+and grounded answer text carries
+[`annotations`](05-messages-and-content.md#citations).
+
+```python
+from luca.client import completion
+from luca.client.providers.openai import WebSearchTool
+from luca.client.types import UserMessage, WebFetchBlock, WebSearchBlock
+
+response = completion(
+    "openai:gpt-5.1",
+    [UserMessage(content="What did Apple report last quarter?")],
+    tools=[WebSearchTool(include_results=True)],
+)
+
+for block in response.messages[-1].content:
+    if isinstance(block, (WebSearchBlock, WebFetchBlock)):
+        block.extras["id"]              # the provider's operation id
+        block.extras.get("error")       # present iff the operation failed
+```
+
+Every portable block is stamped with the operation id and, on a failure, the
+provider's error (`extras` — see
+[the extras contract](05-messages-and-content.md#web-operations--two-views-per-operation)),
+so consuming one never requires reading the adjacent private block.
+
+### OpenAI
+
+One tool covers search, page opening, and find-in-page. All fields are
+optional; unset ones stay on provider defaults.
+
+```python
+from luca.client.providers.openai import (
+    WebSearchFilters, WebSearchImageSettings, WebSearchTool,
+)
+from luca.client.types import ApproximateLocation
+
+WebSearchTool(
+    search_context_size="high",                       # "low" | "medium" | "high"
+    filters=WebSearchFilters(allowed_domains=["apple.com"]),
+    user_location=ApproximateLocation(city="Cordoba", country="AR"),
+    include_sources=True,   # every URL considered → WebSearchBlock.results
+    include_results=True,   # ranked results w/ title+snippet → WebSearchBlock.results
+)
+```
+
+`include_sources` / `include_results` are tool options that OpenAI takes as
+request-level `include` values; the transport merges them into the payload
+(alongside the reasoning include). Without either flag, searches come back
+with `results=None`.
+
+### Anthropic
+
+Search and fetch are separate tools; both accept `max_uses`,
+`allowed_domains` / `blocked_domains` (mutually exclusive),
+`allowed_callers`, and `response_inclusion`.
+
+```python
+from luca.client.providers.anthropic import WebFetchTool, WebSearchTool
+from luca.client.types import ApproximateLocation
+
+TOOLS = [
+    WebSearchTool(max_uses=5, user_location=ApproximateLocation(country="AR")),
+    WebFetchTool(max_content_tokens=20_000, citations=True),
+]
+```
+
+> ⚠️ **Search results are opaque on Anthropic.** A search result carries only
+> `url` and `title` — the content is encrypted, readable only by the model,
+> and stays in the private block. A fetch's page text IS readable and lands
+> on `WebFetchBlock.web_page.content`.
+
+### Usage
+
+Both providers count hosted-tool requests. `Usage` normalizes the count and
+keeps the provider payload:
+
+```python
+usage = response.messages[-1].usage
+usage.tool_requests           # {"web_search": 2, "web_fetch": 0}
+usage.provider_tool_usage     # the provider's own object, verbatim
+```
+
 **Next:** [Structured output](07-structured-output.md)

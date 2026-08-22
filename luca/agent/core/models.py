@@ -57,6 +57,20 @@ def _now_ms() -> int:
 # round-trips through JSON unambiguously (signatures → pass 2).
 
 
+class URLCitation(BaseModel):
+    """A source citation over a character range of the carrying part's text —
+    the agent mirror of the client's `URLCitationAnnotation`. Indexes are
+    nullable because not every provider or transport can supply or safely
+    derive a range."""
+
+    url: str
+    title: str
+    start_index: int | None = None
+    end_index: int | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TextContent(BaseModel):
     """Text carried by a message, a tool result or a pruned replacement.
 
@@ -64,11 +78,19 @@ class TextContent(BaseModel):
     client's `TextBlock` carries only the text. It survives in the session, so
     a replayed transcript can describe where the text came from when that is
     not evident from the text itself (an `@`-mention's inlined file, say).
-    Same contract as `ImageContent.metadata`: the core never interprets it."""
+    Same contract as `ImageContent.metadata`: the core never interprets it.
+
+    `annotations` are the citations a provider grounded this text in — web
+    URLs with character ranges over `text`. The byte-for-byte doctrine of
+    `ThinkingContent` extends to annotated text: Anthropic's split cited
+    spans are kept as `PrivateProviderContent` parts index-linked to this
+    merged text, so middleware rewriting cited text desyncs the ranges and
+    the provider-only citation fields riding in the privates."""
 
     type: Literal["text"] = "text"
     text: str
     metadata: dict = Field(default_factory=dict)
+    annotations: list[URLCitation] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -110,6 +132,67 @@ class ToolCall(BaseModel):
     # copies it, never interprets it; only the middleware that owns the native
     # tool reads it back at projection time. Excluded from doom-loop
     # comparison for free — `_is_doom_loop` compares name + arguments only.
+    extras: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PrivateProviderContent(BaseModel):
+    """Verbatim provider wire item(s) — the replayable half of a
+    provider-hosted operation (web search, web fetch, split cited spans, …).
+
+    `format` names the wire format that minted `data` ("openai.responses",
+    "anthropic.messages", …); the CLIENT transport for that format replays it
+    verbatim and every other transport omits it — the agent stays naive about
+    the wire and never filters (D1). `data` is provider-owned and must
+    round-trip BYTE FOR BYTE, the same doctrine as `ThinkingContent`:
+    middleware never rewrites it, and the core stores and re-emits it
+    untouched, in order — the client's positional contracts (a result item
+    following its call, split cited spans following their merged text) ride
+    through the session on part order alone."""
+
+    type: Literal["private_provider"] = "private_provider"
+    format: str
+    data: dict
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebPageContent(BaseModel):
+    """One web page as a provider exposed it — the agent mirror of the
+    client's `WebPagePart`. `content` is the readable text the provider
+    returned: a search snippet for a result, page text for a fetch."""
+
+    url: str
+    title: str | None = None
+    content: str | None = None
+    extras: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebSearchContent(BaseModel):
+    """The portable view of one provider-hosted web search — the agent mirror
+    of the client's `WebSearchBlock`. `results=None` means result metadata was
+    not returned (usually not requested); `[]` means the provider returned an
+    empty result set. The exact wire items live in the adjacent
+    `PrivateProviderContent` parts; this part is never sent to a provider."""
+
+    type: Literal["web_search"] = "web_search"
+    queries: list[str]
+    results: list[WebPageContent] | None = None
+    extras: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebFetchContent(BaseModel):
+    """The portable view of one provider-hosted page fetch (OpenAI's
+    `open_page` action, Anthropic's `web_fetch` tool) — the agent mirror of
+    the client's `WebFetchBlock`. Never sent to a provider."""
+
+    type: Literal["web_fetch"] = "web_fetch"
+    web_page: WebPageContent
     extras: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
@@ -203,7 +286,7 @@ ContentPart = Annotated[
 
 # what an assistant message carries — a different set, so a separate union
 AssistantContentPart = Annotated[
-    TextContent | ThinkingContent | ToolCall,
+    TextContent | ThinkingContent | ToolCall | PrivateProviderContent | WebSearchContent | WebFetchContent,
     Field(discriminator="type"),
 ]
 
@@ -272,6 +355,10 @@ class Usage(BaseModel):
     cache_read: int = 0
     cache_write: int = 0
     total_tokens: int = 0
+    # The client's normalized hosted-tool request counters for this response
+    # (`{"web_search": 2}`) — per-operation billing facts, so accessory usage
+    # like every other field here, never content size.
+    tool_requests: dict[str, int] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -346,6 +433,11 @@ class ToolKind(str, Enum):
     READ = "read"
     SEARCH = "search"
     WEB_FETCH = "web_fetch"
+    # Provider-hosted web operations (the websearch plugin's synthetic
+    # executions). Distinct from SEARCH, which means filesystem search in
+    # permission rules, and from WEB_FETCH, the network-egress kind of a
+    # locally-executed fetch tool.
+    WEB = "web"
     EDIT = "edit"
     MOVE = "move"
     DELETE = "delete"
@@ -432,6 +524,19 @@ class ToolSpec(BaseModel):
     # Like every other field it is definition-scoped and participates in
     # `spec_id()`, so a tool that gains it is a new row.
     is_private: bool = False
+    # Executions of this spec are RUNTIME-MINTED RECORDS of work the model has
+    # already seen (the `synthesize_executions` hook-#14 path), not
+    # model-issued calls. Read at exactly two sites: excluded from
+    # `open_turn_unseen_material` (a synthetic must not wake a parked parent —
+    # the model already saw the work it records) and from the doom-loop window
+    # (an interleaved synthetic must not break the consecutive-identical
+    # chain). `is_private` stays purely wire-visibility; the minting door does
+    # NOT require this flag — a hook-#14 synthesizer recording an EXTERNAL
+    # event (a webhook, a job completion) can leave it False and legitimately
+    # wake a parked parent. Definition-scoped; participates in `spec_id()`
+    # like every other field (its addition shifted every stored id — the
+    # documented healing case).
+    is_synthetic: bool = False
     metadata: dict | None = None  # free-form, registry-owned; never interpreted
     tool_kind: ToolKind = ToolKind.OTHER  # permission/classification kind
     namespace: str | None = None  # owning tool group, e.g. "builtin.shell_tools"
@@ -638,7 +743,9 @@ class AssistantMessage(Entry):
     type: Literal["assistant"] = "assistant"
     parts: list[AssistantContentPart]
     llm_config: LLMConfig  # provenance: the config that PRODUCED this message
-    stop_reason: str  # "stop" | "tool_use"  (error/aborted → pass 2)
+    stop_reason: str  # "stop" | "tool_use" | "pause" (a hosted tool paused the
+    # response — the durable marker pause-and-replay keys on; error/aborted →
+    # pass 2). Any client finish reason passes through verbatim.
     # NO usage field: provider consumption is conversation-scoped accessory
     # data — see `AgentSession.usages`.
 
@@ -1243,7 +1350,9 @@ def open_turn_unseen_material(
     with the first real update), and keying on the declaration rather than
     the settled payload keeps a mixed all-spawn round from waking on its
     refusals while its committed siblings are still starting. A nonterminal
-    execution is the ordinary loop's business, never a reason to wake.
+    execution is the ordinary loop's business, never a reason to wake. An
+    execution of an `is_synthetic` spec is not material either — it is a
+    runtime-minted record of work the model has already seen.
 
     `include_child_results=False` (the projection of
     `RuntimeConfig.wake_parent_on_subagent_completion` onto this pure path
@@ -1280,6 +1389,14 @@ def open_turn_unseen_material(
             and entry.status not in NONTERMINAL_STATUSES
             and entry.id not in excluded
             and (entry.tool_spec is None or not declares_spawn(entry.tool_spec))
+            # A SYNTHETIC is a record of work the model has already seen (a
+            # hosted web operation minted beside its own assistant entry), so
+            # it is never fresh material — without this exclusion a parent
+            # parked on subagents would take a wasted wake round after every
+            # web-bearing response. Spec-declared, like `declares_spawn`;
+            # `is_private` deliberately plays no part (the subagent-result
+            # spec keeps the default and stays material, as today).
+            and (entry.tool_spec is None or not entry.tool_spec.is_synthetic)
         ):
             return True
     return False
@@ -1424,12 +1541,7 @@ class RuntimeConfig(BaseConfigModel):
     asyncio/client boundary; `Inf` (-1) means infinite / disabled. The
     defaults reproduce the unconfigured behavior exactly."""
 
-    # → client timeout= (httpx, per-phase). INERT when the runner is built
-    # with a provider INSTANCE — the client leaves pre-built providers
-    # untouched ("caller drives the lifecycle"); the wall-clock tier below
-    # always applies.
-    builtin_client_completion_timeout_in_ms: int = Inf
-    client_completion_timeout_in_ms: int = Inf  # → client total_timeout= (wall clock)
+    client_completion_timeout_in_ms: int = Inf  # → client timeout= (wall clock)
     tool_execution_timeout_in_ms: int = Inf
 
     llm_completion_cancellation_grace_period: int = 0  # ms; 0 = immediate teardown
@@ -1444,6 +1556,14 @@ class RuntimeConfig(BaseConfigModel):
     # been repeated this many consecutive times in the current turn.
     # Inf (-1) or 0 disables detection.
     doom_loop_threshold: int = Inf
+
+    # Pause-and-replay (D8): the NORMALIZED client finish reasons that mean
+    # "re-send the recorded assistant content as-is and continue" — the
+    # runner records the paused entry, then replays instead of closing.
+    # Anthropic's `pause_turn` (normalized to "pause") is the first member;
+    # `[]` disables the feature (a pause closes the turn COMPLETED, as any
+    # unknown reason does). Never `"stop"` — that stays the ordinary close.
+    resume_finish_reasons: list[str] = Field(default_factory=lambda: ["pause"])
 
     # ── subagents ──────────────────────────────────────────────────────────
     # Off by default, so existing sessions and tests are unaffected: with this
@@ -1492,7 +1612,6 @@ class RuntimeConfig(BaseConfigModel):
     limit_tool_choice_on_doom_loop_flagged: bool = True
 
     @field_validator(
-        "builtin_client_completion_timeout_in_ms",
         "client_completion_timeout_in_ms",
         "tool_execution_timeout_in_ms",
         "llm_completion_cancellation_grace_period",

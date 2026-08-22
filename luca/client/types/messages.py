@@ -21,10 +21,13 @@ from .content import (
     AudioBlock,
     FileBlock,
     ImageBlock,
+    PrivateProviderBlock,
     RefusalBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    WebFetchBlock,
+    WebSearchBlock,
     _as_generic,
     _as_native,
 )
@@ -56,7 +59,15 @@ class AssistantMessage(BaseModel):
     # SerializeAsAny: model_dump() must keep native ToolCall subclass fields
     # (item_id, status, …). Without it pydantic dumps per the declared base
     # and drops them, with a warning the test suite turns into an error.
-    content: list[TextBlock | ThinkingBlock | SerializeAsAny[ToolCall] | RefusalBlock] = Field(
+    content: list[
+        TextBlock
+        | ThinkingBlock
+        | SerializeAsAny[ToolCall]
+        | RefusalBlock
+        | PrivateProviderBlock
+        | WebSearchBlock
+        | WebFetchBlock
+    ] = Field(
         default_factory=list,
     )
 

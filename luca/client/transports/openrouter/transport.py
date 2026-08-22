@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from ..openai.transport import OpenAITransport
+from .streamer import AsyncOpenRouterStreamer, SyncOpenRouterStreamer
 
 
 class OpenRouterTransport(OpenAITransport):
     transport_id = "openrouter"
+
+    STREAMER = SyncOpenRouterStreamer
+    ASYNC_STREAMER = AsyncOpenRouterStreamer
 
     def _headers(self) -> dict[str, str]:
         return super()._headers()

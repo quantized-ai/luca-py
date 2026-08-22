@@ -1,5 +1,6 @@
 {
   "id": "failures",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "clean the build directory and re-run the suite",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -63,7 +65,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "d00a500470238c4ac3d2224e9c1376763496aa84fd2110e7bc356b086541b0e5",
       "extras": {
         "approval_context": {
           "requests": [
@@ -121,7 +123,8 @@
         {
           "type": "text",
           "text": "That is blocked by a rule. Using `git clean` instead.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -150,7 +153,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "d00a500470238c4ac3d2224e9c1376763496aa84fd2110e7bc356b086541b0e5",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -160,7 +163,8 @@
           {
             "type": "text",
             "text": "removed 12 paths",
-            "metadata": {}
+            "metadata": {},
+            "annotations": []
           }
         ],
         "structured_content": null,
@@ -200,7 +204,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b",
+      "tool_spec_id": "d00a500470238c4ac3d2224e9c1376763496aa84fd2110e7bc356b086541b0e5",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -233,7 +237,8 @@
         {
           "type": "text",
           "text": "The suite is hanging. Narrowing it to the store tests.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -256,7 +261,7 @@
     }
   },
   "tool_specs": {
-    "6eb836a0619424a1b2c33a852ddae90a5779b83c0135789df9218c1dc9326a5b": {
+    "d00a500470238c4ac3d2224e9c1376763496aa84fd2110e7bc356b086541b0e5": {
       "name": "bash",
       "title": null,
       "description": "bash tool.",
@@ -266,6 +271,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": null,
@@ -282,7 +288,8 @@
         "output": 210,
         "cache_read": 12000,
         "cache_write": 0,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -318,7 +325,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -326,6 +332,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

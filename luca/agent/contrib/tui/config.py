@@ -33,6 +33,7 @@ from luca.agent.contrib.simple_context_manager import (
     DEFAULT_WINDOW,
     SummarizingContextManager,
 )
+from luca.agent.contrib.websearch import WebSearchConfig
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
 from luca.client.providers import PROVIDERS
 from luca.client.types import Reasoning
@@ -94,7 +95,6 @@ class ClientSettings(BaseModel):
 class RuntimeSettings(BaseModel):
     """Every `RuntimeConfig` knob, all optional (unset = leave the session's)."""
 
-    builtin_client_completion_timeout_in_ms: int | None = None
     client_completion_timeout_in_ms: int | None = None
     tool_execution_timeout_in_ms: int | None = None
     llm_completion_cancellation_grace_period: int | None = None
@@ -274,6 +274,22 @@ class LucaConfig(BaseModel):
             "(apply_patch + shell on OpenAI, text_editor + bash on Anthropic). Defaults to true."
         ),
     )
+    # Provider-hosted web search (`--websearch` / `--no-websearch`). ABSENT =
+    # OFF — deliberately breaking with `use_native_tools`' default-on: natives
+    # replace equivalent generic tools, while web search is a NEW capability
+    # with per-search cost and an injection surface, so it is opt-in.
+    # `"websearch": {}` is the minimal enable. `None` cannot ride the
+    # `default_factory` feature-block shape precisely because absent must not
+    # equal empty. The value maps 1:1 onto `WebSearchPlugin`'s constructor;
+    # nothing is persisted — runtime wiring, re-applied every launch.
+    websearch: WebSearchConfig | None = Field(
+        default=None,
+        description=(
+            "Provider-hosted web search. Absent = off; {} enables with the defaults. "
+            "openai.options / anthropic.search / anthropic.fetch validate into the client's "
+            "own tool declarations (fetch is opt-in). Nothing is persisted."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -371,6 +387,35 @@ def _deep_merge(base: dict, over: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+# The opinionated TUI defaults for the websearch block, applied UNDER the
+# user's block per key (user block > these > client/provider defaults). A
+# library user instantiating `WebSearchPlugin` directly gets the neutral
+# client defaults — these belong to the DEMO's wiring.
+TUI_WEBSEARCH_DEFAULTS: dict = {
+    "openai": {"options": {"include_results": True, "include_sources": True}},
+    "anthropic": {
+        "search": {"allowed_callers": ["direct"]},
+        # the fetch half applies ONLY when the user's block enables fetch —
+        # an unconditional merge would silently switch opt-in fetch on for
+        # every Anthropic user (see `resolve_websearch`)
+        "fetch": {"allowed_callers": ["direct"]},
+    },
+}
+
+
+def resolve_websearch(block: WebSearchConfig | None) -> WebSearchConfig | None:
+    """The websearch block with the TUI defaults merged UNDER it, or None
+    when the feature is off (absent block). `exclude_unset` keeps the merge
+    honest: only keys the user actually wrote win over the defaults, so a
+    validated-but-untouched `None` field cannot clobber one."""
+    if block is None:
+        return None
+    defaults = json.loads(json.dumps(TUI_WEBSEARCH_DEFAULTS))  # a deep copy
+    if block.anthropic.fetch is None:
+        del defaults["anthropic"]["fetch"]
+    return WebSearchConfig.model_validate(_deep_merge(defaults, block.model_dump(exclude_unset=True)))
 
 
 def load_luca_config(

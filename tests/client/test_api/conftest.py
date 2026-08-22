@@ -50,19 +50,19 @@ class StubProvider(BaseProvider, ChatCompletionMixin):
             raise RuntimeError("StubProvider: no more scripted responses")
         return self._scripted.pop(0)
 
-    def completion(self, request):
+    def completion(self, request, *, timeout=None):
         self.calls.append(StubProviderCall("completion", request))
         return self._pop()
 
-    async def acompletion(self, request):
+    async def acompletion(self, request, *, timeout=None):
         self.calls.append(StubProviderCall("acompletion", request))
         return self._pop()
 
-    def completion_stream(self, request):
+    def completion_stream(self, request, *, timeout=None):
         self.calls.append(StubProviderCall("completion_stream", request))
         return self._pop()
 
-    def acompletion_stream(self, request):
+    def acompletion_stream(self, request, *, timeout=None):
         self.calls.append(StubProviderCall("acompletion_stream", request))
         return self._pop()
 

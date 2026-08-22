@@ -1,0 +1,608 @@
+event: response.created
+{
+  "type": "response.created",
+  "response": {
+    "id": "resp_0efe2dcd96bc22a0016a8067a6013087d2aa80673790a",
+    "object": "response",
+    "created_at": 1786800038,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 0
+}
+
+event: response.in_progress
+{
+  "type": "response.in_progress",
+  "response": {
+    "id": "resp_0efe2dcd96bc22a0016a8067a6013087d2aa80673790a",
+    "object": "response",
+    "created_at": 1786800038,
+    "status": "in_progress",
+    "background": false,
+    "completed_at": null,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "auto",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": null,
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 1
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+    "type": "web_search_call",
+    "status": "in_progress",
+    "results": null
+  },
+  "output_index": 0,
+  "sequence_number": 2
+}
+
+event: response.web_search_call.in_progress
+{
+  "type": "response.web_search_call.in_progress",
+  "item_id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+  "output_index": 0,
+  "sequence_number": 3
+}
+
+event: response.web_search_call.searching
+{
+  "type": "response.web_search_call.searching",
+  "item_id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+  "output_index": 0,
+  "sequence_number": 4
+}
+
+event: response.web_search_call.completed
+{
+  "type": "response.web_search_call.completed",
+  "item_id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+  "output_index": 0,
+  "sequence_number": 5
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+      "type": "search",
+      "queries": [
+        "positive news story today August 15 2026"
+      ],
+      "query": "positive news story today August 15 2026"
+    },
+    "results": [
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0reddit0\ue201 [wordlim: 200] Published: toda",
+        "title": "How is your country doing today? August 15, 2026",
+        "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search1\ue201 [wordlim: 200] Published: 8 mo",
+        "title": "August 15 - 21, 2025",
+        "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search2\ue201 [wordlim: 200] Published: yest",
+        "title": "Positive News WEB",
+        "url": "https://www.positivenewsus.org/uploads/1/3/0/5/130"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search3\ue201 [wordlim: 200] Crawled: 4 mont",
+        "title": "2016 in science",
+        "url": "https://en.wikipedia.org/wiki/2016_in_science"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search4\ue201 [wordlim: 200] Published: 9 mo",
+        "title": "Appalachian Hardwood News - August 2025 - 1",
+        "url": "https://appalachianhardwood.org/wp-content/uploads"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search5\ue201 [wordlim: 200] Published: 6 mo",
+        "title": "+      \n \n \nLesson 12 / August 17, 2025 \n \nGood Ne",
+        "url": "https://www.21stcc.com/wp-content/uploads/2025/08/"
+      },
+      {
+        "type": "text_result",
+        "snippet": "\ue200cite\ue202turn0search6\ue201 [wordlim: 200] Published: last",
+        "title": "B4 THE NEWS-ENTERPRISE  Wednesday, August 13, 2025",
+        "url": "https://kypublicnotice.com/KYLegals/2025/70219-202"
+      }
+    ]
+  },
+  "output_index": 0,
+  "sequence_number": 6
+}
+
+event: response.output_item.added
+{
+  "type": "response.output_item.added",
+  "item": {
+    "id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+    "type": "message",
+    "status": "in_progress",
+    "content": [],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 1,
+  "sequence_number": 7
+}
+
+event: response.content_part.added
+{
+  "type": "response.content_part.added",
+  "content_index": 0,
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "output_index": 1,
+  "part": {
+    "type": "output_text",
+    "annotations": [],
+    "logprobs": [],
+    "text": ""
+  },
+  "sequence_number": 8
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "One positive story I found for **today (Aug 15, ",
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "logprobs": [],
+  "obfuscation": "",
+  "output_index": 1,
+  "sequence_number": 9
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "2026)** is from the **Oregon Zoo**: a post shared ",
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "logprobs": [],
+  "obfuscation": "xlSX",
+  "output_index": 1,
+  "sequence_number": 10
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "delightful otter on its birthday**. ",
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "logprobs": [],
+  "obfuscation": "hMKbyLh9jo8M",
+  "output_index": 1,
+  "sequence_number": 11
+}
+
+event: response.output_text.delta
+{
+  "type": "response.output_text.delta",
+  "content_index": 0,
+  "delta": "([reddit.com](https://www.reddit.com/r/globalcheck",
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "logprobs": [],
+  "obfuscation": "IL1flnq",
+  "output_index": 1,
+  "sequence_number": 12
+}
+
+event: response.output_text.annotation.added
+{
+  "type": "response.output_text.annotation.added",
+  "annotation": {
+    "type": "url_citation",
+    "end_index": 281,
+    "start_index": 144,
+    "title": "How is your country doing today? August 15, 2026",
+    "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+  },
+  "annotation_index": 0,
+  "content_index": 0,
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "output_index": 1,
+  "sequence_number": 13
+}
+
+event: response.output_text.done
+{
+  "type": "response.output_text.done",
+  "content_index": 0,
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "logprobs": [],
+  "output_index": 1,
+  "sequence_number": 14,
+  "text": "One positive story I found for **today (Aug 15, 20"
+}
+
+event: response.content_part.done
+{
+  "type": "response.content_part.done",
+  "content_index": 0,
+  "item_id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+  "output_index": 1,
+  "part": {
+    "type": "output_text",
+    "annotations": [
+      {
+        "type": "url_citation",
+        "end_index": 281,
+        "start_index": 144,
+        "title": "How is your country doing today? August 15, 2026",
+        "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+      }
+    ],
+    "logprobs": [],
+    "text": "One positive story I found for **today (Aug 15, 20"
+  },
+  "sequence_number": 15
+}
+
+event: response.output_item.done
+{
+  "type": "response.output_item.done",
+  "item": {
+    "id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [
+          {
+            "type": "url_citation",
+            "end_index": 281,
+            "start_index": 144,
+            "title": "How is your country doing today? August 15, 2026",
+            "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+          }
+        ],
+        "logprobs": [],
+        "text": "One positive story I found for **today (Aug 15, 20"
+      }
+    ],
+    "phase": "final_answer",
+    "role": "assistant"
+  },
+  "output_index": 1,
+  "sequence_number": 16
+}
+
+event: response.completed
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_0efe2dcd96bc22a0016a8067a6013087d2aa80673790a",
+    "object": "response",
+    "created_at": 1786800038,
+    "status": "completed",
+    "background": false,
+    "completed_at": 1786800040,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "incomplete_details": null,
+    "instructions": null,
+    "max_output_tokens": null,
+    "max_tool_calls": null,
+    "model": "gpt-5.4-nano-2026-03-17",
+    "moderation": null,
+    "output": [
+      {
+        "id": "ws_0efe2dcd96bc22a0016a8067a698f087d2ac016cdcd8715",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "search",
+          "queries": [
+            "positive news story today August 15 2026"
+          ],
+          "query": "positive news story today August 15 2026"
+        },
+        "results": [
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0reddit0\ue201 [wordlim: 200] Published: toda",
+            "title": "How is your country doing today? August 15, 2026",
+            "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search1\ue201 [wordlim: 200] Published: 8 mo",
+            "title": "August 15 - 21, 2025",
+            "url": "https://939c9b01811224bb3dcf-d6f090436a6f3838a347f"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search2\ue201 [wordlim: 200] Published: yest",
+            "title": "Positive News WEB",
+            "url": "https://www.positivenewsus.org/uploads/1/3/0/5/130"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search3\ue201 [wordlim: 200] Crawled: 4 mont",
+            "title": "2016 in science",
+            "url": "https://en.wikipedia.org/wiki/2016_in_science"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search4\ue201 [wordlim: 200] Published: 9 mo",
+            "title": "Appalachian Hardwood News - August 2025 - 1",
+            "url": "https://appalachianhardwood.org/wp-content/uploads"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search5\ue201 [wordlim: 200] Published: 6 mo",
+            "title": "+      \n \n \nLesson 12 / August 17, 2025 \n \nGood Ne",
+            "url": "https://www.21stcc.com/wp-content/uploads/2025/08/"
+          },
+          {
+            "type": "text_result",
+            "snippet": "\ue200cite\ue202turn0search6\ue201 [wordlim: 200] Published: last",
+            "title": "B4 THE NEWS-ENTERPRISE  Wednesday, August 13, 2025",
+            "url": "https://kypublicnotice.com/KYLegals/2025/70219-202"
+          }
+        ]
+      },
+      {
+        "id": "msg_0efe2dcd96bc22a0016a8067a7fbbc87d2b661ca82ba05",
+        "type": "message",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "annotations": [
+              {
+                "type": "url_citation",
+                "end_index": 281,
+                "start_index": 144,
+                "title": "How is your country doing today? August 15, 2026",
+                "url": "https://www.reddit.com/r/globalcheckin/comments/1v"
+              }
+            ],
+            "logprobs": [],
+            "text": "One positive story I found for **today (Aug 15, 20"
+          }
+        ],
+        "phase": "final_answer",
+        "role": "assistant"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "current_turn",
+      "effort": "none",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 1
+      }
+    },
+    "tools": [
+      {
+        "type": "web_search",
+        "return_token_budget": "default",
+        "search_content_types": [
+          "text"
+        ],
+        "search_context_size": "medium",
+        "user_location": {
+          "type": "approximate",
+          "city": null,
+          "country": "US",
+          "region": null,
+          "timezone": null
+        }
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 8395,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 3712
+      },
+      "output_tokens": 98,
+      "output_tokens_details": {
+        "reasoning_tokens": 38
+      },
+      "total_tokens": 8493
+    },
+    "user": null,
+    "metadata": {}
+  },
+  "sequence_number": 17
+}
+

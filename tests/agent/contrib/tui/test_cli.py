@@ -711,3 +711,29 @@ def test_the_env_var_beats_the_config(tmp_path, monkeypatch):
     main(["--faux"])
 
     assert logging.getLogger("luca").level == logging.WARNING
+
+
+def test_websearch_is_off_by_default_and_the_flag_triad():
+    from luca.agent.contrib.tui.cli import resolve_websearch_setting
+    from luca.agent.contrib.websearch import WebSearchConfig
+
+    # off by default — absent block, no flag
+    assert resolve_websearch_setting(arg_parser().parse_args([]).websearch, LucaConfig()) is None
+    # bare --websearch with no block ≡ "websearch": {} (TUI defaults applied)
+    bare = resolve_websearch_setting(arg_parser().parse_args(["--websearch"]).websearch, LucaConfig())
+    assert bare.openai.options.include_results is True
+    assert bare.anthropic.search.allowed_callers == ["direct"]
+    assert bare.anthropic.fetch is None
+    # a config block enables without the flag…
+    block = LucaConfig.model_validate({"websearch": {"anthropic": {"search": {"max_uses": 5}}}})
+    from_config = resolve_websearch_setting(arg_parser().parse_args([]).websearch, block)
+    assert from_config.anthropic.search.max_uses == 5
+    # …and --no-websearch kills it for this run
+    assert resolve_websearch_setting(arg_parser().parse_args(["--no-websearch"]).websearch, block) is None
+    # the flag forced ON wins over the block's temporary "enabled": false
+    disabled = LucaConfig.model_validate({"websearch": {"enabled": False}})
+    assert resolve_websearch_setting(arg_parser().parse_args([]).websearch, disabled) is None
+    forced = resolve_websearch_setting(arg_parser().parse_args(["--websearch"]).websearch, disabled)
+    assert forced == WebSearchConfig(enabled=True).model_copy(
+        update={"openai": bare.openai, "anthropic": bare.anthropic}
+    )

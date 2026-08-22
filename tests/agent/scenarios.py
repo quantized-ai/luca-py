@@ -853,6 +853,42 @@ main_conversation(CANCEL_PARKED_SESSION).updated_at = 600
 # was closed (TurnFinish carries the outcome + error) and the exception
 # re-raised. Status is retry-ready PENDING — a plain run() opens a NEW bracket
 # and re-answers; post_message is also legal (clarify before the retry).
+# A crash / reload in the pause window (D8): the open turn ends in a PAUSED
+# assistant entry (`stop_reason="pause"`), nothing nonterminal anywhere — the
+# session derives BUSY and the next run()'s step 4 replays the recorded
+# content and continues (only `ResponseResumed` fires in the new process;
+# `ResponsePaused` fired in the one that died).
+PAUSED_SESSION = make_session(
+    id="s_paused",
+    entries={
+        "u1": UserMessage(
+            id="u1",
+            created_at=500,
+            parts=[TextContent(text="find apple")],
+        ),
+        "ts": TurnStart(id="ts", parent_id="u1", created_at=500),
+        "a1": AssistantMessage(
+            id="a1",
+            parent_id="ts",
+            created_at=500,
+            parts=[TextContent(text="Searching...")],
+            llm_config=MODEL,
+            stop_reason="pause",
+            context_tokens=3,
+        ),
+    },
+    conversations={
+        "c1": conversation(
+            "c1",
+            ["u1", "ts", "a1"],
+            created_at=500,
+            updated_at=500,
+        )
+    },
+    main_conversation_id="c1",
+    session_config=SessionConfig(llm_config=MODEL),
+)
+
 POST_FAILURE_SESSION = make_session(
     id="s_failed",
     entries={
@@ -867,7 +903,7 @@ POST_FAILURE_SESSION = make_session(
             parent_id="ts",
             created_at=500,
             outcome=TurnOutcome.TIMED_OUT,
-            error="completion exceeded total_timeout=0.05s",
+            error="completion exceeded timeout=0.05s",
         ),
     },
     conversations={

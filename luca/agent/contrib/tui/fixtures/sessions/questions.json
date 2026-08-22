@@ -1,5 +1,6 @@
 {
   "id": "questions",
+  "spec_version": "0.0.1",
   "entries": {
     "ts1": {
       "id": "ts1",
@@ -18,7 +19,8 @@
         {
           "type": "text",
           "text": "port the event store to sqlite — ask before big calls",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ]
     },
@@ -56,7 +58,8 @@
         {
           "type": "text",
           "text": "Four things I'd rather not guess at before I start.",
-          "metadata": {}
+          "metadata": {},
+          "annotations": []
         }
       ],
       "llm_config": {
@@ -127,7 +130,7 @@
         },
         "extras": {}
       },
-      "tool_spec_id": "fcb75d44325f91e75ec69a63183559ecba9ac56d5950b03ffddcc1cfc13e78db",
+      "tool_spec_id": "a70ebb272aae0126f682e09ca0dc4bc7125385a452b9453000332b1a249c8f83",
       "extras": {},
       "approval_status": null,
       "approval_decisions": [],
@@ -148,7 +151,7 @@
     }
   },
   "tool_specs": {
-    "fcb75d44325f91e75ec69a63183559ecba9ac56d5950b03ffddcc1cfc13e78db": {
+    "a70ebb272aae0126f682e09ca0dc4bc7125385a452b9453000332b1a249c8f83": {
       "name": "ask_user",
       "title": "Ask the user",
       "description": "ask_user tool.",
@@ -158,6 +161,7 @@
       },
       "output_schema": null,
       "is_private": false,
+      "is_synthetic": false,
       "metadata": null,
       "tool_kind": "other",
       "namespace": "contrib.questions",
@@ -174,7 +178,8 @@
         "output": 470,
         "cache_read": 19000,
         "cache_write": 1100,
-        "total_tokens": 0
+        "total_tokens": 0,
+        "tool_requests": {}
       }
     }
   },
@@ -206,7 +211,6 @@
     },
     "runtime_config": {
       "extras": {},
-      "builtin_client_completion_timeout_in_ms": -1,
       "client_completion_timeout_in_ms": -1,
       "tool_execution_timeout_in_ms": -1,
       "llm_completion_cancellation_grace_period": 0,
@@ -214,6 +218,9 @@
       "soft_max_steps": -1,
       "hard_max_steps": -1,
       "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
       "subagents_enabled": false,
       "subagents_max_depth": 1,
       "subagents_max_per_turn": -1,

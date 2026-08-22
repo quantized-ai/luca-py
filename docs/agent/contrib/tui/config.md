@@ -143,9 +143,23 @@ Point your editor at [`luca.schema.json`](../../../../luca.schema.json) via the
   },
   "streaming": true,
   "checkpoints": true,           // snapshot the workspace before each turn (/undo, /rewind)
-  "use_native_tools": true       // provider-native tools where the model has them
+  "use_native_tools": true,      // provider-native tools where the model has them
+  "websearch": {                 // provider-hosted web search — ABSENT = OFF, {} = on
+    "enabled": true,             // flip false to disable TEMPORARILY, block kept in place
+    "openai":    { "options": { "search_context_size": "high" } },
+    "anthropic": { "search": { "max_uses": 5 },
+                   "fetch":  { "max_content_tokens": 20000 } }   // fetch is opt-in
+  }
 }
 ```
+
+The `websearch` block maps 1:1 onto
+[`WebSearchPlugin`](../websearch/README.md)'s constructor — the per-provider
+options ARE the client's own tool declarations. The TUI merges its own
+defaults UNDER the user's block, per key (`include_results` +
+`include_sources` on OpenAI; `allowed_callers: ["direct"]` on Anthropic's
+tools — the fetch half only when the block enables fetch). Nothing about it
+is persisted: it is runtime wiring, re-applied every launch.
 
 ## Notes
 
@@ -326,7 +340,10 @@ stay out of any root handler your own program installed. See
 `--streaming` / `--no-streaming`, `--autocompact` / `--no-autocompact`,
 `--compact-threshold`, `--compact-keep-turns`,
 `--use-native` / `--no-use-native`,
-`--checkpoints` / `--no-checkpoints`.
+`--checkpoints` / `--no-checkpoints`,
+`--websearch` / `--no-websearch` (a bare `--websearch` with no block is the
+minimal enable, `≡ "websearch": {}`; forcing it on also overrides a block's
+temporary `"enabled": false`).
 
 `--no-skills`, `--no-commands` and `--no-instructions` withhold skills,
 user-defined slash commands and the project's instruction files entirely,

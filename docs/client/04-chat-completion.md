@@ -6,14 +6,14 @@ Four public helpers, all imported from `luca.client`:
 |---|---|---|
 | `completion(...)` | sync | `ChatCompletionResponse` |
 | `acompletion(...)` | async | `ChatCompletionResponse` |
-| `completion_stream(...)` | sync | `ChatCompletionStream` |
-| `acompletion_stream(...)` | sync (returns async stream) | `AsyncChatCompletionStream` |
+| `completion_stream(...)` | sync | a sync stream object |
+| `acompletion_stream(...)` | sync (returns async stream) | an async stream object |
 
 Plus `get_provider(model_or_pair)` for grabbing the cached provider instance
 behind a given model string.
 
 > Note: `acompletion_stream(...)` is **a regular `def`**, not `async def`.
-> The HTTP request fires on first iteration, so the idiom is
+> The HTTP request fires at `async with`, so the idiom is
 > `async with acompletion_stream(...) as s:` — no `await` on creation.
 
 ## Signature
@@ -45,8 +45,7 @@ Common keyword args:
 | `model_info` | `ModelInfo \| dict \| None` | Override the catalog lookup for this call. |
 | `api_key` | `str \| None` | Override env. |
 | `base_url` | `str \| None` | Override host URL. |
-| `timeout` | `float \| None` | Per-call timeout (sec). Default 60. |
-| `total_timeout` | `float \| None` | Wall-clock deadline over the whole call (sec). **Async helpers only** (`acompletion` / `acompletion_stream` — the sync helpers have no loop to enforce it). Expiry raises the SDK `TimeoutError`; on a stream it follows the streaming contract: exactly one terminal `ErrorEvent` carrying `TimeoutError`, then close. |
+| `timeout` | `float \| None` | Total wall-clock deadline for the call (sec); `None` = no deadline. Expiry raises the SDK `TimeoutError`; on a stream it follows the streaming contract — exactly one terminal `ErrorEvent` carrying `TimeoutError`, then close (expiry during the open raises). Async enforcement is exact; sync enforcement is best-effort (httpx phase timeouts / a cooperative clock — see [08](08-streaming.md#11-timeouts)). |
 | `transport_class` | `type \| None` | Bypass `PROVIDERS` and use a specific transport class. |
 | `transport` | `BaseTransport \| None` | Wrap a pre-built transport instance. |
 
@@ -110,7 +109,8 @@ instances out of `self.content` — same objects, never copied.
 There are **two** finish-reason fields on the message:
 
 - `finish_reason` — SDK-canonical, one of `"stop"`, `"length"`,
-  `"tool_use"`, `"error"`, or `None` (cancelled before any terminal arrived).
+  `"tool_use"`, `"pause"`, `"error"`, or `None` (cancelled before any
+  terminal arrived).
 - `provider_finish_reason` — the **raw upstream string**, preserved verbatim
   (`"end_turn"`, `"content_filter"`, `"refusal"`, `"max_tokens"`, …).
 
@@ -127,6 +127,7 @@ The canonical mapping summary:
 | `"stop"` | Model produced a complete turn. |
 | `"length"` | Hit `max_tokens` / token budget. |
 | `"tool_use"` | Model wants you to execute tool calls and reply. |
+| `"pause"` | A long-running hosted tool paused the response (Anthropic `pause_turn`): re-send the recorded assistant content as-is and let the model continue. |
 | `"error"` | LLM-side refusal / safety / content filter. Check `error_message`. |
 | `None` | Stream was cancelled before any terminal arrived (streaming only). |
 

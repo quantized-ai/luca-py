@@ -94,11 +94,16 @@ from luca.client.types import (
     MediaFileId as ClientMediaFileId,
     MediaURL as ClientMediaURL,
     Message,
+    PrivateProviderBlock as ClientPrivateProviderBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall as ClientToolCall,
     ToolMessage,
+    URLCitationAnnotation as ClientURLCitationAnnotation,
     UserMessage as ClientUserMessage,
+    WebFetchBlock as ClientWebFetchBlock,
+    WebPagePart as ClientWebPagePart,
+    WebSearchBlock as ClientWebSearchBlock,
 )
 
 from .exceptions import ProjectionError
@@ -117,6 +122,7 @@ from .models import (
     MediaBase64,
     MediaFileId,
     MediaURL,
+    PrivateProviderContent,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -126,6 +132,9 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
     is_compaction_bracket,
     open_turn_index,
     spawn_payload,
@@ -373,6 +382,27 @@ class ConversationProjector:
                         arguments=part.arguments,
                     ),
                 )
+            elif isinstance(part, TextContent):
+                # The assistant path carries annotations (grounded citations);
+                # `_content_block` stays the plain shared conversion for the
+                # user / tool-result / pruned paths, where none exist.
+                blocks.append(TextBlock(text=part.text, annotations=self._url_annotations(part.annotations)))
+            elif isinstance(part, PrivateProviderContent):
+                # Verbatim, in order — the client transport for `format`
+                # replays it, every other transport omits it (D1).
+                blocks.append(ClientPrivateProviderBlock(format=part.format, data=part.data))
+            elif isinstance(part, WebSearchContent):
+                blocks.append(
+                    ClientWebSearchBlock(
+                        queries=part.queries,
+                        results=None if part.results is None else [self._web_page_part(r) for r in part.results],
+                        extras=part.extras,
+                    ),
+                )
+            elif isinstance(part, WebFetchContent):
+                blocks.append(
+                    ClientWebFetchBlock(web_page=self._web_page_part(part.web_page), extras=part.extras),
+                )
             else:
                 blocks.append(self._content_block(part))
         return ClientAssistantMessage(
@@ -380,6 +410,24 @@ class ConversationProjector:
             provider=entry.llm_config.provider,
             model=entry.llm_config.model,
         )
+
+    @staticmethod
+    def _url_annotations(annotations) -> list[ClientURLCitationAnnotation]:
+        """Agent `URLCitation`s → the client's identical annotation shape."""
+        return [
+            ClientURLCitationAnnotation(
+                url=annotation.url,
+                title=annotation.title,
+                start_index=annotation.start_index,
+                end_index=annotation.end_index,
+            )
+            for annotation in annotations
+        ]
+
+    @staticmethod
+    def _web_page_part(page: WebPageContent) -> ClientWebPagePart:
+        """Agent `WebPageContent` → the client's identical page shape."""
+        return ClientWebPagePart(url=page.url, title=page.title, content=page.content, extras=page.extras)
 
     def project_tool_execution(
         self,

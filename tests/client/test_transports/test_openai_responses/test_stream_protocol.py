@@ -114,7 +114,7 @@ def test_a_stream_that_ends_without_a_terminal_emits_an_error_event(responses_tr
         events = list(s)
 
     assert events[-1].type == "error"
-    assert "RawFinish" in str(events[-1].error)
+    assert "without a terminal event" in str(events[-1].error)
     assert s.message.content == [TextBlock(text="Once")]
 
 

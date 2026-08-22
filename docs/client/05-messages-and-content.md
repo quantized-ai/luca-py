@@ -60,7 +60,7 @@ ToolMessage`) is discriminated on `role`.
 
 | Block | `type` | Used in |
 |---|---|---|
-| `TextBlock(text, signature=None)` | `"text"` | User, assistant, tool |
+| `TextBlock(text, signature=None, annotations=[])` | `"text"` | User, assistant, tool |
 | `ImageBlock(source)` | `"image"` | User, tool |
 | `AudioBlock(source)` | `"audio"` | User |
 | `FileBlock(source, name=None)` | `"file"` | User |
@@ -68,6 +68,9 @@ ToolMessage`) is discriminated on `role`.
 | `ToolCall(id, name, arguments, partial_arguments, complete, thought_signature=None)` | `"tool_call"` | Assistant |
 | `ToolResultBlock(tool_call_id, content, is_error=False)` | `"tool_result"` | (Anthropic-style inline; prefer `ToolMessage`) |
 | `RefusalBlock(text)` | `"refusal"` | Assistant |
+| `PrivateProviderBlock(format, data)` | `"private_provider"` | Assistant (hosted web tools) |
+| `WebSearchBlock(queries, results=None)` | `"web_search"` | Assistant (hosted web tools) |
+| `WebFetchBlock(web_page)` | `"web_fetch"` | Assistant (hosted web tools) |
 
 ### Reasoning is provider-owned
 
@@ -93,6 +96,74 @@ Send that to `anthropic:claude-sonnet-5` and the reasoning is dropped from the
 wire (the text stays in your message object). A message with no `provider` /
 `model` is taken as caller-driven and replayed as-is. This is what keeps a
 conversation valid across a mid-session model switch.
+
+### Web operations — two views per operation
+
+When a [hosted web tool](06-tools.md#hosted-web-tools) runs, each operation is
+stored twice in the assistant content, side by side:
+
+```python
+AssistantMessage(content=[
+    PrivateProviderBlock(               # the exact wire item(s), for replay
+        format="openai.responses",
+        data={"id": "ws_01", "type": "web_search_call", "status": "completed", ...},
+    ),
+    WebSearchBlock(                     # the portable meaning, for you
+        queries=["Apple latest quarterly results"],
+        results=[WebPagePart(url="https://www.apple.com/newsroom/...", title="...")],
+    ),
+    TextBlock(text="Apple's latest quarterly report says..."),
+])
+```
+
+- `PrivateProviderBlock` is authoritative for replay **by the wire format
+  that produced it** (`"openai.responses"`, `"anthropic.messages"`). Every
+  other transport omits it — and never removes it, so switching back
+  preserves exact replay.
+- `WebSearchBlock` / `WebFetchBlock` are portable observations. The client
+  never sends them to a provider; higher layers may adapt them when a
+  conversation switches providers.
+- `WebSearchBlock.results=None` means result metadata was not returned
+  (usually not requested); `results=[]` means the provider returned an empty
+  result set. Each result is a `WebPagePart(url, title=None, content=None)` —
+  `content` is the readable text the provider exposed (a snippet for a
+  search result, page text for a fetch).
+- **`extras` makes the portable block adjacency-free**: `extras["id"]` is the
+  provider's operation id (`srvtoolu_…` on Anthropic, `ws_…` on OpenAI —
+  the same id the streaming web events carry), and `extras["error"]` is
+  present iff the operation FAILED. The error shape is per provider:
+  Anthropic stamps its wire error dict verbatim
+  (`{"type": "web_search_tool_result_error", "error_code": …}`); OpenAI has
+  no structured per-operation error, so a failed item stamps
+  `{"status": "failed"}` — tolerate an error without a code. `results=None`
+  *plus* `extras["error"]` means "failed"; `results=None` alone means
+  "metadata not returned". Operations with no portable block (OpenAI's
+  `find_in_page`, unknown actions) stay private-only and carry no stamp.
+
+### Citations
+
+Text a model grounds in web results carries `annotations` — character ranges
+over `TextBlock.text`, identical across providers (Anthropic's split cited
+spans are merged into one block and their ranges derived):
+
+```python
+TextBlock(
+    text="Market update: Apple rose 2.8% today. NVIDIA was flat.",
+    annotations=[URLCitationAnnotation(
+        url="https://example.com/apple",
+        title="Apple shares rise",
+        start_index=15,        # nullable: not every transport can derive a range
+        end_index=37,
+    )],
+)
+```
+
+A cited Anthropic run also keeps its original split text blocks as
+`PrivateProviderBlock`s **after** the merged `TextBlock` — their citations
+carry provider-only fields (`cited_text`, `encrypted_index`) Anthropic wants
+back on later turns. Replay to Anthropic sends those privates verbatim and
+skips the merged block; every other provider replays the merged block and
+drops the privates.
 
 ### Media sources
 
@@ -180,6 +251,49 @@ class ToolCall(BaseModel):
 For non-streamed responses `complete=True`, `arguments` is parsed,
 `partial_arguments=""`. During streaming the buffer accumulates and resolves
 at `tool_call_end`.
+
+## The effective view — `effective_messages`
+
+The subset of a conversation that will actually serialize onto the wire for a
+target, in client types instead of wire dicts. Same target resolution as
+`acompletion()`; entirely offline — no key, no HTTP.
+
+```python
+from luca.client import effective_messages
+
+effective_messages("anthropic:claude-sonnet-5", messages)
+# provider= takes a name or a pre-built provider, transport= a pre-built
+# transport instance, transport_class= a class — exactly as acompletion()
+```
+
+The selection is the payload build's own, per transport — the two share one
+rule and the invariant holds by construction:
+
+```
+payload(messages, t) == payload(effective_messages(messages, t), t)   # same bytes
+effective(effective(x, t), t) == effective(x, t)                      # idempotent
+```
+
+What survives is the full walk, not just per-block rules: foreign-format
+`PrivateProviderBlock`s drop, the portable web blocks always drop, thinking
+drops when its attestation was minted by another (provider, model) pair, a
+merged cited `TextBlock` drops when its split privates replay in its place —
+and a foreign-family native `ToolCall` drops together with the `ToolMessage`
+answering it.
+
+- **A fully-filtered assistant message comes back as
+  `AssistantMessage(content=[])`, never omitted** — the list keeps its shape.
+  Transports skip empty assistant messages at build time, so the invariant
+  still holds.
+- The wire-format strings (`"openai.responses"`, `"anthropic.messages"`) are
+  **data** — the values of `PrivateProviderBlock.format` — not exported
+  constants. Nothing outside the client should compare them.
+- Media down-conversion is a non-goal: `effective_messages` models message
+  and assistant-block survival only, not how user-message media serializes.
+
+The purpose is **measurement** (e.g. context accounting after a provider
+switch); the request path never calls it — transports keep filtering at
+payload build, as always.
 
 ## Coercion
 

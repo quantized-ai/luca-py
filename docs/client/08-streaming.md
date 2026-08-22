@@ -13,8 +13,8 @@ one has a single unambiguous return type:
 
 | Function | Returns | Iterate with |
 |---|---|---|
-| `completion_stream(...)` | `ChatCompletionStream` | `for event in s:` |
-| `acompletion_stream(...)` | `AsyncChatCompletionStream` | `async for event in s:` |
+| `completion_stream(...)` | a sync stream object | `for event in s:` |
+| `acompletion_stream(...)` | an async stream object | `async for event in s:` |
 
 ```python
 from luca.client import completion_stream
@@ -29,7 +29,7 @@ with completion_stream(
 ```
 
 The async twin returns the stream **synchronously** — there is no `await` on
-the call itself, because the HTTP request has not been made yet:
+the call itself, because the HTTP request only fires at `async with`:
 
 ```python
 import asyncio
@@ -51,10 +51,11 @@ Both accept every kwarg `completion()` does — `tools`, `system_message`,
 `response_format`, `temperature`, `max_tokens`, `reasoning`, `provider`,
 `api_key`, `timeout`, and the rest. See
 [chat completion](04-chat-completion.md) for the full list.
-`acompletion_stream()` accepts one extra: `total_timeout=` (§11).
 
-> ⚠️ **The request opens lazily, on the first iteration.** Creating the stream
-> makes no network call. Always use `with` / `async with` — a stream that is
+> ⚠️ **The request opens at `with` / `async with`.** Creating the stream makes
+> no network call; entering the context manager sends the request and reads
+> the response headers, so a rejected request raises there (§6). Iterating a
+> stream that was never entered raises `StreamError`, and a stream that is
 > garbage-collected while open emits a `ResourceWarning`.
 
 ## 2. What a stream actually emits
@@ -181,6 +182,13 @@ class TextDeltaEvent(BaseModel):
 | `RefusalStartEvent` | `refusal_start` | `index` | A refusal block opens (OpenAI strict mode). |
 | `RefusalDeltaEvent` | `refusal_delta` | `index`, `delta` | A refusal chunk. |
 | `RefusalEndEvent` | `refusal_end` | `index`, `content` | The refusal block closes. |
+| `TextAnnotationEvent` | `text_annotation` | `index`, `annotation` | A citation landed on the text block at `index`; complete on arrival. |
+| `WebStartEvent` | `web_start` | `id` | A hosted web operation opened. |
+| `WebSearchEvent` | `web_search` | `id`, `queries` | The operation is a search; the queries are known. |
+| `WebSearchResultEvent` | `web_search_result` | `id`, `results` | The search's results, batched as the provider sent them. |
+| `WebFetchEvent` | `web_fetch` | `id`, `urls` | The operation opens these URLs. |
+| `WebFindEvent` | `web_find` | `id`, `url`, `pattern` | The operation searches a page for a pattern (OpenAI). |
+| `WebEndEvent` | `web_end` | `id` | The operation finished; its blocks are on the final message. |
 | `UsageEvent` | `usage` | `usage` | Token counts arrive, near the end. |
 | `FinishEvent` | `finish` | `message`, `finish_reason`, `provider_finish_reason`, `cancelled`, `usage`, `tool_calls` | **Terminal.** The model produced a turn. |
 | `ErrorEvent` | `error` | `error`, `usage` | **Terminal.** The stream broke after opening. |
@@ -188,6 +196,31 @@ class TextDeltaEvent(BaseModel):
 A model that produces no reasoning emits no `thinking_*` events. A model that
 calls no tools emits no `tool_call_*` events. Only `start` and a terminal are
 guaranteed.
+
+### Web operations
+
+The `web_*` events narrate [hosted web tools](06-tools.md#hosted-web-tools)
+as direct, user-facing facts — one `id` links every event of the same
+operation, and there is no nested provider action to inspect:
+
+```python
+match event:
+    case WebStartEvent():
+        show_status("Using the web…")
+    case WebSearchEvent(queries=queries):
+        show_status(f"Searching: {', '.join(queries)}")
+    case WebSearchResultEvent(results=results):
+        show_found_results(results)
+    case WebFetchEvent(urls=urls):
+        show_status(f"Opening: {', '.join(urls)}")
+    case WebFindEvent(url=url, pattern=pattern):
+        show_status(f"Searching {url} for {pattern!r}")
+    case WebEndEvent():
+        clear_status()
+```
+
+No result event is emitted when the provider sends no results. The completed
+canonical blocks ride the final message; `web_end` does not duplicate them.
 
 ## 6. The two terminals
 
@@ -217,12 +250,15 @@ FinishEvent(finish_reason="error", ...)   # message.error_message explains it
 
 `FinishEvent` also carries `provider_finish_reason`, the raw upstream string
 (`"tool_use"`, `"max_tokens"`, `"incomplete:content_filter"`, …) next to the
-SDK-canonical `finish_reason`.
+SDK-canonical `finish_reason`. A long-running hosted tool pausing the
+response (Anthropic's `pause_turn`) finishes the stream normally with
+canonical `finish_reason="pause"` — re-send the recorded assistant content
+as-is to continue.
 
 > ⚠️ **A rejected request raises instead of emitting.** If the provider
-> refuses before the stream opens — bad key, no credit, rate limit — the first
-> iteration raises the mapped `ClientError`. There is no stream to terminate,
-> so no `ErrorEvent`. See [exceptions](11-exceptions.md#streaming).
+> refuses the request — bad key, no credit, rate limit — the `with` /
+> `async with` line raises the mapped `ClientError`. There is no stream to
+> terminate, so no `ErrorEvent`. See [exceptions](11-exceptions.md#streaming).
 
 ## 7. Live accessors on the stream
 
@@ -310,15 +346,18 @@ with completion_stream(...) as s:
             s.cancel()
 ```
 
-`cancel()` closes the underlying HTTP response. The next read fails, and the
-stream converts that into a terminal `FinishEvent` with:
+`cancel()` interrupts the stream — it closes the underlying HTTP response
+(unblocking a read in flight), and after any events already buffered from
+the last chunk drain, the stream terminates with a `FinishEvent` carrying:
 
 - `cancelled=True`
 - `finish_reason=None` (no terminal arrived from the provider)
 - the partial message and whatever usage had already been reported
 
 Cancellation is **not** an error — you still get a `FinishEvent`, never an
-`ErrorEvent`. The async form is `await s.cancel()`.
+`ErrorEvent`. The async form is `await s.cancel()`. The one exception is a
+cancel that lands while `async with` is still opening the request: there is
+no stream to terminate yet, so the open raises `StreamError` instead.
 
 > ⚠️ **Cancelling a stream that already finished does nothing.** If the
 > provider's terminal had already arrived, you get a normal
@@ -327,34 +366,36 @@ Cancellation is **not** an error — you still get a `FinishEvent`, never an
 
 ## 11. Timeouts
 
-Two independent knobs:
+`timeout=` is one knob: a **total wall-clock deadline for the whole call**,
+on all four helpers, sync and async. `None` (the default) means no deadline.
 
 ```python
-# per-request HTTP timeout — same as completion(); applies to the connection
-with completion_stream(model="openai:gpt-4o", messages=[...], timeout=30.0) as s:
-    ...
-
-# wall-clock deadline over the WHOLE stream — async only
 async with acompletion_stream(
     model="openai:gpt-4o",
     messages=[...],
-    total_timeout=60.0,
+    timeout=60.0,
 ) as s:
     async for event in s:
         ...
 ```
 
-`total_timeout=` arms a deadline when the stream opens and enforces it on
-every chunk read. On expiry you get exactly one terminal `ErrorEvent`
-carrying the SDK `TimeoutError`, then the stream closes:
+Expiry after the stream opened emits exactly one terminal `ErrorEvent`
+carrying the SDK `TimeoutError`, then the stream closes; expiry during the
+open raises it at the `with` line:
 
 ```python
 ['start', 'text_start', 'text_delta', 'text_end', 'error']
 #                                                   ^ ErrorEvent(error=TimeoutError(...))
 ```
 
-It is async-only: the sync path has no event loop to enforce a deadline on.
-`timeout=` works on both.
+Async enforcement can interrupt a read in flight (a timer cancels the
+streamer's own read task). Sync enforcement is **cooperative and
+best-effort**: the clock is checked before each read, so a read already
+blocked on a live socket runs to completion before expiry is detected — a
+platform limit, not a bug. The connect phase is always bounded (a black-holed
+host fails in seconds), and a shared client's default read timeout never
+applies to a stream, so a slow model cannot be killed mid-answer by client
+configuration.
 
 ## 12. Tool calls while streaming
 
@@ -438,17 +479,16 @@ with transport.completion_stream(request) as s:
         ...
 ```
 
-Both layers expose `completion_stream(request)` and
-`acompletion_stream(request)`, returning the same stream classes. Note that
-`total_timeout=` is a helper-level convenience; at these layers, arm it with
-`stream._set_total_timeout(seconds)` before the first iteration.
+Both layers expose `completion_stream(request, timeout=None)` and
+`acompletion_stream(request, timeout=None)`, returning the same streamer
+objects the helpers do — `timeout=` travels per call at every layer.
 
-The stream classes themselves are importable for type annotations:
+The streamer base class is importable for type annotations:
 
 ```python
-from luca.client.types import ChatCompletionStream, AsyncChatCompletionStream
+from luca.client.transports.streamer import BaseStreamer
 
-def render(s: ChatCompletionStream) -> str:
+def render(s: BaseStreamer) -> str:
     with s:
         for event in s:
             ...
@@ -468,7 +508,7 @@ from luca.client.testing import (
 )
 
 prov = FauxProvider()
-prov._transport.set_responses([
+prov.set_responses([
     faux_assistant_message(
         blocks=[
             faux_text("Checking the weather."),
@@ -493,33 +533,71 @@ assert [e.type for e in events] == [
 ]
 ```
 
-`tokens_per_second=` on `FauxProvider` paces the deltas if you need to test
-timing. `faux_error(...)` scripts a mid-stream break into an `ErrorEvent`.
+`faux_error(...)` scripts a mid-stream break into an `ErrorEvent`, and
+`faux_hang()` parks an async stream until it is cancelled or times out.
 
-## 15. Internal: `RawStreamEvent`
+## 15. Internal: the streamer classes
 
-Only relevant if you are **writing a transport**. Transports don't build
-public events — they emit a small dataclass vocabulary that
-`ChatCompletionStream` translates:
+Only relevant if you are **writing a transport**. Each wire protocol is a
+STREAMER CLASS that owns its wire end-to-end — request building, chunk
+parsing, event creation, error mapping — as methods, overridable by
+subclassing. Sync/async iteration and the deadline machinery live in two
+mixins written once; a concrete streamer is an empty mixin × wire
+combination:
 
 ```python
-from luca.client.types import (
-    RawBlockStart, RawBlockStop,
-    RawTextDelta, RawThinkingDelta, RawToolArgumentsDelta, RawRefusalDelta,
-    RawFinish, RawUsage,
+from luca.client.transports.streamer import (
+    AsyncStreamerMixin, BaseStreamer, SyncStreamerMixin,
 )
-
-def parse_chunks(self):
-    yield RawBlockStart(index=0, block_type="text")
-    yield RawTextDelta(index=0, text="Hello")
-    yield RawBlockStop(index=0)
-    yield RawUsage(usage=Usage(input_tokens=10, output_tokens=2, total_tokens=12))
-    yield RawFinish(reason="stop")
+from luca.client.transports.anthropic.streamer import (
+    AnthropicStreamer,        # the wire class: handlers, no iteration
+    SyncAnthropicStreamer,    # SyncStreamerMixin  x AnthropicStreamer
+    AsyncAnthropicStreamer,   # AsyncStreamerMixin x AnthropicStreamer
+)
 ```
 
-The stream is the single mutator of the message and the single emitter of
-public events, which is what makes the rules in §2 and §4 hold identically on
-every provider. Transports supply the wire format and nothing else.
+A wire class fills `HANDLERS_BY_TYPE` — wire event type → handler method
+name — and each handler turns one raw wire event into a list of public
+events while mutating `self.message`:
+
+```python
+class AnthropicStreamer(AnthropicWireMixin, BaseStreamer):
+    PROVIDER = "anthropic"
+    HANDLERS_BY_TYPE = {
+        "content_block_delta": "handle_content_block_delta",
+        # ...
+    }
+
+    def handle_content_block_delta(self, raw_event: dict) -> list:
+        ...
+```
+
+The pieces a new wire implements or overrides:
+
+| Method | Job | Override when |
+|---|---|---|
+| `parse(chunk) -> list` | One wire chunk → raw events. Default: SSE `data:` lines. | The framing differs (Bedrock buffers binary frames; CC maps `[DONE]` to a marker). |
+| `handle(raw) -> list` | Dispatch via `HANDLERS_BY_TYPE`. | The wire has no event types (CC routes on chunk shape). |
+| `handle_<event>(raw)` | One handler per wire event type. | Always — this IS the wire knowledge. |
+| `handle_wire_end() -> list` | The wire closed; `[]` means premature end → `ErrorEvent`. | Usage arrives after the finish marker (CC, Bedrock) so the `FinishEvent` can only be built here. |
+| `iter_chunks` / `aiter_chunks` | The chunk source over the response. | The wire is not line-based (Bedrock: bytes). |
+| `open_wire` / `aopen_wire` | Send the request, return the chunk source. | There is no HTTP at all (the faux installs a scripted source). |
+
+Everything the wire shares with the non-streaming path — payload projection,
+the HTTP error mapper, `_classify_finish` — is inherited from the same
+`<X>WireMixin` the transport uses, never duplicated. The transport itself is
+a pure factory: two class attributes name the combos, and
+`completion_stream()` forwards data only.
+
+```python
+class AnthropicTransport(BaseTransport, ChatCompletionTransportMixin, AnthropicWireMixin):
+    STREAMER = SyncAnthropicStreamer
+    ASYNC_STREAMER = AsyncAnthropicStreamer
+```
+
+The streamer is the single mutator of its message and the single emitter of
+its events, which is what makes the rules in §2 and §4 hold identically on
+every provider.
 
 Two Responses-API details worth knowing when reading a transcript: a
 reasoning item's summary parts are joined into **one** thinking block

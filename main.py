@@ -8,7 +8,9 @@ tools are wired and the capability turned on for the session by default;
 `--no-subagents` withholds both. Provider-native tools are on by default too:
 a model that supports them gets its provider's own `apply_patch`/`shell` or
 `text_editor`/`bash` in place of the generic shell tools those replace, and
-`--no-use-native` keeps every model on the generic set.
+`--no-use-native` keeps every model on the generic set. Provider-hosted web
+search is OFF by default — `--websearch` (or a `websearch` block in
+`luca.json`) turns it on where the active model supports it.
 
 Usage:
     uv run python main.py                          # start a fresh session
@@ -17,6 +19,7 @@ Usage:
     uv run python main.py --resume <id>            # resume that session by id
     uv run python main.py --resume <id> --fork     # branch into a new session
     uv run python main.py --no-subagents           # no parallel subagents
+    uv run python main.py --websearch              # provider-hosted web search
     uv run python main.py --subagents-max-depth 1  # no nesting (default 3)
     uv run python main.py --subagents-max-per-turn 5   # per-turn spawn budget
     uv run python main.py --subagents-max-workers 3    # how many work at once

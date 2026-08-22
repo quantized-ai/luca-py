@@ -63,9 +63,39 @@ assert response2.messages[-1].finish_reason == "stop"
 
 ## Streaming
 
+**Web content is scripted with the real client blocks** — pass
+`PrivateProviderBlock` / `WebSearchBlock` / `WebFetchBlock` instances
+straight into `blocks=` and they play back verbatim in both modes; the
+streaming path narrates the portable blocks through the real web event
+vocabulary (`web_start` → `web_search` → `web_search_result` → `web_end`).
+`faux_text` takes `annotations=` for cited text, streamed as
+`text_annotation` events:
+
+```python
+from luca.client.types import URLCitationAnnotation, WebPagePart, WebSearchBlock
+
+faux.set_responses([
+    faux_assistant_message(
+        blocks=[
+            WebSearchBlock(queries=["apple"],
+                           results=[WebPagePart(url="https://apple.com")],
+                           extras={"id": "srv_1"}),
+            faux_text("Apple is up.", annotations=[
+                URLCitationAnnotation(url="https://apple.com", title="Apple",
+                                      start_index=0, end_index=12),
+            ]),
+        ],
+        finish_reason="stop",
+    ),
+])
+```
+
+There is deliberately no scripted `web_find` — find-in-page has no portable
+block to script from.
+
 The same builders work for streaming — `FauxTransport.completion_stream`
-returns a `FauxChatCompletionStream` that yields the proper
-`Raw…` → public-event sequence.
+returns a faux streamer that walks the scripted message through the real
+streaming machinery, yielding the proper public-event sequence.
 
 ```python
 from luca.client.testing import (
@@ -144,5 +174,4 @@ uv run py.test tests/
 
 `pyproject.toml` configures `pytest` to fail on any warnings (including
 `ResourceWarning`), so unclosed streams or connections show up as test
-failures. The full test design lives in
-[`testing_architecture.md`](../../testing_architecture.md).
+failures.

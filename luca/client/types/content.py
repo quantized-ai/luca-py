@@ -83,10 +83,25 @@ def _as_generic(obj: Any, base_cls: type[BaseModel]) -> Any:
     )
 
 
+class URLCitationAnnotation(BaseModel):
+    """A source citation over a character range of the carrying block's text.
+    Indexes are nullable because not every provider or transport can supply
+    or safely derive a range."""
+
+    type: Literal["url_citation"] = "url_citation"
+    url: str
+    title: str
+    start_index: int | None = None
+    end_index: int | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TextBlock(BaseModel):
     type: Literal["text"] = "text"
     text: str
     signature: str | None = None
+    annotations: list[URLCitationAnnotation] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -240,7 +255,72 @@ class RefusalBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PrivateProviderBlock(BaseModel):
+    """One provider item, verbatim and in wire order — the replayable half of
+    a provider-native operation (web search, web fetch, …).
+
+    Authoritative for replay by the wire format that produced it (`format`);
+    every other transport omits it. The adjacent synthetic block
+    (WebSearchBlock / WebFetchBlock) carries the portable meaning and is
+    never replayed by the client."""
+
+    type: Literal["private_provider"] = "private_provider"
+    format: str  # "openai.responses", "anthropic.messages", ...
+    data: dict[str, Any]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebPagePart(BaseModel):
+    """One web page as a provider exposed it: `content` is the readable text
+    it returned — a search snippet for a result, page text for a fetch."""
+
+    type: Literal["web_page"] = "web_page"
+    url: str
+    title: str | None = None
+    content: str | None = None
+    extras: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebSearchBlock(BaseModel):
+    """The portable view of one provider-hosted web search.
+
+    `results=None` means result metadata was not returned (usually not
+    requested); `results=[]` means the provider explicitly returned an empty
+    result set."""
+
+    type: Literal["web_search"] = "web_search"
+    queries: list[str]
+    results: list[WebPagePart] | None = None
+    extras: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WebFetchBlock(BaseModel):
+    """The portable view of one provider-hosted page fetch (OpenAI's
+    `open_page` action, Anthropic's `web_fetch` tool)."""
+
+    type: Literal["web_fetch"] = "web_fetch"
+    web_page: WebPagePart
+    extras: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 ContentBlock = Annotated[
-    TextBlock | ThinkingBlock | RefusalBlock | ImageBlock | AudioBlock | FileBlock | ToolCall | ToolResultBlock,
+    TextBlock
+    | ThinkingBlock
+    | RefusalBlock
+    | ImageBlock
+    | AudioBlock
+    | FileBlock
+    | ToolCall
+    | ToolResultBlock
+    | PrivateProviderBlock
+    | WebSearchBlock
+    | WebFetchBlock,
     Field(discriminator="type"),
 ]

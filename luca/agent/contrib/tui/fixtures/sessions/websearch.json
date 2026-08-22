@@ -1,0 +1,361 @@
+{
+  "id": "websearch",
+  "spec_version": "0.0.1",
+  "entries": {
+    "ts1": {
+      "id": "ts1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "turn_start",
+      "context_tokens": 0
+    },
+    "u1": {
+      "id": "u1",
+      "parent_id": null,
+      "created_at": 1700000000000,
+      "type": "user",
+      "context_tokens": 40,
+      "parts": [
+        {
+          "type": "text",
+          "text": "what did Apple report last quarter?",
+          "metadata": {},
+          "annotations": []
+        }
+      ]
+    },
+    "a1": {
+      "id": "a1",
+      "parent_id": null,
+      "created_at": 1700000024000,
+      "type": "assistant",
+      "context_tokens": 320,
+      "parts": [
+        {
+          "type": "private_provider",
+          "format": "anthropic.messages",
+          "data": {
+            "type": "server_tool_use",
+            "id": "srvtoolu_ws_1",
+            "name": "web_search"
+          }
+        },
+        {
+          "type": "web_search",
+          "queries": [
+            "Apple Q3 2026 results"
+          ],
+          "results": [
+            {
+              "url": "https://www.apple.com/newsroom/2026/07/",
+              "title": "Apple reports third quarter results",
+              "content": null,
+              "extras": {}
+            },
+            {
+              "url": "https://finance.yahoo.com/apple",
+              "title": "Apple beats expectations",
+              "content": null,
+              "extras": {}
+            }
+          ],
+          "extras": {
+            "id": "srvtoolu_ws_1"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Apple reported quarterly revenue of $94.9B, up 6% year over year.",
+          "metadata": {},
+          "annotations": [
+            {
+              "url": "https://www.apple.com/newsroom/2026/07/",
+              "title": "Apple reports third quarter results",
+              "start_index": 15,
+              "end_index": 48
+            }
+          ]
+        }
+      ],
+      "llm_config": {
+        "extras": {},
+        "model": "claude-sonnet-5",
+        "provider": "anthropic",
+        "model_options": {},
+        "provider_options": {}
+      },
+      "stop_reason": "stop"
+    },
+    "s1": {
+      "id": "s1",
+      "parent_id": null,
+      "created_at": 1700000024000,
+      "type": "tool_execution",
+      "context_tokens": 19,
+      "tool_call_id": "srvtoolu_ws_1",
+      "conversation_id": "c1",
+      "raw_tool_call": {
+        "type": "tool_call",
+        "id": "srvtoolu_ws_1",
+        "name": "web_search",
+        "arguments": {
+          "queries": [
+            "Apple Q3 2026 results"
+          ]
+        },
+        "extras": {}
+      },
+      "tool_spec_id": "49e4b59516e9909e6c511880c8819a8ae92ba7861a44f049aa082b6b0c720a83",
+      "extras": {
+        "websearch": {
+          "message_entry_id": "a1"
+        }
+      },
+      "approval_status": null,
+      "approval_decisions": [],
+      "status": "completed",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Web search: \"Apple Q3 2026 results\" — 2 results (apple.com, finance.yahoo.com)",
+            "metadata": {},
+            "annotations": []
+          }
+        ],
+        "structured_content": {
+          "type": "web_search",
+          "queries": [
+            "Apple Q3 2026 results"
+          ],
+          "results": [
+            {
+              "url": "https://www.apple.com/newsroom/2026/07/",
+              "title": "Apple reports third quarter results",
+              "content": null,
+              "extras": {}
+            },
+            {
+              "url": "https://finance.yahoo.com/apple",
+              "title": "Apple beats expectations",
+              "content": null,
+              "extras": {}
+            }
+          ],
+          "extras": {
+            "id": "srvtoolu_ws_1"
+          }
+        },
+        "metadata": {},
+        "is_error": false,
+        "extras": {}
+      },
+      "error": null,
+      "attempts": [],
+      "finished_at": 1700000024000,
+      "cancel_signalled_at": null,
+      "updated_at": null,
+      "is_doom_loop_flagged": false
+    },
+    "tf1": {
+      "id": "tf1",
+      "parent_id": null,
+      "created_at": 1700000036000,
+      "type": "turn_finish",
+      "context_tokens": 0,
+      "outcome": "completed",
+      "error": null
+    }
+  },
+  "tool_specs": {
+    "49e4b59516e9909e6c511880c8819a8ae92ba7861a44f049aa082b6b0c720a83": {
+      "name": "web_search",
+      "title": null,
+      "description": "Provider-hosted web search, recorded for posterity by the websearch plugin. Never advertised and never dispatched: executions are synthesized from response content; the exact wire items live in the adjacent assistant message's private blocks.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "queries"
+        ]
+      },
+      "output_schema": {
+        "$defs": {
+          "WebPageContent": {
+            "additionalProperties": false,
+            "description": "One web page as a provider exposed it — the agent mirror of the\nclient's `WebPagePart`. `content` is the readable text the provider\nreturned: a search snippet for a result, page text for a fetch.",
+            "properties": {
+              "url": {
+                "title": "Url",
+                "type": "string"
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Title"
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Content"
+              },
+              "extras": {
+                "additionalProperties": true,
+                "title": "Extras",
+                "type": "object"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "title": "WebPageContent",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The portable view of one provider-hosted web search — the agent mirror\nof the client's `WebSearchBlock`. `results=None` means result metadata was\nnot returned (usually not requested); `[]` means the provider returned an\nempty result set. The exact wire items live in the adjacent\n`PrivateProviderContent` parts; this part is never sent to a provider.",
+        "properties": {
+          "type": {
+            "const": "web_search",
+            "default": "web_search",
+            "title": "Type",
+            "type": "string"
+          },
+          "queries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Queries",
+            "type": "array"
+          },
+          "results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/WebPageContent"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Results"
+          },
+          "extras": {
+            "additionalProperties": true,
+            "title": "Extras",
+            "type": "object"
+          }
+        },
+        "required": [
+          "queries"
+        ],
+        "title": "WebSearchContent",
+        "type": "object"
+      },
+      "is_private": true,
+      "is_synthetic": true,
+      "metadata": {},
+      "tool_kind": "web",
+      "namespace": "web",
+      "version": "1",
+      "timeout_in_ms": null
+    }
+  },
+  "usages": {
+    "c1": {
+      "a1": {
+        "conversation_id": "c1",
+        "entry_id": "a1",
+        "input": 6400,
+        "output": 280,
+        "cache_read": 12000,
+        "cache_write": 0,
+        "total_tokens": 0,
+        "tool_requests": {}
+      }
+    }
+  },
+  "conversations": {
+    "c1": {
+      "id": "c1",
+      "nodes": [
+        "ts1",
+        "u1",
+        "a1",
+        "s1",
+        "tf1"
+      ],
+      "created_at": 1700000000000,
+      "updated_at": 1700000036000,
+      "previous_conversation_id": null,
+      "depth": 0
+    }
+  },
+  "main_conversation_id": "c1",
+  "session_config": {
+    "extras": {},
+    "llm_config": {
+      "extras": {},
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "model_options": {},
+      "provider_options": {}
+    },
+    "runtime_config": {
+      "extras": {},
+      "client_completion_timeout_in_ms": -1,
+      "tool_execution_timeout_in_ms": -1,
+      "llm_completion_cancellation_grace_period": 0,
+      "tool_cancellation_grace_period": 0,
+      "soft_max_steps": -1,
+      "hard_max_steps": -1,
+      "doom_loop_threshold": -1,
+      "resume_finish_reasons": [
+        "pause"
+      ],
+      "subagents_enabled": false,
+      "subagents_max_depth": 1,
+      "subagents_max_per_turn": -1,
+      "subagents_max_workers": -1,
+      "subagent_soft_max_steps": null,
+      "subagent_hard_max_steps": null,
+      "wake_parent_on_subagent_completion": true,
+      "limit_tool_choice_on_soft_max_steps_reached": true,
+      "limit_tool_choice_on_doom_loop_flagged": true
+    },
+    "use_native_tools": false
+  },
+  "llm_config": {
+    "extras": {},
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "model_options": {},
+    "provider_options": {}
+  },
+  "use_native_tools": false,
+  "extras": {}
+}

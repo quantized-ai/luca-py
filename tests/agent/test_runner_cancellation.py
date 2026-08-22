@@ -1983,3 +1983,43 @@ async def test_tool_raising_timeout_error_within_grace_records_failed():
     )
     assert runner.session.entries["tf"].outcome == TurnOutcome.CANCELLED
     assert runner.idle()
+
+
+async def test_a_cancel_between_pause_and_continuation_wins():
+    # the cancel lands while the drive is suspended at the ResponsePaused
+    # yield; the loop top consumes it before the continuation call — the
+    # paused entry stays recorded, no second request is made
+    from luca.agent.core.events import ResponsePaused
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message([faux_text("Searching...")], finish_reason="pause"),
+            # a continuation response is scripted nowhere: reaching the model
+            # again would exhaust the transport and fail the run
+        ]
+    )
+    session = make_session(
+        id="s_pause_cancel",
+        entries={"u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple")])},
+        conversations={"c1": conversation("c1", ["u1"], created_at=500, updated_at=500)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+    runner = DeterministicRunner(session, provider=faux, ids=["ts", "a1", "cr", "tf"], now=1000)
+
+    async with runner.run() as run:
+        events = []
+        async for event in run:
+            events.append(event)
+            if isinstance(event, ResponsePaused):
+                runner.cancel()
+
+    assert len(faux.requests) == 1
+    assert runner.session.entries["tf"] == TurnFinish(
+        id="tf",
+        parent_id="cr",
+        created_at=1000,
+        outcome=TurnOutcome.CANCELLED,
+    )
+    assert runner.session.entries["a1"].stop_reason == "pause"

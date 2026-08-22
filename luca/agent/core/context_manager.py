@@ -81,10 +81,11 @@ This is a CONCRETE class with complete, deliberately simple default behavior
 (the same pattern as `ConversationProjector`): estimation is one token per
 `CHARS_PER_TOKEN` characters of model-facing text plus a flat `IMAGE_TOKENS`
 per image, `AUDIO_TOKENS` per recording and `FILE_TOKENS` per document,
-pruning supports only terminal tool
-executions (replacing their
-output with a fixed marker), and compaction is absent — `should_compact`
-declines and `compact` raises, so the shipped default is a pure accountant.
+pruning supports terminal tool executions (a fixed marker) and assistant
+messages (web machinery summarized, final answer verbatim; refused when
+client-executed tool calls are aboard), and compaction is absent —
+`should_compact` declines and `compact` raises, so the shipped default is a
+pure accountant.
 `luca.agent.contrib.simple_context_manager` ships one that also compacts.
 Instantiate it directly, subclass and override selected methods, or supply
 another object with the same behavior. Luca does not prescribe per-entry-type
@@ -99,6 +100,15 @@ from __future__ import annotations
 
 import json
 from typing import ClassVar
+from urllib.parse import urlparse
+
+from luca.client import effective_messages
+from luca.client.types import (
+    PrivateProviderBlock as ClientPrivateProviderBlock,
+    TextBlock as ClientTextBlock,
+    ThinkingBlock as ClientThinkingBlock,
+    ToolCall as ClientToolCall,
+)
 
 from .compaction import CompactionPlan
 from .exceptions import AgentError
@@ -113,13 +123,17 @@ from .models import (
     ExecutionResult,
     FileContent,
     ImageContent,
+    LLMConfig,
     PrunedEntry,
     TextContent,
     ThinkingContent,
     ToolCall,
     ToolExecution,
     UserMessage,
+    WebFetchContent,
+    WebSearchContent,
 )
+from .projection import ConversationProjector
 
 # The replacement content a pruned tool output projects as. Module-level alias
 # of the class default.
@@ -130,10 +144,21 @@ class ContextManager:
     """The default context policy. Every method is an override point."""
 
     PRUNED_TOOL_OUTPUT_MARKER: ClassVar[str] = PRUNED_TOOL_OUTPUT_MARKER
+    # The assistant-replacement wording — override points like the marker
+    # above; the whole derivation is `_pruned_assistant_text`.
+    PRUNED_SEARCH_PREFIX: ClassVar[str] = "Searched the web: "
+    PRUNED_FETCH_PREFIX: ClassVar[str] = "Fetched: "
+    PRUNED_ANSWER_PREFIX: ClassVar[str] = "Answered: "
+    PRUNED_HOSTS_SHOWN: ClassVar[int] = 5
     CHARS_PER_TOKEN: ClassVar[int] = 4
     IMAGE_TOKENS: ClassVar[int] = 1_000
     AUDIO_TOKENS: ClassVar[int] = 10_000
     FILE_TOKENS: ClassVar[int] = 5_000
+    # The projector the ASSISTANT branch measures through. A class-level
+    # default, overridable by subclass — house OOP, no injected collaborator.
+    # Known, stated limitation: a custom projector passed to the RUNNER is not
+    # seen here unless the application also overrides the manager.
+    PROJECTOR: ClassVar[ConversationProjector] = ConversationProjector()
 
     def calculate_context(self, session: AgentSession, entry: Entry) -> int:
         """Estimate the context tokens of `entry`'s model-facing content.
@@ -149,22 +174,49 @@ class ContextManager:
         recalculated then); a pruned entry owns its replacement content.
         Markers own nothing.
 
+        ASSISTANT entries are measured through the EFFECTIVE wire view —
+        project the entry, ask the client what actually serializes for the
+        ACTIVE target (`session.llm_config`), and estimate that. This is what
+        removes the categorical error hosted web operations introduced: an
+        encrypted Anthropic payload counts on Anthropic and stops counting
+        after a switch away, without the agent ever learning wire rules. An
+        unresolvable target (an unregistered provider — the faux in tests, a
+        custom host) falls back to the naive estimate: an estimate is allowed
+        to stay an estimate. Every OTHER entry type keeps the naive path ON
+        PURPOSE — a projection-based measure of executions would zero private
+        ones and count placeholder text.
+
         Non-text content is counted separately by `_media_tokens`, so
-        `_estimate_tokens` and `_model_facing_text` stay text-shaped and
+        `_estimate_tokens` and the two text derivations stay text-shaped and
         independently overridable."""
-        return self._estimate_tokens(self._model_facing_text(entry)) + self._media_tokens(entry)
+        if isinstance(entry, AssistantMessage):
+            text = self._effective_wire_text(session, entry)
+        else:
+            text = self._model_facing_text(entry)
+        return self._estimate_tokens(text) + self._media_tokens(entry)
 
     def prune_entry(self, session: AgentSession, entry: Entry) -> PrunedEntry:
         """Build the `PrunedEntry` template replacing `entry` in a path.
 
-        Only terminal `ToolExecution`s are prunable by this default; anything
-        else fails loudly. The returned template carries no identity —
+        Terminal `ToolExecution`s and `AssistantMessage`s are prunable by
+        this default; anything else fails loudly. An assistant replacement
+        summarizes the web machinery (queries + result hosts — where the
+        encrypted bytes live) and keeps the final answer text VERBATIM; a
+        message carrying client-executed `ToolCall` parts is REFUSED, because
+        a replayed `ToolMessage` whose call vanished from the wire is a 400
+        on every provider. The returned template carries no identity —
         `id`/`created_at` stay `None` — the persisting door stamps the real
         `id`/`parent_id`/`created_at` and the runner-side ordering calculates
         `context_tokens` and runs entry middleware, exactly as for any other
-        new entry."""
+        new entry. (Cross-entry reads are fine here — unlike
+        `calculate_context`, pruning runs rarely and by explicit
+        application choice.)"""
+        if isinstance(entry, AssistantMessage):
+            return self._prune_assistant_entry(session, entry)
         if not isinstance(entry, ToolExecution):
-            raise AgentError(f"Cannot prune entry of type {entry.type!r}: only tool executions are prunable.")
+            raise AgentError(
+                f"Cannot prune entry of type {entry.type!r}: only tool executions and assistant messages are prunable."
+            )
         if entry.status in NONTERMINAL_STATUSES:
             raise AgentError(
                 f"Cannot prune ToolExecution {entry.id!r}: a nonterminal "
@@ -174,6 +226,23 @@ class ContextManager:
             pruned_entry_type=entry.type,
             pruned_entry_id=entry.id,
             content=[TextContent(text=self.PRUNED_TOOL_OUTPUT_MARKER)],
+        )
+
+    def _prune_assistant_entry(self, session: AgentSession, entry: AssistantMessage) -> PrunedEntry:
+        """The assistant replacement template: web machinery condensed, final
+        answer verbatim. Annotations drop with the original (their character
+        ranges belong to the split privates being shed); thinking is not
+        answer text and drops too."""
+        if any(isinstance(part, ToolCall) for part in entry.parts):
+            raise AgentError(
+                f"Cannot prune AssistantMessage {entry.id!r}: it carries "
+                "client-executed tool calls, and a replayed ToolMessage whose "
+                "call has vanished from the wire is rejected by every provider."
+            )
+        return PrunedEntry(
+            pruned_entry_type=entry.type,  # "assistant" — the discriminator value
+            pruned_entry_id=entry.id,
+            content=[TextContent(text=self._pruned_assistant_text(session, entry))],
         )
 
     def process_tool_output(
@@ -245,8 +314,108 @@ class ContextManager:
 
     # ── derivation helpers ───────────────────────────────────────────────────
 
+    def _pruned_assistant_text(self, session: AgentSession, entry: AssistantMessage) -> str:
+        """The replacement's one deterministic string: the searches (queries +
+        result hosts, where the shed bytes lived), the fetches, then the
+        final answer text VERBATIM — TextContent parts only."""
+        searches = [self._pruned_search_segment(part) for part in entry.parts if isinstance(part, WebSearchContent)]
+        fetches = [self._pruned_fetch_segment(part) for part in entry.parts if isinstance(part, WebFetchContent)]
+        answer = "".join(part.text for part in entry.parts if isinstance(part, TextContent))
+        pieces: list[str] = []
+        if searches:
+            pieces.append(self.PRUNED_SEARCH_PREFIX + ", ".join(searches) + ".")
+        if fetches:
+            pieces.append(self.PRUNED_FETCH_PREFIX + ", ".join(fetches) + ".")
+        pieces.append(self.PRUNED_ANSWER_PREFIX + answer)
+        return " ".join(pieces)
+
+    def _pruned_search_segment(self, part: WebSearchContent) -> str:
+        quoted = ", ".join(f'"{query}"' for query in part.queries)
+        error = part.extras.get("error")
+        if error is not None:
+            code = error.get("error_code") or error.get("status") or "failed"
+            return f"{quoted} (failed: {code})"
+        if part.results is None:
+            return f"{quoted} (result metadata not returned)"
+        if not part.results:
+            return f"{quoted} (no results)"
+        hosts = [_result_host(result.url) for result in part.results[: self.PRUNED_HOSTS_SHOWN]]
+        more = len(part.results) - self.PRUNED_HOSTS_SHOWN
+        listed = ", ".join(hosts) + (f", +{more} more" if more > 0 else "")
+        count = len(part.results)
+        return f"{quoted} ({count} result{'s' if count != 1 else ''}: {listed})"
+
+    def _pruned_fetch_segment(self, part: WebFetchContent) -> str:
+        error = part.extras.get("error")
+        if error is not None:
+            code = error.get("error_code") or error.get("status") or "failed"
+            return f"{part.web_page.url} (failed: {code})"
+        if part.web_page.title is not None:
+            return f'{part.web_page.url} ("{part.web_page.title}")'
+        return part.web_page.url
+
     def _estimate_tokens(self, text: str) -> int:
         return len(text) // self.CHARS_PER_TOKEN
+
+    def _effective_wire_text(self, session: AgentSession, entry: AssistantMessage) -> str:
+        """The text an ASSISTANT entry actually puts on the wire for the
+        ACTIVE target: project the entry (agent policy), run the projection
+        through the client's `effective_messages` (wire truth), and textify
+        what survives. Measuring the composition of the two is what keeps the
+        count correct under any future agent-side projection policy.
+
+        `project_assistant_message` never reads the entries mapping, so the
+        inside-the-build-callback call site (the entry has its id but is not
+        yet a member of `session.entries`) is safe, and nothing scans the
+        store. The target is the ACTIVE pair — `session.llm_config` — with
+        `transport` lifted from `provider_options` exactly as
+        `completion_options()` lifts it, so a custom-transport session
+        measures its real wire. Resolution failure (an unregistered provider,
+        an unimportable transport path) falls back to the naive estimate."""
+        projected = self.PROJECTOR.project_assistant_message(entry, session.entries)
+        cfg = session.llm_config
+        try:
+            wire_view = effective_messages(
+                cfg.model,
+                [projected],
+                provider=cfg.provider,
+                transport_class=self._transport_class(cfg),
+            )
+        except Exception:
+            return self._model_facing_text(entry)
+        return self._client_message_text(wire_view)
+
+    def _transport_class(self, llm_config: LLMConfig) -> type | None:
+        """The transport class a custom-transport config names, or None.
+        Delegates to the runner's public `completion_options` — the single
+        `LLMConfig` → client-kwargs translation — so the measured wire can
+        never drift from the called one. Imported at call time: the runner
+        module imports this one."""
+        from .runner import completion_options
+
+        return completion_options(llm_config).get("transport_class")
+
+    def _client_message_text(self, messages: list) -> str:
+        """The client-block textifier: what the effective view's blocks
+        contribute to the estimate, mirroring `_model_facing_text`'s rules on
+        the other side of the wire so a plain assistant entry measures
+        identically on both paths — text and thinking contribute their text,
+        a tool call its name + JSON arguments (counted once, on the
+        assistant), and a surviving `PrivateProviderBlock` its JSON payload
+        (it replays verbatim, so its bytes are real context). The portable
+        web blocks never reach here on a real transport — no transport sends
+        them — and contribute nothing if they ever do."""
+        chunks: list[str] = []
+        for message in messages:
+            for block in message.content:
+                if isinstance(block, ClientToolCall):
+                    chunks.append(block.name)
+                    chunks.append(json.dumps(block.arguments))
+                elif isinstance(block, (ClientTextBlock, ClientThinkingBlock)):
+                    chunks.append(block.text)
+                elif isinstance(block, ClientPrivateProviderBlock):
+                    chunks.append(json.dumps(block.data))
+        return "".join(chunks)
 
     def _model_facing_text(self, entry: Entry) -> str:
         """Concatenate the model-facing text the entry OWNS (see
@@ -327,6 +496,13 @@ class ContextManager:
         if isinstance(entry, PrunedEntry):
             return entry.content
         return []
+
+
+def _result_host(url: str) -> str:
+    """A pruned summary's per-result token: the hostname, `www.` dropped,
+    falling back to the raw string for anything unparseable."""
+    host = urlparse(url).netloc or url
+    return host.removeprefix("www.")
 
 
 def _text_of(parts) -> str:

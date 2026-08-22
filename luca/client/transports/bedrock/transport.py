@@ -43,15 +43,18 @@ from ...types.completion import (
 from ...types.content import (
     FileBlock,
     ImageBlock,
+    PrivateProviderBlock,
     RefusalBlock,
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    WebFetchBlock,
+    WebSearchBlock,
 )
 from ...types.media import MediaBase64, MediaFileId, MediaURL
 from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
-from ..base import BaseTransport, ChatCompletionTransportMixin
+from ..base import BaseTransport, ChatCompletionTransportMixin, WireFormatMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
 
 
@@ -199,8 +202,11 @@ class BedrockToolProjector(ToolProjector):
         return {"tool": {"name": tool.name}}
 
 
-class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
-    transport_id = "bedrock"
+class BedrockWireMixin(WireFormatMixin):
+    """Converse wire knowledge: URL, payload building, block projection,
+    response parsing, finish classification, and error mapping. Shared by
+    BedrockTransport (non-streaming) and the Bedrock streamer, by
+    inheritance."""
 
     TOOL_PROJECTOR_BASE: ClassVar[type] = BedrockToolProjector
 
@@ -395,6 +401,31 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     def _project_file_block(self, block: FileBlock) -> dict:
         return _project_file_block(block)
 
+    def select_assistant_blocks(
+        self,
+        message: AssistantMessage,
+        request: ChatCompletionRequest,
+    ) -> list:
+        """The keep/drop rules for this wire, in one place (payload build and
+        `effective_messages` both route through here): text survives;
+        thinking survives when its attestation replays; a ToolCall survives
+        when its projector family is this wire's; refusals have no Converse
+        shape; every private block is foreign (this wire mints none,
+        `WIRE_FORMAT=None`) and drops, as do the portable web blocks."""
+        kept: list = []
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                kept.append(block)
+            elif isinstance(block, ThinkingBlock):
+                if self._project_thinking_block(block, message, request) is not None:
+                    kept.append(block)
+            elif isinstance(block, ToolCall):
+                if self._resolve_call(block) is not None:
+                    kept.append(block)
+            elif isinstance(block, (RefusalBlock, PrivateProviderBlock, WebSearchBlock, WebFetchBlock)):
+                continue
+        return kept
+
     def _project_assistant_content(
         self,
         msg: AssistantMessage,
@@ -403,22 +434,23 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     ) -> list[dict]:
         if lineage is None:
             lineage = {}
-        blocks: list[dict] = []
+        # Lineage records EVERY call's fate — dropped ones included, so the
+        # toolResult answering a dropped foreign call falls with it.
         for block in msg.content:
+            if isinstance(block, ToolCall):
+                lineage[block.id] = self._resolve_call(block)
+        blocks: list[dict] = []
+        for block in self.select_assistant_blocks(msg, request):
             if isinstance(block, TextBlock):
                 blocks.append({"text": block.text})
             elif isinstance(block, ThinkingBlock):
-                reasoning = self._project_thinking_block(block, msg, request)
-                if reasoning is not None:
-                    blocks.append(reasoning)
+                blocks.append(self._project_thinking_block(block, msg, request))
             elif isinstance(block, ToolCall):
-                entry = self._resolve_call(block)
-                lineage[block.id] = entry
-                if entry is not None:
-                    projector, call = entry
-                    blocks.append(projector.project_tool_call_to_llm(call))
-            elif isinstance(block, RefusalBlock):
-                continue
+                # Resolved per block, never through the id-keyed lineage dict:
+                # duplicate ids would make the dict's last write clobber an
+                # earlier kept call's entry.
+                projector, call = self._resolve_call(block)
+                blocks.append(projector.project_tool_call_to_llm(call))
         return blocks
 
     def _project_thinking_block(
@@ -663,14 +695,15 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
         except ValueError:
             return None
 
-    # --- stream class hooks ---
 
-    def _chat_completion_stream_class(self) -> type:
-        from .stream import BedrockChatCompletionStream
+# Imported here, between the wire mixin and the transport class, because the
+# streamer module inherits the mixin above: at the top of the file this would
+# be a circular import.
+from .streamer import AsyncBedrockStreamer, SyncBedrockStreamer  # noqa: E402
 
-        return BedrockChatCompletionStream
 
-    def _async_chat_completion_stream_class(self) -> type:
-        from .stream import BedrockAsyncChatCompletionStream
+class BedrockTransport(BaseTransport, ChatCompletionTransportMixin, BedrockWireMixin):
+    transport_id = "bedrock"
 
-        return BedrockAsyncChatCompletionStream
+    STREAMER = SyncBedrockStreamer
+    ASYNC_STREAMER = AsyncBedrockStreamer

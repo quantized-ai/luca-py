@@ -39,6 +39,7 @@ from .models import (
     ExecutionStatus,
     FileContent,
     ImageContent,
+    PrivateProviderContent,
     PrunedEntry,
     TextContent,
     ThinkingContent,
@@ -49,6 +50,8 @@ from .models import (
     TurnStart,
     Usage,
     UserMessage,
+    WebFetchContent,
+    WebSearchContent,
 )
 
 WIDTH = 64
@@ -294,6 +297,17 @@ def _assistant_lines(
         elif isinstance(part, ToolCall) and part is calls[0]:
             # the whole tree lands where the first call is
             chunks.append(_tools_lines(calls, executions))
+        elif isinstance(part, WebSearchContent):
+            queries = ", ".join(f'"{query}"' for query in part.queries)
+            outcome = "no result metadata" if part.results is None else f"{len(part.results)} results"
+            if part.extras.get("error") is not None:
+                outcome = "failed"
+            chunks.append([f"{INDENT}[web search {queries} · {outcome}]"])
+        elif isinstance(part, WebFetchContent):
+            outcome = "failed · " if part.extras.get("error") is not None else ""
+            chunks.append([f"{INDENT}[web fetch {outcome}{part.web_page.url}]"])
+        elif isinstance(part, PrivateProviderContent):
+            chunks.append([f"{INDENT}[provider data · {part.format}]"])
     lines = [header]
     for index, chunk in enumerate(chunks):
         lines += chunk if index == 0 else ["", *chunk]

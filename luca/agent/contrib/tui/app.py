@@ -49,10 +49,13 @@ from luca.agent.core.events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    ResponsePaused,
+    ResponseResumed,
     SubagentFinished,
     SubagentPaused,
     SubagentsSpawned,
     SubagentStarted,
+    TextAnnotation,
     TextBlock,
     TextDelta,
     TextStart,
@@ -60,6 +63,14 @@ from luca.agent.core.events import (
     ToolCallStart,
     ToolExecuted,
     ToolExecutionStarted,
+    WebFetchBlock,
+    WebFetchUrls,
+    WebFindInPage,
+    WebOperationEnd,
+    WebOperationStart,
+    WebSearchBlock,
+    WebSearchQueries,
+    WebSearchResults,
 )
 from luca.agent.core.exceptions import ProjectionError
 from luca.agent.core.models import (
@@ -111,6 +122,8 @@ from .render import (
     user_prompts,
     user_transcript_text,
     was_auto_approved,
+    web_fetch_row,
+    web_search_row,
 )
 from .sessions import QUESTIONS_STORE_KEY, load_tui_state, save_session, save_tui_state
 from .shells import (
@@ -160,6 +173,7 @@ class AgentApp(LucaApp):
         resume: bool = False,
         read_limits: ReadLimits | None = None,
         checkpoints: bool = True,
+        websearch=None,
     ) -> None:
         super().__init__(theme=theme)
         self._read_limits = read_limits or ReadLimits()
@@ -197,6 +211,9 @@ class AgentApp(LucaApp):
         self.custom_commands = self._load_custom_commands(commands, workspace, extra_command_locations)
         self._instructions = instructions
         self._extra_instructions = extra_instructions
+        # The resolved websearch block (a `WebSearchConfig`), or None for off.
+        # Runtime wiring re-applied per launch — nothing about it persists.
+        self._websearch = websearch
         self._resume = resume
         self._tui_state: dict = {}
         self.runner, self.strategy, self.questions = self._build_runner(session)
@@ -910,6 +927,56 @@ class AgentApp(LucaApp):
                 else:
                     await view.apply(block)
                 self.scroll_transcript_end()
+            case WebSearchQueries(id=op_id, queries=queries):
+                # a hosted operation renders as an ordinary ToolBlock row (the
+                # @-mention idiom) that the later block event settles
+                view = ToolBlockView(vm.ToolBlock(tool="web_search", arg=", ".join(queries), status="pending"))
+                self._tool_views[f"web·{op_id}"] = view
+                await self._mount_widget(view, source)
+            case WebFetchUrls(id=op_id, urls=urls):
+                view = ToolBlockView(vm.ToolBlock(tool="web_fetch", arg=urls[0] if urls else "", status="pending"))
+                self._tool_views[f"web·{op_id}"] = view
+                await self._mount_widget(view, source)
+            case WebFindInPage(url=url, pattern=pattern):
+                # find-in-page leaves no part and no block event — this delta
+                # is its whole transcript presence, settled on arrival
+                await self._mount_widget_block(
+                    vm.ToolBlock(
+                        tool="web_find",
+                        arg=f"{pattern} in {url}",
+                        status="ok",
+                    ),
+                    source,
+                )
+            case WebSearchBlock(id=op_id, queries=queries, results=results, error=error):
+                # the authoritative row, derived from the RECORDED part — the
+                # same derivation the resume path uses. A pause-split search's
+                # continuation result pairs with no call and carries no
+                # queries; the pending row mounted from WebSearchQueries still
+                # holds the label, so an empty arg keeps it.
+                block = web_search_row(queries, results, error)
+                view = self._tool_views.get(f"web·{op_id}")
+                if view is not None and not block.arg:
+                    block = block.model_copy(update={"arg": view.model.arg})
+                if view is None:
+                    await self._mount_widget_block(block, source)
+                else:
+                    await view.apply(block)
+                self.scroll_transcript_end()
+            case WebFetchBlock(id=op_id, web_page=web_page, error=error):
+                block = web_fetch_row(web_page, error)
+                view = self._tool_views.get(f"web·{op_id}")
+                if view is None:
+                    await self._mount_widget_block(block, source)
+                else:
+                    await view.apply(block)
+                self.scroll_transcript_end()
+            case ResponsePaused(provider_finish_reason=provider_reason):
+                reason = f" ({provider_reason})" if provider_reason else ""
+                await self._mount_widget_block(
+                    vm.NoticeBlock(text=f"response paused{reason} · continuing"),
+                    source,
+                )
             case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED, new_conversation_id=new_id):
                 if new_id is not None:
                     self._move_memory_stores(source, new_id)
@@ -943,6 +1010,11 @@ class AgentApp(LucaApp):
                 | CompactionScheduled()
                 | CompactionStarted()
                 | SubagentFinished()
+                | WebOperationStart()
+                | WebSearchResults()
+                | WebOperationEnd()
+                | TextAnnotation()
+                | ResponseResumed()
             ):
                 pass
 
@@ -1329,6 +1401,7 @@ class AgentApp(LucaApp):
             instructions=self._instructions,
             extra_instructions=self._extra_instructions,
             questions_store=self._questions_store,
+            websearch=self._websearch,
         )
 
     def _save(self) -> None:

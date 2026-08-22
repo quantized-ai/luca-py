@@ -170,10 +170,13 @@ from .events import (
     ReasoningBlock,
     ReasoningDelta,
     ReasoningStart,
+    ResponsePaused,
+    ResponseResumed,
     SubagentFinished,
     SubagentPaused,
     SubagentsSpawned,
     SubagentStarted,
+    TextAnnotation,
     TextBlock,
     TextDelta,
     TextStart,
@@ -181,6 +184,14 @@ from .events import (
     ToolCallStart,
     ToolExecuted,
     ToolExecutionStarted,
+    WebFetchBlock,
+    WebFetchUrls,
+    WebFindInPage,
+    WebOperationEnd,
+    WebOperationStart,
+    WebSearchBlock,
+    WebSearchQueries,
+    WebSearchResults,
 )
 from .exceptions import (
     AgentError,
@@ -192,6 +203,7 @@ from .exceptions import (
 )
 from .ledger import SessionLedger
 from .models import (
+    NONTERMINAL_STATUSES,
     SPAWN_MARKER,
     SPAWN_REQUIRED_KEYS,
     AgentSession,
@@ -226,6 +238,8 @@ from .models import (
     TurnOutcome,
     TurnStart,
     UserMessage,
+    WebFetchContent,
+    WebSearchContent,
     declares_spawn,
     is_compaction_bracket,
     open_turn_index,
@@ -2872,7 +2886,7 @@ class AgentSessionRunner:
                 await _kill(task, detach=False)  # idempotent backstop
                 raise _CompactionEnded(
                     TurnOutcome.TIMED_OUT,
-                    f"compaction exceeded total_timeout={deadline}s",
+                    f"compaction exceeded timeout={deadline}s",
                 ) from None
         if not completed:  # the token fired and the grace expired
             raise _CompactionEnded(TurnOutcome.CANCELLED, None)
@@ -3425,6 +3439,18 @@ class AgentSessionRunner:
             ):
                 tool_choice = "none"
 
+            # The other half of the pause pair, detected from DURABLE state so
+            # it fires on a resumed process too: the open turn's last
+            # assistant entry is paused, and only synthetic-spec executions
+            # and/or user posts follow it. The synthetic tolerance is
+            # load-bearing — the flagship Anthropic case is a web-bearing
+            # paused response, IMMEDIATELY followed on the path by its
+            # synthetics, so a "paused entry is the last entry" predicate
+            # would never match the primary scenario. A post landing in the
+            # pause window still counts as a continuation.
+            if self._paused_response_awaiting_replay(conversation_id):
+                yield ResponseResumed(conversation_id=conversation_id)
+
             # Call the model, racing the run's token (§R4): on cancel the
             # call is torn down (httpx closes the connection) and NOTHING from
             # the aborted attempt is recorded — control returns to the loop
@@ -3483,10 +3509,7 @@ class AgentSessionRunner:
             # one that has to refuse a call naming them.
             _, tool_list = collected
             grace_ms = config.llm_completion_cancellation_grace_period
-            request_timeout = _ms_to_seconds(
-                config.builtin_client_completion_timeout_in_ms,
-            )
-            total_timeout = _ms_to_seconds(config.client_completion_timeout_in_ms)
+            timeout = _ms_to_seconds(config.client_completion_timeout_in_ms)
 
             try:
                 if streaming:
@@ -3501,8 +3524,7 @@ class AgentSessionRunner:
                         tools=tool_list or None,
                         tool_choice=tool_choice,
                         provider=self.provider,
-                        timeout=request_timeout,
-                        total_timeout=total_timeout,
+                        timeout=timeout,
                         **self.completion_options(),
                     )
                     async with stream as s:
@@ -3544,8 +3566,7 @@ class AgentSessionRunner:
                             tools=tool_list or None,
                             tool_choice=tool_choice,
                             provider=self.provider,
-                            timeout=request_timeout,
-                            total_timeout=total_timeout,
+                            timeout=timeout,
                             **self.completion_options(),
                         )
                     )
@@ -3635,7 +3656,47 @@ class AgentSessionRunner:
             # The round keys off the tool_calls themselves, not finish_reason:
             # a misclassifying provider can neither wedge the conversation
             # ("stop" + calls) nor loop it ("tool_use" + none).
-            events = self._record_assistant(conversation_id, message, finish_reason, self.session.llm_config)
+            recorded, events = self._record_assistant(conversation_id, message, finish_reason, self.session.llm_config)
+            # Hook #14 — synthetic executions land right after the assistant
+            # entry, BEFORE the RECEIVED births, so the path order is always
+            # assistant → synthetics → executions. Sync, inside this same
+            # no-await block.
+            self._mint_synthetic_executions(conversation_id, recorded)
+            # PAUSE-AND-REPLAY (D8; §10 item 35, ratified). Tool calls remain
+            # the SOLE driver of the round; the finish reason is consulted
+            # only when there are none:
+            #
+            #   | tool calls? | finish reason | behavior |
+            #   |---|---|---|
+            #   | yes | anything, incl. `"pause"` | today's tool round, unchanged |
+            #   | no | in `resume_finish_reasons` (default `["pause"]`) | NEW: record, then replay |
+            #   | no | anything else (`"stop"`, …) | today's close logic, unchanged |
+            #
+            # Only the middle row is new. A malformed `"pause"`+calls response
+            # takes the tool round, harmlessly (predicate-first would instead
+            # replay calls with no results — wire-invalid on every retry, a
+            # permanently wedged conversation). The replay needs ZERO special
+            # code: the path now ends with the paused entry, its same-format
+            # privates replay verbatim, and a trailing assistant message is
+            # exactly the provider's continuation shape. A pause round is a
+            # real model round — the step limits count it.
+            if (
+                not message.tool_calls
+                and finish_reason in self.session.session_config.runtime_config.resume_finish_reasons
+            ):
+                events.append(
+                    ResponsePaused(
+                        conversation_id=conversation_id,
+                        finish_reason=finish_reason,
+                        # read from the in-scope client message — NOT durable
+                        # on the entry, so a reloaded session emits only the
+                        # `ResponseResumed` half
+                        provider_finish_reason=message.provider_finish_reason,
+                    )
+                )
+                for event in events:
+                    yield event
+                continue  # → the loop top; step 4 replays and continues
             if message.tool_calls:
                 self._receive_executions(conversation_id, message)
                 for event in events:
@@ -4363,12 +4424,13 @@ class AgentSessionRunner:
         message,
         finish_reason,
         llm_cfg: LLMConfig,
-    ) -> list[AgentEvent]:
+    ) -> tuple[AssistantMessage, list[AgentEvent]]:
         """Append the assistant message and write its provider-usage record
         to `AgentSession.usages` (usage is accessory conversation-entry data,
         never embedded in the entry — this is the only place the runner
-        creates one); return its block events (block-level events fire in
-        both modes)."""
+        creates one); return the committed entry (the `synthesize_executions`
+        hook needs its durable id) and its block events (block-level events
+        fire in both modes)."""
         parts = adapter.message_to_parts(message)
         entry = self._append(
             conversation_id,
@@ -4394,8 +4456,92 @@ class AgentSessionRunner:
                 )
             elif isinstance(part, TextContent):
                 events.append(TextBlock(conversation_id=conversation_id, text=part.text))
+            elif isinstance(part, WebSearchContent):
+                # Derived from the RECORDED part, so the block tier never
+                # depends on streaming; the op id correlates with the delta
+                # events and the synthetic execution.
+                events.append(
+                    WebSearchBlock(
+                        conversation_id=conversation_id,
+                        id=part.extras.get("id"),
+                        queries=list(part.queries),
+                        results=part.results,
+                        error=part.extras.get("error"),
+                    ),
+                )
+            elif isinstance(part, WebFetchContent):
+                events.append(
+                    WebFetchBlock(
+                        conversation_id=conversation_id,
+                        id=part.extras.get("id"),
+                        web_page=part.web_page,
+                        error=part.extras.get("error"),
+                    ),
+                )
         events.append(FinishReason(conversation_id=conversation_id, finish_reason=finish_reason))
-        return events
+        return entry, events
+
+    def _mint_synthetic_executions(self, conversation_id: str, entry: AssistantMessage) -> None:
+        """Middleware hook #14, `synthesize_executions`: append durable,
+        terminal, PRIVATE executions proposed from the committed assistant
+        entry — the runner stays the only writer.
+
+        A dedicated hasattr-guarded loop rather than `_run_middlewares`: the
+        two existing list hooks FOLD one value through the chain, while this
+        contract has each middleware return only its OWN templates,
+        concatenated in middleware order.
+
+        Validation-then-append: ALL templates are validated first (no partial
+        synthetics on a refusal), then each is appended through `self._append`
+        — the ledger door normalizes the spec into `session.tool_specs` and
+        stamps `tool_spec_id`, `_append` computes `context_tokens` and runs
+        `before_entry_written`. `updated_at` stays None at birth, like every
+        born-terminal execution. NO tool lifecycle events fire — synthetics
+        are a silent structural record (web operations render through the web
+        events instead), and `attempts=[]` stays honest: nothing dispatched.
+
+        A refused template raises `AgentError` out of the drive with the turn
+        left OPEN (the mint site sits outside the LLM call's `try`; the only
+        ERRORED close sites belong to the LLM handler). A guardrail against
+        middleware bugs, not a runtime path — recovery is `cancel()`."""
+        templates: list[ToolExecution] = []
+        for mw in self.middleware:
+            if hasattr(mw, "synthesize_executions"):
+                templates.extend(mw.synthesize_executions(self.session, conversation_id, entry))
+        for template in templates:
+            if template.status in NONTERMINAL_STATUSES:
+                raise AgentError(
+                    f"synthesize_executions returned a nonterminal template "
+                    f"({template.status.value}) for {template.raw_tool_call.name!r}; "
+                    "synthetic executions must be born terminal."
+                )
+            if not (template.tool_spec is not None and template.tool_spec.is_private):
+                raise AgentError(
+                    f"synthesize_executions returned a template for {template.raw_tool_call.name!r} "
+                    "without a private ToolSpec; no ToolCall block for it exists on the "
+                    "path, so a private spec is the only wire-legal shape."
+                )
+        for template in templates:
+            # The runner owns identity, so D9's op-id fallback lives here, not
+            # in the proposing middleware: a template with no operation id gets
+            # one from `generate_id()`, stamped on both correlation fields.
+            op_id = template.tool_call_id or template.raw_tool_call.id or self.generate_id()
+
+            def build(entry_id, parent_id, ts, _t=template, _op=op_id) -> ToolExecution:
+                return _t.model_copy(
+                    deep=True,
+                    update={
+                        "id": entry_id,
+                        "parent_id": parent_id,
+                        "created_at": ts,
+                        "conversation_id": conversation_id,
+                        "tool_call_id": _op,
+                        "raw_tool_call": _t.raw_tool_call.model_copy(deep=True, update={"id": _op}),
+                        "finished_at": ts,
+                    },
+                )
+
+            self._append(conversation_id, build)
 
     def _receive_executions(self, conversation_id: str, message) -> None:
         """Append one RECEIVED `ToolExecution` per tool call in the assistant
@@ -5140,17 +5286,56 @@ class AgentSessionRunner:
             config.hard_max_steps if hard is None else hard,
         )
 
+    def _paused_response_awaiting_replay(self, conversation_id: str) -> bool:
+        """Durable pause detection for the `ResponseResumed` half: the open
+        turn's LAST `AssistantMessage` has a `stop_reason` in
+        `resume_finish_reasons`, and everything recorded after it is only
+        synthetic-spec executions and/or user posts — the exact durable shape
+        a paused round leaves behind (its synthetics land right beside it,
+        and a post in the pause window is a legal continuation)."""
+        resume_reasons = self.session.session_config.runtime_config.resume_finish_reasons
+        if not resume_reasons:
+            return False
+        index = self.ledger.open_turn_index(conversation_id)
+        if index is None:
+            return False
+        nodes = self.session.conversations[conversation_id].nodes
+        last_assistant: AssistantMessage | None = None
+        following: list = []
+        for node_id in nodes[index + 1 :]:
+            entry = self.session.entries[node_id]
+            if isinstance(entry, AssistantMessage):
+                last_assistant = entry
+                following = []
+            else:
+                following.append(entry)
+        if last_assistant is None or last_assistant.stop_reason not in resume_reasons:
+            return False
+        return all(
+            isinstance(entry, UserMessage)
+            or (isinstance(entry, ToolExecution) and entry.tool_spec is not None and entry.tool_spec.is_synthetic)
+            for entry in following
+        )
+
     def _is_doom_loop(self, conversation_id: str, tc) -> bool:
         """True if the current tool call would be the Nth consecutive identical
         call (same name + arguments, compared on `raw_tool_call`) in the open
         turn (where N = doom_loop_threshold). Checks the already-appended
         ToolExecution entries, so parallel tool calls are evaluated in append
-        order."""
+        order. Executions of an `is_synthetic` spec are filtered out of the
+        scan — a runtime-minted record (a hosted web operation) interleaved
+        between identical calls would otherwise break window contiguity and
+        MASK a real doom loop. Subagent-result executions keep the default
+        and stay in the window, as today."""
         threshold = self.session.session_config.runtime_config.doom_loop_threshold
         if threshold <= 0:
             return False
         lookback = threshold - 1
-        current_turn_executions = self.ledger.open_turn_executions(conversation_id)
+        current_turn_executions = [
+            te
+            for te in self.ledger.open_turn_executions(conversation_id)
+            if te.tool_spec is None or not te.tool_spec.is_synthetic
+        ]
         subset = current_turn_executions[-lookback:]
         if len(subset) != lookback:
             return False
@@ -5406,6 +5591,29 @@ def _to_delta_event(conversation_id: str, event) -> AgentEvent | None:
             tool_call_id=event.id,
             name=event.name,
         )
+    if event.type == "web_start":
+        return WebOperationStart(conversation_id=conversation_id, id=event.id)
+    if event.type == "web_search":
+        return WebSearchQueries(conversation_id=conversation_id, id=event.id, queries=list(event.queries))
+    if event.type == "web_search_result":
+        return WebSearchResults(
+            conversation_id=conversation_id,
+            id=event.id,
+            results=[adapter._web_page(part) for part in event.results],
+        )
+    if event.type == "web_fetch":
+        return WebFetchUrls(conversation_id=conversation_id, id=event.id, urls=list(event.urls))
+    if event.type == "web_find":
+        return WebFindInPage(conversation_id=conversation_id, id=event.id, url=event.url, pattern=event.pattern)
+    if event.type == "web_end":
+        return WebOperationEnd(conversation_id=conversation_id, id=event.id)
+    if event.type == "text_annotation":
+        # the client index drops, like every delta mapping; the payload is the
+        # agent's own URLCitation mirror
+        return TextAnnotation(
+            conversation_id=conversation_id,
+            annotation=adapter._url_citations([event.annotation])[0],
+        )
     return None
 
 
@@ -5491,15 +5699,20 @@ def completion_options(
     return kwargs
 
 
-def _to_usage_counters(usage) -> dict[str, int]:
-    """Client usage → the counter kwargs for `SessionLedger.record_usage()`
-    (which owns building the id-carrying `Usage` record)."""
+def _to_usage_counters(usage) -> dict:
+    """Client usage → the kwargs for `SessionLedger.record_usage()` (which
+    owns building the id-carrying `Usage` record). `tool_requests` rides
+    along only when the provider reported hosted-tool counters — it binds to
+    the door's named keyword, not to the int `**counters`."""
     if usage is None:
         return {}
-    return {
+    kwargs: dict = {
         "input": usage.input_tokens or 0,
         "output": usage.output_tokens or 0,
         "cache_read": usage.cached_input_tokens or 0,
         "cache_write": usage.cache_write_tokens or 0,
         "total_tokens": usage.total_tokens or 0,
     }
+    if usage.tool_requests:
+        kwargs["tool_requests"] = dict(usage.tool_requests)
+    return kwargs

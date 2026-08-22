@@ -8,6 +8,9 @@ from ..transports.openai_responses.native_tools import (
     ShellTimeoutOutcome,
     ShellToolCall,
     ShellToolMessage,
+    WebSearchFilters,
+    WebSearchImageSettings,
+    WebSearchTool,
 )
 from .base import BaseProvider, ChatCompletionMixin
 
@@ -22,6 +25,9 @@ __all__ = [
     "ShellTimeoutOutcome",
     "ShellToolCall",
     "ShellToolMessage",
+    "WebSearchFilters",
+    "WebSearchImageSettings",
+    "WebSearchTool",
 ]
 
 

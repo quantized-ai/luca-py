@@ -1,0 +1,223 @@
+{
+  "id": "resp_0a4fbcbf2d264601016a806a033dd887d2bd15247921e25f9d",
+  "object": "response",
+  "created_at": 1786800643,
+  "status": "completed",
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1786800654,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.4-nano-2026-03-17",
+  "moderation": null,
+  "output": [
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a038a9c87d292df18a3143dc3ea",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "Apple latest quarterly earnings release Investor Relations diluted EPS quarterly revenue publication date"
+        ],
+        "query": "Apple latest quarterly earnings release Investor Relations diluted EPS quarterly revenue publication date"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a05c0e087d2a1ceb4fceb6b7e89",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/default.aspx?source=content_type%3Areact%7Cfirst_level_url%3Aarticle%7Csection%3Amain_content%7Cbutton%3Abody_link"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a06707887d2bd862f29b4078311",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/default.aspx?source=content_type%3Areact%7Cfirst_level_url%3Aarticle%7Csection%3Amain_content%7Cbutton%3Abody_link"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a06ea6c87d281376f2b09d1e9ac",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/default.aspx?p=szmhnkswmjhl"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a07725c87d2880ca79c1dc382eb",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "site:investor.apple.com \"Quarterly Earnings Reports\" \"Press Release\" \"diluted\" \"revenue\""
+        ],
+        "query": "site:investor.apple.com \"Quarterly Earnings Reports\" \"Press Release\" \"diluted\" \"revenue\""
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a0825b087d28a870862e2bb297b",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/default.aspx?p=szmhnkswmjhl"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a08b3ac87d2a3d990e9d30ad1a0",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "site:investor.apple.com \"View the press release\" \"quarter\" \"Apple announced\" \"Diluted earnings per share\""
+        ],
+        "query": "site:investor.apple.com \"View the press release\" \"quarter\" \"Apple announced\" \"Diluted earnings per share\""
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a098b3c87d2beb800baeb3d3ed2",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "investor.apple.com quarterly earnings reports press release July 2026 diluted earnings per share"
+        ],
+        "query": "investor.apple.com quarterly earnings reports press release July 2026 diluted earnings per share"
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a0b16ac87d2aae193268ad8a1de",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "queries": [
+          "site:investor.apple.com \"Apple announced\" \"quarter ended\" \"Diluted earnings per share\" \"Press Release\" \"June quarter\""
+        ],
+        "query": "site:investor.apple.com \"Apple announced\" \"quarter ended\" \"Diluted earnings per share\" \"Press Release\" \"June quarter\""
+      }
+    },
+    {
+      "id": "ws_0a4fbcbf2d264601016a806a0c630887d2a7cf49db63e6d8be",
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "open_page",
+        "url": "https://investor.apple.com/investor-relations/"
+      }
+    },
+    {
+      "id": "msg_0a4fbcbf2d264601016a806a0d09b887d2bc1e5411203eada3",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "end_index": 782,
+              "start_index": 598,
+              "title": "Investor Relations - Apple",
+              "url": "https://investor.apple.com/investor-relations/default.aspx?source=content_type%3Areact%7Cfirst_level_url%3Aarticle%7Csection%3Amain_content%7Cbutton%3Abody_link"
+            }
+          ],
+          "logprobs": [],
+          "text": "I searched the web for Apple\u2019s latest quarterly earnings release and then tried to open the corresponding **official Apple Investor Relations** page.\n\nHowever, the pages on Apple\u2019s Investor Relations "
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "none",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 5
+    }
+  },
+  "tools": [
+    {
+      "type": "web_search",
+      "return_token_budget": "default",
+      "search_content_types": [
+        "text"
+      ],
+      "search_context_size": "medium",
+      "user_location": {
+        "type": "approximate",
+        "city": null,
+        "country": "US",
+        "region": null,
+        "timezone": null
+      }
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 14686,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 3712
+    },
+    "output_tokens": 610,
+    "output_tokens_details": {
+      "reasoning_tokens": 394
+    },
+    "total_tokens": 15296
+  },
+  "user": null,
+  "metadata": {}
+}

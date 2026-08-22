@@ -50,6 +50,7 @@ def test_the_library_covers_the_states_that_matter():
         "subagents",
         "todos",
         "todos-done",
+        "websearch",
     ]
 
 
@@ -292,6 +293,7 @@ def test_the_sessions_screen_lists_the_whole_library_against_a_fixed_clock():
         ("2h ago", "the pagination test is failing — sort it out"),
         ("3h ago", "clean the build directory and re-run the suite"),
         ("5h ago", "audit the docs and the tests for stale references"),
+        ("yesterday", "what did Apple report last quarter?"),
         ("yesterday", "(empty)"),
     ]
 

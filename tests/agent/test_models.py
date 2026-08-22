@@ -49,6 +49,7 @@ from luca.agent.core.models import (
     MediaFileId,
     MediaURL,
     MilliSeconds,
+    PrivateProviderContent,
     PrunedEntry,
     RuntimeConfig,
     Seconds,
@@ -63,8 +64,12 @@ from luca.agent.core.models import (
     TurnFinish,
     TurnOutcome,
     TurnStart,
+    URLCitation,
     Usage,
     UserMessage,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
     is_compaction_bracket,
     open_turn_unseen_material,
 )
@@ -239,8 +244,8 @@ def test_spec_id_is_the_sha256_hex_of_the_canonical_json():
     canonical = (
         '{"description":"Run a shell command.",'
         '"input_schema":{"properties":{},"type":"object"},'
-        '"is_private":false,"metadata":null,"name":"bash","namespace":null,'
-        '"output_schema":null,"timeout_in_ms":null,'
+        '"is_private":false,"is_synthetic":false,"metadata":null,"name":"bash",'
+        '"namespace":null,"output_schema":null,"timeout_in_ms":null,'
         '"tool_kind":"execute","version":null}'
     )
 
@@ -311,6 +316,7 @@ def test_tool_kind_members():
         "READ": "read",
         "SEARCH": "search",
         "WEB_FETCH": "web_fetch",
+        "WEB": "web",
         "EDIT": "edit",
         "MOVE": "move",
         "DELETE": "delete",
@@ -620,7 +626,7 @@ def test_a_serialized_session_carries_no_inline_tool_spec():
         "approval_decisions": [],
         "status": "completed",
         "result": {
-            "content": [{"type": "text", "text": "3", "metadata": {}}],
+            "content": [{"type": "text", "text": "3", "metadata": {}, "annotations": []}],
             "structured_content": None,
             "metadata": {},
             "is_error": False,
@@ -894,7 +900,6 @@ def test_cancel_requested_round_trips():
 
 def test_runtime_config_defaults_are_infinite_and_zero_grace():
     assert RuntimeConfig() == RuntimeConfig(
-        builtin_client_completion_timeout_in_ms=Inf,
         client_completion_timeout_in_ms=Inf,
         tool_execution_timeout_in_ms=Inf,
         llm_completion_cancellation_grace_period=0,
@@ -1249,6 +1254,13 @@ def test_an_assistant_message_round_trips_every_part_type():
             ThinkingContent(thinking="let me add"),
             TextContent(text="adding now"),
             ToolCall(id="tc1", name="add", arguments={"a": 1}),
+            PrivateProviderContent(format="openai.responses", data={"id": "ws_1", "type": "web_search_call"}),
+            WebSearchContent(
+                queries=["apple"],
+                results=[WebPageContent(url="https://apple.com", title="Apple")],
+                extras={"id": "ws_1"},
+            ),
+            WebFetchContent(web_page=WebPageContent(url="https://apple.com"), extras={"id": "ws_2"}),
         ],
         llm_config=MODEL,
         stop_reason="tool_use",
@@ -1261,7 +1273,51 @@ def test_an_assistant_message_round_trips_every_part_type():
         ThinkingContent,
         TextContent,
         ToolCall,
+        PrivateProviderContent,
+        WebSearchContent,
+        WebFetchContent,
     ]
+
+
+def test_a_private_provider_part_round_trips_byte_for_byte():
+    part = PrivateProviderContent(
+        format="anthropic.messages",
+        data={"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [{"k": "v"}]},
+    )
+
+    assert PrivateProviderContent.model_validate_json(part.model_dump_json()) == part
+
+
+def test_a_web_search_part_round_trips_and_keeps_none_results():
+    with_results = WebSearchContent(
+        queries=["apple"],
+        results=[WebPageContent(url="https://apple.com", title="Apple", content="snippet", extras={"age": "2w"})],
+        extras={"id": "srvtoolu_1", "error": {"error_code": "max_uses_exceeded"}},
+    )
+    without_results = WebSearchContent(queries=["apple"], results=None)
+
+    assert WebSearchContent.model_validate_json(with_results.model_dump_json()) == with_results
+    reloaded = WebSearchContent.model_validate_json(without_results.model_dump_json())
+    assert reloaded == without_results
+    assert reloaded.results is None
+
+
+def test_a_web_fetch_part_round_trips():
+    part = WebFetchContent(
+        web_page=WebPageContent(url="https://apple.com", title="Apple", content="Page text."),
+        extras={"id": "ws_2"},
+    )
+
+    assert WebFetchContent.model_validate_json(part.model_dump_json()) == part
+
+
+def test_annotated_text_round_trips_its_citations():
+    part = TextContent(
+        text="Apple rose.",
+        annotations=[URLCitation(url="https://apple.com", title="Apple", start_index=0, end_index=11)],
+    )
+
+    assert TextContent.model_validate_json(part.model_dump_json()) == part
 
 
 # ── thinking signatures ────────────────────────────────────────────────────────
@@ -1709,6 +1765,143 @@ def test_a_rejected_or_unresolved_tool_execution_is_material():
     entries["te1"] = _execution("te1", status=ExecutionStatus.NOT_FOUND, tool_spec=None)
 
     assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True
+
+
+# The two spec shapes the is_synthetic refinement separates: a runtime-minted
+# record of work the model already saw (excluded) vs the subagent-result
+# shape — private but NOT synthetic (stays material, as today).
+_SYNTHETIC_SPEC = ToolSpec(
+    name="web_search",
+    description="Provider-hosted web search, recorded for posterity.",
+    input_schema=EMPTY_SCHEMA,
+    is_private=True,
+    is_synthetic=True,
+)
+
+_PRIVATE_RESULT_SPEC = ToolSpec(
+    name="create_conversation_result",
+    description="Derives a subagent's result.",
+    input_schema=EMPTY_SCHEMA,
+    is_private=True,
+)
+
+
+def test_a_synthetic_is_not_unseen_material():
+    # a synthetic records work the model has ALREADY seen (the web parts sit
+    # in its own assistant message), so it must not wake a parked parent
+    entries = _material_entries()
+    entries["te1"] = _execution(
+        "te1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=_SYNTHETIC_SPEC,
+        result=ExecutionResult(content=[TextContent(text='Web search: "apple" — 3 results')]),
+    )
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is False
+
+
+def test_a_non_synthetic_private_execution_stays_material():
+    # privacy is wire-visibility, not wake semantics: the subagent-result
+    # execution keeps the default and stays material, exactly as today
+    entries = _material_entries()
+    entries["te1"] = _execution(
+        "te1",
+        status=ExecutionStatus.COMPLETED,
+        tool_spec=_PRIVATE_RESULT_SPEC,
+        result=ExecutionResult(content=[TextContent(text="child finished")]),
+    )
+
+    assert open_turn_unseen_material(["u1", "ts", "a1", "te1"], entries) is True
+
+
+def test_a_parked_parent_does_not_wake_on_a_web_bearing_response_alone():
+    # The subagent twin, in durable form (drive 3c and this derivation share
+    # `open_turn_unseen_material`): the parent's open turn holds an
+    # unresolved child — itself BLOCKED at a gate — and a synthetic minted
+    # beside the spawn response. With the synthetic excluded the parent
+    # derives BLOCKED (the next drive can only re-park); counting it would
+    # derive BUSY and wake the model with nothing new to say.
+    session = make_session(
+        id="s_park",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="research this")]),
+            "ts": TurnStart(id="ts", parent_id="u1", created_at=600),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="ts",
+                created_at=600,
+                parts=[
+                    WebSearchContent(queries=["apple"], extras={"id": "srv_1"}),
+                    ToolCall(id="tc_sp", name="spawn_subagent", arguments={}),
+                ],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "syn": ToolExecution(
+                id="syn",
+                parent_id="a1",
+                created_at=600,
+                conversation_id="c1",
+                tool_call_id="srv_1",
+                raw_tool_call=ToolCall(id="srv_1", name="web_search", arguments={"queries": ["apple"]}),
+                tool_spec=_SYNTHETIC_SPEC,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+                finished_at=600,
+            ),
+            "sp": ToolExecution(
+                id="sp",
+                parent_id="syn",
+                created_at=600,
+                conversation_id="c1",
+                tool_call_id="tc_sp",
+                raw_tool_call=ToolCall(id="tc_sp", name="spawn_subagent", arguments={}),
+                tool_spec=_SPAWN_DECLARING,
+                status=ExecutionStatus.COMPLETED,
+                result=ExecutionResult(
+                    content=[TextContent(text="spawned")],
+                    structured_content={"is_subagent_spawn": True, "task_id": "t1"},
+                ),
+                finished_at=600,
+            ),
+            "link": ChildConversation(
+                id="link",
+                parent_id="sp",
+                created_at=600,
+                conversation_id="child",
+                tool_execution_id="sp",
+            ),
+            "cu1": UserMessage(id="cu1", created_at=600, parts=[TextContent(text="seed")]),
+            "cts": TurnStart(id="cts", parent_id="cu1", created_at=600),
+            "ca1": AssistantMessage(
+                id="ca1",
+                parent_id="cts",
+                created_at=600,
+                parts=[ToolCall(id="ctc", name="add", arguments={"a": 1, "b": 2})],
+                llm_config=MODEL,
+                stop_reason="tool_use",
+            ),
+            "cte": ToolExecution(
+                id="cte",
+                parent_id="ca1",
+                created_at=600,
+                conversation_id="child",
+                tool_call_id="ctc",
+                raw_tool_call=ToolCall(id="ctc", name="add", arguments={"a": 1, "b": 2}),
+                tool_spec=ADD_SPEC,
+                status=ExecutionStatus.PENDING,
+                approval_status=ApprovalStatus.PENDING,
+            ),
+        },
+        conversations={
+            "c1": conversation("c1", ["u1", "ts", "a1", "syn", "sp", "link"], updated_at=600),
+            "child": conversation("child", ["cu1", "cts", "ca1", "cte"], updated_at=600, depth=1),
+        },
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=MODEL),
+    )
+
+    assert session.get_conversation_status("c1").status == ConversationStatus.BLOCKED
 
 
 def _resolved_child_entries() -> dict:

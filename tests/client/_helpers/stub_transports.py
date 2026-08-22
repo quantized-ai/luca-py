@@ -29,19 +29,19 @@ class StubTransport:
             raise RuntimeError("StubTransport: no more scripted responses")
         return self.responses.pop(0)
 
-    def completion(self, request):
+    def completion(self, request, *, timeout=None):
         self.calls.append(TransportCall("completion", request))
         return self._pop()
 
-    async def acompletion(self, request):
+    async def acompletion(self, request, *, timeout=None):
         self.calls.append(TransportCall("acompletion", request))
         return self._pop()
 
-    def completion_stream(self, request):
+    def completion_stream(self, request, *, timeout=None):
         self.calls.append(TransportCall("completion_stream", request))
         return self._pop()
 
-    def acompletion_stream(self, request):
+    def acompletion_stream(self, request, *, timeout=None):
         self.calls.append(TransportCall("acompletion_stream", request))
         return self._pop()
 

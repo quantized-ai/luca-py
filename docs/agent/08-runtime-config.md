@@ -31,8 +31,7 @@ immediate deadline, no grace.
 | Field | Effect |
 |---|---|
 | `tool_execution_timeout_in_ms` | Deadline for the dispatched tool **body**. Expiry hard-cancels it → `TIMED_OUT` (resultless). The birth `ToolSpec.timeout_in_ms` beats it — `Inf` there means that tool's body is unbounded whatever this says. |
-| `client_completion_timeout_in_ms` | Wall-clock (`total_timeout`) for a model call; also bounds a compaction policy's `compact()`. |
-| `builtin_client_completion_timeout_in_ms` | Per-phase HTTP timeout. **Inert** when the runner is built with a `provider=` instance (the caller owns that lifecycle). |
+| `client_completion_timeout_in_ms` | Wall-clock deadline for a model call (the client's `timeout=`); also bounds a compaction policy's `compact()`. |
 | `tool_cancellation_grace_period` | On cancel, how long a dispatched body may keep running before a hard kill. `0` = immediate. A tool returning within grace records its real result. |
 | `llm_completion_cancellation_grace_period` | Same grace window for an in-flight model call (and for `compact()`). |
 
@@ -62,6 +61,7 @@ Two ceilings guard runaway loops:
 |---|---|
 | `soft_max_steps` | The next model call gets `tool_choice="none"` (if `limit_tool_choice_on_soft_max_steps_reached`, default `True`) — the model must answer in text, ending the turn gracefully. |
 | `hard_max_steps` | The turn closes immediately with `TurnOutcome.ERRORED`. A hard stop, not a graceful one. |
+| `resume_finish_reasons` | The normalized client finish reasons that mean "re-send the recorded assistant content as-is and continue" (pause-and-replay, [04](04-runner.md) §14). Default `["pause"]` — Anthropic's `pause_turn`, normalized. `[]` disables: a pause closes the turn `COMPLETED` like any unknown reason. Never add `"stop"`. |
 
 Set `soft` below `hard` so the agent gets a chance to wrap up before the hard cut.
 Setting them **equal** (both > 0) emits a `UserWarning` — hard prevails, so the

@@ -58,7 +58,7 @@ Five hooks; the runner calls them at fixed points:
 |---|---|---|
 | `calculate_context(session, entry) -> int` | on every **new** entry, before `before_entry_written`; again when a `ToolExecution` turns terminal, before `after_tool_execution` | `len(model-facing text) // 4`, plus `IMAGE_TOKENS` (1000) per image |
 | `process_tool_output(session, execution, result) -> ExecutionResult` | on a returned `ExecutionResult`, before the terminal execution is built (so session, `ToolExecuted` event, and wire all see the processed output). A returned `ExecutionDeferred` skips it — there is no output to process | identity pass-through |
-| `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions only → a fixed marker |
+| `prune_entry(session, entry) -> PrunedEntry` | **never** — no framework call site; you compose it with the ledger (§5) | terminal tool executions → a fixed marker; assistant messages → web machinery summarized, answer text verbatim |
 | `should_compact(session, conversation_id) -> bool` | at the top of every drive, and at `start()` (hence sync) | `False` — never compacts |
 | `compact(session, conversation_id, nodes, entry)` | once `should_compact` says yes, or after `schedule_compaction()` | raises `NotImplementedError` |
 
@@ -101,6 +101,24 @@ and JSON arguments — counted once, never again on the execution); a tool
 execution only its outcome (result content, else the structured error
 message; `0` while nonterminal); a compaction its summary; a pruned entry its
 replacement content; markers own nothing.
+
+**Assistant entries measure the effective wire view.** Hosted web operations
+store provider-encrypted payloads (`PrivateProviderContent`) that replay
+verbatim on the producing wire and are dropped by every other — a
+provider-blind estimate is categorically wrong in one direction or the other
+after a model switch. So the assistant branch composes the two layers: the
+manager projects the entry (agent policy), asks the client's
+[`effective_messages`](../client/05-messages-and-content.md) what actually
+serializes for the ACTIVE target (`session.llm_config`, `transport` lifted
+from `provider_options` exactly as `completion_options()` lifts it), and
+estimates what survives — a surviving private block contributes its JSON
+payload, the portable web blocks are never sent and never counted, and plain
+text/thinking/tool-call entries measure identically to the naive path. A
+target that cannot be resolved offline (an unregistered provider, a custom
+host) falls back to the naive estimate: an estimate is allowed to stay an
+estimate. The projector used is the class-level `ContextManager.PROJECTOR`
+default — a custom projector on the runner is not seen unless the manager is
+also overridden.
 
 > ⚠️ **A parked tool call counts `0`.** An execution deferred at
 > `AWAITING_RESULT` ([03](03-tools.md) §7) is nonterminal, so it contributes
@@ -147,9 +165,12 @@ session.session_config.llm_config = LLMConfig(model="openai/gpt-4o-mini", provid
 runner.recalculate_context_tokens()
 ```
 
-> ⚠️ **Nothing in the framework calls it.** No constructor keyword, no CLI
-> flag, no automatic invocation on a model switch. It exists for the
-> application that swapped in a real tokenizer, and that application calls it.
+> ⚠️ **Core never calls it.** No constructor keyword, no automatic invocation
+> on a model switch — an unbounded rewrite must never hide behind an
+> innocuous assignment. The trigger belongs to the application: the TUI's
+> `/model` apply refreshes the active config and calls it, so switched
+> sessions re-measure their encrypted payloads on the new wire. An
+> application that swaps in a real tokenizer calls it the same way.
 
 > **It runs no middleware.** `before_entry_written` is scoped to the
 > conversation whose operation caused a write, and this rewrites every entry
@@ -221,8 +242,9 @@ When an assistant message is recorded, the runner writes one `Usage` record to
 session.usages == {
     "c1": {
         "a1": Usage(conversation_id="c1", entry_id="a1",
-                    input=100, output=20, total_tokens=120),
-    },
+                    input=100, output=20, total_tokens=120,
+                    tool_requests={"web_search": 2}),   # hosted-tool counters,
+    },                                                  # when the provider ran any
 }
 ```
 
@@ -269,7 +291,7 @@ and nothing triggers pruning automatically. You compose the pieces yourself:
 
 ```python
 manager, session = runner.context_manager, runner.session
-template = manager.prune_entry(session, session.entries["te1"])  # terminal executions only
+template = manager.prune_entry(session, session.entries["te1"])  # executions + assistant messages
 
 def build(entry_id, parent_id, ts):
     pruned = template.model_copy(
@@ -286,10 +308,24 @@ replacement under the original's role and `tool_call_id`
 ([10](10-projection.md)) — ordering and correlation survive. The original
 entry stays in `session.entries` untouched.
 
-> ⚠️ **Minimal on purpose, again.** The default prunes only terminal tool
-> executions, with one fixed marker, and *when* to prune is entirely
-> undecided. A real strategy — thresholds, which entries, budgets — is
-> application policy you build on this seam.
+> ⚠️ **Minimal on purpose, again.** The default prunes terminal tool
+> executions (one fixed marker) and assistant messages, and *when* to prune
+> is entirely undecided. A real strategy — thresholds, which entries,
+> budgets — is application policy you build on this seam.
+
+**Whole-assistant-message pruning** is how heavy hosted-web payloads leave
+the wire: the replacement keeps the final answer text VERBATIM and condenses
+only the search machinery (queries + result hosts), which is where the
+encrypted bytes live. Replacing the whole message is always wire-legal —
+Anthropic's `server_tool_use`/result pairs live *inside* the one message, so
+both halves of every pair go together. Two rules: a message carrying
+client-executed `ToolCall` parts is REFUSED (a replayed `ToolMessage` whose
+call vanished is a 400 on every provider — a pure web-search message has no
+such calls), and the synthetic web executions are separate path nodes that
+project nothing, so they SURVIVE the prune — the structural record remains.
+The wording lives on class constants (`PRUNED_SEARCH_PREFIX`,
+`PRUNED_FETCH_PREFIX`, `PRUNED_ANSWER_PREFIX`, `PRUNED_HOSTS_SHOWN`) beside
+the marker, one subclass away.
 
 A `ChildConversation` is sized by its result only when the link itself renders
 it — a resolution written without a result execution (a cancel wind-down).

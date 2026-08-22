@@ -51,7 +51,7 @@ luca/client/                       # the supporting LLM SDK
 │   ├── media.py                   # MediaURL, MediaBase64, MediaFileId
 │   ├── messages.py                # UserMessage, AssistantMessage, ToolMessage
 │   ├── reasoning.py               # Reasoning literal
-│   ├── streaming.py               # StreamEvent union, BaseStream, accumulator
+│   ├── streaming.py               # StreamEvent union (the public event models)
 │   ├── structured.py              # ResponseFormat, parse_structured_output
 │   └── tools.py                   # Tool, ToolChoice, JSON-schema normalization
 │
@@ -67,12 +67,13 @@ luca/client/                       # the supporting LLM SDK
 │
 ├── transports/
 │   ├── __init__.py                # TRANSPORTS registry
-│   ├── base.py                    # BaseTransport + ChatCompletionTransportMixin
-│   ├── openai/                    # chat completions: transport.py + stream.py
+│   ├── base.py                    # WireFormatMixin + BaseTransport + ChatCompletionTransportMixin
+│   ├── streamer.py                # BaseStreamer + Sync/AsyncStreamerMixin (the streaming core)
+│   ├── openai/                    # chat completions: transport.py + streamer.py
 │   │                              #   + errors.py (envelope shared with responses)
-│   ├── openai_responses/          # /v1/responses: transport.py + stream.py
-│   ├── anthropic/                 # transport.py + stream.py
-│   ├── openrouter/                # subclass of OpenAITransport (only overrides _headers)
+│   ├── openai_responses/          # /v1/responses: transport.py + streamer.py
+│   ├── anthropic/                 # transport.py + streamer.py
+│   ├── openrouter/                # subclass of OpenAITransport + PROVIDER/URL-only streamer
 │   ├── bedrock/                   # Converse translation; binary eventstream decoder
 │   └── faux/                      # scripted responses; no httpx
 │
@@ -209,7 +210,7 @@ an input and storage form.
 
 | Field | Value |
 |---|---|
-| `finish_reason` | SDK-canonical: `"stop"` \| `"length"` \| `"tool_use"` \| `"error"` \| `None` |
+| `finish_reason` | SDK-canonical: `"stop"` \| `"length"` \| `"tool_use"` \| `"pause"` \| `"error"` \| `None` |
 | `provider_finish_reason` | Raw upstream string, verbatim. |
 
 Each transport implements `_classify_finish(provider_value, message)` to compute the canonical pair `(finish_reason, error_message)`. It receives the fully assembled message so it can inspect content — for example, strict-mode OpenAI returns a raw `"stop"` reason alongside a `RefusalBlock`, which classifies to canonical `"error"`.
@@ -227,9 +228,10 @@ items vs `choices`, named SSE events vs `delta` chunks, `status` +
 HTTP error envelope, which lives in `transports/openai/errors.py` as
 `OpenAIErrorMappingMixin` and is mixed into both.
 
-`OpenAIErrorMappingMixin` must come BEFORE `ChatCompletionTransportMixin` in
-the bases — the latter defines the same hook raising `NotImplementedError`, and
-MRO order decides which one answers.
+`OpenAIErrorMappingMixin` must come BEFORE `WireFormatMixin` in the wire
+mixins' bases (`OpenAIWireMixin(OpenAIErrorMappingMixin, WireFormatMixin)`) —
+the latter declares the same hook raising `NotImplementedError`, and MRO
+order decides which one answers.
 
 Responses specifics: `store: false` always (the whole conversation goes up
 every turn), `reasoning: {effort, summary: "auto"}` plus
@@ -252,10 +254,10 @@ prepended before visible text. The resulting content order is
 
 - **Non-streaming:** `_parse_assistant_message` reads `message.reasoning`,
   falling back to `message.reasoning_content`.
-- **Streaming:** `_process_chunk` in `stream.py` emits a `thinking` block from
-  `delta.reasoning` / `delta.reasoning_content`. The thinking block claims the
-  earliest index (reasoning streams before text), stays open while text
-  streams, and closes at finish.
+- **Streaming:** `OpenAIChatCompletionsStreamer.handle()` in `streamer.py`
+  emits a `thinking` block from `delta.reasoning` / `delta.reasoning_content`.
+  The thinking block claims the earliest index (reasoning streams before
+  text), stays open while text streams, and closes at finish.
 - **Usage:** `reasoning_tokens` flows through `_parse_usage` from
   `usage.completion_tokens_details.reasoning_tokens`.
 - **Send-back:** `_project_assistant_message` deliberately **drops**

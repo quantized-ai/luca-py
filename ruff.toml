@@ -6,7 +6,7 @@ include = [
     # The Terminal-Bench harness. Its own uv project, but one house style.
     "benchmarks/**/*.py",
 ]
-exclude = [".venv"]
+exclude = [".venv", "specs"]
 
 line-length = 120
 indent-width = 4

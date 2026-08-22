@@ -100,7 +100,7 @@ with OpenAIProvider(api_key="sk-…", timeout=30.0) as prov:
 | `base_url` | Overrides the class default. |
 | `transport_class` | Force a specific transport (rare). |
 | `transport` | Wrap a pre-built transport instance — provider just delegates. |
-| `timeout` | Per-call httpx timeout (default 60s). |
+| `timeout` | httpx default for the transport-owned clients (default 60s). The per-call wall clock is the helpers' `timeout=`, passed per request. |
 | `http_client` / `async_http_client` | Pre-built httpx clients (for proxies, custom transports, etc.). |
 
 Both `__enter__`/`__exit__` and `__aenter__`/`__aexit__` are implemented so
@@ -207,15 +207,19 @@ response = transport.completion(request)
 ```
 
 `BaseTransport` owns the httpx lifecycle (`close` / `aclose` / context
-managers) and the `_headers()` defaults. Each transport subclass implements
-the hook methods defined in `ChatCompletionTransportMixin`:
+managers). Each transport subclass implements the wire hooks declared on
+`WireFormatMixin` (which also carries the `_headers()` defaults);
+`ChatCompletionTransportMixin` is the orchestration that calls them:
 
 - `_build_chat_completion_payload(request, *, stream=False) -> dict`
 - `_parse_chat_completion_response(response, request) -> ChatCompletionResponse`
 - `_classify_finish(provider_value, message) -> (canonical, error_message)`
 - `_map_chat_completion_http_error(exc) -> ClientError`
-- `_chat_completion_stream_class()`, `_async_chat_completion_stream_class()`
-- Optional: `_chat_completion_url(request, *, stream=False)`, `_build_chat_completion_httpx_request(request, client)`
+- `STREAMER` / `ASYNC_STREAMER` — class attributes naming the wire's streamer combos ([08 §15](08-streaming.md#15-internal-the-streamer-classes))
+- Optional: `_chat_completion_url(request, *, stream=False)`, `_build_chat_completion_httpx_request(request, client, timeout=None)`
+
+The wire methods live on a per-package `<X>WireMixin` shared by the
+transport and its streamer, so the two paths can never drift.
 
 The `transport=` kwarg on `BaseProvider.__init__` lets you wrap a
 pre-configured transport in a provider for a uniform call surface.
@@ -223,7 +227,7 @@ pre-configured transport in a provider for a uniform call surface.
 ## Caching
 
 The helper functions cache one provider instance per
-`(name, api_key, base_url, transport_class, timeout)` tuple. Repeated calls
+`(name, api_key, base_url, transport_class)` tuple. Repeated calls
 to `completion(...)` reuse the same provider, the same transport, and the
 same `httpx.Client` connection pool. Passing a pre-built `provider=` or
 `transport=` bypasses the cache and gives you the lifecycle.

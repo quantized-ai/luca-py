@@ -1,10 +1,12 @@
-"""Tool.parameters accepts dict, BaseModel class, or TypeAdapter."""
+"""Tool.parameters accepts dict, BaseModel class, or TypeAdapter; plus the
+shared ApproximateLocation value object."""
 
 from typing import Annotated, Literal, TypedDict
 
-from pydantic import BaseModel, Field, TypeAdapter
+import pytest
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
-from luca.client.types import Tool, tool_parameters_to_json_schema
+from luca.client.types import ApproximateLocation, Tool, tool_parameters_to_json_schema
 
 
 class WeatherParams(BaseModel):
@@ -35,3 +37,12 @@ def test_tool_with_typeadapter_parameters():
     schema = tool_parameters_to_json_schema(t.parameters)
     assert "properties" in schema
     assert "name" in schema["properties"]
+
+
+def test_approximate_location_needs_at_least_one_field():
+    with pytest.raises(ValidationError, match="at least one"):
+        ApproximateLocation()
+
+
+def test_approximate_location_with_one_field_is_valid():
+    assert ApproximateLocation(country="US").country == "US"

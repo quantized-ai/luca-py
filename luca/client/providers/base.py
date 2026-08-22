@@ -15,8 +15,8 @@ from ..exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from ..transports.base import BaseTransport
+    from ..transports.streamer import BaseStreamer
     from ..types.completion import ChatCompletionRequest, ChatCompletionResponse
-    from ..types.streaming import AsyncChatCompletionStream, ChatCompletionStream
 
 
 class BaseProvider:
@@ -93,28 +93,37 @@ class BaseProvider:
 
 
 class ChatCompletionMixin:
-    """Provider-level chat completion. Forwards every method to the transport."""
+    """Provider-level chat completion. Forwards every method to the transport;
+    `timeout=` travels per call, verbatim."""
 
     def completion(
         self,
         request: ChatCompletionRequest,
+        *,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse:
-        return self._transport.completion(request)  # type: ignore[attr-defined]
+        return self._transport.completion(request, timeout=timeout)  # type: ignore[attr-defined]
 
     async def acompletion(
         self,
         request: ChatCompletionRequest,
+        *,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse:
-        return await self._transport.acompletion(request)  # type: ignore[attr-defined]
+        return await self._transport.acompletion(request, timeout=timeout)  # type: ignore[attr-defined]
 
     def completion_stream(
         self,
         request: ChatCompletionRequest,
-    ) -> ChatCompletionStream:
-        return self._transport.completion_stream(request)  # type: ignore[attr-defined]
+        *,
+        timeout: float | None = None,
+    ) -> BaseStreamer:
+        return self._transport.completion_stream(request, timeout=timeout)  # type: ignore[attr-defined]
 
     def acompletion_stream(
         self,
         request: ChatCompletionRequest,
-    ) -> AsyncChatCompletionStream:
-        return self._transport.acompletion_stream(request)  # type: ignore[attr-defined]
+        *,
+        timeout: float | None = None,
+    ) -> BaseStreamer:
+        return self._transport.acompletion_stream(request, timeout=timeout)  # type: ignore[attr-defined]

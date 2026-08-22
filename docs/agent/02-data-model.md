@@ -166,7 +166,7 @@ land in a user message:
 | Union | Parts | Used by |
 |---|---|---|
 | `ContentPart` | `text`, `image`, `audio`, `file` | user messages, `ExecutionResult.content`, `PrunedEntry.content` |
-| `AssistantContentPart` | `text`, `thinking`, `tool_call` | assistant messages |
+| `AssistantContentPart` | `text`, `thinking`, `tool_call`, `private_provider`, `web_search`, `web_fetch` | assistant messages |
 
 So a tool can return an image too — the shell `read` tool returns one for a png
 or jpeg. An assistant message is the exception: it carries text, thinking and
@@ -177,9 +177,19 @@ tool calls, not images.
 > image in a tool result is stored either way; today it reaches Anthropic and
 > raises on the OpenAI chat-completions API.
 
+The three hosted-web parts arrived with the websearch integration
+([contrib/websearch](contrib/websearch/README.md)): `private_provider` is the
+provider's exact wire item(s), byte-for-byte (replayed verbatim by the wire
+format that minted it, omitted by every other — the same doctrine as
+thinking attestations), `web_search` / `web_fetch` are the portable
+observations no transport ever sends, and cited answer text carries
+`annotations` (URL citations with character ranges over the text).
+
 Beyond `parts`, an assistant entry records its provenance: the `llm_config`
 that produced it and a `stop_reason` — `"stop"` here (the model finished its
-answer), `"tool_use"` when it asks for a tool instead. Provider token usage is
+answer), `"tool_use"` when it asks for a tool instead, `"pause"` when a
+hosted tool paused the response mid-turn (the durable marker pause-and-replay
+keys on — [04](04-runner.md) §14). Provider token usage is
 deliberately *not* on the entry — it lives on the session, keyed by
 conversation ([11](11-context-and-usage.md)).
 

@@ -65,8 +65,8 @@ with completion_stream(
             print(f"\n[finish reason={event.finish_reason}]")
 ```
 
-`acompletion_stream()` returns the stream **synchronously** (HTTP fires on the
-first `__aiter__`), so the idiom is `async with acompletion_stream(...) as s:`
+`acompletion_stream()` returns the stream **synchronously** (HTTP fires at
+`async with`), so the idiom is `async with acompletion_stream(...) as s:`
 — **no `await` on creation**.
 
 ```python

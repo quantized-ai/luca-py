@@ -20,15 +20,47 @@ from luca.client.types import (
     ToolCall as LucaToolCall,
 )
 
-from .models import TextContent, ThinkingContent, ToolCall, ToolSpec
+from .exceptions import AgentError
+from .models import (
+    AssistantContentPart,
+    PrivateProviderContent,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolSpec,
+    URLCitation,
+    WebFetchContent,
+    WebPageContent,
+    WebSearchContent,
+)
+
+
+def _url_citations(annotations) -> list[URLCitation]:
+    return [
+        URLCitation(
+            url=annotation.url,
+            title=annotation.title,
+            start_index=annotation.start_index,
+            end_index=annotation.end_index,
+        )
+        for annotation in annotations
+    ]
+
+
+def _web_page(part) -> WebPageContent:
+    return WebPageContent(url=part.url, title=part.title, content=part.content, extras=part.extras)
 
 
 def message_to_parts(
     message: LucaAssistantMessage,
-) -> list[TextContent | ThinkingContent | ToolCall]:
-    """Translate a client assistant message's blocks into agent message parts.
-    A refusal renders as plain text in V1."""
-    parts: list[TextContent | ThinkingContent | ToolCall] = []
+) -> list[AssistantContentPart]:
+    """Translate a client assistant message's blocks into agent message parts,
+    ORDER PRESERVED — the client's positional contracts (a private result item
+    beside its portable block, split cited spans after their merged text) ride
+    through the session on part order alone. A refusal renders as plain text
+    in V1. An unknown block type raises: the next client block type must not
+    leak out of the session unnoticed."""
+    parts: list[AssistantContentPart] = []
     for block in message.content:
         if block.type == "thinking":
             parts.append(
@@ -39,8 +71,22 @@ def message_to_parts(
                     redacted=block.redacted,
                 ),
             )
-        elif block.type in ("text", "refusal"):
+        elif block.type == "text":
+            parts.append(TextContent(text=block.text, annotations=_url_citations(block.annotations)))
+        elif block.type == "refusal":
             parts.append(TextContent(text=block.text))
+        elif block.type == "private_provider":
+            parts.append(PrivateProviderContent(format=block.format, data=block.data))
+        elif block.type == "web_search":
+            parts.append(
+                WebSearchContent(
+                    queries=block.queries,
+                    results=None if block.results is None else [_web_page(r) for r in block.results],
+                    extras=block.extras,
+                ),
+            )
+        elif block.type == "web_fetch":
+            parts.append(WebFetchContent(web_page=_web_page(block.web_page), extras=block.extras))
         elif isinstance(block, LucaToolCall):
             # isinstance, never `block.type == "tool_call"`: a provider-native
             # call is a ToolCall SUBCLASS whose `type` is its own wire literal
@@ -57,6 +103,11 @@ def message_to_parts(
                     arguments=generic.arguments,
                     extras=generic.extras,
                 ),
+            )
+        else:
+            raise AgentError(
+                f"Cannot store client block of type {getattr(block, 'type', type(block).__name__)!r}; "
+                "the adapter has no agent part for it."
             )
     return parts
 

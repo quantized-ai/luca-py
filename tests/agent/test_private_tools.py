@@ -321,3 +321,28 @@ async def test_the_refusal_still_produces_exactly_one_tool_output():
     ]
     assert main_conversation(runner.session).nodes == ["u1", "ts", "a1", "te1", "a2", "tf"]
     assert faux.requests[1].messages[-1].content[0].text == "Unknown tool: 'secret'."
+
+
+def test_a_synthetic_execution_on_the_path_projects_nothing():
+    # the hook-#14 shape: born terminal, private AND synthetic spec, zero
+    # attempts — same projection silence as any private execution
+    synthetic_spec = ToolSpec(
+        name="web_search",
+        description="Provider-hosted web search, recorded for posterity.",
+        input_schema={"type": "object", "properties": {}},
+        is_private=True,
+        is_synthetic=True,
+    )
+    execution = ToolExecution(
+        id="s1",
+        created_at=500,
+        conversation_id="c1",
+        tool_call_id="srvtoolu_1",
+        raw_tool_call=ToolCall(id="srvtoolu_1", name="web_search", arguments={"queries": ["apple"]}),
+        tool_spec=synthetic_spec,
+        status=ExecutionStatus.COMPLETED,
+        result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+        finished_at=500,
+    )
+
+    assert PROJECTOR.project(["s1"], {"s1": execution}) == []

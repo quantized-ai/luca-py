@@ -1,6 +1,6 @@
 # Middleware
 
-Middleware lets you intercept and modify the runner's pipeline at **13** points —
+Middleware lets you intercept and modify the runner's pipeline at **14** points —
 without subclassing the runner or touching the session model. Pass a list of
 plain objects; each hook they implement is called, in list order.
 
@@ -90,7 +90,11 @@ class AgentMiddlewareMixin:
         vocabulary, the richer fields to filter on), this one RESHAPES how a
         surviving tool is declared. The place to swap a function declaration
         for a provider-native declaration item (`ApplyPatchTool()`,
-        `TextEditorTool()`, …); dropping or adding tools belongs upstream."""
+        `TextEditorTool()`, …) — and the place to APPEND a provider-HOSTED
+        declaration item (a web-search tool the provider executes
+        server-side): a hosted declaration has no `ToolSpec` behind it, so
+        the spec-vocabulary door upstream cannot carry it. Dropping tools,
+        and adding tools that DO have specs, still belong upstream."""
         return tools
 
     def before_post_message(
@@ -167,6 +171,42 @@ class AgentMiddlewareMixin:
         a transformation here changes the durable response and everything
         downstream of it while the rendered stream stands as it was."""
         return message
+
+    def synthesize_executions(
+        self,
+        session: AgentSession,
+        conversation_id: str,
+        entry: AssistantMessage,
+    ) -> list[ToolExecution]:
+        """Executions to append after `entry` — the COMMITTED assistant entry,
+        so its durable id is available for linking — derived from what the
+        response carried (a hosted web operation, an MCP server-side action,
+        anything the model has already seen that deserves a durable structural
+        record).
+
+        UNLIKE every other hook this one CONTRIBUTES rather than transforms:
+        each middleware returns only its OWN templates and the runner
+        concatenates them in middleware order — no value is threaded through
+        the chain. Templates carry no identity (`id` / `created_at` /
+        `conversation_id` are the runner's to stamp; a missing
+        `tool_call_id` / `raw_tool_call.id` is backfilled via `generate_id()`)
+        and MUST be TERMINAL and resolve to a PRIVATE spec — no `ToolCall`
+        block for them exists on the path, so private is the only wire-legal
+        shape. No tool lifecycle events fire for them.
+
+        SYNC ONLY — it runs inside the drive's documented no-await atomic
+        block, between the assistant commit and the RECEIVED births.
+
+        A template that violates the terminal/private contract raises
+        `AgentError` OUT of the drive with the turn left OPEN — the assistant
+        entry is already committed and, for a tool-calling response, the
+        RECEIVED births have not run yet, which is not a cleanly resumable
+        state. Acceptable because the refusals guard against middleware BUGS,
+        not runtime conditions (middleware is trusted); the recovery door is
+        `cancel()`, whose wind-down closes the turn from exactly this state.
+
+        Default: no synthetics."""
+        return []
 
     def before_tool_creation(
         self,
@@ -299,6 +339,7 @@ Every signature below is shown *after* the `(session, conversation_id)` prefix.
 | Per model call | `adapt_tool_declarations` | `(tools: list[client tools])` → `list[client tools]` |
 | Per model call | `before_llm_call` | `(messages, system_message)` → `(messages, system_message)` |
 | Model responded (complete) | `after_llm_response` | `(message)` → `message` |
+| Assistant entry committed | `synthesize_executions` | `(entry: AssistantMessage)` → `list[ToolExecution]` — **contributes**, never transforms |
 | Per creation attempt | `before_tool_creation` | `(call: ToolCall)` → `ToolCall` |
 | Per creation attempt | `after_tool_creation` | `(execution, exception=None)` → `ToolExecution` |
 | Per undecided call | `before_permission_check` | `(execution: ToolExecution)` → `ToolExecution` |
@@ -334,6 +375,16 @@ Every signature below is shown *after* the `(session, conversation_id)` prefix.
 > `before_permission_check`, whose returned execution is discarded when a
 > cancellation lands mid-`decide()` (the call stays PENDING for the wind-down,
 > and `after_permission_decision` never fires).
+
+> **`synthesize_executions` contributes, never transforms.** The one
+> departure from the pass-through idiom: each middleware returns only its OWN
+> `ToolExecution` templates (terminal, private spec, no identity — the runner
+> stamps ids and timestamps) and the runner concatenates them in list order,
+> appending each right after the committed assistant entry, before the tool
+> executions the response's calls create. No tool lifecycle events fire for
+> them; a template violating the terminal/private contract raises `AgentError`
+> with the turn left open (recovery: `cancel()`). The `websearch` plugin's
+> durable web-operation records are the reference use.
 
 > **`recalculate_context_tokens()` runs no middleware.** It re-derives
 > `context_tokens` for every entry across every conversation, so no single

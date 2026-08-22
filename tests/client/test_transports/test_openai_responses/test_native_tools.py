@@ -152,7 +152,7 @@ def test_parse_builds_typed_native_calls(responses_transport_factory):
 
 def test_unknown_item_type_is_still_ignored(responses_transport_factory):
     transport = responses_transport_factory()
-    data = {"id": "resp_1", "output": [{"type": "web_search_call", "id": "ws_1"}]}
+    data = {"id": "resp_1", "output": [{"type": "file_search_call", "id": "fs_1"}]}
     message = transport._parse_assistant_message(data, _request())
     assert message.content == []
 

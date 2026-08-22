@@ -73,7 +73,7 @@ Read top to bottom; each page starts simple and deepens.
 | [`04-runner.md`](04-runner.md) | `run()`/`start()`, events, streaming, async, cancel, the status machine |
 | [`05-permissions.md`](05-permissions.md) | The `ToolRegistry` contract — approval as a registry concern |
 | [`06-system-prompts.md`](06-system-prompts.md) | System-prompt parts (static or callable) + the assembler |
-| [`07-middleware.md`](07-middleware.md) | Intercept the pipeline at 10 hook points |
+| [`07-middleware.md`](07-middleware.md) | Intercept the pipeline at 14 hook points |
 | [`08-runtime-config.md`](08-runtime-config.md) | Timeouts, step limits, doom-loop detection |
 | [`09-plugins.md`](09-plugins.md) | Plugins — bundle a registry + prompt parts + middleware in one object (contrib) |
 | [`10-projection.md`](10-projection.md) | `ConversationProjector` — own the LLM message history and tool-output wording |

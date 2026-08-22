@@ -36,6 +36,7 @@ from luca.agent.core.models import (
     ApprovalDecision,
     ApprovalOption,
     ApprovalStatus,
+    AssistantMessage,
     Entry,
     ExecutionAttempt,
     ExecutionAttemptOutcome,
@@ -70,6 +71,7 @@ from tests.agent.scenarios import (
     FakeToolRegistry,
     conversation,
     main_conversation,
+    make_session,
 )
 
 
@@ -478,3 +480,141 @@ async def test_constructing_a_runner_recalculates_no_context_tokens():
         "tf3": 0,
         "u4": 0,
     }
+
+
+async def test_a_model_switch_recalculates_every_entry_through_the_effective_view():
+    """The D3 pipeline end to end: an entry carrying an Anthropic-encrypted
+    private measures its blob on the Anthropic basis; refreshing the ACTIVE
+    pair and recalculating puts every stored count on the new target's wire
+    — the blob stops counting, the naive-path entries stand."""
+    from luca.agent.core.models import LLMConfig, PrivateProviderContent
+
+    session = make_session(
+        id="s_switch",
+        entries={
+            "u1": UserMessage(id="u1", created_at=500, parts=[TextContent(text="find apple results")]),
+            "a1": AssistantMessage(
+                id="a1",
+                parent_id="u1",
+                created_at=600,
+                parts=[
+                    PrivateProviderContent(format="anthropic.messages", data={"blob": "x" * 26}),
+                    TextContent(text="Answer."),
+                ],
+                llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic"),
+                stop_reason="stop",
+                context_tokens=11,  # (38 dumps chars + 7 text chars) // 4, the Anthropic basis
+            ),
+        },
+        conversations={"c1": conversation("c1", ["u1", "a1"], created_at=500, updated_at=600)},
+        main_conversation_id="c1",
+        session_config=SessionConfig(llm_config=LLMConfig(model="claude-sonnet-5", provider="anthropic")),
+    )
+    runner = DeterministicRunner(session, now=1000)
+
+    runner.session.update_llm_config("openai:gpt-5.1", False)
+    runner.recalculate_context_tokens()
+
+    assert {entry_id: entry.context_tokens for entry_id, entry in runner.session.entries.items()} == {
+        "u1": 4,  # len("find apple results") // 4 — the naive path, unchanged by the switch
+        "a1": 1,  # the foreign target drops the private; only "Answer." (7 // 4) is left
+    }
+
+
+async def test_a_pruned_web_entry_projects_the_replacement_and_sheds_the_blobs():
+    """The D6 composition end to end: prune the web-bearing assistant entry,
+    then assert the exact next faux request — the replacement projects as an
+    assistant message with provenance, the encrypted private payload is gone,
+    and the synthetic beside it still contributes nothing (private)."""
+    from luca.agent.core.models import (
+        ExecutionResult,
+        ToolSpec,
+        WebSearchContent,
+    )
+    from luca.client.types import (
+        PrivateProviderBlock as ClientPrivateProviderBlock,
+        WebPagePart as ClientWebPagePart,
+        WebSearchBlock as ClientWebSearchBlock,
+    )
+
+    synthetic_spec = ToolSpec(
+        name="web_search",
+        description="Synthetic web op.",
+        input_schema={"type": "object", "properties": {}},
+        is_private=True,
+        is_synthetic=True,
+    )
+
+    class MintWebSynthetic:
+        def synthesize_executions(self, session, conversation_id, entry):
+            parts = [part for part in entry.parts if isinstance(part, WebSearchContent)]
+            return [
+                ToolExecution(
+                    tool_call_id=part.extras["id"],
+                    raw_tool_call=ToolCall(
+                        id=part.extras["id"], name="web_search", arguments={"queries": part.queries}
+                    ),
+                    tool_spec=synthetic_spec,
+                    status=ExecutionStatus.COMPLETED,
+                    result=ExecutionResult(content=[TextContent(text='Web search: "apple"')]),
+                )
+                for part in parts
+            ]
+
+    faux = FauxProvider()
+    faux.set_responses(
+        [
+            faux_assistant_message(
+                [
+                    ClientPrivateProviderBlock(
+                        format="anthropic.messages",
+                        data={"type": "web_search_tool_result", "content": [{"encrypted": "blob" * 200}]},
+                    ),
+                    ClientWebSearchBlock(
+                        queries=["apple"],
+                        results=[ClientWebPagePart(url="https://apple.com", title="Apple")],
+                        extras={"id": "srv_1"},
+                    ),
+                    faux_text("Apple rose."),
+                ],
+                finish_reason="stop",
+            ),
+            faux_assistant_message([faux_text("Still up.")], finish_reason="stop"),
+        ]
+    )
+    session = _session("s_prune_web")
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        ids=["ts", "a1", "s1", "tf", "p1", "u2", "ts2", "a2", "tf2"],
+        now=1000,
+        middleware=[MintWebSynthetic()],
+    )
+    await runner.run()  # turn 1: the web-bearing answer + its synthetic
+
+    manager = runner.context_manager
+    template = manager.prune_entry(runner.session, runner.session.entries["a1"])
+
+    def build(entry_id, parent_id, ts):
+        pruned = template.model_copy(
+            update={"id": entry_id, "parent_id": parent_id, "created_at": ts},
+        )
+        pruned.context_tokens = manager.calculate_context(runner.session, pruned)
+        return pruned
+
+    runner.ledger.prune(session.main_conversation_id, "a1", build)
+
+    assert main_conversation(runner.session).nodes == ["u1", "ts", "p1", "s1", "tf"]
+
+    runner.post_message("And now?")
+    await runner.run()  # turn 2
+
+    assert faux.requests[1].messages == [
+        LucaUserMessage(content=[TextBlock(text="Add 1 and 2")]),
+        LucaAssistantMessage(
+            content=[TextBlock(text=('Searched the web: "apple" (1 result: apple.com). Answered: Apple rose.'))],
+            provider="faux",
+            model="test-model",
+        ),
+        LucaUserMessage(content=[TextBlock(text="And now?")]),
+    ]

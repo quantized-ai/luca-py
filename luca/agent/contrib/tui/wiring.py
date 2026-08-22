@@ -29,6 +29,7 @@ from luca.agent.contrib.simple_tool_registry import SimpleToolRegistry
 from luca.agent.contrib.skills import SkillsPlugin
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME, SubagentsPlugin
 from luca.agent.contrib.tools import Tool
+from luca.agent.contrib.websearch import WebSearchPlugin
 from luca.agent.core.context import CancellationToken
 from luca.agent.core.models import AgentSession, LLMConfig
 from luca.client.testing import (
@@ -134,6 +135,7 @@ def build_runner(
     instructions: bool = True,
     extra_instructions: list[str] | None = None,
     questions_store: dict | None = None,
+    websearch=None,
 ) -> tuple[PluginAgentSessionRunner, PermissionStrategy, QuestionsPlugin]:
     """The full demo composition: shell + memory + questions plugins, the math
     tools, one shared strategy, and — unless `subagents=False` — the subagent
@@ -197,6 +199,12 @@ def build_runner(
         # shell and memory tools the main agent has, each keyed by conversation
         # so the two never overwrite each other.
         plugins.append(SubagentsPlugin())
+    if websearch is not None:
+        # Provider-hosted web tools: the block IS the plugin's config (D7),
+        # threaded as one typed kwarg — nothing is persisted, and the
+        # per-model support table inside the middleware still has the last
+        # word on whether anything is advertised.
+        plugins.append(WebSearchPlugin(websearch))
     runner = PluginAgentSessionRunner(
         session,
         tool_registry=registry,
