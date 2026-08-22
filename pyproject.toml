@@ -42,6 +42,10 @@ addopts = [
     "-W", "error::ResourceWarning",
     "--strict-markers",
     "--strict-config",
+    # Live tests are DESELECTED, not skipped: a contributor with real AWS
+    # credentials exported would otherwise spend money on a plain test run.
+    # A `-m live` on the command line replaces this and selects them.
+    "-m", "not live",
 ]
 asyncio_mode = "auto"
 markers = [
@@ -50,6 +54,9 @@ markers = [
 filterwarnings = [
     "error",
     "ignore:The frame locals reference is no longer cached.*:DeprecationWarning",
+]
+markers = [
+    "live: hits a real provider over the network; opt in with `-m live`",
 ]
 testpaths = ["tests"]
 

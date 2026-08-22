@@ -13,9 +13,10 @@ import os
 import time
 from functools import partial
 
+from luca.agent.contrib.simple_context_manager import SummarizingContextManager
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.app import AgentApp
-from luca.agent.contrib.tui.auth import AuthEntry
+from luca.agent.contrib.tui.auth import ApiAuthEntry, AwsAuthEntry
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, UserTurn
 from luca.agent.contrib.tui.commands import (
     COMMANDS,
@@ -34,7 +35,7 @@ from luca.agent.contrib.tui.sessions import list_sessions, save_session
 from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig, RuntimeConfig
-from luca.client import catalog
+from luca.client import AwsCredentials, catalog
 from luca.client.catalog._data import cache_path
 from luca.client.providers import PROVIDERS
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
@@ -295,8 +296,8 @@ async def test_switching_provider_re_points_the_credential(tmp_path):
     app = AgentApp(
         fresh_session(),
         auth={
-            "faux": AuthEntry(type="api", key="sk-faux"),
-            "anthropic": AuthEntry(type="api", key="sk-ant"),
+            "faux": ApiAuthEntry(type="api", key="sk-faux"),
+            "anthropic": ApiAuthEntry(type="api", key="sk-ant"),
         },
         workspace=tmp_path,
         session_dir=tmp_path,
@@ -314,7 +315,7 @@ async def test_switching_provider_re_points_the_credential(tmp_path):
 async def test_switching_to_a_provider_with_no_entry_clears_the_credential(tmp_path):
     app = AgentApp(
         fresh_session(),
-        auth={"faux": AuthEntry(type="api", key="sk-faux")},
+        auth={"faux": ApiAuthEntry(type="api", key="sk-faux")},
         workspace=tmp_path,
         session_dir=tmp_path,
         skills=False,
@@ -325,6 +326,126 @@ async def test_switching_to_a_provider_with_no_entry_clears_the_credential(tmp_p
         await pilot.pause()
 
         assert app.runner.api_key is None
+
+
+async def test_switching_to_an_unbuildable_provider_still_switches_but_says_so(tmp_path, monkeypatch):
+    # `/model` is deliberately never a gate. Before this, a switch onto a
+    # provider with no region looked like it worked and failed one message
+    # later as a red block mid-conversation.
+    for variable in ("BEDROCK_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-such-config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-such-credentials"))
+    app = AgentApp(
+        fresh_session(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model bedrock:amazon.nova-pro-v1:0")
+        await pilot.pause()
+
+        assert _config(app) == LLMConfig(model="amazon.nova-pro-v1:0", provider="bedrock")
+        assert _notices(app) == [
+            ("model set to amazon.nova-pro-v1:0", False),
+            (
+                "Provider 'bedrock' needs a region: set BEDROCK_AWS_REGION or AWS_REGION in the "
+                "environment, put one in your AWS profile, or pass base_url= explicitly.",
+                True,
+            ),
+        ]
+
+
+async def test_switching_to_a_buildable_provider_says_nothing_extra(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEDROCK_AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-key")
+    app = AgentApp(
+        fresh_session(),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model bedrock:amazon.nova-pro-v1:0")
+        await pilot.pause()
+
+        assert _notices(app) == [("model set to amazon.nova-pro-v1:0", False)]
+
+
+async def test_switching_onto_bedrock_swaps_a_key_for_aws_credentials(tmp_path):
+    # The two credential kinds are mutually exclusive per provider. A switch
+    # that moved one and left the other would send anthropic's key alongside
+    # AWS credentials, or worse, keep sending AWS credentials to anthropic.
+    app = AgentApp(
+        fresh_session(),
+        auth={
+            "faux": ApiAuthEntry(type="api", key="sk-faux"),
+            "bedrock": AwsAuthEntry(type="aws", profile="work"),
+        },
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        before = (app.runner.api_key, app.runner.credentials)
+        await submit(pilot, "/model bedrock:us.amazon.nova-lite-v1:0")
+        await pilot.pause()
+
+        assert (before, (app.runner.api_key, app.runner.credentials)) == (
+            ("sk-faux", None),
+            (None, AwsCredentials(profile="work")),
+        )
+
+
+async def test_switching_off_bedrock_clears_the_aws_credentials(tmp_path):
+    app = AgentApp(
+        fresh_session(),
+        auth={
+            "faux": ApiAuthEntry(type="api", key="sk-faux"),
+            "bedrock": AwsAuthEntry(type="aws", profile="work"),
+        },
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model bedrock:us.amazon.nova-lite-v1:0")
+        await pilot.pause()
+        await submit(pilot, "/model faux:faux-model")
+        await pilot.pause()
+
+        assert (app.runner.api_key, app.runner.credentials) == ("sk-faux", None)
+
+
+async def test_a_switch_re_points_the_context_manager_too(tmp_path):
+    # The context manager makes its own LLM call with its own copy of the
+    # credential, so a switch that only moved the runner's would leave the
+    # compaction call authenticating as the previous provider.
+    app = AgentApp(
+        fresh_session(),
+        auth={
+            "faux": ApiAuthEntry(type="api", key="sk-faux"),
+            "bedrock": AwsAuthEntry(type="aws", profile="work"),
+        },
+        context_manager=SummarizingContextManager(api_key="sk-faux"),
+        workspace=tmp_path,
+        session_dir=tmp_path,
+        skills=False,
+        instructions=False,
+    )
+    async with app.run_test(size=(105, 35)) as pilot:
+        await submit(pilot, "/model bedrock:us.amazon.nova-lite-v1:0")
+        await pilot.pause()
+
+        assert (app._context_manager.api_key, app._context_manager.credentials) == (
+            None,
+            AwsCredentials(profile="work"),
+        )
 
 
 async def test_reasoning_alone_does_not_re_resolve_the_model_block(tmp_path):

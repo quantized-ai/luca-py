@@ -117,6 +117,7 @@ class SummarizingContextManager(ContextManager):
         enabled: bool = True,
         provider=None,
         api_key: str | None = None,
+        credentials=None,
     ) -> None:
         self.keep_turns = keep_turns
         self.threshold = threshold
@@ -130,6 +131,7 @@ class SummarizingContextManager(ContextManager):
         # application hands it the same key — it is never read off the
         # session, which deliberately stores none.
         self.api_key = api_key
+        self.credentials = credentials
 
     def should_compact(self, session: AgentSession, conversation_id: str) -> bool:
         return self.enabled and (
@@ -181,7 +183,7 @@ class SummarizingContextManager(ContextManager):
             # applies to the summary call too. The runner's own ctor-level
             # overrides are NOT visible here — this is a separate collaborator
             # the application builds, so it configures both.
-            **completion_options(cfg, api_key=self.api_key),
+            **completion_options(cfg, api_key=self.api_key, credentials=self.credentials),
         )
         message = response.messages[-1]
         return self.text_of(message), self.usage_of(message)

@@ -12,7 +12,7 @@ of new hosts.
 | `openai` | `OpenAIProvider` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OpenAIResponsesTransport` |
 | `anthropic` | `AnthropicProvider` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `AnthropicTransport` |
 | `openrouter` | `OpenRouterProvider` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OpenRouterTransport` |
-| `bedrock` | `BedrockProvider` | `https://bedrock-runtime.{region}.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` | `BedrockTransport` |
+| `bedrock` | `BedrockProvider` | `https://bedrock-runtime.{region}.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK`, or the AWS chain | `BedrockTransport` |
 | `groq` | `GenericProvider` (from dict) | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `OpenAITransport` |
 | `deepseek` | `GenericProvider` (from dict) | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `OpenAITransport` |
 | `ollama` | `GenericProvider` (from dict) | `http://localhost:11434/v1` | (none) | `OpenAITransport` |
@@ -54,10 +54,48 @@ there is reasoning text to render. An organization that is not verified with
 OpenAI gets a 400 on some models; the error says exactly what to do, and
 `provider_options={"openai": {"reasoning": {...}}}` replaces the whole key.
 
-`bedrock` also reads `BEDROCK_AWS_REGION` to fill the `{region}` in its base
-URL. Pass `base_url=` to point at a VPC endpoint or a proxy instead. The token
-in `AWS_BEARER_TOKEN_BEDROCK` is a Bedrock API key used as a plain bearer
-header; SigV4 is not used.
+## Bedrock authentication
+
+`bedrock` takes either of two schemes, and picks between them the way AWS's
+own SDKs do.
+
+**A Bedrock API key** (`AWS_BEARER_TOKEN_BEDROCK`, or an explicit `api_key=`)
+is sent as a plain bearer header. If one is present it wins, and SigV4 never
+runs.
+
+**Otherwise, AWS SigV4.** Credentials are resolved first from an explicit
+`credentials=`, then from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (plus
+`AWS_SESSION_TOKEN`), then from `~/.aws/credentials` and `~/.aws/config` under
+the selected profile — `AwsCredentials.profile`, else `AWS_PROFILE`, else
+`default`. `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` move the files.
+
+```python
+from luca.client import AwsCredentials, completion
+
+# Everything from the environment and ~/.aws — nothing to pass.
+completion(model="bedrock:us.amazon.nova-lite-v1:0", messages=[...])
+
+# Or name a profile, or pass keys outright.
+completion(
+    model="bedrock:us.amazon.nova-lite-v1:0",
+    credentials=AwsCredentials(profile="work"),
+    messages=[...],
+)
+```
+
+Not supported, deliberately: IMDSv2, the ECS/EKS container endpoints, web
+identity tokens, the SSO token cache, `credential_process`, and `role_arn`
+chaining. Each needs a network call at credential time plus expiry handling,
+which is a different kind of machinery from a signer. A profile using one
+raises `ConfigurationError` naming the mechanism rather than falling through
+to an unsigned request — run
+`aws configure export-credentials --profile <name> --format env` and export
+those instead.
+
+**Region.** Resolved from `credentials.region`, then `BEDROCK_AWS_REGION`,
+`AWS_REGION`, `AWS_DEFAULT_REGION`, then the profile's `region`. It fills the
+`{region}` in the base URL AND is a signing input, so it is required even
+when `base_url=` points at a VPC endpoint or a proxy.
 
 ## Model strings
 
@@ -175,7 +213,10 @@ but accepts the turn without the block.
 `BedrockTransport` is a full translation transport, not an OpenAI-compatible
 one. It targets the Converse API: the model id goes in the URL path, the
 system prompt is a top-level array, tool arguments are real JSON objects, and
-streaming is a binary `vnd.amazon.eventstream` framing rather than SSE. One
+streaming is a binary `vnd.amazon.eventstream` framing rather than SSE. It is
+also the only transport that builds its own `httpx.Request`, because SigV4
+signs a hash of the exact body: the payload is serialized once and the same
+bytes are both signed and sent. One
 schema covers every model family on Bedrock (Anthropic, Nova, Llama). Per-model
 facts (reasoning support, output ceilings) live in a capabilities table like
 `AnthropicTransport`'s; the Anthropic-on-Bedrock reasoning rows are written

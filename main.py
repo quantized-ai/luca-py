@@ -30,13 +30,14 @@ Usage:
     uv run python main.py --config ./ci.json       # use THIS config, skip discovery
     uv run python main.py --log-level DEBUG        # verbose session log
     uv run python main.py --no-skills              # ignore SKILL.md skills
-    uv run python main.py --no-commands            # ignore user-defined slash commands
     uv run python main.py --no-instructions        # ignore AGENTS.md
     uv run python main.py --resume <id> --pretty-print  # transcript, then exit
 
 Requires a provider credential, except with `--faux`: `auth.json`, or an
 exported environment variable (OPENROUTER_API_KEY by default). A `.env` is NOT
-read — export the variables yourself. Sessions persist to
+read. The provider is built at boot, so a missing region or a half-written
+credential is a startup error rather than a failed first message. Sessions
+persist to
 `~/.luca/projects/<encoded-project-path>/<session-id>.json` after every run —
 one directory per project, so nothing is written next to your code. Requires the `tui` dependency group (installed by
 default with `uv sync`).

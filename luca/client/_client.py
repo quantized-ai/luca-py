@@ -24,7 +24,8 @@ if TYPE_CHECKING:
     from .types.streaming import AsyncChatCompletionStream, ChatCompletionStream
 
 
-# Process-local provider cache: keyed by (name, api_key, base_url, transport_class, timeout).
+# Process-local provider cache: keyed by
+# (name, api_key, credentials, base_url, transport_class, timeout).
 # Never evicts. close_all() (not exposed in V1) can clear it for tests.
 _provider_cache: dict[tuple, BaseProvider] = {}
 
@@ -161,16 +162,21 @@ def _get_cached_provider(
     name: str,
     *,
     api_key: str | None,
+    credentials: Any,
     base_url: str | None,
     transport_class: type | None,
     timeout: float | None,
 ) -> BaseProvider:
-    key = (name, api_key, base_url, transport_class, timeout)
+    # `credentials` is in the key for the same reason `api_key` is: two
+    # credential sets in one process must not answer each other's calls.
+    # That is why `Credentials` is frozen — an unhashable one would not fit.
+    key = (name, api_key, credentials, base_url, transport_class, timeout)
     inst = _provider_cache.get(key)
     if inst is None:
         inst = resolve_provider(
             name,
             api_key=api_key,
+            credentials=credentials,
             base_url=base_url,
             transport_class=transport_class,
             timeout=timeout,
@@ -186,6 +192,7 @@ def _resolve_for_call(
     transport: Any,
     transport_class: type | None,
     api_key: str | None,
+    credentials: Any,
     base_url: str | None,
     timeout: float | None,
 ) -> tuple[BaseProvider, str, str]:
@@ -210,6 +217,7 @@ def _resolve_for_call(
     prov = _get_cached_provider(
         provider_name,
         api_key=api_key,
+        credentials=credentials,
         base_url=base_url,
         transport_class=transport_class,
         timeout=timeout,
@@ -252,6 +260,7 @@ def completion(
     metadata: dict | None = None,
     provider_options: dict[str, dict] | None = None,
     api_key: str | None = None,
+    credentials: Any = None,
     base_url: str | None = None,
     timeout: float | None = None,
 ) -> ChatCompletionResponse:
@@ -261,6 +270,7 @@ def completion(
         transport=transport,
         transport_class=transport_class,
         api_key=api_key,
+        credentials=credentials,
         base_url=base_url,
         timeout=timeout,
     )
@@ -324,6 +334,7 @@ async def acompletion(
     metadata: dict | None = None,
     provider_options: dict[str, dict] | None = None,
     api_key: str | None = None,
+    credentials: Any = None,
     base_url: str | None = None,
     timeout: float | None = None,
     total_timeout: float | None = None,
@@ -338,6 +349,7 @@ async def acompletion(
         transport=transport,
         transport_class=transport_class,
         api_key=api_key,
+        credentials=credentials,
         base_url=base_url,
         timeout=timeout,
     )
@@ -411,6 +423,7 @@ def completion_stream(
     metadata: dict | None = None,
     provider_options: dict[str, dict] | None = None,
     api_key: str | None = None,
+    credentials: Any = None,
     base_url: str | None = None,
     timeout: float | None = None,
 ) -> ChatCompletionStream:
@@ -420,6 +433,7 @@ def completion_stream(
         transport=transport,
         transport_class=transport_class,
         api_key=api_key,
+        credentials=credentials,
         base_url=base_url,
         timeout=timeout,
     )
@@ -483,6 +497,7 @@ def acompletion_stream(
     metadata: dict | None = None,
     provider_options: dict[str, dict] | None = None,
     api_key: str | None = None,
+    credentials: Any = None,
     base_url: str | None = None,
     timeout: float | None = None,
     total_timeout: float | None = None,
@@ -500,6 +515,7 @@ def acompletion_stream(
         transport=transport,
         transport_class=transport_class,
         api_key=api_key,
+        credentials=credentials,
         base_url=base_url,
         timeout=timeout,
     )
@@ -543,6 +559,7 @@ def get_provider(model_or_pair: str) -> BaseProvider:
     return _get_cached_provider(
         provider_name,
         api_key=None,
+        credentials=None,
         base_url=None,
         transport_class=None,
         timeout=None,

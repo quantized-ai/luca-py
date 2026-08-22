@@ -46,6 +46,7 @@ class BaseTransport:
         provider: str,
         base_url: str,
         api_key: str | None = None,
+        credentials: Any = None,
         timeout: float | None = 60.0,
         http_client: httpx.Client | None = None,
         async_http_client: httpx.AsyncClient | None = None,
@@ -53,6 +54,11 @@ class BaseTransport:
         self._provider = provider
         self._base_url = base_url.rstrip("/") if base_url else ""
         self._api_key = api_key
+        # A non-string credential, for the schemes `api_key` cannot express
+        # (AWS SigV4 needs four values). Stored and never read here: only the
+        # transport that understands one looks inside. Same division
+        # `provider_options` uses.
+        self._credentials = credentials
         self._timeout = timeout
 
         self._owned_client = http_client is None

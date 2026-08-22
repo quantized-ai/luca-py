@@ -34,7 +34,9 @@ from luca.agent.contrib.simple_context_manager import (
     SummarizingContextManager,
 )
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
-from luca.client.providers import PROVIDERS
+from luca.agent.core.runner import completion_options
+from luca.client.exceptions import ClientError
+from luca.client.providers import PROVIDERS, resolve_provider
 from luca.client.types import Reasoning
 
 from .prompt_files import ReadLimits
@@ -441,6 +443,32 @@ def validate_provider(config: LucaConfig, provider: str) -> None:
     )
 
 
+def check_provider_buildable(llm_config: LLMConfig, *, api_key=None, credentials=None) -> None:
+    """Fail at BOOT if the provider cannot be CONSTRUCTED.
+
+    `validate_provider` only asks whether the name is reachable. A missing
+    region, a half-written AWS credential or an unresolvable profile all live
+    in the provider's constructor, which otherwise does not run until the first
+    LLM call and surfaces there as a failed turn.
+
+    `resolve_provider`, never `get_provider`: the latter hands back a CACHED
+    instance and closing it would leave the real call holding a dead client.
+    The arguments come from `completion_options` so this builds exactly what
+    the runner will. No network happens; construction is local."""
+    kwargs = completion_options(llm_config, api_key=api_key, credentials=credentials)
+    try:
+        provider = resolve_provider(
+            llm_config.provider,
+            api_key=kwargs.get("api_key"),
+            credentials=kwargs.get("credentials"),
+            base_url=kwargs.get("base_url"),
+            transport_class=kwargs.get("transport_class"),
+        )
+    except ClientError as exc:
+        raise LucaConfigError(str(exc)) from exc
+    provider.close()
+
+
 def resolve_model_options(
     config: LucaConfig,
     provider: str,
@@ -566,6 +594,7 @@ def build_context_manager(
     *,
     provider=None,
     api_key: str | None = None,
+    credentials=None,
     enabled: bool | None,
     threshold: float | None,
     keep_turns: int | None,
@@ -581,4 +610,5 @@ def build_context_manager(
         enabled=enabled,
         provider=provider,
         api_key=api_key,
+        credentials=credentials,
     )

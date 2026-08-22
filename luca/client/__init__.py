@@ -1,7 +1,7 @@
 """luca.client — unified LLM SDK.
 
 Public surface: completion, acompletion, completion_stream, acompletion_stream,
-get_provider, catalog.
+get_provider, catalog, AwsCredentials.
 """
 
 from . import catalog
@@ -12,6 +12,7 @@ from ._client import (
     completion_stream,
     get_provider,
 )
+from .types.auth import AwsCredentials, Credentials
 
 __all__ = [
     "completion",
@@ -20,4 +21,6 @@ __all__ = [
     "acompletion_stream",
     "get_provider",
     "catalog",
+    "AwsCredentials",
+    "Credentials",
 ]

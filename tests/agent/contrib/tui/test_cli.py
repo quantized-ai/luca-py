@@ -26,6 +26,7 @@ from luca.agent.contrib.tui.sessions import (
 from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
 from luca.agent.core.utils import pretty_print
+from luca.client import AwsCredentials
 
 from .helpers import fresh_session
 
@@ -367,6 +368,65 @@ def test_the_auth_file_key_reaches_the_runner_and_the_context_manager(tmp_path, 
     main([])
 
     assert seen == {"runner": "sk-or-live", "context_manager": "sk-or-live"}
+
+
+def test_an_aws_auth_entry_reaches_the_runner_and_the_context_manager(tmp_path, monkeypatch):
+    # The credential kind that is not a string takes the same boot path, and
+    # has to reach BOTH: the context manager makes its own LLM call. The keys
+    # are spelled out because boot now BUILDS the provider, and a profile that
+    # does not exist on this machine would (correctly) refuse to resolve.
+    entry = {
+        "type": "aws",
+        "access_key_id": "AKIA-BOOT",
+        "secret_access_key": "boot-secret",
+        "region": "us-east-1",
+    }
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "auth.json").write_text(json.dumps({"bedrock": entry}))
+    monkeypatch.setenv(ENV_AUTH_PATH, str(tmp_path / "auth.json"))
+    seen: dict[str, object] = {}
+
+    def fake_run(self: AgentApp) -> None:
+        seen["runner"] = self.runner.credentials
+        seen["context_manager"] = self._context_manager.credentials
+        seen["api_key"] = self.runner.api_key
+
+    monkeypatch.setattr(AgentApp, "run", fake_run)
+    main(["--provider", "bedrock", "--model", "us.amazon.nova-lite-v1:0"])
+
+    expected = AwsCredentials(access_key_id="AKIA-BOOT", secret_access_key="boot-secret", region="us-east-1")
+    assert seen == {"runner": expected, "context_manager": expected, "api_key": None}
+
+
+def test_a_provider_that_cannot_be_built_fails_at_boot_not_mid_turn(tmp_path, monkeypatch, capsys):
+    # The reported bug: `/model bedrock:…` with no region booted fine and died
+    # on the first message as a red block. Naming the provider is not enough —
+    # only CONSTRUCTING it reaches the region check.
+    monkeypatch.chdir(tmp_path)
+    for variable in ("BEDROCK_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-such-config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-such-credentials"))
+
+    with pytest.raises(SystemExit):
+        main(["--provider", "bedrock", "--model", "amazon.nova-pro-v1:0"])
+
+    assert "BEDROCK_AWS_REGION" in capsys.readouterr().err
+
+
+def test_a_saved_session_that_cannot_boot_says_how_to_open_it(tmp_path, monkeypatch, capsys):
+    # Refusing to start is right, but being locked out of your own transcript
+    # with no way back in is not.
+    monkeypatch.chdir(tmp_path)
+    for variable in ("BEDROCK_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "none"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "none"))
+
+    with pytest.raises(SystemExit):
+        main(["--provider", "bedrock", "--model", "amazon.nova-pro-v1:0"])
+
+    assert "--provider/--model" in capsys.readouterr().err
 
 
 def test_a_provider_with_no_auth_entry_passes_no_key_at_all(tmp_path, monkeypatch):

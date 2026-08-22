@@ -9,7 +9,14 @@ Meta Llama, …). What is new here versus the other transports:
   - Roles are only `user` / `assistant`; a tool result is a `toolResult`
     block inside a user message, and adjacent same-role messages are merged
     because Converse requires strict alternation.
-  - Auth is a plain bearer token (`AWS_BEARER_TOKEN_BEDROCK`); no SigV4.
+  - Auth is either a Bedrock API key as a bearer header
+    (`AWS_BEARER_TOKEN_BEDROCK`, handled by the base class) or AWS SigV4. The
+    provider decides; this class signs when handed a resolved credential.
+
+SigV4 is why this transport builds its own httpx request and why the streaming
+path passes `content=` rather than `json=`: the signature covers a hash of the
+exact body, so the payload is serialized once and the same bytes are signed
+and sent.
 
 Anthropic-on-Bedrock reasoning is written from the docs and is unverified —
 see `capabilities.py`. Nova and Llama are verified live.
@@ -17,7 +24,10 @@ see `capabilities.py`. Nova and Llama are verified live.
 
 from __future__ import annotations
 
+import json
 import re
+import time
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import httpx
@@ -53,6 +63,9 @@ from ...types.messages import AssistantMessage, ToolMessage, UserMessage
 from ...types.tools import BaseTool, Tool, ToolProjector, tool_parameters_to_json_schema
 from ..base import BaseTransport, ChatCompletionTransportMixin
 from .capabilities import check_sampling, get_model_capabilities, resolve_reasoning
+from .sigv4 import sign
+
+SIGNING_SERVICE = "bedrock"
 
 
 def _image_format(media_type: str | None) -> str:
@@ -211,7 +224,7 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     # summaries. Model facts live in `capabilities.py`; this is policy.
     THINKING_DISPLAY: ClassVar[str | None] = "summarized"
 
-    # --- URL (auth is the base-class bearer header) ---
+    # --- URL ---
 
     def _chat_completion_url(
         self,
@@ -221,6 +234,53 @@ class BedrockTransport(BaseTransport, ChatCompletionTransportMixin):
     ) -> str:
         op = "converse-stream" if stream else "converse"
         return f"{self._base_url}/model/{request.model}/{op}"
+
+    # --- auth ---
+
+    def _now(self) -> datetime:
+        """The signing timestamp. Routed through `time.time()` so the suite's
+        existing `frozen_time` fixture freezes it."""
+        return datetime.fromtimestamp(time.time(), tz=UTC)
+
+    def _serialize_payload(self, payload: dict) -> bytes:
+        """The bytes that get signed AND sent, from one place."""
+        return json.dumps(payload).encode()
+
+    def _signed_headers(self, method: str, url: str, body: bytes) -> dict[str, str]:
+        """Request headers, with the SigV4 set added when signing applies.
+        With a bearer token this is just `_headers()`."""
+        headers = self._headers()
+        if self._credentials is None:
+            return headers
+        return {
+            **headers,
+            **sign(
+                method,
+                httpx.URL(url),
+                headers,
+                body,
+                access_key_id=self._credentials.access_key_id,
+                secret_access_key=self._credentials.secret_access_key,
+                session_token=self._credentials.session_token,
+                region=self._credentials.region,
+                service=SIGNING_SERVICE,
+                now=self._now(),
+            ),
+        }
+
+    def _build_chat_completion_httpx_request(
+        self,
+        request: ChatCompletionRequest,
+        client: Any,
+    ) -> httpx.Request:
+        url = self._chat_completion_url(request)
+        body = self._serialize_payload(self._build_chat_completion_payload(request))
+        return client.build_request(
+            "POST",
+            url,
+            content=body,
+            headers=self._signed_headers("POST", url, body),
+        )
 
     # --- payload building ---
 

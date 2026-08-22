@@ -23,6 +23,7 @@ from luca.agent.core.models import (
     UserMessage,
 )
 from luca.agent.core.runner import completion_options
+from luca.client import AwsCredentials
 from luca.client.providers import resolve_provider
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 from luca.client.transports import OpenAITransport
@@ -105,6 +106,15 @@ def test_the_api_key_is_absent_unless_one_is_given():
     # variable, and an explicit None would be indistinguishable from "no key".
     assert "api_key" not in completion_options(MODEL)
     assert completion_options(MODEL, api_key="sk-test") == {"api_key": "sk-test"}
+
+
+def test_credentials_follow_the_same_absent_unless_given_rule():
+    # Same reason: passing None would stop the client running its own AWS
+    # credential chain, which is the whole point of leaving it unset.
+    assert "credentials" not in completion_options(MODEL)
+    assert completion_options(MODEL, credentials=AwsCredentials(profile="work")) == {
+        "credentials": AwsCredentials(profile="work")
+    }
 
 
 def test_what_the_translation_produces_actually_builds_a_provider():
@@ -262,3 +272,29 @@ async def test_the_api_key_is_nowhere_in_the_serialized_session():
         _ = [event async for event in run]
 
     assert "sk-do-not-persist" not in json.dumps(session.model_dump(mode="json"))
+
+
+async def test_aws_credentials_are_nowhere_in_the_serialized_session():
+    # The same rule for the credential kind that is not a string. A secret
+    # access key written once per assistant message is the failure mode.
+    faux = FauxProvider()
+    faux.set_responses([faux_assistant_message([faux_text("done")], finish_reason="stop")])
+    session = _session("s_aws_secret", CONFIGURED)
+    runner = DeterministicRunner(
+        session,
+        provider=faux,
+        credentials=AwsCredentials(
+            access_key_id="AKIA-DO-NOT-PERSIST",
+            secret_access_key="secret-do-not-persist",
+            region="us-east-1",
+        ),
+        ids=["ts", "a1", "tf"],
+        now=1000,
+    )
+
+    async with runner.run() as run:
+        _ = [event async for event in run]
+
+    serialized = json.dumps(session.model_dump(mode="json"))
+    assert "AKIA-DO-NOT-PERSIST" not in serialized
+    assert "secret-do-not-persist" not in serialized

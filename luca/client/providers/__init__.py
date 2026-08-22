@@ -81,6 +81,7 @@ def resolve_provider(
     name: str,
     *,
     api_key: str | None = None,
+    credentials=None,
     base_url: str | None = None,
     transport_class: type | None = None,
     transport=None,
@@ -93,6 +94,7 @@ def resolve_provider(
 
     common: dict = {
         "api_key": api_key,
+        "credentials": credentials,
         "base_url": base_url,
         "transport_class": transport_class,
         "transport": transport,

@@ -1046,6 +1046,7 @@ class AgentSessionRunner:
         *,
         provider=None,
         api_key: str | None = None,
+        credentials=None,
         model_options: dict | None = None,
         provider_options: dict | None = None,
         conversation_projector: ConversationProjector | None = None,
@@ -1082,6 +1083,11 @@ class AgentSessionRunner:
         # over the session's, so a process can bound or reroute its own calls
         # without rewriting what the session records.
         self.api_key = api_key
+        # The same runtime-only slot for the credentials a single string
+        # cannot express (AWS SigV4 needs four values). Exactly one of the two
+        # is set for any given provider; both being None means the client
+        # resolves the credential itself.
+        self.credentials = credentials
         self.model_options = dict(model_options or {})
         self.provider_options = dict(provider_options or {})
         self.middleware = list(middleware or [])
@@ -1176,6 +1182,7 @@ class AgentSessionRunner:
             and _equivalent(self.context_manager, other.context_manager)
             and self.provider == other.provider
             and self.api_key == other.api_key
+            and self.credentials == other.credentials
             and self.model_options == other.model_options
             and self.provider_options == other.provider_options
             and _all_equivalent(self.middleware, other.middleware)
@@ -2460,6 +2467,7 @@ class AgentSessionRunner:
             model_options=self.model_options,
             provider_options=self.provider_options,
             api_key=self.api_key,
+            credentials=self.credentials,
         )
 
     async def resolve_tool_specs(self, conversation_id: str) -> list[ToolSpec]:
@@ -5455,6 +5463,7 @@ def completion_options(
     model_options: dict | None = None,
     provider_options: dict | None = None,
     api_key: str | None = None,
+    credentials=None,
 ) -> dict:
     """`LLMConfig` → the client completion kwargs it sets.
 
@@ -5474,8 +5483,9 @@ def completion_options(
     The keyword arguments are RUNTIME overrides that win per key over the
     stored config: the session records what the application configured, and a
     caller can still bound one process without rewriting the session. `api_key`
-    is only ever a runtime value — passing none leaves the kwarg off entirely
-    so the client falls back to the provider's environment variable."""
+    and `credentials` are only ever runtime values — passing none leaves the
+    kwarg off entirely so the client falls back to the provider's environment
+    variable or its own credential chain."""
     kwargs = {**llm_config.model_options, **(model_options or {})}
     options = {**llm_config.provider_options, **(provider_options or {})}
     base_url = options.pop("base_url", None)
@@ -5488,6 +5498,8 @@ def completion_options(
         kwargs["provider_options"] = {llm_config.provider: options}
     if api_key is not None:
         kwargs["api_key"] = api_key
+    if credentials is not None:
+        kwargs["credentials"] = credentials
     return kwargs
 
 
