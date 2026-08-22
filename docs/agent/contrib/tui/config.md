@@ -1,7 +1,11 @@
 # `luca.json`
 
-The TUI reads a JSON config from two places and deep-merges them, project over
-home:
+> The loader lives in [`contrib/app`](../app/README.md), not here — the
+> [ACP server](../acp/README.md) reads the same file. This page stays under
+> `tui/` because everything it documents is reachable from the TUI's flags.
+
+Both front ends read a JSON config from two places and deep-merge them, project
+over home:
 
 - `~/.config/luca/luca.json` (or `$XDG_CONFIG_HOME/luca/luca.json`) — your
   personal defaults across every repo.
