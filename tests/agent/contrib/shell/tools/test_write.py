@@ -40,7 +40,12 @@ async def test_creates_a_missing_file(tmp_path, run):
 
     assert result.is_error is False
     assert body(result) == f"File created successfully at: {target}"
-    assert result.metadata == {"existed": False}
+    assert result.metadata == {
+        "existed": False,
+        "path": str(target),
+        "old_text": None,
+        "new_text": "Hello, World!",
+    }
     assert target.read_text() == "Hello, World!"
 
 
@@ -85,7 +90,12 @@ async def test_overwrites_an_existing_file_after_a_read(tmp_path, run):
     )
 
     assert body(result) == f"File updated successfully at: {target}"
-    assert result.metadata == {"existed": True}
+    assert result.metadata == {
+        "existed": True,
+        "path": str(target),
+        "old_text": "old content",
+        "new_text": "new content",
+    }
     assert target.read_text() == "new content"
 
 

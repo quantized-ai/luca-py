@@ -944,7 +944,7 @@ class EditTool(ShellTool):
         diff = _unified_diff("", content, str(path), str(path))
         return ExecutionResult(
             content=[TextContent(text=f"Created file: {path}")],
-            metadata={"diff": diff, "created": True},
+            metadata={"diff": diff, "created": True, "path": str(path), "old_text": None, "new_text": content},
         )
 
     def _edit(
@@ -993,7 +993,14 @@ class EditTool(ShellTool):
         self.tracker.record(conversation_id, path)
         return ExecutionResult(
             content=[TextContent(text=f"Edited file: {path}")],
-            metadata={"diff": diff, "created": False, "replacements": count},
+            metadata={
+                "diff": diff,
+                "created": False,
+                "replacements": count,
+                "path": str(path),
+                "old_text": working,
+                "new_text": updated,
+            },
         )
 
 
@@ -1077,20 +1084,37 @@ class WriteTool(ShellTool):
                     f"File has not been read yet: read {path} before overwriting it.",
                 )
         async with _file_lock(path):
-            await asyncio.to_thread(self._write, path, args["content"], existed)
+            before = await asyncio.to_thread(self._write, path, args["content"], existed)
         self.tracker.record(conversation_id, path)
         verb = "updated" if existed else "created"
         return ExecutionResult(
             content=[TextContent(text=f"File {verb} successfully at: {path}")],
-            metadata={"existed": existed},
+            metadata={
+                "existed": existed,
+                "path": str(path),
+                "old_text": before,
+                "new_text": args["content"],
+            },
         )
 
-    def _write(self, path: Path, content: str, existed: bool) -> None:
+    def _write(self, path: Path, content: str, existed: bool) -> str | None:
+        """Returns what was there before, or None for a new file. A client that
+        renders the change needs both sides, and this is the last moment the
+        old one exists."""
         try:
             bom = False
+            before: str | None = None
             if existed:
-                with open(path, "rb") as stream:
-                    bom = stream.read(len(_BOM_BYTES)) == _BOM_BYTES
+                raw = path.read_bytes()
+                bom = raw.startswith(_BOM_BYTES)
+                # Lossy on purpose: this text is only ever shown, never written
+                # back, and overwriting a file that is not valid UTF-8 must not
+                # fail because we could not decode what it used to hold.
+                before = (
+                    raw[len(_BOM_BYTES) :].decode("utf-8", errors="replace")
+                    if bom
+                    else raw.decode("utf-8", errors="replace")
+                )
             if content.startswith(_BOM_CHAR):
                 bom = True
                 content = content[len(_BOM_CHAR) :]
@@ -1099,6 +1123,7 @@ class WriteTool(ShellTool):
             path.write_bytes(data)
         except OSError as error:
             raise ShellToolError(f"Failed to write file: {error}") from error
+        return before
 
 
 # ── apply_patch ──────────────────────────────────────────────────────────────
@@ -1239,6 +1264,13 @@ class ApplyPatchTool(ShellTool):
                         1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
                     ),
                     "move_to": plan["move_to"],
+                    # `path` above is what the model wrote, which the patch
+                    # format lets be relative. Clients that render a diff need
+                    # the file itself, so the resolved one rides alongside —
+                    # for a move that is the DESTINATION, the file now on disk.
+                    "absolute_path": str(plan["target"]),
+                    "old_text": plan["before"] if plan["type"] != "add" else None,
+                    "new_text": plan["after"],
                 }
             )
         text = "Success. Updated the following files:\n" + "\n".join(summary)
