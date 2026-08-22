@@ -38,7 +38,7 @@ nothing here has anything for a client to log into.
 
 Flags mirror the TUI's, minus everything that needs a screen: `--workspace`,
 `--config`, `--log-level`, `--faux`, `--no-checkpoints`, `--no-subagents`,
-`--no-skills`, `--no-instructions`.
+`--no-skills`, `--no-instructions`, `--no-commands`.
 
 > ⚠️ **stdout is the protocol.** Logging goes to `<session dir>/logs/<id>.log`
 > and nowhere else. One stray `print` corrupts the stream and the client
@@ -49,7 +49,7 @@ Flags mirror the TUI's, minus everything that needs a screen: `--workspace`,
 | Capability | Value | Why |
 |---|---|---|
 | `protocolVersion` | `1` | v2 exists in the schema repo but is still unstable |
-| `loadSession` | `true` | sessions already persist per project; §5 |
+| `loadSession` | `true` | sessions already persist per project; §6 |
 | `promptCapabilities` | image, audio, embeddedContext | `ContentPart` is text \| image \| audio \| file |
 | `mcpCapabilities` | absent | nothing in luca speaks MCP yet (#25); servers passed to `session/new` are ignored, with a warning |
 | `authMethods` | `[]` | see above |
@@ -100,7 +100,42 @@ buries the output.
 A child whose spawn call cannot be resolved is dropped and logged. That happens
 on a resumed session, where the spawn was in a previous process.
 
-## 5. Approvals, questions, load
+## 5. Slash commands
+
+ACP has no invoke method. The agent advertises a list through
+`available_commands_update` (after `session/new` and again after
+`session/load`, since a reload is a fresh palette), and the client sends the
+invocation back as ORDINARY PROMPT TEXT beginning with `/name`. So a command is
+a parse of the first text block, and a client that never saw the advertisement
+can still type one.
+
+Four commands, and the set is deliberately not the TUI's sixteen:
+
+| Command | What it does |
+|---|---|
+| `/compact` | schedules a compaction; the runner performs it on the next drive |
+| `/cost` | token and spend totals, answered without calling the model |
+| `/help` | lists everything, for clients that do not render their own palette |
+| your own `.md` files | discovered from `.claude/commands` and `.agents/commands`, exactly as the TUI discovers them |
+
+A user command is a saved prompt: `expand()` substitutes `$ARGUMENTS` and
+`$1`…`$9`, and the result is posted as an ordinary user message, so the
+transcript shows what was actually asked. A file can never shadow a built-in.
+`--no-commands` turns the user's half off.
+
+What is NOT here, and why. `/theme` and `/quit` are meaningless to a client
+that owns its own window; `/session`, `/clear` and `/resume` belong to whatever
+manages threads; `/rewind` and `/context` are pickers. `/model` and
+`/reasoning` are session settings, and ACP has `session/set_config_option` for
+exactly that — putting them behind a slash would be the wrong shape in a client
+that wants to render a picker. That one is worth doing next.
+
+An unrecognised `/name` is sent to the model as text rather than refused: prose
+that starts with a slash is still prose, and the client already refuses the
+names it knows nothing about. A leading space disarms the parse, and so does
+anything that is not a bare word — `/tmp/notes.txt` is a path.
+
+## 6. Approvals, questions, load
 
 **Approvals.** `session/request_permission`, one request per approval STEP —
 an execution can need several (directory access, then the tool's own verb) and
@@ -124,7 +159,7 @@ id IS the luca session id, so a load is a lookup in
 `~/.luca/projects/<encoded-project-path>/`, which already keys on the workspace
 ACP passes as `cwd`.
 
-## 6. Testing it
+## 7. Testing it
 
 ```bash
 uv run py.test tests/agent/contrib/acp/
@@ -133,6 +168,7 @@ uv run py.test tests/agent/contrib/acp/
 Three layers, none of which need a key or a network:
 
 - `test_stream.py` — the mapping, one event at a time.
+- `test_commands.py` — the slash-command parse, registry and round trip.
 - `test_agent.py` — the protocol surface driven in-process against `--faux`,
   whose scripted conversation covers thinking, a gated call, a subagent spawn
   and the wrap-up in one turn.
@@ -141,7 +177,8 @@ Three layers, none of which need a key or a network:
 
 ## Not implemented
 
-MCP (#25), the client filesystem, terminals, `session/list`,
-`session/set_config_option`, and ACP v2.
+MCP (#25), the client filesystem, terminals, `session/list`, and ACP v2.
+`session/set_config_option` is the next real gap — it is where model and
+reasoning selection belong.
 
 Next: [`app`](../app/README.md) — the headless layer this package drives.

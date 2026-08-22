@@ -17,6 +17,7 @@ off. A stray `print` corrupts the JSON-RPC stream and the client disconnects.
 Requires the `acp` dependency group.
 """
 
+from . import commands
 from .agent import LucaAgent, content_parts
 from .permissions import PermissionBridge, permission_options
 from .questions import QuestionBridge, elicitation_schema
@@ -26,6 +27,7 @@ from .stream import Translator, tool_kind, tool_title
 
 __all__ = [
     "LucaAgent",
+    "commands",
     "PermissionBridge",
     "QuestionBridge",
     "Translator",

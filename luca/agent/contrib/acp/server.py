@@ -39,6 +39,13 @@ def arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-subagents", dest="subagents", action="store_false", default=True)
     parser.add_argument("--no-skills", dest="skills", action="store_false", default=True)
     parser.add_argument("--no-instructions", dest="instructions", action="store_false", default=True)
+    parser.add_argument(
+        "--no-commands",
+        dest="commands",
+        action="store_false",
+        default=True,
+        help="Ignore user-defined .md slash commands.",
+    )
     return parser
 
 
@@ -57,6 +64,7 @@ def build_agent(args: argparse.Namespace) -> LucaAgent:
         subagents=args.subagents,
         skills=args.skills,
         instructions=args.instructions,
+        commands=args.commands,
         log_level=args.log_level,
     )
 

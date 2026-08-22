@@ -44,6 +44,7 @@ import logging
 from typing import Any
 
 from acp import Agent, RequestError
+from acp.helpers import text_block, update_agent_message, update_available_commands
 from acp.schema import (
     AgentCapabilities,
     ClientCapabilities,
@@ -85,6 +86,7 @@ from luca.agent.core.models import (
     TurnOutcome,
 )
 
+from . import commands as slash
 from .permissions import Cancelled, PermissionBridge
 from .questions import QuestionBridge, is_questions_tool
 from .replay import replay
@@ -199,6 +201,8 @@ class LucaAgent(Agent):
         subagents: bool = True,
         skills: bool = True,
         instructions: bool = True,
+        commands: bool = True,
+        extra_command_locations: list[str] | None = None,
         log_level: str | None = None,
     ) -> None:
         self._config_path = config_path
@@ -209,10 +213,13 @@ class LucaAgent(Agent):
         self._subagents = subagents
         self._skills = skills
         self._instructions = instructions
+        self._commands = commands
+        self._extra_command_locations = extra_command_locations
         self._log_level = log_level
         self._connection: Any = None
         self._client_capabilities = ClientCapabilities()
         self._sessions: dict[str, AgentApplication] = {}
+        self._commands_for: dict[str, tuple[slash.Command, ...]] = {}
         self._bridges: dict[str, PermissionBridge] = {}
         self._cancelled: set[str] = set()
 
@@ -257,6 +264,7 @@ class LucaAgent(Agent):
         application = self._compose(cwd, additional_directories, resume=None)
         self._sessions[application.session.id] = application
         application.save()
+        await self._advertise_commands(application.session.id, cwd)
         return NewSessionResponse(session_id=application.session.id, modes=self._mode_state(application))
 
     async def load_session(
@@ -273,6 +281,7 @@ class LucaAgent(Agent):
         # the client rebuilds the thread and carries on as if uninterrupted.
         for update in replay(application.session):
             await self._connection.session_update(session_id=session_id, update=update)
+        await self._advertise_commands(session_id, cwd)
         return LoadSessionResponse(modes=self._mode_state(application))
 
     async def set_session_mode(self, session_id: str, mode_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
@@ -284,6 +293,19 @@ class LucaAgent(Agent):
         application.mode = mode.value
         application.strategy.mode = mode
         return SetSessionModeResponse()
+
+    async def _advertise_commands(self, session_id: str, cwd: str) -> None:
+        """Tell the client what it may offer behind a `/`.
+
+        Read from disk ONCE per session, like `auth.json`: a command is a saved
+        prompt, so re-reading the directory mid-session would only matter to
+        someone editing their own files while the client is up."""
+        registry = slash.build(cwd, self._extra_command_locations, enabled=self._commands)
+        self._commands_for[session_id] = registry
+        await self._connection.session_update(
+            session_id=session_id,
+            update=update_available_commands(slash.advertisement(registry)),
+        )
 
     def _mode_state(self, application: AgentApplication) -> SessionModeState:
         return SessionModeState(current_mode_id=application.mode, available_modes=MODES)
@@ -355,10 +377,51 @@ class LucaAgent(Agent):
         parts = content_parts(prompt)
         if not parts:
             raise RequestError.invalid_params("the prompt carried no content luca can read")
+        parts = await self._apply_command(session_id, application, parts)
+        if parts is None:
+            # A command that answered on its own. The turn is over without the
+            # model ever being called, which is still a completed turn.
+            return PromptResponse(stop_reason="end_turn")
         if application.checkpoints.available:
             await application.checkpoints.take(application.session, label=_label(parts))
         application.runner.post_message(parts)
         return await self._drive(session_id, application)
+
+    async def _apply_command(
+        self,
+        session_id: str,
+        application: AgentApplication,
+        parts: list[ContentPart],
+    ) -> list[ContentPart] | None:
+        """Resolve a leading `/name`, if there is one.
+
+        Returns the parts to send to the model — the command's expansion, or
+        the original prompt unchanged — or None when the command answered by
+        itself and there is nothing to ask.
+
+        ONLY THE FIRST PART is examined, and only when it is text. A client
+        that attaches an image and types `/review` sends the command with the
+        image still attached, and both have to reach the model."""
+        if not isinstance(parts[0], TextContent):
+            return parts
+        invocation = slash.parse(parts[0].text)
+        if invocation is None:
+            return parts
+        outcome = slash.dispatch(application, self._commands_for.get(session_id, ()), invocation)
+        if outcome is None:
+            # Not a name we know. Prose that starts with a slash is still
+            # prose, and refusing it would be worse than letting the model
+            # answer it.
+            logger.info("no command named %r; sending it to the model as text", invocation.name)
+            return parts
+        if isinstance(outcome, slash.Reply):
+            await self._connection.session_update(
+                session_id=session_id,
+                update=update_agent_message(text_block(outcome.text)),
+            )
+            application.save()
+            return None
+        return [TextContent(text=outcome.text), *parts[1:]]
 
     async def _drive(self, session_id: str, application: AgentApplication) -> PromptResponse:
         runner = application.runner
