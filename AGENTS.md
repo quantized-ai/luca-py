@@ -23,6 +23,9 @@ luca/
 ├── agent/                         # THE AGENT FRAMEWORK (primary) — see AGENTS.agent.md
 │   ├── core/                      # the agent core: data model, runner, main abstractions
 │   └── contrib/                   # everything else — optional packages built on core
+│       ├── app/                   #   the headless application layer (no UI, ever)
+│       ├── tui/                   #   the Textual front end
+│       └── acp/                   #   the Agent Client Protocol front end
 └── client/                        # the supporting LLM SDK — see AGENTS.client.md
 
 docs/                              # user-facing docs — docs/agent/ + docs/client/
@@ -75,6 +78,8 @@ Tests are declarative: precondition → one action → postcondition. No logic, 
 ## Running the agent demo
 
 Use `uv run`, not bare `python`. `main.py` is a thin launcher over the Textual TUI in `luca/agent/contrib/tui` (streaming by default). Run `uv run python --help` for more.
+
+TWO FRONT ENDS, ONE COMPOSITION. Everything that is not a widget — `luca.json`, credentials, the session store, `build_runner`, the approval policy, `AgentApplication` — lives in `luca/agent/contrib/app` and imports NO UI, enforced by `tests/agent/contrib/app/test_no_textual.py`. `contrib/tui` is one consumer; `contrib/acp` is the other, an Agent Client Protocol server over stdio (`uv run python -m luca.agent.contrib.acp`) so Zed, Nori, Pool and acp-ui can drive luca. It advertises SLASH COMMANDS the client renders in its own palette — `/compact`, `/cost`, `/help` and the user's own `.md` files — which arrive back as ordinary `/name` prompt text. See [docs/agent/contrib/app/README.md](docs/agent/contrib/app/README.md) and [docs/agent/contrib/acp/README.md](docs/agent/contrib/acp/README.md).
 
 Model facts — context windows, pricing, capabilities — come from [models.dev](https://models.dev), vendored in `luca/client/catalog/_data/models.json` and refreshable with `--refresh-models`. Metadata, never a gate: an unlisted model still runs. See [docs/client/10-catalog.md](docs/client/10-catalog.md).
 

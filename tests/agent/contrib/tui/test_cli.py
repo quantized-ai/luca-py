@@ -6,24 +6,23 @@ from pathlib import Path
 
 import pytest
 
-from luca.agent.contrib.tui.app import AgentApp
-from luca.agent.contrib.tui.auth import ENV_AUTH_PATH
-from luca.agent.contrib.tui.cli import (
-    arg_parser,
-    build_session,
-    log_path,
-    main,
-    resume_id,
-    resume_picker,
-    setup_logging,
-)
-from luca.agent.contrib.tui.config import ENV_CONFIG_PATH, LucaConfig, LucaConfigError
-from luca.agent.contrib.tui.sessions import (
+from luca.agent.contrib.app.auth import ENV_AUTH_PATH
+from luca.agent.contrib.app.boot import log_path, setup_logging
+from luca.agent.contrib.app.config import ENV_CONFIG_PATH, LucaConfig, LucaConfigError
+from luca.agent.contrib.app.sessions import (
     encode_project_path,
     resolve_session_directory,
     save_session,
 )
-from luca.agent.contrib.tui.wiring import default_model
+from luca.agent.contrib.app.wiring import default_model
+from luca.agent.contrib.tui.app import AgentApp
+from luca.agent.contrib.tui.cli import (
+    arg_parser,
+    build_session,
+    main,
+    resume_id,
+    resume_picker,
+)
 from luca.agent.core.models import Inf, LLMConfig, RuntimeConfig
 from luca.agent.core.utils import pretty_print
 
@@ -192,7 +191,7 @@ def test_the_subagent_limits_default_to_depth_three_and_no_caps():
 def test_an_invalid_limit_flag_value_fails_loudly():
     # 0 is rejected by the RuntimeConfig validator; a plain attribute write
     # would bypass it, wedge the first spawn, and poison the saved session
-    from luca.agent.contrib.tui.config import LucaConfigError
+    from luca.agent.contrib.app.config import LucaConfigError
 
     with pytest.raises(LucaConfigError, match="invalid subagent flag"):
         build_session(arg_parser().parse_args(["--subagents-max-workers", "0"]))
@@ -361,7 +360,7 @@ def test_the_auth_file_key_reaches_the_runner_and_the_context_manager(tmp_path, 
 
     def fake_run(self: AgentApp) -> None:
         seen["runner"] = self.runner.api_key
-        seen["context_manager"] = self._context_manager.api_key
+        seen["context_manager"] = self.app_state.context_manager.api_key
 
     monkeypatch.setattr(AgentApp, "run", fake_run)
     main([])

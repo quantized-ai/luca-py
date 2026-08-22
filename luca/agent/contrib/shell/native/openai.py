@@ -172,7 +172,13 @@ class OpenAIApplyPatchTool(ShellTool):
             raise ShellToolError(f"Failed to delete {target}: {error}") from error
         return ExecutionResult(
             content=[TextContent(text=f"Deleted {display}")],
-            metadata={"diff": unified_diff(before, "", display), "created": False},
+            metadata={
+                "diff": unified_diff(before, "", display),
+                "created": False,
+                "path": str(target),
+                "old_text": before,
+                "new_text": "",
+            },
         )
 
     def _create(
@@ -200,6 +206,9 @@ class OpenAIApplyPatchTool(ShellTool):
             metadata={
                 "diff": unified_diff(source.text if source else "", content, display),
                 "created": not existed,
+                "path": str(target),
+                "old_text": source.text if source else None,
+                "new_text": content,
             },
         )
 
@@ -228,6 +237,10 @@ class OpenAIApplyPatchTool(ShellTool):
                 "diff": unified_diff(source.text, content, display),
                 "created": False,
                 "move_to": args.get("move_to"),
+                # The DESTINATION for a move: the file that is now on disk.
+                "path": str(destination),
+                "old_text": source.text,
+                "new_text": content,
             },
         )
 

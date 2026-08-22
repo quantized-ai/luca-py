@@ -556,7 +556,7 @@ Core never reads a key out of either. The single exception is `runner.completion
 
 `update_llm_config` derives the ACTIVE config from the CONFIGURED one and preserves both dicts untouched, and `completion_options` keys the raw block by the ACTIVE provider — so a `build_model_string` middleware that routes elsewhere carries the configured model's settings to the provider it chose. Routing to a provider that does not understand them is the routing middleware's business.
 
-Core reads no config file. Resolving a per-provider / per-model table into those two dicts is contrib's job (`contrib/tui/config.py`: `resolve_model_options` / `apply_model_options`), and reading credentials is `contrib/tui/auth.py`.
+Core reads no config file. Resolving a per-provider / per-model table into those two dicts is contrib's job (`contrib/app/config.py`: `resolve_model_options` / `apply_model_options`), and reading credentials is `contrib/app/auth.py`.
 
 ### System prompt parts
 

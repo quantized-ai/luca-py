@@ -249,7 +249,7 @@ spent = sum(
 > persistence. Write to a temporary file and `os.replace` it into place — a
 > crash mid-write otherwise leaves truncated JSON and an unloadable session,
 > which is the one way to lose a whole conversation.
-> `luca.agent.contrib.tui.sessions.save_session` does exactly that.
+> `luca.agent.contrib.app.sessions.save_session` does exactly that.
 
 ## 5. Pruning
 

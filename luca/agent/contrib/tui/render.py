@@ -11,6 +11,14 @@ import json
 import textwrap
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 
+from luca.agent.contrib.app.prompt_files import (
+    STATUS_TOO_LARGE,
+    STATUS_UNSUPPORTED,
+    media_kind,
+    mention_of,
+)
+from luca.agent.contrib.app.sessions import user_transcript_text
+from luca.agent.contrib.app.wiring import TODO_STORE_KEY
 from luca.agent.contrib.memory import (
     changed_of,
     is_open,
@@ -28,15 +36,12 @@ from luca.agent.core.models import (
     NONTERMINAL_STATUSES,
     AgentSession,
     AssistantMessage,
-    AudioContent,
     ChildConversation,
     CompactionEntry,
     ContentPart,
     Conversation,
     Entry,
     ExecutionStatus,
-    FileContent,
-    ImageContent,
     TextContent,
     ThinkingContent,
     ToolExecution,
@@ -47,45 +52,12 @@ from luca.agent.core.models import (
 
 from . import state as vm
 from .format import fmt_bytes, fmt_duration, fmt_tokens, home_path
-from .prompt_files import STATUS_TOO_LARGE, STATUS_UNSUPPORTED, media_kind
 
 OUTPUT_HEAD_LINES = 8
 ARG_VALUE_MAX_CHARS = 80
 SUMMARY_MAX_CHARS = 84
 
 # ── user content ──────────────────────────────────────────────────────────────
-
-
-def mention_of(part: ContentPart) -> dict | None:
-    """The `@`-mention annotation on a part, or None for ordinary content.
-    Read best-effort: a part written by an older build, or by an application
-    that annotates differently, must not break the transcript."""
-    mention = (getattr(part, "metadata", None) or {}).get("mention")
-    return mention if isinstance(mention, dict) else None
-
-
-def user_transcript_text(parts: Iterable[ContentPart]) -> str:
-    """A user message's parts as transcript text: text verbatim, each image
-    as a `[image: name]` placeholder line.
-
-    `@`-mention parts are skipped — an inlined file belongs in its own read
-    row, not dumped into the user's own words."""
-    lines: list[str] = []
-    for part in parts:
-        if mention_of(part) is not None:
-            continue
-        if isinstance(part, TextContent):
-            lines.append(part.text)
-        elif isinstance(part, ImageContent):
-            label = part.metadata.get("name") or part.source.media_type or "image"
-            lines.append(f"[image: {label}]")
-        elif isinstance(part, AudioContent):
-            label = part.metadata.get("name") or part.source.media_type or "audio"
-            lines.append(f"[audio: {label}]")
-        elif isinstance(part, FileContent):
-            label = part.name or part.metadata.get("name") or part.source.media_type or "file"
-            lines.append(f"[file: {label}]")
-    return "\n".join(lines)
 
 
 def mention_blocks(parts: Iterable[ContentPart]) -> list[vm.ToolBlock]:
@@ -366,15 +338,6 @@ def _completed_summary(tool: str, lines: list[str]) -> str | None:
 
 
 # ── the sticky plan (todo) panel ──────────────────────────────────────────────
-
-# Where THE APP keeps the memory plugin's two stores inside
-# `AgentSession.extras`. The plugin takes both dicts as constructor arguments
-# and never looks a key up, so these names are the application's choice alone
-# — `wiring.py` hands the dicts over, this module reads them back, and the
-# session save persists them because they live on the session. An application
-# composing `MemoryPlugin` differently picks its own names, or none.
-TODO_STORE_KEY = "todos"
-SCRATCHPAD_STORE_KEY = "scratchpad"
 
 # How many todo rows the panel shows before it collapses the rest into one
 # summary row. The panel is docked, so every row it takes is a row the

@@ -7,13 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from luca.agent.contrib.resource_permissions import (
-    PermissionMode,
-    ResourcePermission,
-    ToolKindRule,
-    ToolRule,
-)
-from luca.agent.contrib.tui.config import (
+from luca.agent.contrib.app.config import (
     ENV_CONFIG_PATH,
     CompactionSettings,
     LoggingSettings,
@@ -37,7 +31,13 @@ from luca.agent.contrib.tui.config import (
     resolve_runtime_config,
     validate_provider,
 )
-from luca.agent.contrib.tui.prompt_files import ReadLimits
+from luca.agent.contrib.app.prompt_files import ReadLimits
+from luca.agent.contrib.resource_permissions import (
+    PermissionMode,
+    ResourcePermission,
+    ToolKindRule,
+    ToolRule,
+)
 from luca.agent.core.models import ApprovalOption, LLMConfig, RuntimeConfig, ToolKind
 
 
@@ -778,8 +778,8 @@ def test_an_invalid_field_raises_luca_config_error(tmp_path):
 
 
 async def test_luca_json_flows_into_the_running_app(tmp_path):
+    from luca.agent.contrib.app.wiring import faux_model
     from luca.agent.contrib.tui import AgentApp
-    from luca.agent.contrib.tui.wiring import faux_model
     from luca.agent.core.models import SessionConfig
     from luca.agent.core.runner import AgentSessionRunner
     from luca.client.testing import FauxProvider
@@ -833,7 +833,7 @@ async def test_luca_json_flows_into_the_running_app(tmp_path):
             ),
             runtime_config=RuntimeConfig(hard_max_steps=42),
         )
-        assert app._context_manager.threshold == 0.66
+        assert app.app_state.context_manager.threshold == 0.66
         assert app.strategy.mode is PermissionMode.YOLO
         assert app.recommended_models == {"anthropic": ["claude-sonnet-5"]}
         assert app.theme == "luca-dark"

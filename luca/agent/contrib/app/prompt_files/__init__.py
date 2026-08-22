@@ -38,10 +38,12 @@ from .handlers import (
     MediaKind,
     ReadLimits,
     media_kind,
+    mention_of,
     probe,
 )
 
 __all__ = [
+    "mention_of",
     "HANDLERS",
     "HEAD_BYTES",
     "STATUS_BINARY",

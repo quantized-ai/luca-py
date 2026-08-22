@@ -9,6 +9,14 @@ loaded, and the only way to show that is to run it.
 
 from pathlib import Path
 
+from luca.agent.contrib.app.custom_commands import (
+    CustomCommand,
+    default_locations,
+    discover_commands,
+    expand,
+    load_command,
+    resolve_locations,
+)
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.app import AgentApp
 from luca.agent.contrib.tui.blocks import ListBlockView, UserTurn
@@ -19,14 +27,6 @@ from luca.agent.contrib.tui.commands import (
     load_custom_commands,
     palette_rows,
     to_slash_commands,
-)
-from luca.agent.contrib.tui.custom_commands import (
-    CustomCommand,
-    default_locations,
-    discover_commands,
-    expand,
-    load_command,
-    resolve_locations,
 )
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 

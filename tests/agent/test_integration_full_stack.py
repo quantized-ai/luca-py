@@ -36,11 +36,11 @@ from pathlib import Path
 
 import pytest
 
+from luca.agent.contrib.app.approvals import build_approval_prompts
+from luca.agent.contrib.app.wiring import build_runner
 from luca.agent.contrib.memory import MemoryPlugin
 from luca.agent.contrib.resource_permissions import PermissionMode, PermissionStrategy
 from luca.agent.contrib.subagents import RESULT_TOOL_NAME, SPAWN_TOOL_NAME
-from luca.agent.contrib.tui.approvals import build_approval_prompts
-from luca.agent.contrib.tui.wiring import build_runner
 from luca.agent.core import (
     AgentSession,
     AgentSessionRunner,

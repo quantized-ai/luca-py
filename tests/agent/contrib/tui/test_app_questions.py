@@ -19,10 +19,10 @@ import json
 
 from textual.events import Key, Paste
 
+from luca.agent.contrib.app.sessions import app_state_path, load_session, session_path
 from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, ToolBlockView
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.sessions import load_session, session_path, tui_state_path
 from luca.agent.contrib.tui.shells import (
     OverlayListView,
     QuestionConfirmView,
@@ -708,7 +708,7 @@ async def test_the_sidecar_beside_the_session_carries_the_question_store(tmp_pat
         await wait_until(pilot, lambda: idle_again(app))
 
         assert session_path(session.id, tmp_path).exists()
-        assert json.loads(tui_state_path(session.id, tmp_path).read_text()) == {
+        assert json.loads(app_state_path(session.id, tmp_path).read_text()) == {
             "questions": {
                 "tc1": {
                     "questions": STORED_QUESTIONS,
@@ -868,7 +868,7 @@ async def test_a_cancelled_set_renders_the_same_live_and_on_replay(tmp_path):
 
 async def test_a_session_that_never_asked_a_question_writes_no_sidecar(tmp_path):
     # The store is the app's own reference rather than a key `setdefault`-ed
-    # into the TUI state, so the empty-state guard in `save_tui_state` can
+    # into the TUI state, so the empty-state guard in `save_app_state` can
     # actually fire and an ordinary session leaves one file, not two.
     app = make_app(fresh_session(), scripted(faux_assistant_message([faux_text("no questions here")])), tmp_path)
 
@@ -884,7 +884,7 @@ async def test_a_sidecar_whose_store_is_the_wrong_shape_is_dropped(tmp_path):
     # indexes it, turning every `ask_user` call in the session into a FAILED
     # one — permanently, since the bad shape is written back on every save.
     session = fresh_session()
-    tui_state_path(session.id, tmp_path).write_text(json.dumps({"questions": ["not", "a", "store"]}))
+    app_state_path(session.id, tmp_path).write_text(json.dumps({"questions": ["not", "a", "store"]}))
     app = make_app(session, scripted(*asks("Got it.")), tmp_path)
 
     async with app.run_test(size=(105, 35)) as pilot:

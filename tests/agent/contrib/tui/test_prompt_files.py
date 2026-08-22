@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from luca.agent.contrib.tui.prompt_files import (
+from luca.agent.contrib.app.prompt_files import (
     ReadLimits,
     find_mentions,
     get_model_info,

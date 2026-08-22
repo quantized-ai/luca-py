@@ -2,16 +2,16 @@
 
 import pytest
 
-from luca.agent.contrib.plugins import PluginAgentSessionRunner
-from luca.agent.contrib.prompts import BASE, load_prompt
-from luca.agent.contrib.resource_permissions import PermissionMode
-from luca.agent.contrib.tui.wiring import (
+from luca.agent.contrib.app.wiring import (
     AddTool,
     MultiplyTool,
     SubtractTool,
     build_faux_provider,
     build_runner,
 )
+from luca.agent.contrib.plugins import PluginAgentSessionRunner
+from luca.agent.contrib.prompts import BASE, load_prompt
+from luca.agent.contrib.resource_permissions import PermissionMode
 from luca.agent.core import AgentSessionRunner as _Runner  # noqa: F401
 from luca.agent.core.adapter import tool_spec_to_luca_tool
 from luca.agent.core.context import CancellationToken

@@ -7,9 +7,9 @@ import pytest
 
 pytest.importorskip("textual")
 
+from luca.agent.contrib.app.boot import remove_log_handlers
+from luca.agent.contrib.app.config import ENV_CONFIG_PATH
 from luca.agent.contrib.checkpoints import ShadowGitStore
-from luca.agent.contrib.tui.cli import _remove_log_handlers
-from luca.agent.contrib.tui.config import ENV_CONFIG_PATH
 from luca.client.catalog import _store
 from luca.client.providers import PROVIDERS
 
@@ -52,7 +52,7 @@ def _restore_luca_logger():
     log = logging.getLogger("luca")
     level = log.level
     yield
-    _remove_log_handlers()
+    remove_log_handlers()
     log.setLevel(level)
 
 

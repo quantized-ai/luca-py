@@ -209,7 +209,13 @@ class AnthropicTextEditorTool(ShellTool):
         self.tracker.record(conversation_id, target)
         return ExecutionResult(
             content=[TextContent(text=f"Updated {args['path']}")],
-            metadata={"diff": unified_diff(source.text, content, args["path"]), "created": False},
+            metadata={
+                "diff": unified_diff(source.text, content, args["path"]),
+                "created": False,
+                "path": str(target),
+                "old_text": source.text,
+                "new_text": content,
+            },
         )
 
     def _create(self, args: dict, conversation_id: str, target: Path) -> ExecutionResult:
@@ -228,6 +234,9 @@ class AnthropicTextEditorTool(ShellTool):
             metadata={
                 "diff": unified_diff(source.text if source else "", args["file_text"], args["path"]),
                 "created": not existed,
+                "path": str(target),
+                "old_text": source.text if source else None,
+                "new_text": args["file_text"],
             },
         )
 

@@ -65,58 +65,44 @@ wrap-up).
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from functools import partial
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import get_args
 
-from pydantic import ValidationError
-
-from luca.agent.contrib.prompts import InstructionsError
-from luca.agent.core import AgentSessionRunner, Inf, RuntimeConfig, pretty_print
-from luca.agent.core.models import AgentSession
-from luca.client.catalog.refresh import main as refresh_catalog
-from luca.client.types import Reasoning
-
-from .app import DEFAULT_THEME, AgentApp
-from .auth import api_key_for, load_auth, resolve_auth_path
-from .config import (
+from luca.agent.contrib.app.auth import api_key_for
+from luca.agent.contrib.app.boot import (
+    DEFAULT_LOG_LEVEL,
+    ENV_LOG_LEVEL,
+    boot,
+    build_session as _build_session,
+    credentials,
+    log_path,
+    setup_logging,
+)
+from luca.agent.contrib.app.config import (
     LucaConfig,
     LucaConfigError,
     apply_model_options,
     build_context_manager,
     build_permission_rules,
-    load_luca_config,
     pick,
     picker_models,
-    resolve_config_path,
-    resolve_llm_config,
     resolve_read_limits,
-    resolve_runtime_config,
-    validate_provider,
 )
-from .sessions import fork_session, load_session, resolve_session_directory
-from .wiring import build_faux_provider, default_model, faux_model
+from luca.agent.contrib.app.sessions import load_session
+from luca.agent.contrib.app.wiring import build_faux_provider
+from luca.agent.contrib.prompts import InstructionsError
+from luca.agent.core import pretty_print
+from luca.agent.core.models import AgentSession
+from luca.client.catalog.refresh import main as refresh_catalog
+from luca.client.types import Reasoning
+
+from .app import DEFAULT_THEME, AgentApp
 
 PICKER = ""
 """`--resume` given without an id: open the picker instead of loading one session."""
-
-ENV_LOG_LEVEL = "LUCA_LOG_LEVEL"
-"""Level for the session log, below `--log-level` and above `luca.json`."""
-
-DEFAULT_LOG_LEVEL = "INFO"
-
-LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
-
-LOG_MAX_BYTES = 5_000_000
-LOG_BACKUPS = 3
-
-LOG_HANDLER_NAME = "luca-session-log"
-"""Marks the handler this module owns, so re-running `setup_logging` replaces
-its own and never a handler the embedding program installed."""
 
 
 def resume_id(args: argparse.Namespace) -> str | None:
@@ -314,111 +300,28 @@ def arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def log_path(session_id: str, session_dir: Path, configured: str | None = None) -> Path:
-    """Where this session's log goes: `<session dir>/logs/<session-id>.log`,
-    beside the `<session-id>.json` it belongs to, or the configured path."""
-    if configured is not None:
-        return Path(configured).expanduser()
-    return session_dir / "logs" / f"{session_id}.log"
-
-
-def setup_logging(path: Path, level: str) -> None:
-    """Point the `luca` logger at one rotating file.
-
-    The TUI OWNS the stderr the app is drawing on, so nothing may log to it: the
-    handler is attached to `luca` alone and `propagate` is turned off, which
-    keeps luca's records away from a root handler the embedding program may have
-    installed. `level="OFF"` writes no file at all.
-
-    Idempotent — a second call REPLACES the handler the first one installed
-    rather than stacking a second file on the logger."""
-    _remove_log_handlers()
-    if level.upper() == "OFF":
-        return
-    levels = logging.getLevelNamesMapping()
-    if level.upper() not in levels:
-        raise LucaConfigError(
-            f"unknown log level {level!r}; expected one of {', '.join(sorted(levels))} or OFF.",
-        )
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS)
-    except OSError as exc:
-        raise LucaConfigError(f"cannot write the log to {path}: {exc}") from exc
-    handler.setFormatter(logging.Formatter(LOG_FORMAT))
-    handler.set_name(LOG_HANDLER_NAME)
-    log = logging.getLogger("luca")
-    log.setLevel(levels[level.upper()])
-    log.addHandler(handler)
-    log.propagate = False
-
-
-def _remove_log_handlers() -> None:
-    """Detach and close the handlers THIS module installed, leaving the
-    `NullHandler` and anything an embedding program added in place."""
-    log = logging.getLogger("luca")
-    for handler in [h for h in log.handlers if h.get_name() == LOG_HANDLER_NAME]:
-        log.removeHandler(handler)
-        handler.close()
-    log.propagate = True
-
-
 def build_session(
     args: argparse.Namespace,
     config: LucaConfig | None = None,
     session_dir: Path | None = None,
 ) -> AgentSession:
-    config = config or LucaConfig()
-    session_id = resume_id(args)
-    if session_id:
-        session = load_session(session_id, session_dir or ".")
-        if args.fork:
-            session = fork_session(session)
-    else:
-        model = faux_model() if args.faux else default_model()
-        session = AgentSessionRunner.new_session(model)
-    cli = {"model": args.model, "provider": args.provider, "reasoning": args.reasoning}
-    session.session_config.llm_config = resolve_llm_config(
-        session.session_config.llm_config,
-        config,
-        cli,
+    """This launch's session, from the parsed command line. The work is
+    `app.boot.build_session`; this is the argparse shape of it."""
+    return _build_session(
+        config=config,
+        session_dir=session_dir or ".",
+        resume=resume_id(args),
+        fork=args.fork,
+        faux=args.faux,
+        model=args.model,
+        provider=args.provider,
+        reasoning=args.reasoning,
+        use_native=getattr(args, "use_native", None),
+        subagents=getattr(args, "subagents", True),
+        subagents_max_depth=getattr(args, "subagents_max_depth", 3),
+        subagents_max_per_turn=getattr(args, "subagents_max_per_turn", None),
+        subagents_max_workers=getattr(args, "subagents_max_workers", None),
     )
-    session.session_config.runtime_config = resolve_runtime_config(
-        session.session_config.runtime_config,
-        config,
-    )
-    # The flags set the CAPABILITY on this session, durably — including on a
-    # resumed one, so `--no-subagents` turns a session that had them off;
-    # wiring the plugin only makes the tools available to a session that asked.
-    # Same rule for the subagent limits: every launch writes them, so the flags
-    # always describe the run you are starting now. Written through
-    # `model_validate` rather than attribute assignment: an invalid flag value
-    # (`--subagents-max-workers 0`) must fail loudly here, not wedge the first
-    # spawn and poison the saved session file.
-    # Native tools are the same kind of durable capability flag: every launch
-    # writes it, so `--no-use-native` turns a resumed session that had them on.
-    # It is read fresh at the top of every drive iteration, so it also decides
-    # each individual call — a session can be flipped mid-run.
-    session.session_config.use_native_tools = pick(
-        getattr(args, "use_native", None),
-        config.use_native_tools,
-        True,
-    )
-    per_turn = getattr(args, "subagents_max_per_turn", None)
-    max_workers = getattr(args, "subagents_max_workers", None)
-    try:
-        session.session_config.runtime_config = RuntimeConfig.model_validate(
-            {
-                **session.session_config.runtime_config.model_dump(),
-                "subagents_enabled": getattr(args, "subagents", True),
-                "subagents_max_depth": getattr(args, "subagents_max_depth", 3),
-                "subagents_max_per_turn": Inf if per_turn is None else per_turn,
-                "subagents_max_workers": Inf if max_workers is None else max_workers,
-            }
-        )
-    except ValidationError as exc:
-        raise LucaConfigError(f"invalid subagent flag value: {exc}") from exc
-    return session
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -443,13 +346,11 @@ def main(argv: list[str] | None = None) -> None:
     # `instructions` paths, and a typo there has to exit readably like any
     # other bad config value rather than traceback.
     try:
-        config = load_luca_config(path=resolve_config_path(args.config))
         # Resolved once and threaded everywhere: `build_session` loads before
         # the app exists, and `--pretty-print` never builds one at all.
-        store = resolve_session_directory(
-            pick(args.workspace, config.workspace, "."),
-            config.sessions.directory,
-        )
+        environment = boot(workspace=args.workspace, config_path=args.config)
+        config = environment.config
+        store = environment.session_dir
         if args.pretty_print:
             print(pretty_print(load_session(resume_id(args), store)))
             return
@@ -458,10 +359,7 @@ def main(argv: list[str] | None = None) -> None:
         # needs neither a credential nor the reachability check. Otherwise both
         # run against the provider this launch will actually call — `--provider`,
         # the file and the resumed session are all folded in by `build_session`.
-        auth: dict = {}
-        if not args.faux:
-            auth = load_auth(resolve_auth_path())
-            validate_provider(config, session.session_config.llm_config.provider)
+        auth = credentials(config, session.session_config.llm_config, faux=args.faux)
         # After build_session: the filename is the session's, and a resumed
         # session appends to the log it already has.
         setup_logging(

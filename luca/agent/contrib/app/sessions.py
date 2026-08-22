@@ -1,24 +1,25 @@
-"""Session persistence for the TUI: one `<session-id>.json` per session, kept
-in a per-project directory under a global store.
+"""Session persistence: one `<session-id>.json` per session, kept in a
+per-project directory under a global store.
 
 The store is `~/.luca/projects/<encoded-project-path>/`, where the encoding is
 the project's absolute path with its separators turned into `-`. Sessions used
 to land in the launch directory, which littered every repo and left no way back
 into a conversation except copying its id by hand.
 
-`save_session` / `load_session` still take the directory, so the app and its
-tests point the store anywhere; `resolve_session_directory` is what the TUI uses
-to work out where that is.
+`save_session` / `load_session` take the directory, so an application and its
+tests point the store anywhere; `resolve_session_directory` is what works out
+where that is.
 
-Beside each session sits an optional `<session-id>.tui.json` — THE TUI'S OWN
-STORE, for state that belongs to the interface rather than to the conversation.
-It is a separate file rather than a key under `AgentSession.extras` on purpose:
-`extras` is the SESSION's free-form state, read by anything that loads the
-session (another driver, a script, a server), and the TUI's private bookkeeping
-has no business travelling with it. Today it holds exactly one thing — the
-`ask_user` question store, which a deferred tool call needs back on resume so a
-parked question can be re-rendered rather than silently re-asked. See
-`load_tui_state` / `save_tui_state`.
+Beside each session sits an optional `<session-id>.app.json` — THE FRONT END'S
+OWN STORE, for state that belongs to the interface rather than to the
+conversation. It is a separate file rather than a key under
+`AgentSession.extras` on purpose: `extras` is the SESSION's free-form state,
+read by anything that loads the session (another driver, a script, a server),
+and a front end's private bookkeeping has no business travelling with it.
+Today it holds exactly one thing — the `ask_user` question store, which a
+deferred tool call needs back on resume so a parked question can be
+re-rendered rather than silently re-asked. See `load_app_state` /
+`save_app_state`.
 """
 
 from __future__ import annotations
@@ -26,22 +27,33 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from luca.agent.core.models import AgentSession, UserMessage
+from luca.agent.core.models import (
+    AgentSession,
+    AudioContent,
+    ContentPart,
+    FileContent,
+    ImageContent,
+    TextContent,
+    UserMessage,
+)
 
-from .render import user_transcript_text
+from .prompt_files import mention_of
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE = "~/.luca/projects"
 
+SIDECAR_SUFFIX = ".app.json"
+
 TITLE_LENGTH = 60
 
-# The one key the TUI store carries today: `QuestionsTool`'s job store, keyed by
+# The one key the sidecar carries today: `QuestionsTool`'s job store, keyed by
 # `tool_call_id`, JSON-shaped all the way down.
 QUESTIONS_STORE_KEY = "questions"
 
@@ -50,13 +62,13 @@ def session_path(session_id: str, directory: str | os.PathLike[str] = ".") -> Pa
     return Path(directory) / f"{session_id}.json"
 
 
-def tui_state_path(session_id: str, directory: str | os.PathLike[str] = ".") -> Path:
-    """The TUI's sidecar for one session: `<session-id>.tui.json`."""
-    return Path(directory) / f"{session_id}.tui.json"
+def app_state_path(session_id: str, directory: str | os.PathLike[str] = ".") -> Path:
+    """The front end's sidecar for one session: `<session-id>.app.json`."""
+    return Path(directory) / f"{session_id}{SIDECAR_SUFFIX}"
 
 
-def load_tui_state(session_id: str, directory: str | os.PathLike[str] = ".") -> dict:
-    """The TUI's own state for one session, or an empty dict.
+def load_app_state(session_id: str, directory: str | os.PathLike[str] = ".") -> dict:
+    """The front end's own state for one session, or an empty dict.
 
     NEVER RAISES, and validates SHAPE rather than only syntax. This is an
     interface convenience, not conversation data: a missing, unreadable or
@@ -70,16 +82,16 @@ def load_tui_state(session_id: str, directory: str | os.PathLike[str] = ".") -> 
     that session into a `FAILED` one, permanently, since the bad shape would be
     written back on the next save. Anything that is not a mapping is dropped
     here instead."""
-    path = tui_state_path(session_id, directory)
+    path = app_state_path(session_id, directory)
     if not path.exists():
         return {}
     try:
         state = json.loads(path.read_text())
     except (OSError, ValueError):
-        logger.warning("could not read the TUI state at %s; starting clean", path, exc_info=True)
+        logger.warning("could not read the app state at %s; starting clean", path, exc_info=True)
         return {}
     if not isinstance(state, dict):
-        logger.warning("the TUI state at %s is not an object; starting clean", path)
+        logger.warning("the app state at %s is not an object; starting clean", path)
         return {}
     store = state.get(QUESTIONS_STORE_KEY)
     if store is not None and not isinstance(store, dict):
@@ -88,13 +100,13 @@ def load_tui_state(session_id: str, directory: str | os.PathLike[str] = ".") -> 
     return state
 
 
-def save_tui_state(session_id: str, state: dict, directory: str | os.PathLike[str] = ".") -> Path | None:
+def save_app_state(session_id: str, state: dict, directory: str | os.PathLike[str] = ".") -> Path | None:
     """Write the sidecar atomically, the way `save_session` writes the session.
 
     Returns the path, or None when the state is empty (nothing to keep) or the
     write failed — the same reasoning as the read: losing this file is a
     cosmetic loss and must never take a turn down with it."""
-    path = tui_state_path(session_id, directory)
+    path = app_state_path(session_id, directory)
     if not state:
         return None
     try:
@@ -107,7 +119,7 @@ def save_tui_state(session_id: str, state: dict, directory: str | os.PathLike[st
             temporary.unlink(missing_ok=True)
             raise
     except (OSError, TypeError, ValueError):
-        logger.warning("could not write the TUI state at %s", path, exc_info=True)
+        logger.warning("could not write the app state at %s", path, exc_info=True)
         return None
     return path
 
@@ -181,9 +193,51 @@ def resolve_session_directory(
     return store / encode_project_path(workspace)
 
 
+def delete_session(session_id: str, directory: str | os.PathLike[str] = ".") -> None:
+    """Delete a session AND its sidecar — the two are one artifact to the
+    user, and an orphaned `.app.json` would outlive the conversation it
+    describes forever."""
+    session_path(session_id, directory).unlink(missing_ok=True)
+    app_state_path(session_id, directory).unlink(missing_ok=True)
+
+
+# ── one session, summarized ──────────────────────────────────────────────────
+
+
+def user_transcript_text(parts: Iterable[ContentPart]) -> str:
+    """A user message's parts as transcript text: text verbatim, each image
+    as a `[image: name]` placeholder line.
+
+    `@`-mention parts are skipped — an inlined file belongs in its own read
+    row, not dumped into the user's own words."""
+    lines: list[str] = []
+    for part in parts:
+        if mention_of(part) is not None:
+            continue
+        if isinstance(part, TextContent):
+            lines.append(part.text)
+        elif isinstance(part, ImageContent):
+            label = part.metadata.get("name") or part.source.media_type or "image"
+            lines.append(f"[image: {label}]")
+        elif isinstance(part, AudioContent):
+            label = part.metadata.get("name") or part.source.media_type or "audio"
+            lines.append(f"[audio: {label}]")
+        elif isinstance(part, FileContent):
+            label = part.name or part.metadata.get("name") or part.source.media_type or "file"
+            lines.append(f"[file: {label}]")
+    return "\n".join(lines)
+
+
+PreviewFn = Callable[[AgentSession], list[str]]
+"""How a front end renders the last few transcript rows of a session for its
+picker. Optional, and front-end shaped: the TUI's version emits theme-token
+markup that means nothing to anyone else, and a JSON-RPC client wants no
+preview at all."""
+
+
 @dataclass(frozen=True)
 class SessionSummary:
-    """One row of the sessions screen."""
+    """One row of a session picker."""
 
     id: str
     path: Path
@@ -203,12 +257,12 @@ def summarize(
     path: Path,
     modified: datetime,
     size_bytes: int,
+    preview: PreviewFn | None = None,
 ) -> SessionSummary:
-    """A loaded session as a sessions-screen row.
+    """A loaded session as one picker row.
 
     Split from the file read so a catalogued, in-memory session produces the
-    same row a stored one does — the screen has one derivation, not two."""
-    from .render import preview_rows
+    same row a stored one does — a front end has one derivation, not two."""
     from .usage import estimated_cost, usage_totals
 
     nodes = session.conversations[session.main_conversation_id].nodes
@@ -225,13 +279,13 @@ def summarize(
         tokens=usage_totals(session).total,
         cost=estimated_cost(session),
         size_bytes=size_bytes,
-        preview=preview_rows(session),
+        preview=preview(session) if preview is not None else None,
     )
 
 
-def summarize_session(path: Path) -> SessionSummary | None:
-    """One stored session as a sessions-screen row, or `None` when it cannot
-    be read. One unloadable file must never stop the screen opening."""
+def summarize_session(path: Path, *, preview: PreviewFn | None = None) -> SessionSummary | None:
+    """One stored session as one picker row, or `None` when it cannot be read.
+    One unloadable file must never stop the picker opening."""
     try:
         session = AgentSession.model_validate_json(path.read_text())
     except (OSError, UnicodeDecodeError, ValueError) as exc:
@@ -245,31 +299,32 @@ def summarize_session(path: Path) -> SessionSummary | None:
         path=path,
         modified=datetime.fromtimestamp(stat.st_mtime),
         size_bytes=stat.st_size,
+        preview=preview,
     )
 
 
-def delete_session(session_id: str, directory: str | os.PathLike[str] = ".") -> None:
-    """Delete a session AND its TUI sidecar — the two are one artifact to the
-    user, and an orphaned `.tui.json` would outlive the conversation it
-    describes forever."""
-    session_path(session_id, directory).unlink(missing_ok=True)
-    tui_state_path(session_id, directory).unlink(missing_ok=True)
-
-
-def list_sessions(directory: str | os.PathLike[str]) -> list[SessionSummary]:
+def list_sessions(
+    directory: str | os.PathLike[str],
+    *,
+    preview: PreviewFn | None = None,
+) -> list[SessionSummary]:
     """Every readable session in `directory`, newest first.
 
     Each row costs one parse (~3ms for a 500KB session), so no index file: the
     listing is built on demand when the picker opens, and there is nothing to
     keep in sync or rebuild when it drifts.
 
-    `*.tui.json` sidecars are skipped by NAME rather than by failing to parse:
+    `*.app.json` sidecars are skipped by NAME rather than by failing to parse:
     they live in the same directory and match the same glob, and letting them
     through would log a warning per session on every open."""
     root = Path(directory)
     if not root.is_dir():
         return []
-    found = [summarize_session(path) for path in sorted(root.glob("*.json")) if not path.name.endswith(".tui.json")]
+    found = [
+        summarize_session(path, preview=preview)
+        for path in sorted(root.glob("*.json"))
+        if not path.name.endswith(SIDECAR_SUFFIX)
+    ]
     return sorted(
         (summary for summary in found if summary is not None),
         key=lambda summary: summary.modified,

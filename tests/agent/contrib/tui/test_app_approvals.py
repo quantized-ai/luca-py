@@ -7,9 +7,9 @@ composer in `#dock`; answers are picked by digit key, exactly as a user
 would.
 """
 
+from luca.agent.contrib.app.sessions import load_session
 from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.blocks import AssistantText, NoticeLine, ToolBlockView
-from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.contrib.tui.shells import ApprovalPromptView
 from luca.agent.core.models import ConversationStatus, ExecutionStatus, ToolExecution
 from luca.client.testing import (

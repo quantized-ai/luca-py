@@ -10,11 +10,11 @@ The workspace is a plain tmp directory, so `git ls-files` fails there and the
 listing falls back to the bounded walk — a fixed, sorted set of files.
 """
 
+from luca.agent.contrib.app.prompt_files import ReadLimits
+from luca.agent.contrib.app.sessions import load_session
 from luca.agent.contrib.tui import AgentApp, state as vm
 from luca.agent.contrib.tui.blocks import ToolBlockView, UserTurn
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.prompt_files import ReadLimits
-from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.contrib.tui.shells import OverlayListView
 from luca.client.testing import FauxProvider, faux_assistant_message, faux_text
 

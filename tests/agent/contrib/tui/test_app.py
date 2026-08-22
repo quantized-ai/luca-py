@@ -7,6 +7,7 @@ block view-models plus the persisted session.
 
 import base64
 
+from luca.agent.contrib.app.sessions import load_session
 from luca.agent.contrib.tui import AgentApp, app as app_module, state as vm
 from luca.agent.contrib.tui.blocks import (
     AssistantText,
@@ -16,7 +17,6 @@ from luca.agent.contrib.tui.blocks import (
     UserTurn,
 )
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.contrib.tui.shells import ApprovalPromptView
 from luca.agent.core.models import ConversationStatus, LLMConfig
 from luca.client.testing import (

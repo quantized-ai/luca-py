@@ -3,7 +3,9 @@
 Uploaded into the task container and run there, so it imports `luca` and the
 standard library only — notably not `luca.agent.contrib.tui`, whose package
 root pulls in Textual. It composes the agent through core + contrib's public
-surface, exactly as any application would.
+surface, exactly as any application would; the composition is deliberately its
+own rather than `contrib.app.wiring`'s, because a benchmark wants neither the
+demo math tools nor a way to ask the user anything.
 
     python runner.py --model openai/gpt-5.4-mini --provider openrouter \\
         --workspace /app --session-out /logs/agent/session.json -- "<task>"
@@ -23,6 +25,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from luca.agent.contrib.app.wiring import SCRATCHPAD_STORE_KEY, TODO_STORE_KEY
 from luca.agent.contrib.memory import MemoryPlugin
 from luca.agent.contrib.plugins import PluginAgentSessionRunner
 from luca.agent.contrib.prompts import InstructionsPlugin, SystemPromptPlugin
@@ -40,9 +43,6 @@ EXIT_BLOCKED = 2
 EXIT_TIMEOUT = 124
 
 ADDENDUM_PRIORITY = 110  # after the project's own instruction files (100)
-
-TODO_STORE_KEY = "todos"
-SCRATCHPAD_STORE_KEY = "scratchpad"
 
 
 class PromptAddendumPlugin:
