@@ -10,6 +10,13 @@ the option set, the labels, the question wording, and the answers each option
 carries.
 """
 
+from luca.agent.contrib.app.approvals import (
+    CANCEL_LABEL,
+    DENY_LABEL,
+    ApprovalPromptModel,
+    PromptOption,
+    build_approval_prompts,
+)
 from luca.agent.contrib.resource_permissions import (
     AnswerDecision,
     AnswerOption,
@@ -19,13 +26,7 @@ from luca.agent.contrib.resource_permissions import (
     ResourcePermission,
 )
 from luca.agent.contrib.tui import state as vm
-from luca.agent.contrib.tui.approvals import (
-    CANCEL_LABEL,
-    DENY_LABEL,
-    ApprovalPromptModel,
-    PromptOption,
-    build_approval_prompts,
-)
+from luca.agent.contrib.tui.approvals import approval_state
 from luca.agent.core.models import (
     ApprovalOption,
     ExecutionStatus,
@@ -462,7 +463,7 @@ def test_to_state_maps_labels_and_the_esc_hint():
 
     [prompt] = build_approval_prompts(READ_EXECUTION, strategy)
 
-    assert prompt.to_state() == vm.ApprovalState(
+    assert approval_state(prompt) == vm.ApprovalState(
         question="Read /tmp/notes.txt?",
         options=[
             vm.ApprovalOption(label="Approve once"),

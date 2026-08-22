@@ -498,3 +498,13 @@ HANDLERS: tuple[PromptFileHandler, ...] = (
     BinaryHandler(),
     TextHandler(),
 )
+
+
+def mention_of(part: ContentPart) -> dict | None:
+    """The `@`-mention annotation on a part, or None for ordinary content.
+
+    The read side of what `build` writes above. Best-effort: a part written by
+    an older build, or by an application that annotates differently, must not
+    break whatever is rendering it."""
+    mention = (getattr(part, "metadata", None) or {}).get("mention")
+    return mention if isinstance(mention, dict) else None

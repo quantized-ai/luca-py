@@ -30,6 +30,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from luca.agent.contrib.app.approvals import build_approval_prompts
+from luca.agent.contrib.app.sessions import SessionSummary, summarize
 from luca.agent.contrib.questions import QuestionsTool
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.core.exceptions import ProjectionError
@@ -42,7 +44,7 @@ from luca.agent.core.models import (
 from luca.agent.core.projection import ConversationProjector, tool_message_text
 
 from . import state as vm
-from .approvals import build_approval_prompts
+from .approvals import approval_state
 from .commands import build_sessions_state, build_settings_state, palette_rows
 from .files import rank_files
 from .format import HINTS, approval_hints, question_hints_for, short_model
@@ -51,10 +53,10 @@ from .render import (
     is_questions_tool,
     picker_rows,
     plan_from_session,
+    preview_rows,
     question_set_state,
     transcript_blocks,
 )
-from .sessions import SessionSummary, summarize
 from .usage import cost_state, status_counter
 
 CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog.yaml"
@@ -222,7 +224,7 @@ def approval_screen(scene: Scene) -> vm.ScreenState:
     # The FIRST uncovered step. A multi-step gate asks again after this one is
     # answered, which is a sequence, not a state — the catalog holds states.
     prompt = build_approval_prompts(execution, PermissionStrategy())[0]
-    approval = prompt.to_state().model_copy(update={"selected": scene.world.selected})
+    approval = approval_state(prompt).model_copy(update={"selected": scene.world.selected})
     return vm.ScreenState(
         **_base(scene),
         approval=approval,
@@ -425,6 +427,7 @@ def _summary(session: AgentSession) -> SessionSummary:
         path=SESSIONS_DIR / f"{session.id}.json",
         modified=NOW - timedelta(minutes=AGES_MINUTES.get(session.id, DEFAULT_AGE_MINUTES)),
         size_bytes=len(session.model_dump_json()),
+        preview=preview_rows,
     )
 
 

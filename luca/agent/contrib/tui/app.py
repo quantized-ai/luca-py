@@ -36,7 +36,9 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.widgets import TextArea
 
-from luca.agent.contrib.checkpoints import CheckpointService, ShadowGitStore
+from luca.agent.contrib.app import AgentApplication
+from luca.agent.contrib.app.approvals import build_approval_prompts
+from luca.agent.contrib.app.prompt_files import ReadLimits, get_model_info, parse_prompt
 from luca.agent.contrib.memory import changed_of, is_todo_tool, is_todo_update
 from luca.agent.contrib.simple_context_manager import get_context_window_size
 from luca.agent.core import AgentError, AgentRun, AlreadyCancellingError
@@ -76,7 +78,7 @@ from luca.agent.core.models import (
 from luca.agent.core.projection import tool_message_text
 
 from . import state as vm
-from .approvals import build_approval_prompts
+from .approvals import approval_state
 from .blocks import (
     AssistantText,
     TaskBlockView,
@@ -89,10 +91,7 @@ from .frame import DEFAULT_THEME, LucaApp
 from .gitinfo import GitInfo, read_git_info
 from .modals import CostScreen, SessionsScreen, SettingsScreen
 from .prompt import PromptInput
-from .prompt_files import ReadLimits, get_model_info, parse_prompt
 from .render import (
-    SCRATCHPAD_STORE_KEY,
-    TODO_STORE_KEY,
     answer_payload,
     child_links,
     entry_blocks,
@@ -112,7 +111,6 @@ from .render import (
     user_transcript_text,
     was_auto_approved,
 )
-from .sessions import QUESTIONS_STORE_KEY, load_tui_state, save_session, save_tui_state
 from .shells import (
     ApprovalPromptView,
     OverlayListView,
@@ -120,7 +118,6 @@ from .shells import (
     QuestionSetView,
 )
 from .usage import status_counter
-from .wiring import build_runner
 
 __all__ = ["AgentApp", "DEFAULT_THEME"]
 
@@ -166,40 +163,34 @@ class AgentApp(LucaApp):
         self._session_dir = Path(session_dir)
         self._streaming = streaming
         self._workspace = workspace
-        # One shadow repo per PROJECT, beside that project's sessions. The
-        # service outlives any single session (`/clear` and `/resume` swap the
-        # runner, not the workspace), so it is built here and not in
-        # `_build_runner`.
-        self.checkpoints = CheckpointService(
-            ShadowGitStore(workspace, self._session_dir / "checkpoints.git"),
-            enabled=checkpoints,
+        # EVERYTHING THAT IS NOT A WIDGET lives on the application: the runner,
+        # the permission strategy, the questions plugin, the checkpoint store
+        # and both halves of persistence. It is the same object the ACP server
+        # composes, so the two front ends cannot drift apart.
+        self.app_state = AgentApplication(
+            session,
+            provider=provider,
+            auth=auth,
+            workspace=workspace,
+            session_dir=self._session_dir,
+            mode=mode,
+            context_manager=context_manager,
+            additional_directories=additional_directories,
+            permission_rules=permission_rules,
+            model_options=model_options,
+            subagents=subagents,
+            skills=skills,
+            extra_skill_locations=extra_skill_locations,
+            instructions=instructions,
+            extra_instructions=extra_instructions,
+            checkpoints=checkpoints,
         )
-        self._provider = provider
-        # `auth.json`, read once at boot. Kept as the whole map rather than as
-        # one resolved key because `/model` can move the session to another
-        # provider mid-run, and the key has to follow it.
-        self._auth = dict(auth or {})
-        self._mode = mode
-        self._context_manager = context_manager
-        self._additional_directories = additional_directories
-        self._permission_rules = permission_rules
         self.recommended_models = recommended_models
-        # A callable, not the LucaConfig: the app needs "re-resolve options for
-        # this pair", not the file the answer came from. Identity when nothing
-        # configured any, so a plain app carries no options at all.
-        self._model_options = model_options or (lambda llm_config: llm_config)
-        self._subagents = subagents
-        self._skills = skills
-        self._extra_skill_locations = extra_skill_locations
         # Read once at boot, like `auth.json`. A command is a saved prompt, so
         # re-reading the directory mid-session would only matter to someone
         # editing their own files while the TUI is up.
         self.custom_commands = self._load_custom_commands(commands, workspace, extra_command_locations)
-        self._instructions = instructions
-        self._extra_instructions = extra_instructions
         self._resume = resume
-        self._tui_state: dict = {}
-        self.runner, self.strategy, self.questions = self._build_runner(session)
         self._current_run: AgentRun | None = None
         self._driving = False
         # KEYED BY CONVERSATION: with subagents several conversations stream
@@ -244,6 +235,22 @@ class AgentApp(LucaApp):
         self._menu_all_rows: list[vm.OverlayRow] = []
         self._picker_selected: set[str] = set()
         self._picker_files: list[str] = []
+
+    @property
+    def runner(self):
+        return self.app_state.runner
+
+    @property
+    def strategy(self):
+        return self.app_state.strategy
+
+    @property
+    def questions(self):
+        return self.app_state.questions
+
+    @property
+    def checkpoints(self):
+        return self.app_state.checkpoints
 
     @property
     def current_run(self) -> AgentRun | None:
@@ -499,24 +506,19 @@ class AgentApp(LucaApp):
         """Re-resolve the configured options for this pair. Called by `_apply`
         on every model switch, so a session never keeps the previous model's
         settings."""
-        return self._model_options(llm_config)
+        return self.app_state.model_options(llm_config)
 
     def api_key_for(self, provider: str) -> str | None:
         """This provider's key from `auth.json`, or None to let the client fall
         back to its own environment variable."""
-        from .auth import api_key_for
-
-        return api_key_for(self._auth, provider)
+        return self.app_state.api_key_for(provider)
 
     def repoint_api_key(self, provider: str) -> None:
         """Move the live runner (and its context manager) onto another
         provider's credential. Called by `_apply` alongside the option
         re-resolution: a `/model openai:…` on a session configured for
         openrouter must stop sending openrouter's key."""
-        key = self.api_key_for(provider)
-        self.runner.api_key = key
-        if self._context_manager is not None:
-            self._context_manager.api_key = key
+        self.app_state.repoint_api_key(provider)
 
     def _alternate_model(self) -> tuple[str, str] | None:
         """A sibling to offer after a turn fails — the newest model from the
@@ -565,7 +567,7 @@ class AgentApp(LucaApp):
                 main_conversation_id=self.runner.main_conversation_id,
                 subagent_labels={cid: task.status_model.description for cid, task in self._tasks.items()},
             ):
-                choice = await self._ask(prompt.to_state())
+                choice = await self._ask(approval_state(prompt))
                 option = prompt.options[choice]
                 self._answered.add(execution.tool_call_id)
                 if option.is_cancel:
@@ -912,7 +914,7 @@ class AgentApp(LucaApp):
                 self.scroll_transcript_end()
             case CompactionFinished(entry=entry, outcome=TurnOutcome.COMPLETED, new_conversation_id=new_id):
                 if new_id is not None:
-                    self._move_memory_stores(source, new_id)
+                    self.app_state.move_memory_stores(source, new_id)
                 replaced = len(entry.compacted_nodes or [])
                 text = f"context compacted · {replaced} entries summarized" if entry.parts else "nothing to compact"
                 await self._mount_widget_block(vm.NoticeBlock(text=text), source)
@@ -961,17 +963,6 @@ class AgentApp(LucaApp):
         handed the plugin a dict that lives on the session, so reading it back
         off the session reads exactly what the agent answers from."""
         return session_todos(self.runner.session)
-
-    def _move_memory_stores(self, outgoing: str, incoming: str) -> None:
-        """Compaction installs a NEW conversation id, and both memory stores
-        are keyed by the old one. Nothing in the agent moves them: the stores
-        are the app's, handed to the plugin at construction, so keeping them
-        addressable is the app's job. Mutated IN PLACE — the plugin's tools
-        hold these same dicts by reference."""
-        for key in (TODO_STORE_KEY, SCRATCHPAD_STORE_KEY):
-            store = self.runner.session.extras.get(key)
-            if isinstance(store, dict) and outgoing in store:
-                store[incoming] = store.pop(outgoing)
 
     def _render_plan(self, *, running: bool = False) -> None:
         if plan_dismissed(self.runner.session):
@@ -1297,51 +1288,11 @@ class AgentApp(LucaApp):
             if aclose is not None:
                 await aclose()
 
-    def _build_runner(self, session: AgentSession):
-        """Compose the runner for one session, and load THE TUI'S OWN STATE for
-        it from the `<session-id>.tui.json` sidecar beside the session file.
-
-        The question store lives there rather than on `AgentSession.extras`
-        because outstanding questions are the INTERFACE's state: another driver
-        loading this session has no use for a prompt only this TUI knows how to
-        render. Losing the sidecar is survivable — `ask_user` re-seeds from
-        `raw_tool_call.arguments` and defers again, so the user is asked a
-        second time rather than left wedged."""
-        self._tui_state = load_tui_state(session.id, self._session_dir)
-        # The store is the app's own reference, NOT a key `setdefault`-ed into
-        # `_tui_state` — that would make the state permanently truthy and write
-        # a sidecar beside every session that never asked a question.
-        # `_save()` files it back only when it holds something.
-        stored = self._tui_state.get(QUESTIONS_STORE_KEY)
-        self._questions_store: dict = stored if isinstance(stored, dict) else {}
-        return build_runner(
-            session,
-            workspace=self._workspace,
-            provider=self._provider,
-            api_key=self.api_key_for(session.session_config.llm_config.provider),
-            mode=self._mode,
-            context_manager=self._context_manager,
-            additional_directories=self._additional_directories,
-            extra_rules=self._permission_rules,
-            subagents=self._subagents,
-            skills=self._skills,
-            extra_skill_locations=self._extra_skill_locations,
-            instructions=self._instructions,
-            extra_instructions=self._extra_instructions,
-            questions_store=self._questions_store,
-        )
-
     def _save(self) -> None:
-        """Persist both halves of a session: the conversation and the TUI's own
-        sidecar. Called wherever `save_session` used to be, so the two can never
-        drift out of step."""
-        save_session(self.runner.session, self._session_dir)
-        state = dict(self._tui_state)
-        if self._questions_store:
-            state[QUESTIONS_STORE_KEY] = self._questions_store
-        else:
-            state.pop(QUESTIONS_STORE_KEY, None)
-        save_tui_state(self.runner.session.id, state, self._session_dir)
+        """Persist both halves of a session: the conversation and the sidecar
+        beside it. Called wherever `save_session` used to be, so the two can
+        never drift out of step."""
+        self.app_state.save()
 
     def _settle(self) -> None:
         if self.runner.idle():
@@ -1355,7 +1306,7 @@ class AgentApp(LucaApp):
         # `/clear`, `/resume` and fork all land here, each discarding a whole
         # runner — including the shell plugin's live bash processes.
         await self._close_plugins()
-        self.runner, self.strategy, self.questions = self._build_runner(session)
+        self.app_state.use(session)
         await self._reset_view()
 
     async def _reset_view(self) -> None:
@@ -1412,10 +1363,12 @@ class AgentApp(LucaApp):
     # ── modal screens (live) ──────────────────────────────────────────────────
 
     async def open_sessions_screen(self) -> None:
-        from .commands import build_sessions_state
-        from .sessions import list_sessions
+        from luca.agent.contrib.app.sessions import list_sessions
 
-        summaries = list_sessions(self._session_dir)
+        from .commands import build_sessions_state
+        from .render import preview_rows
+
+        summaries = list_sessions(self._session_dir, preview=preview_rows)
         state = build_sessions_state(summaries, directory_name=Path(self._session_dir).name)
         if state is None:
             await self._notice("no saved sessions for this project yet")
@@ -1432,7 +1385,7 @@ class AgentApp(LucaApp):
             self.runner.session.session_config.llm_config,
             theme=self.theme,
             streaming=self._streaming,
-            mode=self._mode,
+            mode=self.app_state.mode,
             show_counter=self._show_counter,
             selected=selected,
         )

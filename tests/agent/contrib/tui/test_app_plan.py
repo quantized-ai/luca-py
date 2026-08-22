@@ -9,9 +9,9 @@ Everything runs against a scripted `FauxProvider`: the model calls
 `update_todos`, the memory plugin numbers the list, the app renders it.
 """
 
+from luca.agent.contrib.app.sessions import load_session
 from luca.agent.contrib.tui import AgentApp
 from luca.agent.contrib.tui.blocks import ListBlockView, ToolBlockView
-from luca.agent.contrib.tui.sessions import load_session
 from luca.client.testing import (
     FauxProvider,
     faux_assistant_message,

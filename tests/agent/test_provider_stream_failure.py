@@ -47,7 +47,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from luca.agent.contrib.tui.wiring import build_runner
+from luca.agent.contrib.app.wiring import build_runner
 from luca.agent.core import AgentSessionRunner, LLMConfig, TurnOutcome
 from luca.client.exceptions import StreamError
 from luca.client.providers.openrouter import OpenRouterProvider

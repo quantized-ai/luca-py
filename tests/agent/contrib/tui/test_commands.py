@@ -13,9 +13,12 @@ import os
 import time
 from functools import partial
 
+from luca.agent.contrib.app.auth import AuthEntry
+from luca.agent.contrib.app.config import LucaConfig, apply_model_options
+from luca.agent.contrib.app.sessions import list_sessions, save_session
+from luca.agent.contrib.app.wiring import default_model
 from luca.agent.contrib.tui import state as vm
 from luca.agent.contrib.tui.app import AgentApp
-from luca.agent.contrib.tui.auth import AuthEntry
 from luca.agent.contrib.tui.blocks import ListBlockView, NoticeLine, UserTurn
 from luca.agent.contrib.tui.commands import (
     COMMANDS,
@@ -26,13 +29,11 @@ from luca.agent.contrib.tui.commands import (
     recent_models,
     run_palette_choice,
 )
-from luca.agent.contrib.tui.config import LucaConfig, apply_model_options
 from luca.agent.contrib.tui.format import fmt_tokens, short_model
 from luca.agent.contrib.tui.modals import SettingsScreen
 from luca.agent.contrib.tui.prompt import PromptInput
-from luca.agent.contrib.tui.sessions import list_sessions, save_session
+from luca.agent.contrib.tui.render import preview_rows
 from luca.agent.contrib.tui.shells import OverlayListView, QueryLine
-from luca.agent.contrib.tui.wiring import default_model
 from luca.agent.core.models import LLMConfig, RuntimeConfig
 from luca.client import catalog
 from luca.client.catalog._data import cache_path
@@ -614,7 +615,7 @@ async def test_settings_leaves_the_approval_mode_untouched(tmp_path):
         await pilot.press("right")
         await pilot.pause()
 
-        assert app._mode == "ask"
+        assert app.app_state.mode == "ask"
         assert app.screen.state.groups[1].rows == [
             vm.SettingRow(name="approval mode", value="ask", color="muted"),
         ]
@@ -633,7 +634,7 @@ def test_build_sessions_state_lists_newest_first_with_the_count_line(tmp_path):
     os.utime(tmp_path / f"{newer.id}.json", (now - 300, now - 300))
     total = sum(path.stat().st_size for path in tmp_path.glob("*.json"))
 
-    summaries = list_sessions(tmp_path)
+    summaries = list_sessions(tmp_path, preview=preview_rows)
     state = build_sessions_state(summaries, directory_name=tmp_path.name)
 
     assert state == vm.SessionsState(

@@ -16,8 +16,9 @@ default throughout.
 
 import pytest
 
+from luca.agent.contrib.app.usage import UsageTotals, estimated_cost, usage_totals
 from luca.agent.contrib.tui import state as vm
-from luca.agent.contrib.tui.usage import UsageTotals, cost_state, estimated_cost, status_counter, usage_totals
+from luca.agent.contrib.tui.usage import cost_state, status_counter
 from luca.agent.core.models import (
     AssistantMessage,
     ExecutionResult,

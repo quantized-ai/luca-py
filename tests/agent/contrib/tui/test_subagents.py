@@ -7,17 +7,17 @@ behavior under test, and a flat query would pass just as happily with the
 subagent's output spliced into the main column.
 """
 
+from luca.agent.contrib.app.approvals import build_approval_prompts
+from luca.agent.contrib.app.sessions import load_session
 from luca.agent.contrib.resource_permissions import PermissionStrategy
 from luca.agent.contrib.subagents import SPAWN_TOOL_NAME
 from luca.agent.contrib.tui import AgentApp, state as vm
-from luca.agent.contrib.tui.approvals import build_approval_prompts
 from luca.agent.contrib.tui.blocks import (
     AssistantText,
     NoticeLine,
     TaskBlockView,
     ToolBlockView,
 )
-from luca.agent.contrib.tui.sessions import load_session
 from luca.agent.contrib.tui.shells import ApprovalPromptView
 from luca.agent.core.models import (
     ChildConversation,

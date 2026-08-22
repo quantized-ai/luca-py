@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from luca.agent.contrib.tui.auth import (
+from luca.agent.contrib.app.auth import (
     ENV_AUTH_PATH,
     AuthEntry,
     api_key_for,
@@ -14,7 +14,7 @@ from luca.agent.contrib.tui.auth import (
     load_auth,
     resolve_auth_path,
 )
-from luca.agent.contrib.tui.config import LucaConfigError
+from luca.agent.contrib.app.config import LucaConfigError
 
 
 def _write(path: Path, payload: dict) -> Path:

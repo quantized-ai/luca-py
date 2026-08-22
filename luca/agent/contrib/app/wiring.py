@@ -1,4 +1,4 @@
-"""Agent composition for the TUI.
+"""Agent composition for the demo applications.
 
 `build_runner` reproduces the demo wiring in one place: the prompt plugins
 (the model's base prompt, the environment, the project's instruction files),
@@ -7,8 +7,8 @@ questions plugin (`ask_user`), the three demo math tools, and ONE
 `PermissionStrategy` (built and seeded by `ShellAccessPlugin`) shared by every
 registry so a single approval gate serves everything.
 
-`build_faux_provider` scripts an offline conversation (`--faux`) so the TUI
-can be exercised end-to-end with no key and no network — the same
+`build_faux_provider` scripts an offline conversation (`--faux`) so a front
+end can be exercised end-to-end with no key and no network — the same
 `FauxProvider` the tests inject.
 """
 
@@ -39,7 +39,14 @@ from luca.client.testing import (
     faux_tool_call,
 )
 
-from .render import SCRATCHPAD_STORE_KEY, TODO_STORE_KEY
+# Where THE APPLICATION keeps the memory plugin's two stores inside
+# `AgentSession.extras`. The plugin takes both dicts as constructor arguments
+# and never looks a key up, so these names are the application's choice alone
+# — `build_runner` hands the dicts over, a front end reads them back, and the
+# session save persists them because they live on the session. An application
+# composing `MemoryPlugin` differently picks its own names, or none.
+TODO_STORE_KEY = "todos"
+SCRATCHPAD_STORE_KEY = "scratchpad"
 
 # ── demo math tools ────────────────────────────────────────────────────────────
 # Resourceless tools without the permission mixin: the approval layer
@@ -145,8 +152,8 @@ def build_runner(
     `/compact` fails until one that implements `compact()` is passed here.
 
     `questions_store=` is the dict `QuestionsTool` keeps its outstanding jobs
-    in. The app hands in the one it loaded from the session's `.tui.json`
-    sidecar, so a question parked when the process died comes back parked;
+    in. The application hands in the one it loaded from the session's
+    `.app.json` sidecar, so a question parked when the process died comes back parked;
     passing nothing starts clean, which is right for a script and wrong for
     anything a user comes back to. The plugin is returned alongside the runner
     because the driver needs a stable reference to `answer()` on — resolving a
@@ -181,9 +188,9 @@ def build_runner(
         todo_store=session.extras.setdefault(TODO_STORE_KEY, {}),
     )
     # THE `ask_user` TOOL, and the one deferred tool the demo ships. Its store
-    # is the app's, not the session's: outstanding questions are the
+    # is the application's, not the session's: outstanding questions are the
     # INTERFACE's state, and a second driver loading this session has no use
-    # for a prompt only this TUI knows how to render.
+    # for a prompt only this front end knows how to render.
     questions = QuestionsPlugin(store=questions_store)
     plugins: list = [SystemPromptPlugin(workspace=workspace), memory, questions, shell]
     if skills_plugin is not None:

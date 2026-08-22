@@ -26,10 +26,11 @@ package root pulls in Textual; the pure modules can be imported directly
 without it.
 """
 
+from luca.agent.contrib.app.wiring import build_faux_provider, build_runner
+
 from .app import AgentApp
 from .cli import main
 from .frame import LucaApp
 from .gallery import GalleryApp
-from .wiring import build_faux_provider, build_runner
 
 __all__ = ["AgentApp", "GalleryApp", "LucaApp", "build_faux_provider", "build_runner", "main"]
