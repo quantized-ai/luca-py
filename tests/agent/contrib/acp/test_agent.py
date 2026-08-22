@@ -269,3 +269,34 @@ async def test_client_info_is_accepted_and_ignored(agent):
     )
 
     assert response.protocol_version == 1
+
+
+# ── the defaults nobody passes ───────────────────────────────────────────────
+
+
+async def test_a_session_starts_with_no_log_level_configured(agent, workspace):
+    """Both the flag and `luca.json` are optional, and `setup_logging` takes a
+    real level. Shipped without the fallback this died on `None.upper()`
+    before the first session existed, and Zed reported it as nothing more
+    useful than "Failed to Launch"."""
+    instance = await connected(agent, RecordingClient(), log_level=None)
+    await instance.initialize(protocol_version=1)
+
+    response = await instance.new_session(cwd=str(workspace))
+
+    assert response.session_id
+
+
+async def test_a_session_starts_with_every_optional_flag_left_alone(agent, workspace):
+    """The shape a client actually launches: no flags at all beyond the
+    provider the tests have to inject."""
+    from luca.agent.contrib.acp import LucaAgent
+    from luca.agent.contrib.app import build_faux_provider
+
+    instance = LucaAgent(provider=build_faux_provider(), faux=True)
+    instance.on_connect(RecordingClient())
+    await instance.initialize(protocol_version=1)
+
+    response = await instance.new_session(cwd=str(workspace))
+
+    assert response.session_id

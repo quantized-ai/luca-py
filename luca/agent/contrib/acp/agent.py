@@ -59,6 +59,7 @@ from acp.schema import (
 )
 
 from luca.agent.contrib.app import (
+    DEFAULT_LOG_LEVEL,
     AgentApplication,
     LucaConfig,
     apply_model_options,
@@ -69,6 +70,7 @@ from luca.agent.contrib.app import (
     credentials,
     load_session,
     log_path,
+    pick,
     setup_logging,
 )
 from luca.agent.contrib.resource_permissions import PermissionMode
@@ -307,7 +309,12 @@ class LucaAgent(Agent):
         auth = credentials(config, session.session_config.llm_config, faux=self._faux)
         setup_logging(
             log_path(session.id, environment.session_dir, config.logging.file),
-            self._log_level or config.logging.level,
+            # BOTH sources are optional and `setup_logging` takes a real level,
+            # so the default has to be applied here. Without it a launch with
+            # no `--log-level` and no `luca.json` dies on `None.upper()` before
+            # the first session exists, which a client reports as nothing more
+            # useful than "failed to launch".
+            pick(self._log_level, config.logging.level, DEFAULT_LOG_LEVEL),
         )
         mode = config.permissions.mode.value if config.permissions.mode is not None else PermissionMode.ASK.value
         return AgentApplication(
